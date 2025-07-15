@@ -1,6 +1,6 @@
 from fastapi import Request, Depends
 from cassandra.cluster import Session
-from shared_lib import security as shared_security
+from platformq_shared import security as shared_security
 
 # This service only needs a db session and the trusted header user
 # The actual logic is in the shared library.

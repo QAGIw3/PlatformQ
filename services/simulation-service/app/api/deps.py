@@ -1,6 +1,6 @@
 from fastapi import Request, Depends
 from cassandra.cluster import Session
-from shared_lib import security as shared_security
+from platformq_shared import security as shared_security
 
 def get_db_session(request: Request) -> Session:
     session = request.app.state.db_manager.get_session()

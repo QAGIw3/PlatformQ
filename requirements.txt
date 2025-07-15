@@ -1,6 +1,0 @@
-hvac
-redoc-cli
-minio
-pdoc
-mkdocs
-mkdocs-material 

@@ -8,7 +8,7 @@ def extract_freecad_metadata(filepath):
     """
     Opens a FreeCAD file and extracts metadata and physical properties.
     """
-    doc = FreeCAD.open(filepath)
+        doc = FreeCAD.open(filepath)
 
     metadata = {
         "document": {

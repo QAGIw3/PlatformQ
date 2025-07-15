@@ -4,9 +4,6 @@ from typing import Optional
 from jose import JWTError, jwt
 from passlib.context import CryptContext
 
-from .config import settings
-
-# For password hashing (good to have for future password-based auth)
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 

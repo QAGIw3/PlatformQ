@@ -25,7 +25,9 @@ def test_create_user():
     with patch('app.crud.crud_user.get_user_by_id', return_value=mock_created_user) as mock_get:
         user_to_create = UserCreate(email="test@example.com", full_name="Test User")
         
-        created_user = crud_user.create_user(mock_db_session, user=user_to_create)
+        created_user = crud_user.create_user(
+            db=mock_db_session, user=user_to_create, tenant_id="test-tenant"
+        )
         
         # 1. Assert that the execute method was called on the mock session
         assert mock_db_session.execute.called

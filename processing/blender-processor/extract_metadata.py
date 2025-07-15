@@ -8,7 +8,7 @@ def extract_blender_metadata(filepath):
     """
     Opens a .blend file and extracts rich metadata using Blender's Python API.
     """
-    bpy.ops.wm.open_mainfile(filepath=filepath)
+        bpy.ops.wm.open_mainfile(filepath=filepath)
 
     # --- Metadata Extraction ---
     

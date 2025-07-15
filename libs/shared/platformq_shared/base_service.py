@@ -1,7 +1,4 @@
 from fastapi import FastAPI
-from fastapi.staticfiles import StaticFiles
-from fastapi.responses import HTMLResponse
-from redoc.core import get_redoc_html
 from typing import Callable
 import logging
 import logging.config
@@ -138,21 +135,8 @@ def create_base_app(
         otel_endpoint=settings["OTEL_EXPORTER_OTLP_ENDPOINT"], 
         instrument_grpc=has_grpc
     )
-    
-    # Mount static files directory for Redoc
-    static_files_path = os.path.join(os.path.dirname(__file__), "static")
-    app.mount("/static", StaticFiles(directory=static_files_path), name="static")
 
-    # --- Step 3: Add automatic API documentation ---
-    @app.get("/docs", response_class=HTMLResponse, include_in_schema=False)
-    async def get_redoc_docs():
-        return get_redoc_html(
-            openapi_url=app.openapi_url,
-            title=f"{service_name} - API Docs",
-            redoc_js_url="/static/redoc.standalone.js",
-        )
-
-    # --- Step 4: Wire up Shared Security Dependencies ---
+    # --- Step 3: Wire up Shared Security Dependencies ---
     # This is a critical step for our "trusted subsystem" model.
     # We use FastAPI's dependency_overrides to "inject" the concrete,
     # service-specific CRUD functions into the generic, shared security
@@ -163,7 +147,7 @@ def create_base_app(
     app.dependency_overrides[shared_security.get_user_crud_dependency] = user_crud_dependency
     app.dependency_overrides[shared_security.get_password_verifier_dependency] = password_verifier_dependency
 
-    # --- Step 5: Manage Lifecycle Events ---
+    # --- Step 4: Manage Lifecycle Events ---
     @app.on_event("startup")
     def on_startup():
         """

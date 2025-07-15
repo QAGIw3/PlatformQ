@@ -1,5 +1,8 @@
 -r ../../requirements/base.in
 
+# Service-specific dependencies
+python-jose[cryptography]
+
 # No service-specific Python dependencies are needed for this service.
 
 # Development and Testing

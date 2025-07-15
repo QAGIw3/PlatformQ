@@ -8,7 +8,10 @@ import logging
 import threading
 import time
 from fastapi import Request, Response, status
-import requests # For calling the VC service
+from platformq_shared.event_publisher import EventPublisher
+from platformq_shared.config import ConfigLoader
+import json
+import re
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -20,9 +23,20 @@ settings = config_loader.load_settings()
 # We would add API keys for Zulip, Nextcloud, etc. to Vault
 # ZULIP_API_KEY = config_loader.get_secret(...)
 
+def get_tenant_from_topic(topic: str) -> str:
+    """Extracts tenant ID from a topic name using a regex."""
+    # This regex looks for the tenant ID in topics like:
+    # persistent://platformq/0a1b2c3d-..../proposal-approved-events
+    match = re.search(r'platformq/([a-f0-9-]+)/', topic)
+    if match:
+        return match.group(1)
+    logger.warning(f"Could not extract tenant ID from topic: {topic}")
+    return None
+
 # --- Pulsar Consumer Thread for Workflows ---
-def workflow_consumer_loop():
+def workflow_consumer_loop(app):
     logger.info("Starting workflow consumer thread...")
+    publisher = app.state.event_publisher
     client = pulsar.Client(settings["PULSAR_URL"])
     consumer = client.subscribe(
         "persistent://public/default/project-events",
@@ -39,32 +53,32 @@ def workflow_consumer_loop():
             # to perform the cross-application workflow.
             
             # --- Project Approved Workflow (Example) ---
+            # This is a placeholder for deserializing an approval event.
+            # In a real system, you would use an Avro schema.
+            # For now, we assume 'data' is a dictionary from a JSON payload.
             if "proposal-approved-events" in msg.topic_name():
                 tenant_id = get_tenant_from_topic(msg.topic_name())
+                data = json.loads(msg.data().decode('utf-8')) # Placeholder deserialization
                 logger.info(f"  - (Workflow) Proposal {data['proposal_id']} approved for tenant {tenant_id}.")
                 
-                logger.info("  - (Workflow) Requesting Verifiable Credential for approval...")
-                vc_payload = {
-                    "type": "ProposalApprovalCredential",
-                    "subject": {
-                        "id": f"urn:platformq:proposal:{data['proposal_id']}",
-                        "approvedBy": data['approver_id'],
-                        "customer": data['customer_name'],
-                        "approvedAt": data['event_timestamp']
-                    }
+                logger.info("  - (Workflow) Publishing event to request Verifiable Credential for approval...")
+                
+                event_data = {
+                    "tenant_id": tenant_id,
+                    "proposal_id": data['proposal_id'],
+                    "approver_id": data['approver_id'],
+                    "customer_name": data['customer_name'],
+                    "event_timestamp": int(time.time() * 1000)
                 }
+
+                publisher.publish(
+                    topic_base='verifiable-credential-issuance-requests',
+                    tenant_id=tenant_id,
+                    schema_path='libs/event-schemas/issue_verifiable_credential.avsc',
+                    data=event_data
+                )
                 
-                # In a real system, we would need a secure way to get a service-to-service token
-                # to authenticate this call to the VC service.
-                # vc_response = requests.post(
-                #     f"http://kong:8000/vc/api/v1/issue",
-                #     json=vc_payload,
-                #     headers={"X-Tenant-ID": tenant_id, "Authorization": "Bearer ..."}
-                # )
-                # signed_credential_id = vc_response.json()['id']
-                
-                logger.info("  - (Workflow) Storing credential ID and finalizing proposal...")
-                # proposals_client.add_credential_to_proposal(data['proposal_id'], signed_credential_id)
+                logger.info("  - (Workflow) Event published. The VC service will handle the issuance.")
             
             consumer.acknowledge(msg)
         except Exception as e:
@@ -83,8 +97,10 @@ app = create_base_app(
 
 @app.on_event("startup")
 def startup_event():
+    # Make the event publisher available to the app
+    app.state.event_publisher = EventPublisher()
     # Start the Pulsar consumer in a background thread
-    thread = threading.Thread(target=workflow_consumer_loop, daemon=True)
+    thread = threading.Thread(target=workflow_consumer_loop, args=(app,), daemon=True)
     thread.start()
 
 @app.post("/webhooks/openproject")

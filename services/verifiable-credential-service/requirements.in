@@ -3,6 +3,7 @@
 # Service-specific dependencies
 didkit
 fabric-sdk-py
+python-jose[cryptography]
 
 # Development and Testing
 pytest

@@ -23,7 +23,7 @@ asgiref==3.9.1
     # via opentelemetry-instrumentation-asgi
 attrs==25.3.0
     # via aiohttp
-authlib==1.2.1
+authlib[starlette]==1.2.1
     # via -r /Users/m/Downloads/platformQ/requirements/base.in
 avro==1.11.3
     # via -r /Users/m/Downloads/platformQ/requirements/base.in
@@ -270,16 +270,16 @@ python-dotenv==1.0.0
     #   redoc
     #   uvicorn
 python-jose[cryptography]==3.3.0
-    # via -r /Users/m/Downloads/platformQ/requirements/base.in
+    # via
+    #   -r /Users/m/Downloads/platformQ/requirements/base.in
+    #   -r services/storage-proxy-service/requirements.in
 pyyaml==6.0.2
     # via
     #   kubernetes
     #   redoc
     #   uvicorn
 redoc==0.2.3
-    # via
-    #   -r /Users/m/Downloads/platformQ/requirements/base.in
-    #   -r services/storage-proxy-service/requirements.in
+    # via -r services/storage-proxy-service/requirements.in
 reportlab==4.4.2
     # via redoc
 requests==2.31.0

@@ -1,5 +1,8 @@
 -r ../../requirements/base.in
 
+# Service-specific dependencies
+python-jose[cryptography]
+
 # Development and Testing
 pytest
 black

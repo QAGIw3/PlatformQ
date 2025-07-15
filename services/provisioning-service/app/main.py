@@ -3,19 +3,20 @@ import avro.schema
 import avro.io
 import io
 import logging
-import requests
 import os
 import sys
 import re
+import signal
 
 # Add project root to path to allow imports from shared_lib
 # This is a hack for local development; in a container, this is handled by PYTHONPATH
 if "/app" not in sys.path:
     sys.path.append("/app")
     
-from shared_lib.event_publisher import EventPublisher # We use it for creating a client
+from platformq_shared.event_publisher import EventPublisher # We use it for creating a client
 from platformq_shared.events import UserCreatedEvent
 from pulsar.schema import AvroSchema
+from .nextcloud_provisioner import NextcloudProvisioner
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -38,34 +39,17 @@ def get_tenant_from_topic(topic: str) -> str:
         return match.group(1)
     return None
 
-def provision_nextcloud_user(tenant_id: str, user_data: dict):
-    """Calls the Nextcloud User Provisioning API to create a user."""
-    logger.info(f"Provisioning user in Nextcloud for tenant {tenant_id}: {user_data['email']}")
-    
-    url = f"{NEXTCLOUD_URL}/ocs/v1.php/cloud/users"
-    headers = {"OCS-APIRequest": "true"}
-    auth = (NEXTCLOUD_ADMIN_USER, NEXTCLOUD_ADMIN_PASS)
-    
-    payload = {
-        "userid": user_data["email"],
-        "password": "a-long-random-password-that-will-not-be-used", # Password is not used due to SSO
-        "email": user_data["email"],
-        "displayName": user_data["full_name"],
-    }
-    
-    try:
-        response = requests.post(url, headers=headers, auth=auth, data=payload)
-        response.raise_for_status()
-        logger.info(f"Successfully provisioned user {user_data['email']} in Nextcloud for tenant {tenant_id}.")
-    except requests.exceptions.HTTPError as e:
-        # It's common for the user to already exist, which is not a critical error.
-        if e.response.status_code == 400 and "already exists" in e.response.text:
-             logger.warning(f"User {user_data['email']} already exists in Nextcloud for tenant {tenant_id}.")
-        else:
-             logger.error(f"Failed to provision user in Nextcloud for tenant {tenant_id}: {e.response.text}")
-
 def main():
     logger.info("Starting Tenant-Aware Provisioning Service...")
+
+    # Initialize and start the background provisioner for Nextcloud
+    provisioner = NextcloudProvisioner(
+        admin_user=NEXTCLOUD_ADMIN_USER,
+        admin_pass=NEXTCLOUD_ADMIN_PASS,
+        nextcloud_url=NEXTCLOUD_URL,
+    )
+    provisioner_thread = provisioner.start()
+
     client = pulsar.Client(PULSAR_URL)
     consumer = client.subscribe(
         topic_pattern=TOPIC_PATTERN,
@@ -73,10 +57,24 @@ def main():
         consumer_type=pulsar.ConsumerType.Shared,
         schema=AvroSchema(UserCreatedEvent)
     )
+
+    def shutdown(signum, frame):
+        logger.info("Shutdown signal received. Stopping consumer and provisioner...")
+        provisioner.stop()
+        provisioner_thread.join() # Wait for the worker to finish
+        consumer.close()
+        client.close()
+        logger.info("Provisioning Service shut down gracefully.")
+        sys.exit(0)
+
+    signal.signal(signal.SIGINT, shutdown)
+    signal.signal(signal.SIGTERM, shutdown)
     
     try:
         while True:
-            msg = consumer.receive()
+            msg = consumer.receive(timeout_millis=1000)
+            if msg is None:
+                continue
             try:
                 tenant_id = get_tenant_from_topic(msg.topic_name())
                 if not tenant_id:
@@ -85,19 +83,20 @@ def main():
                     continue
 
                 user_data = msg.value() # Deserialization is automatic
-                logger.info(f"Received user_created event for tenant {tenant_id}: {user_data}")
+                logger.info(f"Received user_created event for tenant {tenant_id}: {user_data.email}")
                 
-                provision_nextcloud_user(tenant_id, user_data)
+                # Add provisioning task to the non-blocking queue
+                provisioner.add_user_to_queue(tenant_id, user_data)
                 
                 consumer.acknowledge(msg)
             except Exception as e:
                 consumer.negative_acknowledge(msg)
                 logger.error(f"Failed to process message: {e}")
 
+    except KeyboardInterrupt:
+        logger.info("KeyboardInterrupt received.")
     finally:
-        consumer.close()
-        client.close()
-        logger.info("Provisioning Service shut down.")
+        shutdown(None, None)
 
 if __name__ == "__main__":
     main() 

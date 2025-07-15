@@ -1,4 +1,3 @@
-from shared_lib.base_service import create_base_app
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel
 from typing import List, Dict, Any
@@ -10,6 +9,7 @@ from .api.deps import get_current_tenant_and_user, get_db_session, get_event_pub
 from .crud import crud_simulation, crud_agent_definition, crud_agent_state
 from platformq_shared.events import SimulationStartedEvent, SimulationRunCompleted
 from platformq_shared.event_publisher import EventPublisher
+from platformq_shared.base_service import create_base_app
 
 app = create_base_app(
     service_name="simulation-service",

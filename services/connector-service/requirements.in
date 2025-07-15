@@ -3,7 +3,7 @@
 # Service-specific dependencies
 apscheduler
 httpx
-
+ 
 # Development and Testing
 pytest
 black

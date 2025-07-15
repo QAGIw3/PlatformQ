@@ -23,7 +23,7 @@ asgiref==3.9.1
     # via opentelemetry-instrumentation-asgi
 attrs==25.3.0
     # via aiohttp
-authlib==1.2.1
+authlib[starlette]==1.2.1
     # via -r /Users/m/Downloads/platformQ/requirements/base.in
 avro==1.11.3
     # via -r /Users/m/Downloads/platformQ/requirements/base.in
@@ -271,9 +271,7 @@ pyyaml==6.0.2
     #   redoc
     #   uvicorn
 redoc==0.2.3
-    # via
-    #   -r /Users/m/Downloads/platformQ/requirements/base.in
-    #   -r services/functions-service/requirements.in
+    # via -r services/functions-service/requirements.in
 reportlab==4.4.2
     # via redoc
 requests==2.31.0

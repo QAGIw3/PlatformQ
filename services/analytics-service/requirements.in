@@ -5,4 +5,4 @@
 # Development and Testing
 pytest
 black
-ruff 
+ruff

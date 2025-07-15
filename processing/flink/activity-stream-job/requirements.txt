@@ -1,6 +1,0 @@
-apache-flink[s3]==1.17.1
-apache-flink-libraries==1.17.1
-# Connectors are often provided separately
-# For this example, we assume they are available in the Flink image
-# pyflink-pulsar
-# pyflink-cassandra 

@@ -2,7 +2,8 @@
 
 # Service-specific dependencies
 ipfshttpclient
-
+python-jose[cryptography]
+ 
 # Development and Testing
 pytest
 black

@@ -1,7 +1,7 @@
 -r ../../requirements/base.in
 
 # No service-specific Python dependencies are needed for this service.
-
+ 
 # Development and Testing
 pytest
 black

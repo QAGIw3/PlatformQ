@@ -1,4 +1,4 @@
-from shared_lib.base_service import create_base_app
+from platformq_shared.base_service import create_base_app
 from fastapi import Depends, HTTPException
 from gremlin_python.structure.graph import Graph
 from gremlin_python.driver.driver_remote_connection import DriverRemoteConnection

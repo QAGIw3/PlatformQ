@@ -33,10 +33,28 @@ format:
 	ruff check . --fix
 
 test:
+	@echo "Installing shared library in editable mode..."
+	pip install -e libs/shared
+	@echo "Installing dependencies for all services..."
+	@for dir in services/*/ ; do \
+		if [ -f "$${dir}requirements.txt" ]; then \
+			echo "--> Installing dependencies for $${dir}"; \
+			pip install -r "$${dir}requirements.txt"; \
+		fi \
+	done
 	@echo "Running tests..."
 	python3 -m pytest
 
 test-coverage:
+	@echo "Installing shared library in editable mode..."
+	pip install -e libs/shared
+	@echo "Installing dependencies for all services..."
+	@for dir in services/*/ ; do \
+		if [ -f "$${dir}requirements.txt" ]; then \
+			echo "--> Installing dependencies for $${dir}"; \
+			pip install -r "$${dir}requirements.txt"; \
+		fi \
+	done
 	@echo "Running tests with coverage..."
 	coverage run -m pytest
 	@echo "Generating HTML coverage report..."

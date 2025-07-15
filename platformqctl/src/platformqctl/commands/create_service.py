@@ -40,7 +40,7 @@ def create_service(service_name):
             except UnicodeDecodeError:
                 # Ignore binary files that can't be read
                 click.echo(f"Skipping binary file: {filename}")
-    
+
     # 3. Automatically add the new service to the platformq-stack chart
     try:
         update_platform_stack(service_name)

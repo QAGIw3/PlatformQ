@@ -1,4 +1,4 @@
-from shared_lib.base_service import create_base_app
+from platformq_shared.base_service import create_base_app
 from fastapi import Depends
 from cassandra.cluster import Session
 from uuid import UUID

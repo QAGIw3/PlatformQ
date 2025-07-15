@@ -6,6 +6,7 @@ pdoc
 web3
 siwe
 python-jose[cryptography]
+authlib[starlette]
 
 # Development and Testing
 pytest

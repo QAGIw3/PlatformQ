@@ -5,9 +5,8 @@ from uuid import UUID
 
 from cassandra.cluster import Session
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Response
-from shared_lib.event_publisher import EventPublisher
+from platformq_shared.event_publisher import EventPublisher
 
-from ..core.oidc_server import create_authorization_server, generate_user_info
 from ..api.deps import get_current_user_from_trusted_header
 from ..crud import (
     crud_api_key,
@@ -41,57 +40,6 @@ from ..services.user_service import UserService
 from platformq_shared.events import UserCreatedEvent, SubscriptionChangedEvent
 
 router = APIRouter()
-
-# ==============================================================================
-# OIDC Provider Endpoints
-# ==============================================================================
-# These endpoints are required by the OpenID Connect standard. They are not
-# typically called directly by a human user, but by client applications
-# (like Nextcloud) during the SSO login flow.
-
-@router.get('/.well-known/openid-configuration', tags=["OIDC"])
-async def openid_configuration():
-    """The OIDC discovery document."""
-    return {
-        "issuer": "http://localhost:8000/auth", # Replace with actual public URL
-        "authorization_endpoint": "http://localhost:8000/auth/api/v1/authorize",
-        "token_endpoint": "http://localhost:8000/auth/api/v1/token",
-        "userinfo_endpoint": "http://localhost:8000/auth/api/v1/userinfo",
-        "jwks_uri": "http://localhost:8000/auth/api/v1/jwks", # Not implemented yet
-        "response_types_supported": ["code"],
-        "subject_types_supported": ["public"],
-        "id_token_signing_alg_values_supported": ["HS256"],
-    }
-
-@router.get('/authorize', tags=["OIDC"])
-async def authorize(request: Request, db: Session = Depends(get_db_session)):
-    """The main authorization endpoint where the user grants consent."""
-    # The dependency logic needs to be slightly different here
-    # to handle the UI redirect flow, but it will still be tenant-aware.
-    # We will assume a tenant_id is passed in the query params for now.
-    tenant_id = request.query_params.get("tenant_id")
-    try:
-        user = get_current_user_from_trusted_header(user_id=request.headers.get("X-User-ID"), db=db)
-    except HTTPException:
-        # Redirect to a login page or return an error
-        return Response("Not logged in", status_code=401)
-    
-    server = create_authorization_server(db, tenant_id) # OIDC server becomes tenant-aware
-    return await server.create_authorization_response(request, user)
-
-@router.post('/token', tags=["OIDC"])
-async def issue_token(request: Request, db: Session = Depends(get_db_session)):
-    """The token endpoint where an auth code is exchanged for an access token."""
-    server = create_authorization_server(db)
-    return await server.create_token_response(request)
-
-@router.get('/userinfo')
-async def userinfo(request: Request, db: Session = Depends(get_db_session)):
-    """This is a placeholder as Authlib requires a BearerTokenValidator class
-    to protect this route, which we will implement if needed."""
-    user = get_current_user_from_trusted_header(user_id=request.headers.get("X-User-ID"), db=db)
-    return generate_user_info(user, "openid profile email")
-
 
 # ==============================================================================
 # Tenant & User Management Endpoints

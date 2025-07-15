@@ -2,7 +2,7 @@
 
 # Service-specific dependencies
 wasmtime
-
+ 
 # Development and Testing
 pytest
 black
