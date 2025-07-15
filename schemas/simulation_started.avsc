@@ -1,0 +1,10 @@
+{
+    "namespace": "com.platformq.simulation",
+    "type": "record",
+    "name": "SimulationStarted",
+    "fields": [
+        {"name": "tenant_id", "type": "string", "logicalType": "uuid"},
+        {"name": "simulation_id", "type": "string", "logicalType": "uuid"},
+        {"name": "event_timestamp", "type": "long", "logicalType": "timestamp-millis"}
+    ]
+} 

@@ -189,3 +189,38 @@ CREATE TABLE IF NOT EXISTS projects (
     created_at TIMESTAMP,
     PRIMARY KEY ((tenant_id), project_id)
 ); 
+
+-- A table to store the definition and state of a simulation
+CREATE TABLE IF NOT EXISTS simulations (
+    tenant_id UUID,
+    simulation_id UUID,
+    simulation_name TEXT,
+    status TEXT, -- e.g., 'defined', 'running', 'paused', 'finished'
+    current_tick_time TIMESTAMP,
+    created_at TIMESTAMP,
+    PRIMARY KEY ((tenant_id), simulation_id)
+);
+
+-- A table to define the types of agents in a simulation
+CREATE TABLE IF NOT EXISTS agent_definitions (
+    tenant_id UUID,
+    simulation_id UUID,
+    agent_type_name TEXT,
+    behavior_rules TEXT, -- e.g., a JSON or YAML string defining the agent's logic
+    initial_state_distribution TEXT, -- JSON defining how to create new agents of this type
+    PRIMARY KEY ((tenant_id), simulation_id, agent_type_name)
+);
+
+-- A table to store the real-time state of every agent in a running simulation
+CREATE TABLE IF NOT EXISTS agent_states (
+    tenant_id UUID,
+    simulation_id UUID,
+    agent_id UUID,
+    agent_type TEXT,
+    position_x DOUBLE,
+    position_y DOUBLE,
+    -- This flexible map can hold any other state the agent has
+    attributes MAP<TEXT, TEXT>,
+    last_updated_tick TIMESTAMP,
+    PRIMARY KEY ((tenant_id), simulation_id, agent_id)
+); 

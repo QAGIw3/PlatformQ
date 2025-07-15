@@ -1,0 +1,30 @@
+{
+    "__inputs": [],
+    "__requires": [],
+    "annotations": {"list": []},
+    "panels": [
+        {
+            "title": "Agent Population Over Time",
+            "type": "timeseries",
+            "targets": [
+                {
+                    "datasource": "Trino",
+                    "rawQuery": true,
+                    "rawSql": "SELECT event_timestamp, agent_type, count(agent_id) FROM cassandra.auth_keyspace.agent_states WHERE tenant_id = '...' GROUP BY event_timestamp, agent_type"
+                }
+            ]
+        },
+        {
+            "title": "Agent Positions (XY Scatter)",
+            "type": "xychart",
+            "targets": [
+                {
+                    "datasource": "Trino",
+                    "rawQuery": true,
+                    "rawSql": "SELECT position_x, position_y, agent_type FROM cassandra.auth_keyspace.agent_states WHERE tenant_id = '...'"
+                }
+            ]
+        }
+    ],
+    "title": "Live Simulation Dashboard"
+} 
