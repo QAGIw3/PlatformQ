@@ -11,6 +11,12 @@ avro
 apscheduler
 httpx
 kubernetes
+
+# gRPC dependencies
+grpcio
+grpcio-tools
+protobuf
+
 -e ../shared
 
 # Development and Testing

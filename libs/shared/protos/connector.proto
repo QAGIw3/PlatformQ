@@ -1,0 +1,25 @@
+syntax = "proto3";
+
+package platformq.connector;
+
+// The service that can be called to interact with connectors
+service ConnectorService {
+  // Triggers a connector to create a digital asset from a given URI
+  rpc CreateAssetFromURI(CreateAssetFromURIRequest) returns (CreateAssetFromURIResponse);
+}
+
+// The request message containing the URI and metadata
+message CreateAssetFromURIRequest {
+  string uri = 1;
+  string tenant_id = 2;
+  // Could also include things like:
+  // string source_system = 3;
+  // map<string, string> metadata = 4;
+}
+
+// The response message containing the ID of the newly created asset
+message CreateAssetFromURIResponse {
+  string asset_id = 1;
+  bool success = 2;
+  string message = 3;
+} 

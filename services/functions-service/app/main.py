@@ -9,6 +9,22 @@ import wasmtime
 import asyncio
 import pulsar
 import json
+import logging
+
+# Assuming the generate_grpc.sh script has been run
+from .grpc_generated import connector_pb2, connector_pb2_grpc
+import grpc
+import os
+
+# --- Configuration ---
+# In a real app, these would come from environment variables or a config service
+PULSAR_URL = os.environ.get("PULSAR_URL", "pulsar://pulsar:6650")
+CONNECTOR_SERVICE_GRPC_TARGET = os.environ.get("CONNECTOR_SERVICE_GRPC_TARGET", "connector-service:50051")
+# ---
+
+# Setup basic logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 app = create_base_app(
     service_name="functions-service",
@@ -30,8 +46,8 @@ async def consume_asset_events():
     A background task that listens for asset creation events and
     triggers the asset-linker WASM module.
     """
-    print("Starting Pulsar consumer for asset events...")
-    client = pulsar.Client('pulsar://localhost:6650') # Should be from config
+    logger.info("Starting Pulsar consumer for asset events...")
+    client = pulsar.Client(PULSAR_URL) # Should be from config
     consumer = client.subscribe('non-persistent://public/default/digital_asset_created', 'functions-service-subscriber')
     
     # Pre-load the WASM module for efficiency
@@ -41,15 +57,15 @@ async def consume_asset_events():
             wasm_bytes = f.read()
         wasm_module = Module(wasm_engine, wasm_bytes)
     except FileNotFoundError:
-        print("WARNING: asset_linker_wasm.wasm not found. The event consumer will not work.")
-        print("Build it with: cd examples/asset-linker-wasm && cargo build --target wasm32-unknown-unknown --release")
+        logger.warning("WARNING: asset_linker_wasm.wasm not found. The event consumer will not work.")
+        logger.warning("Build it with: cd examples/asset-linker-wasm && cargo build --target wasm32-unknown-unknown --release")
         client.close()
         return
 
     while True:
         try:
             msg = await asyncio.to_thread(consumer.receive)
-            print("Received asset creation event")
+            logger.info("Received asset creation event")
             
             # Here we would use an Avro schema to decode, but for PoC we'll assume JSON
             event_data = json.loads(msg.data().decode('utf-8'))
@@ -80,31 +96,47 @@ async def consume_asset_events():
             api_call = json.loads(result_json)
             # --- End WASM Execution ---
 
-            print("--- MOCKING OpenProject API Call ---")
-            print(f"  METHOD: {api_call['method']}")
-            print(f"  URL:    {api_call['url']}")
-            print(f"  BODY:   {api_call['body']}")
-            print("------------------------------------")
+            logger.info("--- MOCKING OpenProject API Call ---")
+            logger.info(f"  METHOD: {api_call['method']}")
+            logger.info(f"  URL:    {api_call['url']}")
+            logger.info(f"  BODY:   {api_call['body']}")
+            logger.info("------------------------------------")
 
             consumer.acknowledge(msg)
         except Exception as e:
-            print(f"Error processing event: {e}")
+            logger.error(f"Error processing event: {e}")
             # In a real app, you would handle message redelivery (nack)
+
+async def trigger_connector_service(uri: str, tenant_id: str):
+    """
+    Calls the connector-service via gRPC to create a digital asset.
+    """
+    logger.info(f"Calling connector-service gRPC for URI: {uri}")
+    try:
+        async with grpc.aio.insecure_channel(CONNECTOR_SERVICE_GRPC_TARGET) as channel:
+            stub = connector_pb2_grpc.ConnectorServiceStub(channel)
+            request = connector_pb2.CreateAssetFromURIRequest(uri=uri, tenant_id=tenant_id)
+            response = await stub.CreateAssetFromURI(request)
+            logger.info(f"gRPC response from connector-service: {response.message}")
+            return response
+    except grpc.aio.AioRpcError as e:
+        logger.error(f"Error calling connector-service via gRPC: {e.details()}")
+        return None
 
 async def consume_simulation_events():
     """
     A background task that listens for simulation completion events,
     analyzes the logs, and triggers follow-up actions.
     """
-    print("Starting Pulsar consumer for simulation events...")
-    client = pulsar.Client('pulsar://localhost:6650')
+    logger.info("Starting Pulsar consumer for simulation events...")
+    client = pulsar.Client(PULSAR_URL)
     consumer = client.subscribe('non-persistent://public/default/simulation-lifecycle-events', 'functions-service-sim-subscriber')
 
     try:
         with open("examples/log-analyzer-wasm/target/wasm32-unknown-unknown/release/log_analyzer_wasm.wasm", "rb") as f:
             log_analyzer_wasm_module = Module(wasm_engine, f.read())
     except FileNotFoundError:
-        print("WARNING: log_analyzer_wasm.wasm not found. The simulation event consumer will not work.")
+        logger.warning("WARNING: log_analyzer_wasm.wasm not found. The simulation event consumer will not work.")
         client.close()
         return
 
@@ -112,7 +144,8 @@ async def consume_simulation_events():
         try:
             msg = await asyncio.to_thread(consumer.receive)
             event_data = json.loads(msg.data().decode('utf-8'))
-            print(f"Received simulation completion event for run: {event_data['run_id']}")
+            tenant_id = "default" # TODO: Extract tenant from event or topic
+            logger.info(f"Received simulation completion event for run: {event_data['run_id']}")
 
             # 1. MOCK: Fetch log content from the URI
             log_content = "This is a log file. It contains some INFO and some WARNINGS. Oh no, a FAILURE occurred."
@@ -138,21 +171,22 @@ async def consume_simulation_events():
                 i += 1
             analysis_result = json.loads(b"".join(result_bytes).decode('utf-8'))
             
-            print(f"  -> Analysis result: {analysis_result['status']}")
+            logger.info(f"  -> Analysis result: {analysis_result['status']}")
 
             # 3. If failure, orchestrate follow-up actions
             if analysis_result['status'] == 'FAILURE':
-                print("  -> Failure detected. Orchestrating response...")
-                # MOCK: Call connector-service to create a Digital Asset for the log
-                print("     - MOCK: Triggering connector-service to create asset for log_uri:", event_data['log_uri'])
+                logger.info("  -> Failure detected. Orchestrating response...")
+                # Replace the MOCK call with the actual gRPC call
+                await trigger_connector_service(uri=event_data['log_uri'], tenant_id=tenant_id)
+
                 # MOCK: Call OpenProject API to create an issue
-                print("     - MOCK: Creating issue in OpenProject with summary:", analysis_result['summary'])
+                logger.info("     - MOCK: Creating issue in OpenProject with summary:", analysis_result['summary'])
                 # MOCK: Link asset to issue
-                print("     - MOCK: Linking new asset to OpenProject issue.")
+                logger.info("     - MOCK: Linking new asset to OpenProject issue.")
 
             consumer.acknowledge(msg)
         except Exception as e:
-            print(f"Error processing simulation event: {e}")
+            logger.error(f"Error processing simulation event: {e}")
 
 # ---
 
