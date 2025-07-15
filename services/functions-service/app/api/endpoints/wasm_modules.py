@@ -4,7 +4,8 @@ from sqlalchemy.orm import Session
 from typing import List, Optional
 import os
 import shutil
-from ... import db, wasm_module_crud
+from ... import db
+from ...crud import wasm_module_crud
 from ...db import get_db
 
 router = APIRouter()

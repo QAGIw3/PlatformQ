@@ -1,4 +1,3 @@
-
 from sqlalchemy.orm import Session
 from . import db
 from pydantic import BaseModel
