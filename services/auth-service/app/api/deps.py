@@ -5,9 +5,12 @@ from uuid import UUID
 
 from ..crud import crud_user, crud_role, crud_api_key
 from ..core.security import verify_password
-from shared_lib import security as shared_security
+from platformq_shared import security as shared_security
 
 # --- Dependency Provider Functions ---
+# These functions act as the "glue" between our generic, shared security
+# dependencies and this specific service's concrete implementation of its
+# CRUD modules. They are wired into the shared library in main.py.
 
 
 def get_db_session(request: Request) -> Session:
@@ -38,41 +41,34 @@ def get_event_publisher(request: Request) -> EventPublisher:
 
 
 def get_api_key_crud():
+    """Provides the concrete API Key CRUD module."""
     return crud_api_key
 
 
 def get_user_crud():
+    """Provides the concrete User CRUD module."""
     return crud_user
 
 
 def get_password_verifier():
+    """Provides the concrete password verification function."""
     return verify_password
 
 
 # --- Main Dependencies ---
+# We "import" the fully-wired, generic dependencies from the shared library
+# for use in our own API endpoints.
 
-def get_current_tenant_and_user(
-    tenant_id: UUID = Header(None, alias="X-Tenant-ID"),
-    user_id: UUID = Header(None, alias="X-User-ID"),
-    db: Session = Depends(get_db_session)
-):
-    """
-    Gets the current tenant and user based on trusted headers from the gateway.
-    This is the primary security dependency for tenant-scoped operations.
-    """
-    if not tenant_id or not user_id:
-        raise HTTPException(status_code=401, detail="Missing tenant or user information")
-    
-    user = crud_user.get_user_by_id(db, tenant_id=tenant_id, user_id=user_id)
-    if not user:
-        raise HTTPException(status_code=401, detail="Invalid user or tenant")
-    if user.status != 'active':
-        raise HTTPException(status_code=403, detail="User is not active")
-    
-    # Return both for use in endpoints
-    return {"tenant_id": tenant_id, "user": user}
+get_current_tenant_and_user = shared_security.get_current_user_from_trusted_header
+get_current_user_from_api_key = shared_security.get_user_from_api_key
 
 def require_role(required_role: str):
+    """
+    A dependency factory that creates a role-checking dependency.
+    It takes a required role as an argument and returns a FastAPI dependency
+    that will check if the current user has that role.
+    It depends on `get_current_tenant_and_user` to get the user first.
+    """
     def role_checker(
         context: dict = Depends(get_current_tenant_and_user),
         db: Session = Depends(get_db_session),
@@ -87,6 +83,3 @@ def require_role(required_role: str):
             )
         return context
     return role_checker
-
-# The API Key dependency also needs to be updated, but we will focus on the main flow first.
-get_current_user_from_api_key = shared_security.get_user_from_api_key

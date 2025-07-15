@@ -54,6 +54,15 @@ dependencies:
   - name: superset
     version: "0.11.2"
     repository: "https://apache.github.io/superset"
+  - name: hyperledger-fabric # Conceptual chart
+    version: "1.0.0"
+    repository: "https://charts.hyperledger.org"
+  - name: janusgraph
+    version: "0.4.0"
+    repository: "https://janusgraph.github.io/helm-charts"
+  - name: velero
+    version: "4.1.0"
+    repository: "https://vmware-tanzu.github.io/helm-charts"
   - name: ipfs
     version: "0.1.0"
     repository: "https://ipfs.github.io/helm-charts/"
@@ -75,4 +84,13 @@ dependencies:
     repository: "file://./../provisioning-service" 
   - name: projects-service
     version: "0.1.0"
-    repository: "file://./../projects-service" 
+    repository: "file://./../projects-service"
+  - name: simulation-service
+    version: "0.1.0"
+    repository: "file://./../simulation-service"
+  - name: verifiable-credential-service
+    version: "0.1.0"
+    repository: "file://./../verifiable-credential-service"
+  - name: graph-intelligence-service
+    version: "0.1.0"
+    repository: "file://./../graph-intelligence-service" 

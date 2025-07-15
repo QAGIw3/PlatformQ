@@ -4,8 +4,11 @@ from pydantic import BaseModel
 from typing import List, Dict, Any
 from sqlalchemy.orm import Session
 import time
+from uuid import UUID
 
 from .api.deps import get_current_tenant_and_user, get_db_session, get_event_publisher
+from .crud import crud_simulation, crud_agent_definition, crud_agent_state
+from platformq_shared.events import SimulationStartedEvent
 
 app = create_base_app(
     service_name="simulation-service",
@@ -38,46 +41,57 @@ def create_simulation(
     context: dict = Depends(get_current_tenant_and_user),
     db: Session = Depends(get_db_session),
 ):
-    """
-    Defines a new simulation and its agents.
-    """
     tenant_id = context["tenant_id"]
-    # In a real implementation, we would have a full CRUD module for this.
-    # For now, we'll use conceptual direct queries.
     
     # 1. Create the main simulation record
-    # db.execute("INSERT INTO simulations ...", [tenant_id, sim_id, ...])
+    new_sim = crud_simulation.create_simulation(db, tenant_id=tenant_id, name=sim_in.simulation_name)
+    sim_id = new_sim["simulation_id"]
     
     # 2. Create the agent definitions for this simulation
-    # for agent_def in sim_in.agent_definitions:
-    #     db.execute("INSERT INTO agent_definitions ...", [tenant_id, sim_id, agent_def.agent_type_name, ...])
+    for agent_def in sim_in.agent_definitions:
+        crud_agent_definition.create_agent_definition(
+            db,
+            tenant_id=tenant_id,
+            simulation_id=sim_id,
+            name=agent_def.agent_type_name,
+            rules=agent_def.behavior_rules,
+            initial_state=agent_def.initial_state_distribution
+        )
         
-    return {"message": f"Simulation '{sim_in.simulation_name}' defined successfully."}
+    return new_sim
 
 @app.post("/api/v1/simulations/{simulation_id}/start")
 def start_simulation(
-    simulation_id: str,
+    simulation_id: UUID,
     context: dict = Depends(get_current_tenant_and_user),
     publisher: EventPublisher = Depends(get_event_publisher),
+    db: Session = Depends(get_db_session)
 ):
-    """
-    Starts a simulation by publishing a SimulationStarted event.
-    """
     tenant_id = context["tenant_id"]
     
-    # In a real app, you would verify the simulation exists and is in a 'defined' state.
-    
-    event_data = {
-        "simulation_id": simulation_id,
-        "tenant_id": str(tenant_id),
-        "event_timestamp": int(time.time() * 1000)
-    }
+    sim = crud_simulation.get_simulation(db, tenant_id=tenant_id, simulation_id=simulation_id)
+    if not sim or sim.status != 'defined':
+        raise HTTPException(status_code=400, detail="Simulation not found or already running.")
     
     publisher.publish(
         topic_base='simulation-control-events',
         tenant_id=str(tenant_id),
-        schema_path='schemas/simulation_started.avsc', # We will create this schema
-        data=event_data
+        schema_class=SimulationStartedEvent,
+        data=SimulationStartedEvent(tenant_id=str(tenant_id), simulation_id=str(simulation_id))
     )
     
     return {"message": f"Simulation {simulation_id} start signal sent."}
+
+@app.get("/api/v1/simulations/{simulation_id}/state")
+def get_simulation_state(
+    simulation_id: UUID,
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db_session),
+):
+    """
+    Returns the real-time state of all agents in a running simulation.
+    """
+    tenant_id = context["tenant_id"]
+    return crud_agent_state.get_agent_states_for_simulation(
+        db, tenant_id=tenant_id, simulation_id=simulation_id
+    )

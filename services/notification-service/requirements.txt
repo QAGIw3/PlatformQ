@@ -1,5 +1,5 @@
 # Application dependencies
--e ../shared
+-e ../../libs/shared
 zulip
 
 # Development and Testing

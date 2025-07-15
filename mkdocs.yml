@@ -1,0 +1,32 @@
+site_name: platformQ Reference Architecture
+theme:
+  name: material
+  palette:
+    scheme: slate
+    primary: indigo
+    accent: indigo
+nav:
+  - 'Home': 'index.md'
+  - 'Architecture':
+    - 'Core Principles': 'CONTRIBUTING.md'
+    - 'Architectural Decisions': 'docs/ADR.md' # Create this
+  - 'Platform Development':
+    - 'Local Setup': 'docs/local_setup.md'
+    - 'Creating a New Service': 'platformqctl/README.md' # Create this
+  - 'Cloud Deployment':
+    - 'Infrastructure (Terraform)': 'iac/terraform/README.md'
+    - 'Application Stack (Helm)': 'iac/kubernetes/charts/platformq-stack/README.md'
+  - 'Core Services':
+    - 'auth-service': 'services/auth-service/README.md' # Create this
+    - 'projects-service': 'services/projects-service/README.md' # Create this
+    - 'simulation-service': 'services/simulation-service/README.md' # Create this
+    # ... and so on for all other services
+  - 'Data Pipelines (Flink)':
+    - 'Activity Stream Job': 'processing/flink/activity-stream-job/README.md' # Create this
+  - 'Integrations':
+    - 'Nextcloud': 'docs/nextcloud_oidc_setup.md'
+    - 'Zulip': 'docs/zulip_oidc_setup.md'
+    - 'OpenProject': 'docs/openproject_oidc_setup.md'
+  - 'API Reference':
+    - 'Shared Library': 'docs/shared-lib-api/index.html'
+    - 'REST APIs (OpenAPI)': 'docs/index.html' 

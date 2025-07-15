@@ -8,7 +8,7 @@ python-jose[cryptography]
 authlib
 pulsar-client
 avro
--e ../shared
+-e ../../libs/shared
 
 # Development and Testing
 pytest

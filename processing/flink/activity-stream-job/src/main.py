@@ -16,9 +16,11 @@ def activity_stream_job():
     PULSAR_ADMIN_URL = "http://pulsar:8080"
     CASSANDRA_HOST = "cassandra"
     
-    # 1. Create source tables for all event types
+    # 1. Create source tables. The 'format' = 'avro' will now
+    # automatically use the schema from the Pulsar Schema Registry.
     t_env.execute_sql(f"""
         CREATE TABLE user_events_source (
+            -- The schema is now inferred from the registry
             `event_timestamp` BIGINT,
             `user_id` STRING,
             `email` STRING,

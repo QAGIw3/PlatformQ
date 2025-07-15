@@ -1,0 +1,6 @@
+# Application dependencies
+-e ../shared
+GitPython
+
+# Development and Testing
+# ... 

@@ -2,6 +2,7 @@ import click
 import os
 import shutil
 from ruamel.yaml import YAML
+from jinja2 import Environment, FileSystemLoader
 
 TEMPLATE_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "templates", "service-template")
 SERVICES_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "services")
@@ -10,19 +11,56 @@ PLACEHOLDER = "__SERVICE_NAME__"
 STACK_CHART_DIR = os.path.join(os.path.dirname(__file__), "..", "..", "iac", "kubernetes", "charts", "platformq-stack")
 CI_WORKFLOW_FILE = os.path.join(os.path.dirname(__file__), "..", "..", ".github", "workflows", "ci.yml")
 
+CONFIG_FILE_NAME = ".platformqctl.yaml"
 yaml = YAML()
 
+# --- Helper Functions ---
+def load_config():
+    if not os.path.exists(CONFIG_FILE_NAME):
+        return None
+    with open(CONFIG_FILE_NAME, 'r') as f:
+        return yaml.load(f)
+
+def render_templates(target_dir, context):
+    env = Environment(loader=FileSystemLoader(target_dir))
+    for dirpath, _, filenames in os.walk(target_dir):
+        for filename in filenames:
+            file_path = os.path.join(dirpath, filename)
+            template = env.get_template(os.path.relpath(file_path, target_dir))
+            output = template.render(context)
+            with open(file_path, 'w') as f:
+                f.write(output)
+
+# --- CLI Commands ---
 @click.group()
 def cli():
     """A CLI tool for managing the platformQ microservices."""
     pass
 
 @cli.command()
+@click.pass_context
+def init(ctx):
+    """Initializes a new config file for platformqctl."""
+    config_data = {
+        "enterprise": {
+            "registry_url": "gcr.io/your-company",
+            "ci_system": "github_actions",
+            "helm_repo": "https://charts.your-company.com",
+        },
+        "template_repo": "https://github.com/your-company/service-templates.git"
+    }
+    with open(CONFIG_FILE_NAME, 'w') as f:
+        yaml.dump(config_data, f)
+    click.echo(f"Initialized config file at ./{CONFIG_FILE_NAME}")
+
+@cli.command()
 @click.argument('service_name')
-@click.option('--deployable', is_flag=True, help="Automatically add the service to the Helm chart and CI/CD pipeline.")
-def create_service(service_name, deployable):
-    """Creates a new service from the default template."""
-    click.echo(f"Creating new service: {service_name}")
+def create_service(service_name):
+    """Creates a new service from the configured template."""
+    config = load_config()
+    if not config:
+        click.echo("Error: Config file not found. Please run 'platformqctl init'.")
+        return
     
     target_dir = os.path.join(SERVICES_DIR, service_name)
     if os.path.exists(target_dir):

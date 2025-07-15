@@ -1,0 +1,14 @@
+apiVersion: velero.io/v1
+kind: Schedule
+metadata:
+  name: platformq-daily-backup
+  namespace: velero
+spec:
+  schedule: "0 1 * * *" # Run every day at 1:00 AM UTC
+  template:
+    includeNamespaces:
+    - {{ .Release.Namespace }}
+    storageLocation: gcp
+    volumeSnapshotLocations:
+    - gcp
+    ttl: "720h" # Backups live for 30 days 

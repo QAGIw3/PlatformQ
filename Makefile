@@ -1,6 +1,6 @@
 # Makefile for platformQ
 
-.PHONY: help lint format test services-up services-down bootstrap-config bootstrap-gateway bootstrap-oidc-clients docs-build
+.PHONY: help lint format test services-up services-down bootstrap-config bootstrap-gateway bootstrap-oidc-clients docs-build docs-serve
 
 help:
 	@echo "Commands:"
@@ -14,6 +14,7 @@ help:
 	@echo "  bootstrap-platform : Configure Kong, Minio, and other platform services."
 	@echo "  bootstrap-oidc-clients : Register initial OIDC clients."
 	@echo "  docs-build    : Generate all project documentation."
+	@echo "  docs-serve    : Serve the documentation site locally."
 
 lint:
 	@echo "Running linter..."
@@ -60,3 +61,7 @@ docs-build:
 	@echo "Generating API documentation for shared library..."
 	docker-compose -f infra/docker-compose/docker-compose.yml \
 		run --rm auth-service pdoc --html --output-dir /app/docs/shared-lib-api /app/shared_lib 
+
+docs-serve:
+	@echo "Serving documentation at http://127.0.0.1:8000"
+	mkdocs serve 

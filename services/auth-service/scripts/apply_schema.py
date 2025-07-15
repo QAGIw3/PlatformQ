@@ -32,17 +32,17 @@ def apply_schema():
         session = cluster.connect()
         logger.info("Successfully connected to Cassandra.")
 
-        # Create Keyspace
-        logger.info(
-            f"Creating keyspace '{settings.CASSANDRA_KEYSPACE}' if it does not exist..."
-        )
-        session.execute(
-            f"""
+        # Create Keyspace with NetworkTopologyStrategy
+        logger.info(f"Creating keyspace '{settings.CASSANDRA_KEYSPACE}' if it does not exist...")
+        session.execute(f"""
             CREATE KEYSPACE IF NOT EXISTS {settings.CASSANDRA_KEYSPACE}
-            WITH replication = {{ 'class': 'SimpleStrategy', 'replication_factor': '1' }}
+            WITH replication = {{ 
+                'class': 'NetworkTopologyStrategy', 
+                'dc1': '3',  -- Replication factor for datacenter 1
+                'dc2': '3'   -- Replication factor for datacenter 2
+            }}
             AND durable_writes = true;
-        """
-        )
+        """)
         session.set_keyspace(settings.CASSANDRA_KEYSPACE)
 
         # Apply Schema from CQL file

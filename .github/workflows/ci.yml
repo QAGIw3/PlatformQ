@@ -13,6 +13,7 @@ env:
   IMAGE_NAME: "auth-service"
 
 jobs:
+  # Job 1: Run fast, parallelizable checks on every push.
   lint-and-test:
     runs-on: ubuntu-latest
     steps:
@@ -36,6 +37,8 @@ jobs:
       run: |
         make test
 
+  # Job 2: Build and deploy the auth-service.
+  # This job (and others like it) only runs on a merge to main.
   build-and-deploy-auth-service:
     # This job only runs on pushes to the main branch, not on pull requests.
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
@@ -44,16 +47,16 @@ jobs:
     
     permissions:
       contents: 'read'
-      id-token: 'write' # Required for Workload Identity Federation
+      id-token: 'write' # Required for Workload Identity Federation with GCP.
 
     steps:
     - name: Checkout
       uses: actions/checkout@v3
 
     - name: Authenticate to Google Cloud
-      # See: https://github.com/google-github-actions/auth
-      # You must configure Workload Identity Federation in your GCP project
-      # and add the required secrets (WIF_PROVIDER, WIF_SERVICE_ACCOUNT) to your GitHub repo.
+      # This action uses GCP's Workload Identity Federation to securely get
+      # temporary credentials for our CI/CD job without needing to store
+      # long-lived service account keys as GitHub secrets.
       uses: 'google-github-actions/auth@v1'
       with:
         workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
@@ -166,6 +169,108 @@ jobs:
             --set projects-service.image.tag=${IMAGE_TAG} \
             --set projects-service.image.repository=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/projects-service
 
+  build-and-deploy-simulation-service:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Authenticate to Google Cloud
+        uses: 'google-github-actions/auth@v1'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v1'
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+      - name: Build and Push Docker Image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/simulation-service:${IMAGE_TAG} ./services/simulation-service
+          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/simulation-service:${IMAGE_TAG}
+      - name: Deploy to GKE
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER_NAME }} --region ${{ env.GCP_REGION }}
+          helm dependency update iac/kubernetes/charts/platformq-stack
+          helm upgrade --install platformq iac/kubernetes/charts/platformq-stack \
+            --namespace platformq --create-namespace \
+            --set simulation-service.image.tag=${IMAGE_TAG} \
+            --set simulation-service.image.repository=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/simulation-service
+
+  build-and-deploy-verifiable-credential-service:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Authenticate to Google Cloud
+        uses: 'google-github-actions/auth@v1'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v1'
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+      - name: Build and Push Docker Image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/verifiable-credential-service:${IMAGE_TAG} ./services/verifiable-credential-service
+          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/verifiable-credential-service:${IMAGE_TAG}
+      - name: Deploy to GKE
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER_NAME }} --region ${{ env.GCP_REGION }}
+          helm dependency update iac/kubernetes/charts/platformq-stack
+          helm upgrade --install platformq iac/kubernetes/charts/platformq-stack \
+            --namespace platformq --create-namespace \
+            --set verifiable-credential-service.image.tag=${IMAGE_TAG} \
+            --set verifiable-credential-service.image.repository=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/verifiable-credential-service
+
+  build-and-deploy-graph-intelligence-service:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Authenticate to Google Cloud
+        uses: 'google-github-actions/auth@v1'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v1'
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+      - name: Build and Push Docker Image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/graph-intelligence-service:${IMAGE_TAG} ./services/graph-intelligence-service
+          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/graph-intelligence-service:${IMAGE_TAG}
+      - name: Deploy to GKE
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER_NAME }} --region ${{ env.GCP_REGION }}
+          helm dependency update iac/kubernetes/charts/platformq-stack
+          helm upgrade --install platformq iac/kubernetes/charts/platformq-stack \
+            --namespace platformq --create-namespace \
+            --set graph-intelligence-service.image.tag=${IMAGE_TAG} \
+            --set graph-intelligence-service.image.repository=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/graph-intelligence-service
+
   build-and-push-wasm-example:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     runs-on: ubuntu-latest
@@ -236,6 +341,7 @@ jobs:
         github_token: ${{ secrets.GITHUB_TOKEN }}
         publish_dir: ./docs 
 
+  # Job 3: Perform a metric-driven canary release analysis.
   canary-release-auth-service:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: [lint-and-test, build-and-deploy-auth-service] # Depends on image being pushed
@@ -274,6 +380,10 @@ jobs:
           echo "Smoke tests passed."
 
       - name: 3. Analyze Canary Performance
+        # This is a conceptual step. A real implementation would use a script to
+        # query the Prometheus API for the SLO metrics of the canary version.
+        # It would check if the error budget for latency and availability
+        # has been consumed too quickly during the test period.
         id: analyze
         run: |
           # In a real pipeline, this step would query Prometheus for the error rate
@@ -283,6 +393,9 @@ jobs:
           echo "promotion_gate=passed" >> $GITHUB_OUTPUT
 
       - name: 4. Promote Canary or Rollback
+        # This step only runs if the analysis step was successful.
+        # It promotes the canary by updating the 'stable' deployment to use
+        # the new image tag and scales the canary deployment down to zero.
         if: steps.analyze.outputs.promotion_gate == 'passed'
         run: |
           IMAGE_TAG=${{ github.sha }}
@@ -293,6 +406,8 @@ jobs:
             --set auth-service.canary.replicaCount=0 --reuse-values # Scale down canary
       
       - name: 4b. Rollback Canary
+        # This step only runs if the analysis step failed.
+        # It scales down the canary deployment to zero replicas.
         if: steps.analyze.outputs.promotion_gate != 'passed'
         run: |
           echo "Canary analysis failed! Rolling back..."

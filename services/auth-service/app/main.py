@@ -1,4 +1,4 @@
-from shared_lib.base_service import create_base_app
+from platformq_shared.base_service import create_base_app
 from .api import endpoints, siwe_endpoints
 from .api.deps import (
     get_db_session, 

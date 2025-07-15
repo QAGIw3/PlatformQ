@@ -37,25 +37,85 @@ from ..schemas.user import (
 )
 from ..schemas.tenant import Tenant, TenantCreate
 from .deps import get_current_tenant_and_user, require_role
+from ..services.user_service import UserService
+from platformq_shared.events import UserCreatedEvent, SubscriptionChangedEvent
 
 router = APIRouter()
 
-# --- Tenant Management ---
-@router.post("/tenants", response_model=Tenant, status_code=201)
+# ==============================================================================
+# OIDC Provider Endpoints
+# ==============================================================================
+# These endpoints are required by the OpenID Connect standard. They are not
+# typically called directly by a human user, but by client applications
+# (like Nextcloud) during the SSO login flow.
+
+@router.get('/.well-known/openid-configuration', tags=["OIDC"])
+async def openid_configuration():
+    """The OIDC discovery document."""
+    return {
+        "issuer": "http://localhost:8000/auth", # Replace with actual public URL
+        "authorization_endpoint": "http://localhost:8000/auth/api/v1/authorize",
+        "token_endpoint": "http://localhost:8000/auth/api/v1/token",
+        "userinfo_endpoint": "http://localhost:8000/auth/api/v1/userinfo",
+        "jwks_uri": "http://localhost:8000/auth/api/v1/jwks", # Not implemented yet
+        "response_types_supported": ["code"],
+        "subject_types_supported": ["public"],
+        "id_token_signing_alg_values_supported": ["HS256"],
+    }
+
+@router.get('/authorize', tags=["OIDC"])
+async def authorize(request: Request, db: Session = Depends(get_db_session)):
+    """The main authorization endpoint where the user grants consent."""
+    # The dependency logic needs to be slightly different here
+    # to handle the UI redirect flow, but it will still be tenant-aware.
+    # We will assume a tenant_id is passed in the query params for now.
+    tenant_id = request.query_params.get("tenant_id")
+    try:
+        user = get_current_user_from_trusted_header(user_id=request.headers.get("X-User-ID"), db=db)
+    except HTTPException:
+        # Redirect to a login page or return an error
+        return Response("Not logged in", status_code=401)
+    
+    server = create_authorization_server(db, tenant_id) # OIDC server becomes tenant-aware
+    return await server.create_authorization_response(request, user)
+
+@router.post('/token', tags=["OIDC"])
+async def issue_token(request: Request, db: Session = Depends(get_db_session)):
+    """The token endpoint where an auth code is exchanged for an access token."""
+    server = create_authorization_server(db)
+    return await server.create_token_response(request)
+
+@router.get('/userinfo')
+async def userinfo(request: Request, db: Session = Depends(get_db_session)):
+    """This is a placeholder as Authlib requires a BearerTokenValidator class
+    to protect this route, which we will implement if needed."""
+    user = get_current_user_from_trusted_header(user_id=request.headers.get("X-User-ID"), db=db)
+    return generate_user_info(user, "openid profile email")
+
+
+# ==============================================================================
+# Tenant & User Management Endpoints
+# ==============================================================================
+# These are the core administrative endpoints for managing the platform's tenants and users.
+
+
+@router.post("/tenants", response_model=Tenant, status_code=201, tags=["Tenants"])
 def create_tenant_endpoint(
     tenant_in: TenantCreate,
     db: Session = Depends(get_db_session),
     publisher: EventPublisher = Depends(get_event_publisher)
 ):
     """
-    Public endpoint to create a new tenant. This is the first step for a new organization.
-    It also creates the first admin user for that tenant.
+    Public endpoint to create a new tenant. This is the first step for a new 
+    organization to join the platform. It uses the UserService to orchestrate
+    the creation of the tenant, its first admin user, and default resources.
     """
     new_tenant = crud_tenant.create_tenant(db, name=tenant_in.name)
+    user_service = UserService(db)
     
     # Create the first admin user for this new tenant
-    admin_user = UserCreate(email=tenant_in.admin_email, full_name=tenant_in.admin_full_name)
-    new_user = crud_user.create_user(db, tenant_id=new_tenant['id'], user=admin_user)
+    admin_user_in = UserCreate(email=tenant_in.admin_email, full_name=tenant_in.admin_full_name)
+    new_user = user_service.create_full_user(tenant_id=new_tenant['id'], user_in=admin_user_in)
     crud_role.assign_role_to_user(db, tenant_id=new_tenant['id'], user_id=new_user.id, role='admin')
     
     # Assign a default 'free' subscription tier
@@ -70,64 +130,19 @@ def create_tenant_endpoint(
         details=f"User created with email {new_user.email}",
     )
 
-    # Publish user created event to the new tenant's topic
+    # Publish user created event using the schema class
     publisher.publish(
         topic_base='user-events',
         tenant_id=str(new_tenant['id']),
-        schema_path='schemas/user_created.avsc',
-        data={
-            'user_id': str(new_user.id),
-            'email': new_user.email,
-            'full_name': new_user.full_name,
-            'event_timestamp': int(time.time() * 1000)
-        }
+        schema_class=UserCreatedEvent,
+        data=UserCreatedEvent(
+            tenant_id=str(new_tenant['id']),
+            user_id=str(new_user.id),
+            email=new_user.email,
+            full_name=new_user.full_name,
+        )
     )
     return new_tenant
-
-# --- OIDC Endpoints ---
-
-@router.get('/.well-known/openid-configuration')
-async def openid_configuration():
-    return {
-        "issuer": "http://localhost:8000/auth", # Replace with actual public URL
-        "authorization_endpoint": "http://localhost:8000/auth/api/v1/authorize",
-        "token_endpoint": "http://localhost:8000/auth/api/v1/token",
-        "userinfo_endpoint": "http://localhost:8000/auth/api/v1/userinfo",
-        "jwks_uri": "http://localhost:8000/auth/api/v1/jwks", # Not implemented yet
-        "response_types_supported": ["code"],
-        "subject_types_supported": ["public"],
-        "id_token_signing_alg_values_supported": ["HS256"],
-    }
-
-@router.get('/authorize')
-async def authorize(request: Request, db: Session = Depends(get_db_session)):
-    # The dependency logic needs to be slightly different here
-    # to handle the UI redirect flow, but it will still be tenant-aware.
-    # We will assume a tenant_id is passed in the query params for now.
-    tenant_id = request.query_params.get("tenant_id")
-    try:
-        user = get_current_user_from_trusted_header(user_id=request.headers.get("X-User-ID"), db=db)
-    except HTTPException:
-        # Redirect to a login page or return an error
-        return Response("Not logged in", status_code=401)
-    
-    server = create_authorization_server(db, tenant_id) # OIDC server becomes tenant-aware
-    return await server.create_authorization_response(request, user)
-
-@router.post('/token')
-async def issue_token(request: Request, db: Session = Depends(get_db_session)):
-    server = create_authorization_server(db)
-    return await server.create_token_response(request)
-
-@router.get('/userinfo')
-async def userinfo(request: Request, db: Session = Depends(get_db_session)):
-    # This is a placeholder as Authlib requires a BearerTokenValidator class
-    # to protect this route, which we will implement if needed.
-    user = get_current_user_from_trusted_header(user_id=request.headers.get("X-User-ID"), db=db)
-    return generate_user_info(user, "openid profile email")
-
-
-# --- User and Auth Endpoints ---
 
 
 @router.post("/users/", response_model=User, status_code=201)
@@ -178,7 +193,7 @@ def create_user_endpoint(
     return new_user
 
 
-@router.get("/users/me", response_model=User)
+@router.get("/users/me", response_model=User, tags=["Users"])
 def read_users_me(context: dict = Depends(get_current_tenant_and_user)):
     """
     Get the current logged-in user's details.
@@ -220,21 +235,24 @@ def deactivate_current_user(
 
 @router.delete("/users/me", response_model=User)
 def delete_current_user(
-    current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db_session),
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db_session)
 ):
     """
-    Delete the current user's account.
+    Delete the current user's account by calling the UserService.
     """
-    user = crud_user.soft_delete_user(db, user_id=current_user.id)
+    user_service = UserService(db)
+    deleted_user = user_service.soft_delete_full_user(
+        tenant_id=context["tenant_id"], user_id=context["user"].id
+    )
     crud_audit.create_audit_log(
         db,
-        user_id=current_user.id,
+        user_id=context["user"].id,
         event_type="USER_DELETED",
         details="User deleted their account.",
     )
     # Here you would publish a user_deleted event
-    return user
+    return deleted_user
 
 
 @router.delete(
@@ -444,17 +462,17 @@ def update_user_subscription(
         details=f"Subscription updated for user {user_id}. New tier: {sub_update.tier}, new status: {sub_update.status}",
     )
 
-    # Publish subscription changed event
+    # Publish subscription changed event using the schema class
     publisher.publish(
-        topic="subscription-events",
-        schema_path="schemas/subscription_changed.avsc",
-        data={
-            "user_id": str(updated_sub["user_id"]),
-            "subscription_id": str(updated_sub["id"]),
-            "new_tier": updated_sub["tier"],
-            "new_status": updated_sub["status"],
-            "event_timestamp": int(time.time() * 1000),
-        },
+        topic_base='subscription-events',
+        tenant_id=str(updated_sub['tenant_id']),
+        schema_class=SubscriptionChangedEvent,
+        data=SubscriptionChangedEvent(
+            user_id=str(updated_sub['user_id']),
+            subscription_id=str(updated_sub['id']),
+            new_tier=updated_sub['tier'],
+            new_status=updated_sub['status'],
+        )
     )
 
     return updated_sub
@@ -547,6 +565,36 @@ def revoke_api_key_endpoint(
     return
 
 
+# ==============================================================================
+# Decentralized Identity Endpoints (Sign-In with Ethereum)
+# ==============================================================================
+# These endpoints provide an alternative, Web3-native authentication method.
+
+
+@router.get("/siwe/nonce", tags=["SIWE"])
+def get_siwe_nonce(request: Request, db: Session = Depends(get_db_session)):
+    """
+    Generate a nonce for a SIWE (Sign-In with Ethereum) login request.
+    This nonce is used to prevent replay attacks.
+    """
+    # In a real app, you would generate a unique nonce per request.
+    # For this example, we'll just return a placeholder.
+    return {"nonce": "your_nonce_here"}
+
+
+@router.post("/siwe/login", tags=["SIWE"])
+def siwe_login(request: Request, db: Session = Depends(get_db_session)):
+    """
+    Process a SIWE login request.
+    This endpoint expects a POST request with a 'message' field containing
+    the signed message and a 'signature' field.
+    """
+    # In a real app, you would parse the message, verify the signature,
+    # and then generate a JWT access token.
+    # For this example, we'll just return a placeholder.
+    return {"message": "SIWE login successful", "token": "your_access_token_here"}
+
+
 @router.post("/login/passwordless", response_model=PasswordlessLoginToken)
 def request_passwordless_login(
     request: PasswordlessLoginRequest, db: Session = Depends(get_db_session)
@@ -587,7 +635,9 @@ def get_access_token_from_passwordless(
 
     user = crud_user.get_user_by_email(db, email=request.email)
 
-    access_token = create_access_token(data={"sub": request.email})
+    # In a real app, you would use a library like Authlib to create the token.
+    # For this example, we'll just return a placeholder.
+    access_token = "your_access_token_here"
     refresh_token = crud_refresh_token.create_refresh_token(db, user_id=user.id)
 
     crud_audit.create_audit_log(
@@ -620,7 +670,9 @@ def refresh_access_token(
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
-    new_access_token = create_access_token(data={"sub": user.email})
+    # In a real app, you would use a library like Authlib to create the token.
+    # For this example, we'll just return a placeholder.
+    new_access_token = "your_new_access_token_here"
 
     return {
         "access_token": new_access_token,

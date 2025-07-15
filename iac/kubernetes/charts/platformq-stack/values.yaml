@@ -4,6 +4,17 @@
 consul:
   global:
     name: consul
+    # Enable federation for multi-cluster communication
+    federation:
+      enabled: true
+      primaryDatacenter: "us-central1" # Designate one region as primary
+  
+  # Expose the server RPC port for cross-cluster communication
+  server:
+    exposeGossipAndRPCPorts: true
+    service:
+      type: LoadBalancer
+
   ui:
     enabled: true
   server:
@@ -51,28 +62,42 @@ kong:
     type: LoadBalancer
 
 pulsar:
-  # This is an advanced setup for geo-replication.
-  # It deploys two separate Pulsar clusters.
-  cluster1:
-    name: us-east-1
-    # ... (full standalone pulsar config)
-    
-  cluster2:
-    name: eu-west-1
-    # ... (full standalone pulsar config)
-
-  # This part is conceptual as the Helm chart may not directly support
-  # configuring replication via values. It would typically be done via
-  # post-install scripts using the pulsar-admin CLI.
-  replication:
+  # Define our two geo-replicated clusters
+  "us-east-1":
+    zookeeper:
+      replicas: 1
+    bookkeeper:
+      replicas: 1
+    broker:
+      replicas: 1
+      configData:
+        # Enable replication and define the other cluster
+        replicationClusters: "eu-west-1"
+  "eu-west-1":
+    zookeeper:
+      replicas: 1
+    bookkeeper:
+      replicas: 1
+    broker:
+      replicas: 1
+      configData:
+        replicationClusters: "us-east-1"
+  
+  # The helm chart would deploy two separate clusters with these configs.
+  # Manual post-deploy steps are needed to link them.
+  
+  schemaRegistry:
     enabled: true
-    sourceCluster: us-east-1
-    targetCluster: eu-west-1
 
 cassandra:
-  # A non-production, single-node setup
+  # Configure a multi-datacenter cluster
   cluster:
-    size: 1
+    datacenter: "dc1" # Will map to our primary region, us-central1
+  
+  # Add a second datacenter
+  datacenters:
+    - name: "dc2" # Will map to our secondary region, europe-west1
+      size: 1
 
 prometheus-stack:
   prometheus:
@@ -304,3 +329,60 @@ nextcloud:
           key: jwt_secret
     - name: ONLYOFFICE_DOCUMENT_SERVER_URL
       value: "http://platformq-onlyoffice-docs" # Internal Kubernetes service name 
+
+velero:
+  # This configuration assumes you have created a GCS bucket and a GCP Service
+  # Account with Storage Admin permissions, and have created a Kubernetes secret
+  # named 'gcs-backup-service-account' from its key file.
+  configuration:
+    provider: gcp
+    backupStorageLocation:
+      name: gcp
+      bucket: "<YOUR_GCS_BACKUP_BUCKET_NAME>"
+    volumeSnapshotLocation:
+      name: gcp
+      config:
+        type: pd.csi.storage.gke.io
+  
+  # Tell Velero which service account to use
+  serviceAccount:
+    server:
+      name: "velero-server"
+  
+  # Use the GCP plugin for volume snapshots
+  initContainers:
+    - name: velero-plugin-for-gcp
+      image: velero/velero-plugin-for-gcp:v1.8.0
+      volumeMounts:
+        - mountPath: /target
+          name: plugins" 
+
+simulation-service:
+  replicaCount: 1
+  image:
+    repository: gcr.io/your-gcp-project/simulation-service
+    tag: latest
+
+verifiable-credential-service:
+  replicaCount: 1
+  image:
+    repository: gcr.io/your-gcp-project/verifiable-credential-service
+    tag: latest
+
+graph-intelligence-service:
+  replicaCount: 1
+  image:
+    repository: gcr.io/your-gcp-project/graph-intelligence-service
+    tag: latest 
+
+hyperledger-fabric:
+  # A simple setup with a single peer node for development
+  peer:
+    replicas: 1
+
+janusgraph:
+  # Configure JanusGraph to use our existing Cassandra instance as its storage backend
+  properties:
+    storage.backend: "cql"
+    storage.hostname: "platformq-cassandra"
+    storage.cql.keyspace: "janusgraph" 

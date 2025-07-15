@@ -8,6 +8,10 @@ import io
 import logging
 import threading
 from fastapi import Request, Response, status
+from platformq_shared.events import UserCreatedEvent, DocumentUpdatedEvent
+from pulsar.schema import AvroSchema
+import schedule
+import time
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -27,35 +31,33 @@ zulip_client = zulip.Client(api_key=ZULIP_API_KEY, email=ZULIP_EMAIL, site=ZULIP
 def notification_consumer_loop():
     logger.info("Starting notification consumer thread...")
     client = pulsar.Client(settings["PULSAR_URL"])
-    consumer = client.subscribe(
-        topic_pattern="persistent://platformq/.*/(user-events|document-events)",
-        subscription_name="notification-service-sub",
-        consumer_type=pulsar.ConsumerType.Shared,
+    
+    # Subscribe to multiple topics with different schemas
+    user_consumer = client.subscribe(
+        topic_pattern="persistent://platformq/.*/user-events",
+        subscription_name="notification-service-user-sub",
+        schema=AvroSchema(UserCreatedEvent)
     )
-
-    # Pre-load schemas
-    user_schema = avro.schema.parse(open("schemas/user_created.avsc").read())
-    doc_schema = avro.schema.parse(open("schemas/document_updated.avsc").read())
-
+    doc_consumer = client.subscribe(
+        topic_pattern="persistent://platformq/.*/document-events",
+        subscription_name="notification-service-doc-sub",
+        schema=AvroSchema(DocumentUpdatedEvent)
+    )
+    
+    # This is a simplified example of handling multiple consumers.
+    # A real implementation might use a more robust multi-threaded approach.
     while True:
         try:
-            msg = consumer.receive()
+            msg = client.receive() # Receive from any subscribed topic
+            data = msg.value()
             topic = msg.topic_name()
-            bytes_reader = io.BytesIO(msg.data())
-            decoder = avro.io.BinaryDecoder(bytes_reader)
             
             message_content = ""
+            if isinstance(data, UserCreatedEvent):
+                message_content = f"New user signed up! Welcome, **{data.full_name}** ({data.email})."
+            elif isinstance(data, DocumentUpdatedEvent):
+                message_content = f"User {data.saved_by_user_id} just updated the document: `{data.document_path}`"
             
-            if "user-events" in topic:
-                reader = avro.io.DatumReader(user_schema)
-                data = reader.read(decoder)
-                message_content = f"New user signed up! Welcome, **{data['full_name']}** ({data['email']})."
-            
-            elif "document-events" in topic:
-                reader = avro.io.DatumReader(doc_schema)
-                data = reader.read(decoder)
-                message_content = f"User {data['saved_by_user_id']} just updated the document: `{data['document_path']}`"
-
             if message_content:
                 zulip_message = {
                     "type": "stream", "to": "general", "topic": "Platform Activity", "content": message_content
@@ -63,10 +65,43 @@ def notification_consumer_loop():
                 zulip_client.send_message(zulip_message)
                 logger.info(f"Sent notification to Zulip for event from topic {topic}.")
 
-            consumer.acknowledge(msg)
+            client.acknowledge(msg)
         except Exception as e:
             logger.error(f"Error in consumer loop: {e}")
-            consumer.negative_acknowledge(msg)
+            client.negative_acknowledge(msg)
+
+# --- Background Task for Graph Intelligence ---
+def check_for_graph_insights():
+    logger.info("Checking for new graph insights...")
+    try:
+        # In a real app, we would need a way to get a service-to-service auth token
+        # to call the graph-intelligence-service securely.
+        # response = requests.get("http://kong:8000/graph/api/v1/insights/community-detection", headers=...)
+        # new_communities = response.json()['data']
+        
+        # Conceptual: If new_communities have been found since the last check...
+        # For this example, we'll just simulate a finding.
+        new_communities = [{"community_id": 1, "users": ["user1", "user2", "user3"]}]
+
+        for community in new_communities:
+            user_list = ", ".join(community['users'])
+            message = {
+                "type": "stream",
+                "to": "general",
+                "topic": "Platform Insights",
+                "content": f"**New Collaboration Hub Detected!**\nA new community of users has formed around a recent project, including: {user_list}. Consider creating a dedicated Zulip channel for them to collaborate!"
+            }
+            zulip_client.send_message(message)
+            logger.info("Sent graph insight notification to Zulip.")
+
+    except Exception as e:
+        logger.error(f"Failed to check for graph insights: {e}")
+
+def intelligence_scheduler_loop():
+    schedule.every(1).hour.do(check_for_graph_insights)
+    while True:
+        schedule.run_pending()
+        time.sleep(1)
 
 # --- FastAPI App ---
 app = create_base_app(
@@ -81,8 +116,12 @@ app = create_base_app(
 @app.on_event("startup")
 def startup_event():
     # Start the Pulsar consumer in a background thread
-    thread = threading.Thread(target=notification_consumer_loop, daemon=True)
-    thread.start()
+    pulsar_thread = threading.Thread(target=notification_consumer_loop, daemon=True)
+    pulsar_thread.start()
+    
+    # Start the intelligence scheduler in another thread
+    intel_thread = threading.Thread(target=intelligence_scheduler_loop, daemon=True)
+    intel_thread.start()
 
 @app.post("/webhooks/nextcloud")
 async def handle_nextcloud_webhook(request: Request):

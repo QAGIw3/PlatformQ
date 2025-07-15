@@ -1,5 +1,5 @@
 # Application dependencies
--e ../shared
+-e ../../libs/shared
 requests
 
 # Development and Testing

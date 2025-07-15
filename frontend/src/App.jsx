@@ -1,5 +1,6 @@
 import React, { useState, useEffect } from 'react';
 import { UserManager, WebStorageStateStore } from 'oidc-client-ts';
+import { BrowserRouter, Routes, Route, Link } from 'react-router-dom';
 
 // --- OIDC Configuration ---
 const oidcSettings = {
@@ -12,6 +13,10 @@ const oidcSettings = {
 };
 
 const userManager = new UserManager(oidcSettings);
+
+// New Components (files would be created for these)
+const Dashboard = () => <h2>Dashboard</h2>;
+const SimulationManager = () => <h2>Simulation Manager</h2>;
 
 function App() {
   const [user, setUser] = useState(null);
@@ -58,15 +63,21 @@ function App() {
 
   if (user) {
     return (
-      <div>
-        <h1>Welcome, platformQ</h1>
-        <p>You are logged in!</p>
-        {userInfo ? (
-          <pre>{JSON.stringify(userInfo, null, 2)}</pre>
-        ) : (
-          <p>Loading user info...</p>
-        )}
-        <button onClick={handleLogout}>Logout</button>
+      <div style={{ display: 'flex' }}>
+        <nav style={{ width: '200px', borderRight: '1px solid #ccc', padding: '1rem' }}>
+          <h2>platformQ</h2>
+          <ul>
+            <li><Link to="/">Dashboard</Link></li>
+            <li><Link to="/simulations">Simulations</Link></li>
+            <li><button onClick={handleLogout}>Logout</button></li>
+          </ul>
+        </nav>
+        <main style={{ padding: '1rem', flexGrow: 1 }}>
+          <Routes>
+            <Route path="/" element={<Dashboard />} />
+            <Route path="/simulations" element={<SimulationManager />} />
+          </Routes>
+        </main>
       </div>
     );
   }

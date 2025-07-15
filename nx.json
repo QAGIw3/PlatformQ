@@ -1,0 +1,21 @@
+{
+  "extends": "nx/presets/npm.json",
+  "affected": {
+    "defaultBase": "main"
+  },
+  "targetDefaults": {
+    "build": {
+      "dependsOn": ["^build"]
+    },
+    "test": {
+      "inputs": ["default", "^default"]
+    },
+    "lint": {
+      "inputs": ["default"]
+    }
+  },
+  "workspaceLayout": {
+    "appsDir": "services",
+    "libsDir": "libs"
+  }
+} 

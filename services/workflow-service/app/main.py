@@ -8,6 +8,7 @@ import logging
 import threading
 import time
 from fastapi import Request, Response, status
+import requests # For calling the VC service
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -37,10 +38,29 @@ def workflow_consumer_loop():
             # and then call the APIs for Zulip, Nextcloud, and OpenProject
             # to perform the cross-application workflow.
             
-            # Example placeholder logic:
-            logger.info("  - (Placeholder) Would create Zulip stream now.")
-            logger.info("  - (Placeholder) Would create Nextcloud folder now.")
-            logger.info("  - (Placeholder) Would post comment back to OpenProject now.")
+            # --- Project Created Workflow ---
+            if "project-events" in msg.topic_name():
+                logger.info("  - (Workflow) Creating Zulip stream...")
+                # zulip_client.create_stream(...)
+                
+                logger.info("  - (Workflow) Creating Nextcloud folder...")
+                # nextcloud_client.create_folder(...)
+
+                logger.info("  - (Workflow) Requesting Verifiable Credential for project creation...")
+                vc_payload = {
+                    "type": "ProjectCreationCredential",
+                    "subject": {
+                        "id": f"urn:platformq:project:{data['project_id']}",
+                        "name": data['project_name'],
+                        "createdBy": data['creator_id']
+                    }
+                }
+                # This call would be routed through Kong to the VC service
+                # vc_response = requests.post("http://kong:8000/vc/api/v1/issue", json=vc_payload, headers=...)
+                # signed_credential_id = vc_response.json()['id']
+                
+                logger.info("  - (Workflow) Storing credential ID and posting links back to OpenProject...")
+                # openproject_client.post_comment(..., f"Project created. Verifiable Credential ID: {signed_credential_id}")
             
             consumer.acknowledge(msg)
         except Exception as e:

@@ -1,52 +1,39 @@
-# platformQ
+# platformQ: A Cloud-Native Digital Ecosystem
 
-This repository contains the source code for platformQ, a multiservice platform for complex data processing and analysis.
+Welcome to platformQ. This repository contains the source code for a complete, enterprise-grade, multi-tenant cloud-native platform. It is designed from the ground up to be secure, scalable, observable, and automated, providing a robust foundation for building a suite of integrated digital applications.
 
-## Architecture
+## Core Capabilities
 
-The platform is built on a microservices architecture designed for high-throughput, real-time data processing. For a detailed overview of the components and their interactions, please refer to the architecture diagrams generated during the initial design phase.
+The platform is more than just a collection of microservices; it is a unified ecosystem that provides:
 
-The core technologies include:
-- **API/Services**: Microservices offering APIs for clients.
-- **Messaging**: Apache Pulsar
-- **Real-time Processing**: Apache Flink
-- **Batch Processing**: Apache Spark
-- **Orchestration**: Apache Airflow
-- **Storage**: Apache Cassandra (NoSQL), JanusGraph (Graph), Minio (Object Store), Apache Ignite (In-Memory)
-- **Querying**: Trino
-- **Observability**: OpenTelemetry, Jaeger (Tracing), Prometheus (Metrics)
+*   **Centralized Identity & SSO**: A full OIDC provider (`auth-service`) for unified authentication.
+*   **Integrated Open-Source Suite**: Seamless integration with powerful tools like Nextcloud, OpenProject, Zulip, and OnlyOffice.
+*   **Event-Driven Architecture**: A Pulsar-based message bus for asynchronous, resilient communication between services.
+*   **Advanced Data & Analytics**: A complete Lakehouse architecture with Flink, Trino, and Cassandra for real-time analytics and deep data exploration.
+*   **Cutting-Edge Engines**:
+    *   **Simulation Engine**: For large-scale, agent-based modeling.
+    *   **Trust Engine**: For creating cryptographically verifiable workflows with Verifiable Credentials.
+    *   **Intelligence Engine**: For discovering emergent patterns in platform data using Graph Analytics.
+*   **"Golden Path" Developer Experience**: A complete DevOps automation suite, including a CLI (`platformqctl`) for scaffolding new services, automated CI/CD with canary releases, and a "Golden Path" service template.
 
 ## Getting Started
 
-### Prerequisites
+For developers looking to contribute or build on the platform, the best place to start is the **[Contribution Guide](CONTRIBUTING.md)**.
 
-- [Docker](https://docs.docker.com/get-docker/)
-- [Docker Compose](https://docs.docker.com/compose/install/)
+For operators looking to deploy and manage the platform, refer to the **[IaC & Deployment Guide](iac/terraform/README.md)**.
 
-### Launching the Development Environment
+## Documentation Portal
 
-All core infrastructure services are managed via Docker Compose. To start the environment, run the following command from the root of the project:
+For complete, in-depth documentation on every aspect of the platform, you can build and serve the documentation portal locally:
 
 ```bash
-docker-compose -f infra/docker-compose/docker-compose.yml up -d
+# Install documentation tools
+pip install -r requirements.txt
+
+# Build API docs and other generated content
+make docs-build
+
+# Serve the site locally
+make docs-serve
 ```
-
-This will launch all the services in the background. You can view the status of the containers with `docker-compose -f infra/docker-compose/docker-compose.yml ps`.
-
-### Accessing Services
-
-Once the environment is running, you can access the various UIs and endpoints:
-
-- **Pulsar Manager**: http://localhost:8080
-- **Trino UI**: http://localhost:8081
-- **Minio Console**: http://localhost:9001 (User: `minioadmin`, Pass: `minioadmin`)
-- **Prometheus**: http://localhost:9090
-- **Jaeger UI**: http://localhost:16686
-- **Cassandra (CQL)**: `localhost:9042`
-- **JanusGraph (Gremlin)**: `localhost:8182`
-
-To shut down the environment, run:
-
-```bash
-docker-compose -f infra/docker-compose/docker-compose.yml down
-``` 
+This will make the full documentation available at `http://127.0.0.1:8000`. 

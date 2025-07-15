@@ -14,6 +14,8 @@ if "/app" not in sys.path:
     sys.path.append("/app")
     
 from shared_lib.event_publisher import EventPublisher # We use it for creating a client
+from platformq_shared.events import UserCreatedEvent
+from pulsar.schema import AvroSchema
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -69,11 +71,10 @@ def main():
         topic_pattern=TOPIC_PATTERN,
         subscription_name=SUBSCRIPTION_NAME,
         consumer_type=pulsar.ConsumerType.Shared,
+        schema=AvroSchema(UserCreatedEvent)
     )
     
     try:
-        schema = avro.schema.parse(open(SCHEMA_PATH).read())
-        
         while True:
             msg = consumer.receive()
             try:
@@ -83,12 +84,9 @@ def main():
                     consumer.acknowledge(msg)
                     continue
 
-                bytes_reader = io.BytesIO(msg.data())
-                decoder = avro.io.BinaryDecoder(bytes_reader)
-                reader = avro.io.DatumReader(schema)
-                user_data = reader.read(decoder)
-                
+                user_data = msg.value() # Deserialization is automatic
                 logger.info(f"Received user_created event for tenant {tenant_id}: {user_data}")
+                
                 provision_nextcloud_user(tenant_id, user_data)
                 
                 consumer.acknowledge(msg)

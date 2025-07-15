@@ -1,0 +1,25 @@
+fastapi
+uvicorn[standard]
+pydantic
+cassandra-driver
+python-dotenv
+passlib[bcrypt]
+python-jose[cryptography]
+authlib
+pulsar-client
+avro
+-e ../shared
+requests
+kubernetes
+py-w3c-vc
+# For interacting with Hyperledger Fabric
+grpcio
+hyperledger-fabric-sdk
+
+# Development and Testing
+pytest
+black
+ruff
+python-consul
+hvac
+redoc-cli 
