@@ -1,0 +1,12 @@
+# Default values for connector-service.
+replicaCount: 1
+
+image:
+  repository: platformq/connector-service
+  pullPolicy: IfNotPresent
+  # Overridden by chart AppVersion
+  tag: ""
+
+service:
+  type: ClusterIP
+  port: 80 

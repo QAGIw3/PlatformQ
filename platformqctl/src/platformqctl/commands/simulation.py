@@ -16,12 +16,19 @@ def simulation_cli():
     pass
 
 @simulation_cli.command("list")
-def list_simulations():
+@click.pass_context
+def list_simulations(ctx):
     """Lists all available simulations."""
+    config = ctx.obj.get('config')
+    if not config:
+        click.echo("Error: Config not found. Please run 'platformqctl init'.", err=True)
+        return
+    base_url = f"{config.get('api_gateway_url', '')}/simulation-service/api/v1/simulations"
+
     click.echo("Fetching simulations from the simulation-service...")
     try:
         with httpx.Client() as client:
-            response = client.get(SIMULATION_SERVICE_URL)
+            response = client.get(base_url)
             handle_api_error(response)
             click.echo(response.text)
     except httpx.RequestError as exc:
@@ -32,10 +39,17 @@ def list_simulations():
 
 @simulation_cli.command("run")
 @click.argument("simulation_id")
-def run_simulation(simulation_id: str):
+@click.pass_context
+def run_simulation(ctx, simulation_id: str):
     """Triggers a new run for a specific simulation."""
+    config = ctx.obj.get('config')
+    if not config:
+        click.echo("Error: Config not found. Please run 'platformqctl init'.", err=True)
+        return
+    base_url = f"{config.get('api_gateway_url', '')}/simulation-service/api/v1/simulations"
+
     click.echo(f"Requesting new run for simulation {simulation_id}...")
     
     # In a real app, this would likely be a POST request
-    # e.g., client.post(f"{SIMULATION_SERVICE_URL}/{simulation_id}/run")
+    # e.g., client.post(f"{base_url}/{simulation_id}/run")
     click.echo("(This is a placeholder - a real implementation would POST to the service)") 

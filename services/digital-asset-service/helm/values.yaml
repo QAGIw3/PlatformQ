@@ -1,0 +1,12 @@
+# Default values for digital-asset-service.
+replicaCount: 1
+
+image:
+  repository: platformq/digital-asset-service
+  pullPolicy: IfNotPresent
+  # Overridden by chart AppVersion
+  tag: ""
+
+service:
+  type: ClusterIP
+  port: 80 

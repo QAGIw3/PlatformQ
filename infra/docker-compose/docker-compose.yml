@@ -11,6 +11,9 @@ volumes:
   cassandra_data:
   minio_data:
   kong_db_data:
+  platformq-janusgraph-data:
+  platformq-janusgraph-config:
+  platformq-assets-pgdata:
 
 services:
   #################################
@@ -280,3 +283,23 @@ auth-service:
     pulsar:
       condition: service_healthy
   restart: on-failure 
+  platformq-pulsar:
+    image: apachepulsar/pulsar:2.11.0
+    ports:
+      - "6650:6650"
+      - "8080:8080"
+    command: >
+      /bin/bash -c
+      "bin/apply-config-from-env.py conf/standalone.conf &&
+      bin/pulsar standalone"
+
+  platformq-assets-db:
+    image: postgres:15-alpine
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=user
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_DB=platformq_assets
+    volumes:
+      - platformq-assets-pgdata:/var/lib/postgresql/data 

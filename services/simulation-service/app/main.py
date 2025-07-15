@@ -8,7 +8,8 @@ from uuid import UUID
 
 from .api.deps import get_current_tenant_and_user, get_db_session, get_event_publisher
 from .crud import crud_simulation, crud_agent_definition, crud_agent_state
-from platformq_shared.events import SimulationStartedEvent
+from platformq_shared.events import SimulationStartedEvent, SimulationRunCompleted
+from platformq_shared.event_publisher import EventPublisher
 
 app = create_base_app(
     service_name="simulation-service",
@@ -81,6 +82,42 @@ def start_simulation(
     )
     
     return {"message": f"Simulation {simulation_id} start signal sent."}
+
+class CompletionRequest(BaseModel):
+    run_id: str
+    status: str
+    log_uri: str
+
+@app.post("/api/v1/simulations/{simulation_id}/complete")
+def complete_simulation(
+    simulation_id: UUID,
+    completion_data: CompletionRequest,
+    context: dict = Depends(get_current_tenant_and_user),
+    publisher: EventPublisher = Depends(get_event_publisher),
+):
+    """
+    An internal endpoint for simulation workers to report completion.
+    Publishes a SimulationRunCompleted event.
+    """
+    tenant_id = str(context["tenant_id"])
+    
+    # In a real app, we might update the simulation status in our DB here.
+    
+    publisher.publish(
+        topic_base='simulation-lifecycle-events',
+        tenant_id=tenant_id,
+        schema_class=SimulationRunCompleted,
+        data=SimulationRunCompleted(
+            tenant_id=tenant_id,
+            simulation_id=str(simulation_id),
+            run_id=completion_data.run_id,
+            status=completion_data.status,
+            log_uri=completion_data.log_uri,
+        )
+    )
+    
+    return {"message": f"Completion of simulation {simulation_id} recorded."}
+
 
 @app.get("/api/v1/simulations/{simulation_id}/state")
 def get_simulation_state(

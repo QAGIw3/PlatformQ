@@ -29,7 +29,7 @@ def create_asset(db: Session, asset: schemas.DigitalAssetCreate) -> models.Digit
         source_asset_id=asset.source_asset_id,
         raw_data_uri=asset.raw_data_uri,
         tags=asset.tags,
-        metadata=asset.metadata,
+        asset_metadata=asset.metadata,
     )
     db.add(db_asset)
     db.commit()

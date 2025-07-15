@@ -21,7 +21,7 @@ class DigitalAssetBase(BaseModel):
     source_tool: Optional[str] = None
     source_asset_id: Optional[str] = None
     tags: List[str] = []
-    metadata: Dict[str, str] = {}
+    metadata: Dict[str, str] = Field(default_factory=dict, alias="asset_metadata")
     raw_data_uri: Optional[str] = None
 
 class DigitalAssetCreate(DigitalAssetBase):
@@ -32,7 +32,7 @@ class DigitalAssetCreate(DigitalAssetBase):
 class DigitalAssetUpdate(BaseModel):
     asset_name: Optional[str] = None
     tags: Optional[List[str]] = None
-    metadata: Optional[Dict[str, str]] = None
+    metadata: Optional[Dict[str, str]] = Field(default=None, alias="asset_metadata")
 
 class DigitalAsset(DigitalAssetBase):
     asset_id: uuid.UUID

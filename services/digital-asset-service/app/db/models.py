@@ -1,9 +1,22 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, ForeignKey, Table
+from sqlalchemy import Column, String, DateTime, ForeignKey, Table, TypeDecorator, JSON
 from sqlalchemy.orm import relationship, Mapped
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
-from platformq_shared.postgres_db import Base
+from ..postgres_db import Base
+
+# --- Compatibility Type for Testing ---
+# This decorator allows our model to use JSONB in PostgreSQL
+# but fall back to a standard JSON type in other databases like SQLite for testing.
+class JsonBCompat(TypeDecorator):
+    impl = JSON
+    cache_ok = True
+
+    def load_dialect_impl(self, dialect):
+        if dialect.name == 'postgresql':
+            return dialect.type_descriptor(JSONB())
+        else:
+            return dialect.type_descriptor(JSON())
 
 # Association Table for the many-to-many relationship between assets
 asset_links = Table('asset_links', Base.metadata,
@@ -28,8 +41,8 @@ class DigitalAsset(Base):
     raw_data_uri = Column(String)
 
     # Flexible Metadata using JSONB
-    tags = Column(JSONB)
-    metadata = Column(JSONB)
+    tags = Column(JsonBCompat)
+    asset_metadata = Column("metadata", JsonBCompat)
 
     # Relationships
     # This relationship represents the assets linked *from* this asset.

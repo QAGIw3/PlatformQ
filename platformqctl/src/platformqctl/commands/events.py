@@ -10,18 +10,25 @@ def events_cli():
 @events_cli.command("listen")
 @click.argument("topic")
 @click.option("--subscription-name", default="platformqctl-listener", help="Name for the Pulsar subscription.")
-def listen_events(topic: str, subscription_name: str):
+@click.pass_context
+def listen_events(ctx, topic: str, subscription_name: str):
     """
     Listens to a specific topic on the event bus and prints messages.
     
     Example: platformqctl events listen non-persistent://public/default/digital_asset_created
     """
-    click.echo(f"Connecting to Pulsar and listening to topic '{topic}'...")
+    config = ctx.obj.get('config')
+    if not config or not config.get('pulsar_url'):
+        click.echo("Error: pulsar_url not found in config. Please run 'platformqctl init'.", err=True)
+        return
+    pulsar_url = config['pulsar_url']
+
+    click.echo(f"Connecting to Pulsar at {pulsar_url} and listening to topic '{topic}'...")
     click.echo("Press Ctrl+C to stop.")
     
     try:
         # In a real app, the pulsar URL would come from the .platformqctl.yaml config
-        client = pulsar.Client('pulsar://localhost:6650')
+        client = pulsar.Client(pulsar_url)
         consumer = client.subscribe(topic, subscription_name)
 
         while True:

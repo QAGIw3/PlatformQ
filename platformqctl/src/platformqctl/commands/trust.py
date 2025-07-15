@@ -18,12 +18,19 @@ def trust_cli():
 @trust_cli.command("issue")
 @click.option("--type", "credential_type", required=True, help="The type of the credential (e.g., EmployeeID).")
 @click.option("--subject", required=True, help="The credential subject as a JSON string.")
-def issue_credential(credential_type: str, subject: str):
+@click.pass_context
+def issue_credential(ctx, credential_type: str, subject: str):
     """
     Issues a new Verifiable Credential.
     
     Example: platformqctl trust issue --type EmployeeID --subject '{"id": "did:example:123", "name": "Alice"}'
     """
+    config = ctx.obj.get('config')
+    if not config:
+        click.echo("Error: Config not found. Please run 'platformqctl init'.", err=True)
+        return
+    base_url = f"{config.get('api_gateway_url', '')}/verifiable-credential-service/api/v1/issue"
+
     click.echo(f"Issuing '{credential_type}' credential...")
     
     try:
@@ -39,7 +46,7 @@ def issue_credential(credential_type: str, subject: str):
 
     try:
         with httpx.Client() as client:
-            response = client.post(VC_SERVICE_URL, json=request_body)
+            response = client.post(base_url, json=request_body)
             handle_api_error(response)
             click.echo("Credential issued successfully:")
             click.echo(json.dumps(response.json(), indent=2))

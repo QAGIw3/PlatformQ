@@ -1,11 +1,8 @@
 from fastapi import FastAPI
 from .api import endpoints
 
-# Set up the database tables
-from platformq_shared.postgres_db import engine, Base
-from .db import models
-Base.metadata.create_all(bind=engine)
-
+# The database tables are now managed by Alembic migrations.
+# No need for Base.metadata.create_all(bind=engine) here anymore.
 
 app = FastAPI(
     title="Digital Asset Service",

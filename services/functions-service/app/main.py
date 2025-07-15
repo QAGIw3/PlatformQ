@@ -90,6 +90,70 @@ async def consume_asset_events():
         except Exception as e:
             print(f"Error processing event: {e}")
             # In a real app, you would handle message redelivery (nack)
+
+async def consume_simulation_events():
+    """
+    A background task that listens for simulation completion events,
+    analyzes the logs, and triggers follow-up actions.
+    """
+    print("Starting Pulsar consumer for simulation events...")
+    client = pulsar.Client('pulsar://localhost:6650')
+    consumer = client.subscribe('non-persistent://public/default/simulation-lifecycle-events', 'functions-service-sim-subscriber')
+
+    try:
+        with open("examples/log-analyzer-wasm/target/wasm32-unknown-unknown/release/log_analyzer_wasm.wasm", "rb") as f:
+            log_analyzer_wasm_module = Module(wasm_engine, f.read())
+    except FileNotFoundError:
+        print("WARNING: log_analyzer_wasm.wasm not found. The simulation event consumer will not work.")
+        client.close()
+        return
+
+    while True:
+        try:
+            msg = await asyncio.to_thread(consumer.receive)
+            event_data = json.loads(msg.data().decode('utf-8'))
+            print(f"Received simulation completion event for run: {event_data['run_id']}")
+
+            # 1. MOCK: Fetch log content from the URI
+            log_content = "This is a log file. It contains some INFO and some WARNINGS. Oh no, a FAILURE occurred."
+            
+            # 2. Execute WASM analyzer
+            linker = wasmtime.Linker(wasm_engine)
+            instance = linker.instantiate(wasm_store, log_analyzer_wasm_module)
+            memory = instance.exports(wasm_store).get("memory")
+            alloc_func = instance.exports(wasm_store).get("allocate")
+            run_func = instance.exports(wasm_store).get("run")
+
+            input_bytes = log_content.encode('utf-8')
+            input_ptr = alloc_func(wasm_store, len(input_bytes))
+            memory.write(wasm_store, input_bytes, input_ptr)
+            
+            output_ptr = run_func(wasm_store, input_ptr, len(input_bytes))
+            result_bytes = []
+            i = output_ptr
+            while True:
+                byte = memory.read(wasm_store, i, 1)
+                if byte == b'\0': break
+                result_bytes.append(byte)
+                i += 1
+            analysis_result = json.loads(b"".join(result_bytes).decode('utf-8'))
+            
+            print(f"  -> Analysis result: {analysis_result['status']}")
+
+            # 3. If failure, orchestrate follow-up actions
+            if analysis_result['status'] == 'FAILURE':
+                print("  -> Failure detected. Orchestrating response...")
+                # MOCK: Call connector-service to create a Digital Asset for the log
+                print("     - MOCK: Triggering connector-service to create asset for log_uri:", event_data['log_uri'])
+                # MOCK: Call OpenProject API to create an issue
+                print("     - MOCK: Creating issue in OpenProject with summary:", analysis_result['summary'])
+                # MOCK: Link asset to issue
+                print("     - MOCK: Linking new asset to OpenProject issue.")
+
+            consumer.acknowledge(msg)
+        except Exception as e:
+            print(f"Error processing simulation event: {e}")
+
 # ---
 
 # Include service-specific routers
@@ -165,8 +229,9 @@ def deploy_function(
 
 @app.on_event("startup")
 async def startup_event():
-    # Start the background event consumer
+    # Start the background event consumers
     asyncio.create_task(consume_asset_events())
+    asyncio.create_task(consume_simulation_events())
 
 class WasmRunRequest(BaseModel):
     wasm_module_b64: str = Field(..., description="The WASM module, encoded in Base64.")

@@ -2,6 +2,7 @@ fastapi
 uvicorn[standard]
 pydantic
 sqlalchemy
+alembic
 psycopg2-binary
 python-dotenv
 passlib[bcrypt]
@@ -9,7 +10,7 @@ python-jose[cryptography]
 authlib
 pulsar-client
 avro
--e ../shared
+-e ../../libs/shared
 
 # Development and Testing
 pytest

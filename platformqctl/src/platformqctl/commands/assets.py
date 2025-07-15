@@ -2,9 +2,7 @@ import click
 import httpx
 import uuid
 
-# Configuration - In a real app, this would come from a config file.
-BASE_URL = "http://localhost:8000/api/v1/assets" 
-
+# Re-using the helper from the assets command would be ideal in a real app
 def handle_api_error(response: httpx.Response):
     """Helper function to handle common API errors."""
     if response.status_code == 404:
@@ -24,12 +22,19 @@ def assets_cli():
 
 @assets_cli.command("get")
 @click.argument("asset_id", type=click.UUID)
-def get_asset(asset_id: uuid.UUID):
+@click.pass_context
+def get_asset(ctx, asset_id: uuid.UUID):
     """Retrieves metadata for a specific Digital Asset."""
+    config = ctx.obj.get('config')
+    if not config:
+        click.echo("Error: Config not found. Please run 'platformqctl init'.", err=True)
+        return
+    base_url = f"{config.get('api_gateway_url', '')}/assets-service/api/v1/assets"
+
     click.echo(f"Fetching asset {asset_id}...")
     try:
         with httpx.Client() as client:
-            response = client.get(f"{BASE_URL}/{asset_id}")
+            response = client.get(f"{base_url}/{asset_id}")
             handle_api_error(response)
             click.echo(response.text)
     except httpx.RequestError as exc:
@@ -41,8 +46,15 @@ def get_asset(asset_id: uuid.UUID):
 @assets_cli.command("list")
 @click.option("--asset-type", help="Filter by asset type (e.g., CRM_CONTACT).")
 @click.option("--limit", default=10, help="Number of assets to return.")
-def list_assets(asset_type: str, limit: int):
+@click.pass_context
+def list_assets(ctx, asset_type: str, limit: int):
     """Lists Digital Assets on the platform."""
+    config = ctx.obj.get('config')
+    if not config:
+        click.echo("Error: Config not found. Please run 'platformqctl init'.", err=True)
+        return
+    base_url = f"{config.get('api_gateway_url', '')}/assets-service/api/v1/assets"
+
     click.echo("Listing assets...")
     params = {"limit": limit}
     if asset_type:
@@ -50,7 +62,7 @@ def list_assets(asset_type: str, limit: int):
     
     try:
         with httpx.Client() as client:
-            response = client.get(BASE_URL, params=params)
+            response = client.get(base_url, params=params)
             handle_api_error(response)
             click.echo(response.text)
     except httpx.RequestError as exc:
@@ -63,8 +75,15 @@ def list_assets(asset_type: str, limit: int):
 @click.option("--type", "asset_type", required=True, help="Type of the asset (e.g., 3D_MODEL).")
 @click.option("--owner-id", required=True, type=click.UUID, help="UUID of the owner.")
 @click.option("--tag", "tags", multiple=True, help="Add one or more tags.")
-def create_asset(name: str, asset_type: str, owner_id: uuid.UUID, tags: list):
+@click.pass_context
+def create_asset(ctx, name: str, asset_type: str, owner_id: uuid.UUID, tags: list):
     """Creates a new Digital Asset."""
+    config = ctx.obj.get('config')
+    if not config:
+        click.echo("Error: Config not found. Please run 'platformqctl init'.", err=True)
+        return
+    base_url = f"{config.get('api_gateway_url', '')}/assets-service/api/v1/assets"
+
     click.echo(f"Creating asset '{name}'...")
     
     asset_data = {
@@ -76,10 +95,69 @@ def create_asset(name: str, asset_type: str, owner_id: uuid.UUID, tags: list):
 
     try:
         with httpx.Client() as client:
-            response = client.post(BASE_URL, json=asset_data)
+            response = client.post(base_url, json=asset_data)
             handle_api_error(response)
             click.echo("Asset created successfully:")
             click.echo(response.text)
+    except httpx.RequestError as exc:
+        click.echo(f"An error occurred while requesting {exc.request.url!r}.")
+    except httpx.HTTPStatusError as exc:
+        click.echo(f"HTTP error for {exc.request.url!r}.")
+
+@assets_cli.command("update")
+@click.argument("asset_id", type=click.UUID)
+@click.option("--name", help="New name for the asset.")
+@click.option("--tag", "tags", multiple=True, help="Set new tags for the asset.")
+@click.pass_context
+def update_asset(ctx, asset_id: uuid.UUID, name: str, tags: list):
+    """Updates an existing Digital Asset."""
+    config = ctx.obj.get('config')
+    if not config:
+        click.echo("Error: Config not found. Please run 'platformqctl init'.", err=True)
+        return
+    base_url = f"{config.get('api_gateway_url', '')}/assets-service/api/v1/assets"
+    
+    update_data = {}
+    if name:
+        update_data['asset_name'] = name
+    if tags:
+        update_data['tags'] = list(tags)
+
+    if not update_data:
+        click.echo("Nothing to update. Please provide --name or --tag.", err=True)
+        return
+
+    click.echo(f"Updating asset {asset_id}...")
+    try:
+        with httpx.Client() as client:
+            response = client.patch(f"{base_url}/{asset_id}", json=update_data)
+            handle_api_error(response)
+            click.echo("Asset updated successfully:")
+            click.echo(response.text)
+    except httpx.RequestError as exc:
+        click.echo(f"An error occurred while requesting {exc.request.url!r}.")
+    except httpx.HTTPStatusError as exc:
+        click.echo(f"HTTP error for {exc.request.url!r}.")
+
+@assets_cli.command("delete")
+@click.argument("asset_id", type=click.UUID)
+@click.pass_context
+def delete_asset(ctx, asset_id: uuid.UUID):
+    """Deletes a Digital Asset."""
+    config = ctx.obj.get('config')
+    if not config:
+        click.echo("Error: Config not found. Please run 'platformqctl init'.", err=True)
+        return
+    base_url = f"{config.get('api_gateway_url', '')}/assets-service/api/v1/assets"
+    
+    click.confirm(f"Are you sure you want to delete asset {asset_id}?", abort=True)
+    
+    click.echo(f"Deleting asset {asset_id}...")
+    try:
+        with httpx.Client() as client:
+            response = client.delete(f"{base_url}/{asset_id}")
+            handle_api_error(response)
+            click.echo("Asset deleted successfully.")
     except httpx.RequestError as exc:
         click.echo(f"An error occurred while requesting {exc.request.url!r}.")
     except httpx.HTTPStatusError as exc:

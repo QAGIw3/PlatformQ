@@ -3,4 +3,5 @@ ruamel.yaml
 Jinja2
 httpx
 pulsar-client
-trino 
+trino
+tabulate 

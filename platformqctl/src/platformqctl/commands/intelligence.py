@@ -17,13 +17,20 @@ def intelligence_cli():
 
 @intelligence_cli.command("get")
 @click.argument("insight_type", type=click.Choice(['community-detection', 'centrality'], case_sensitive=False))
-def get_insight(insight_type: str):
+@click.pass_context
+def get_insight(ctx, insight_type: str):
     """
     Retrieves a specific graph insight from the intelligence engine.
     """
+    config = ctx.obj.get('config')
+    if not config:
+        click.echo("Error: Config not found. Please run 'platformqctl init'.", err=True)
+        return
+    base_url = f"{config.get('api_gateway_url', '')}/graph-intelligence-service/api/v1/insights"
+
     click.echo(f"Requesting '{insight_type}' insight...")
     
-    url = f"{INTELLIGENCE_SERVICE_URL}/{insight_type}"
+    url = f"{base_url}/{insight_type}"
     
     try:
         with httpx.Client() as client:

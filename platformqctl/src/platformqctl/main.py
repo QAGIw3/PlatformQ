@@ -10,20 +10,23 @@ from .commands.simulation import simulation_cli
 from .commands.trust import trust_cli
 from .commands.intelligence import intelligence_cli
 from .commands.lakehouse import lakehouse_cli
+from .commands.connector import connector_cli
 
 CONFIG_FILE_NAME = ".platformqctl.yaml"
 yaml = YAML()
 
 # --- Main CLI Group ---
 @click.group()
-def cli():
+@click.pass_context
+def cli(ctx):
     """
     A CLI tool for managing the platformQ ecosystem.
     
     This tool provides commands for scaffolding services, interacting with
     Digital Assets, and monitoring the event bus.
     """
-    pass
+    ctx.ensure_object(dict)
+    ctx.obj['config'] = load_config()
 
 # --- Helper Functions ---
 def load_config():
@@ -34,14 +37,17 @@ def load_config():
 
 # --- Top-level Commands ---
 @cli.command()
-def init():
+@click.pass_context
+def init(ctx):
     """Initializes a new config file for platformqctl."""
     config_data = {
         "enterprise": {
             "registry_url": "gcr.io/your-company",
             "helm_repo": "https://charts.your-company.com",
         },
-        "api_gateway_url": "https://api.platformq.your-domain.com"
+        "api_gateway_url": "https://api.platformq.your-domain.com",
+        "trino_host": "trino.platformq.your-domain.com",
+        "pulsar_url": "pulsar://pulsar.platformq.your-domain.com:6650",
     }
     with open(CONFIG_FILE_NAME, 'w') as f:
         yaml.dump(config_data, f)
@@ -56,6 +62,7 @@ cli.add_command(simulation_cli)
 cli.add_command(trust_cli)
 cli.add_command(intelligence_cli)
 cli.add_command(lakehouse_cli)
+cli.add_command(connector_cli)
 
 if __name__ == '__main__':
-    cli() 
+    cli(obj={}) 
