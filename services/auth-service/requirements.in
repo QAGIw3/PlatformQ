@@ -5,6 +5,7 @@ minio
 pdoc
 web3
 siwe
+python-jose[cryptography]
 
 # Development and Testing
 pytest

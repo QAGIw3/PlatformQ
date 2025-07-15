@@ -7,6 +7,7 @@ help:
 	@echo "  lint          : Check for style and errors in Python code."
 	@echo "  format        : Automatically format Python code."
 	@echo "  test          : Run all unit and integration tests."
+	@echo "  test-coverage : Run tests and generate an HTML coverage report."
 	@echo "  services-up   : Start all infrastructure services with Docker Compose."
 	@echo "  services-down : Stop all infrastructure services."
 	@echo "  bootstrap     : Run all bootstrap steps in order."
@@ -34,6 +35,13 @@ format:
 test:
 	@echo "Running tests..."
 	python3 -m pytest
+
+test-coverage:
+	@echo "Running tests with coverage..."
+	coverage run -m pytest
+	@echo "Generating HTML coverage report..."
+	coverage html
+	@echo "Coverage report generated at htmlcov/index.html"
 
 services-up:
 	@echo "Starting local infrastructure..."

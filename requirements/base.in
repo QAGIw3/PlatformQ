@@ -35,4 +35,12 @@ kubernetes==28.1.0
 
 # --- Configuration ---
 python-consul==1.1.0
-hvac==1.2.1 
+hvac==1.2.1
+
+# --- Testing ---
+pytest==8.2.0
+pytest-cov==4.1.0
+coverage==7.4.1
+black==24.4.2
+ruff==0.1.6
+redoc==0.2.3 
