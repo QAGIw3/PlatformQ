@@ -98,6 +98,8 @@ cassandra:
   datacenters:
     - name: "dc2" # Will map to our secondary region, europe-west1
       size: 1
+  persistence:
+    storageClass: '{{repl config "storage_class_name"}}'
 
 prometheus-stack:
   prometheus:
@@ -134,8 +136,9 @@ nextcloud:
   # Configure Nextcloud itself
   nextcloud:
     username: "nc-admin"
-    password: "strongpassword"
-    host: "nextcloud.example.com"
+    # Use the value from the KOTS config screen
+    password: '{{repl config "nextcloud_admin_pass"}}'
+    host: '{{repl config "hostname"}}'
 
   # Enable and configure the ONLYOFFICE connector app
   extraApps:
@@ -376,9 +379,14 @@ graph-intelligence-service:
     tag: latest 
 
 hyperledger-fabric:
-  # A simple setup with a single peer node for development
+  # A simple, single-peer setup for development.
+  # A production setup would have multiple peers and ordering nodes.
   peer:
     replicas: 1
+  orderer:
+    replicas: 1
+  ca:
+    enabled: true
 
 janusgraph:
   # Configure JanusGraph to use our existing Cassandra instance as its storage backend

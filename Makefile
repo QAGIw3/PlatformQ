@@ -1,6 +1,6 @@
 # Makefile for platformQ
 
-.PHONY: help lint format test services-up services-down bootstrap-config bootstrap-gateway bootstrap-oidc-clients docs-build docs-serve
+.PHONY: help lint format test services-up services-down bootstrap-config bootstrap-gateway bootstrap-oidc-clients docs-build docs-serve package-private-cloud package-airgapped
 
 help:
 	@echo "Commands:"
@@ -15,6 +15,8 @@ help:
 	@echo "  bootstrap-oidc-clients : Register initial OIDC clients."
 	@echo "  docs-build    : Generate all project documentation."
 	@echo "  docs-serve    : Serve the documentation site locally."
+	@echo "  package-private-cloud : Package the application for online distribution."
+	@echo "  package-airgapped : Package the application for air-gapped distribution."
 
 lint:
 	@echo "Running linter..."
@@ -65,3 +67,22 @@ docs-build:
 docs-serve:
 	@echo "Serving documentation at http://127.0.0.1:8000"
 	mkdocs serve 
+
+package-private-cloud:
+	@echo "Packaging platformQ Private Cloud Edition..."
+	# First, we need to vendor all the Helm dependencies so they are included in the package.
+	helm dependency build iac/kubernetes/charts/platformq-stack
+	
+	# Now, we create the distributable .kots file
+	# In a real pipeline, a 'kots pull' would also be needed to vendor images
+	# for a true air-gapped installation.
+	kots release create --chart iac/kubernetes/charts/platformq-stack --namespace platformq --version 1.0.0
+	@echo "Package created at ./platformq-private-cloud.kots" 
+
+package-airgapped:
+	@echo "Packaging platformQ Private Cloud Edition for air-gapped environments..."
+	# This requires the 'kots' CLI to be installed.
+	# The kots CLI will find all images in the Helm chart and vendor them.
+	kots release create --chart iac/kubernetes/charts/platformq-stack \
+		--namespace platformq --version 1.0.1 --airgap-bundle ./platformq-airgap.tar.gz
+	@echo "Air-gapped package created at ./platformq-airgap.tar.gz" 

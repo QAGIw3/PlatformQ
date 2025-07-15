@@ -1,0 +1,35 @@
+apiVersion: kots.io/v1beta1
+kind: Config
+metadata:
+  name: platformq-config
+spec:
+  groups:
+    - name: general_settings
+      title: General Settings
+      items:
+        - name: hostname
+          title: Public Hostname
+          type: text
+          help_text: "The primary domain name for accessing the platform (e.g., platform.mycompany.com)"
+          
+    - name: admin_credentials
+      title: Initial Admin Credentials
+      items:
+        - name: nextcloud_admin_pass
+          title: Nextcloud Admin Password
+          type: password
+          value: "strongpassword"
+        - name: zulip_admin_pass
+          title: Zulip Admin Password
+          type: password
+          value: "strongpassword"
+        # ... and so on for all other admin passwords
+
+    - name: storage_settings
+      title: Storage Settings
+      items:
+        - name: storage_class_name
+          title: Storage Class
+          type: text
+          help_text: "The name of the Kubernetes StorageClass to use for persistent volumes."
+          value: "standard" 

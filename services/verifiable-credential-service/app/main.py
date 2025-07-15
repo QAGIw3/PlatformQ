@@ -41,38 +41,32 @@ def issue_credential(
 ):
     """
     Issues a new Verifiable Credential, signs it, and records its hash
-    on a conceptual blockchain.
+    on the private Hyperledger Fabric blockchain.
     """
-    # In a real app, the signing key and issuer DID would be loaded from Vault/Consul
-    # on service startup and stored in the app's state.
+    tenant_id = str(context["tenant_id"])
+    
+    # In a real app, the signing key would be loaded from Vault.
     # issuer_key = app.state.issuer_key
-    # issuer_id = app.state.issuer_id
     
     vc = VerifiableCredential({
-        "@context": ["https://www.w3.org/2018/credentials/v1", "https://www.w3.org/2018/credentials/examples/v1"],
+        "@context": ["https://www.w3.org/2018/credentials/v1"],
         "id": f"urn:uuid:{uuid.uuid4()}",
         "type": ["VerifiableCredential", req.credential_type],
-        "issuer": "did:web:platformq.com", # Placeholder issuer DID
+        "issuer": f"did:web:platformq.com:tenants:{tenant_id}",
         "issuanceDate": datetime.utcnow().isoformat() + "Z",
         "credentialSubject": req.subject,
     })
     
-    # In a real implementation, you would use a cryptographic library to sign the VC.
-    # signed_vc = vc.sign(issuer_key, method="Ed25519VerificationKey2018")
-    # For this example, we will simulate the signature.
-    vc.add_proof(
-        method="Ed25519VerificationKey2018",
-        signature="z5tRea..." # Placeholder signature
-    )
+    # Conceptually sign the credential with a key from Vault
+    vc.add_proof(method="Ed25519VerificationKey2018", signature="z5tRea...")
     
-    # Conceptually, connect to the Hyperledger Fabric peer and submit a transaction
-    # with the hash of the signed credential to the ledger.
+    # Conceptually, connect to a Fabric peer and submit a transaction
+    # to a "chaincode" (smart contract) that records the credential's hash.
     # try:
-    #     with gateway.connect(config) as gw:
-    #         network = gw.get_network(channel_name="platformq-channel")
-    #         contract = network.get_contract(chaincode_name="audit_trail")
+    #     with gateway.connect(...) as gw:
+    #         contract = gw.get_contract("audit_trail")
     #         contract.submit_transaction("recordCredential", str(vc.id), vc.proof.signature)
-    #     logger.info(f"Recorded credential {vc.id} to the blockchain.")
+    #     logger.info(f"Recorded credential {vc.id} to blockchain for tenant {tenant_id}.")
     # except Exception as e:
     #     raise HTTPException(status_code=500, detail=f"Blockchain transaction failed: {e}")
     

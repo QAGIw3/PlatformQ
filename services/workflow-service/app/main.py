@@ -38,29 +38,33 @@ def workflow_consumer_loop():
             # and then call the APIs for Zulip, Nextcloud, and OpenProject
             # to perform the cross-application workflow.
             
-            # --- Project Created Workflow ---
-            if "project-events" in msg.topic_name():
-                logger.info("  - (Workflow) Creating Zulip stream...")
-                # zulip_client.create_stream(...)
+            # --- Project Approved Workflow (Example) ---
+            if "proposal-approved-events" in msg.topic_name():
+                tenant_id = get_tenant_from_topic(msg.topic_name())
+                logger.info(f"  - (Workflow) Proposal {data['proposal_id']} approved for tenant {tenant_id}.")
                 
-                logger.info("  - (Workflow) Creating Nextcloud folder...")
-                # nextcloud_client.create_folder(...)
-
-                logger.info("  - (Workflow) Requesting Verifiable Credential for project creation...")
+                logger.info("  - (Workflow) Requesting Verifiable Credential for approval...")
                 vc_payload = {
-                    "type": "ProjectCreationCredential",
+                    "type": "ProposalApprovalCredential",
                     "subject": {
-                        "id": f"urn:platformq:project:{data['project_id']}",
-                        "name": data['project_name'],
-                        "createdBy": data['creator_id']
+                        "id": f"urn:platformq:proposal:{data['proposal_id']}",
+                        "approvedBy": data['approver_id'],
+                        "customer": data['customer_name'],
+                        "approvedAt": data['event_timestamp']
                     }
                 }
-                # This call would be routed through Kong to the VC service
-                # vc_response = requests.post("http://kong:8000/vc/api/v1/issue", json=vc_payload, headers=...)
+                
+                # In a real system, we would need a secure way to get a service-to-service token
+                # to authenticate this call to the VC service.
+                # vc_response = requests.post(
+                #     f"http://kong:8000/vc/api/v1/issue",
+                #     json=vc_payload,
+                #     headers={"X-Tenant-ID": tenant_id, "Authorization": "Bearer ..."}
+                # )
                 # signed_credential_id = vc_response.json()['id']
                 
-                logger.info("  - (Workflow) Storing credential ID and posting links back to OpenProject...")
-                # openproject_client.post_comment(..., f"Project created. Verifiable Credential ID: {signed_credential_id}")
+                logger.info("  - (Workflow) Storing credential ID and finalizing proposal...")
+                # proposals_client.add_credential_to_proposal(data['proposal_id'], signed_credential_id)
             
             consumer.acknowledge(msg)
         except Exception as e:
