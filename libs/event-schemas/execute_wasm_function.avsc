@@ -1,0 +1,12 @@
+{
+    "type": "record",
+    "namespace": "com.platformq.events",
+    "name": "ExecuteWasmFunction",
+    "fields": [
+        { "name": "tenant_id", "type": "string" },
+        { "name": "asset_id", "type": "string" },
+        { "name": "asset_uri", "type": "string", "doc": "URI to the raw asset data (e.g., in Minio)" },
+        { "name": "wasm_module_id", "type": "string", "doc": "The ID of the registered WASM module to run" },
+        { "name": "event_timestamp", "type": "long", "logicalType": "timestamp-millis" }
+    ]
+} 

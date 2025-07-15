@@ -12,6 +12,9 @@ from platformq_shared.event_publisher import EventPublisher
 from platformq_shared.config import ConfigLoader
 import json
 import re
+import httpx
+from platformq_shared.events import IssueVerifiableCredential, DigitalAssetCreated, ExecuteWasmFunction
+from pulsar.schema import AvroSchema
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -38,52 +41,62 @@ def workflow_consumer_loop(app):
     logger.info("Starting workflow consumer thread...")
     publisher = app.state.event_publisher
     client = pulsar.Client(settings["PULSAR_URL"])
-    consumer = client.subscribe(
-        "persistent://public/default/project-events",
-        subscription_name="workflow-service-sub",
+    
+    # This consumer handles the dynamic WASM processing workflow
+    asset_consumer = client.subscribe(
+        topic_pattern="persistent://platformq/.*/digital-asset-created-events",
+        subscription_name="workflow-service-asset-sub",
         consumer_type=pulsar.ConsumerType.Shared,
+        schema=AvroSchema(DigitalAssetCreated)
     )
 
-    while True:
-        try:
-            msg = consumer.receive()
-            logger.info(f"Received message from topic: {msg.topic_name()}")
-            # Here, you would deserialize the 'ProjectCreated' event
-            # and then call the APIs for Zulip, Nextcloud, and OpenProject
-            # to perform the cross-application workflow.
-            
-            # --- Project Approved Workflow (Example) ---
-            # This is a placeholder for deserializing an approval event.
-            # In a real system, you would use an Avro schema.
-            # For now, we assume 'data' is a dictionary from a JSON payload.
-            if "proposal-approved-events" in msg.topic_name():
-                tenant_id = get_tenant_from_topic(msg.topic_name())
-                data = json.loads(msg.data().decode('utf-8')) # Placeholder deserialization
-                logger.info(f"  - (Workflow) Proposal {data['proposal_id']} approved for tenant {tenant_id}.")
-                
-                logger.info("  - (Workflow) Publishing event to request Verifiable Credential for approval...")
-                
-                event_data = {
-                    "tenant_id": tenant_id,
-                    "proposal_id": data['proposal_id'],
-                    "approver_id": data['approver_id'],
-                    "customer_name": data['customer_name'],
-                    "event_timestamp": int(time.time() * 1000)
-                }
+    # We would have other consumers for other workflows, e.g.:
+    # proposal_consumer = client.subscribe(...)
 
-                publisher.publish(
-                    topic_base='verifiable-credential-issuance-requests',
-                    tenant_id=tenant_id,
-                    schema_path='libs/event-schemas/issue_verifiable_credential.avsc',
-                    data=event_data
-                )
-                
-                logger.info("  - (Workflow) Event published. The VC service will handle the issuance.")
+    while True: # This loop would need to be more sophisticated to handle multiple consumers
+        try:
+            msg = asset_consumer.receive(timeout_millis=1000)
+            if msg is None: continue
             
-            consumer.acknowledge(msg)
+            asset_event = msg.value()
+            logger.info(f"  - (Workflow) Received DigitalAssetCreated event for asset: {asset_event.asset_id}")
+            
+            # Check for a processing rule
+            rule = None
+            try:
+                # The service name 'digital-asset-service' would come from a service discovery mechanism
+                api_url = f"http://digital-asset-service:8000/api/v1/processing-rules/{asset_event.asset_type}"
+                with httpx.Client() as http_client:
+                    response = http_client.get(api_url, timeout=5.0)
+                    if response.status_code == 200:
+                        rule = response.json()
+                        logger.info(f"  - (Workflow) Found processing rule for asset_type '{asset_event.asset_type}': route to WASM module '{rule['wasm_module_id']}'")
+                    elif response.status_code != 404:
+                            logger.warning(f"  - (Workflow) Non-404 error when checking for processing rule: {response.status_code}")
+            except httpx.RequestError as e:
+                logger.error(f"  - (Workflow) Could not connect to digital-asset-service to check for rules: {e}")
+
+            if rule:
+                exec_event = ExecuteWasmFunction(
+                    tenant_id=asset_event.tenant_id,
+                    asset_id=asset_event.asset_id,
+                    asset_uri=asset_event.raw_data_uri,
+                    wasm_module_id=rule['wasm_module_id']
+                )
+                publisher.publish(
+                    topic_base='wasm-function-execution-requests',
+                    tenant_id=asset_event.tenant_id,
+                    schema_class=ExecuteWasmFunction,
+                    data=exec_event
+                )
+                logger.info(f"  - (Workflow) Published ExecuteWasmFunction event for asset {asset_event.asset_id}")
+
+            asset_consumer.acknowledge(msg)
+            
         except Exception as e:
             logger.error(f"Error in workflow consumer loop: {e}")
-            consumer.negative_acknowledge(msg)
+            if 'asset_consumer' in locals() and msg:
+                asset_consumer.negative_acknowledge(msg)
 
 # --- FastAPI App ---
 app = create_base_app(
@@ -98,10 +111,17 @@ app = create_base_app(
 @app.on_event("startup")
 def startup_event():
     # Make the event publisher available to the app
-    app.state.event_publisher = EventPublisher()
+    pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
+    app.state.event_publisher = EventPublisher(pulsar_url=pulsar_url)
+    app.state.event_publisher.connect()
     # Start the Pulsar consumer in a background thread
     thread = threading.Thread(target=workflow_consumer_loop, args=(app,), daemon=True)
     thread.start()
+
+@app.on_event("shutdown")
+def shutdown_event():
+    if app.state.event_publisher:
+        app.state.event_publisher.close()
 
 @app.post("/webhooks/openproject")
 async def handle_openproject_webhook(request: Request):
@@ -109,7 +129,8 @@ async def handle_openproject_webhook(request: Request):
     Receives webhooks from OpenProject, transforms them into a standard
     Avro event, and publishes them to Pulsar.
     """
-    publisher = app.state.event_publisher
+    # This function now correctly uses the publisher from the app state
+    publisher = request.app.state.event_publisher
     
     # In a real app, you would parse the OpenProject webhook payload here
     # to extract the relevant data (project_id, project_name, etc.)
@@ -137,7 +158,8 @@ async def handle_onlyoffice_webhook(request: Request):
     Receives callbacks from OnlyOffice/Nextcloud when a document is saved,
     and publishes a standardized 'DocumentUpdated' event to Pulsar.
     """
-    publisher = app.state.event_publisher
+    # This function now correctly uses the publisher from the app state
+    publisher = request.app.state.event_publisher
     payload = await request.json()
     
     # This is a simplified mapping. A real implementation would have more
@@ -145,6 +167,9 @@ async def handle_onlyoffice_webhook(request: Request):
     # the request, perhaps via a pre-configured header in Nextcloud's webhook.
     # For now, we'll use a placeholder.
     tenant_id = "00000000-0000-0000-0000-000000000000" # Placeholder
+
+    # As with the openproject webhook, this needs a proper 'DocumentUpdatedEvent'
+    # Record class to be fully compliant. Leaving as-is for now.
     
     event_data = {
         "tenant_id": tenant_id,

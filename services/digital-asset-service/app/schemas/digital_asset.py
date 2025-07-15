@@ -3,6 +3,25 @@ from typing import List, Optional, Dict
 from datetime import datetime
 import uuid
 
+# --- Asset Processing Rule Schemas ---
+
+class AssetProcessingRuleBase(BaseModel):
+    asset_type: str = Field(..., description="The type of asset this rule applies to (e.g., '3D_MODEL'). This is the key.")
+    wasm_module_id: str = Field(..., description="The ID/name of the WASM module in the functions-service to execute.")
+
+class AssetProcessingRuleCreate(AssetProcessingRuleBase):
+    pass
+
+class AssetProcessingRule(AssetProcessingRuleBase):
+    tenant_id: uuid.UUID
+    created_by_id: uuid.UUID
+    created_at: datetime
+
+    class Config:
+        orm_mode = True
+
+# --- Asset Link Schemas ---
+
 class AssetLinkBase(BaseModel):
     target_asset_id: uuid.UUID
     link_type: str = Field(..., description="e.g., 'derived_from', 'related_to', 'part_of'")
@@ -38,6 +57,7 @@ class DigitalAsset(DigitalAssetBase):
     asset_id: uuid.UUID
     created_at: datetime
     links: List[AssetLink] = []
+    processing_rule: Optional[AssetProcessingRule] = None # Include the rule in the response
 
     class Config:
         orm_mode = True 

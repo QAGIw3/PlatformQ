@@ -1,5 +1,5 @@
 from shared_lib.base_service import create_base_app
-from fastapi import Depends, HTTPException
+from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel, Field
 from typing import Dict, Any
 from w3c_vc import VerifiableCredential
@@ -14,6 +14,7 @@ import pulsar
 from pulsar.schema import AvroSchema
 from platformq_shared.event_publisher import EventPublisher
 from platformq_shared.config import ConfigLoader
+from platformq_shared.events import IssueVerifiableCredential, VerifiableCredentialIssued
 
 # from hyperledger.fabric import gateway # Conceptual client
 
@@ -53,19 +54,18 @@ def issue_and_record_credential(tenant_id: str, subject: dict, credential_type: 
     logger.info(f"Recorded credential {vc.data['id']} to blockchain for tenant {tenant_id}.")
 
     # Publish an event to notify that the credential has been issued
-    event_data = {
-        "tenant_id": tenant_id,
-        "proposal_id": subject.get("id", "").replace("urn:platformq:proposal:", ""), # Extract from subject
-        "credential_id": vc.data['id'],
-        "event_timestamp": int(time.time() * 1000)
-    }
+    event = VerifiableCredentialIssued(
+        tenant_id=tenant_id,
+        proposal_id=subject.get("id", "").replace("urn:platformq:proposal:", ""), # Extract from subject
+        credential_id=vc.data['id'],
+    )
     publisher.publish(
         topic_base='verifiable-credential-issued-events',
         tenant_id=tenant_id,
-        schema_path='libs/event-schemas/verifiable_credential_issued.avsc',
-        data=event_data
+        schema_class=VerifiableCredentialIssued,
+        data=event
     )
-    logger.info(f"Published VerifiableCredentialIssued event for proposal {event_data['proposal_id']}")
+    logger.info(f"Published VerifiableCredentialIssued event for proposal {event.proposal_id}")
     return vc.data
 
 
@@ -78,7 +78,7 @@ def credential_issuer_loop(app):
         topic_pattern="persistent://platformq/.*/verifiable-credential-issuance-requests",
         subscription_name="vc-service-issuer-sub",
         consumer_type=pulsar.ConsumerType.Shared,
-        schema=AvroSchema(dict) # Using dict for now, would be a specific Avro class
+        schema=AvroSchema(IssueVerifiableCredential)
     )
 
     while not app.state.stop_event.is_set():
@@ -96,10 +96,10 @@ def credential_issuer_loop(app):
             
             # Construct the subject for the VC from the event data
             credential_subject = {
-                "id": f"urn:platformq:proposal:{event_data['proposal_id']}",
-                "approvedBy": event_data['approver_id'],
-                "customer": event_data['customer_name'],
-                "approvedAt": datetime.fromtimestamp(event_data['event_timestamp'] / 1000).isoformat() + "Z"
+                "id": f"urn:platformq:proposal:{event_data.proposal_id}",
+                "approvedBy": event_data.approver_id,
+                "customer": event_data.customer_name,
+                "approvedAt": datetime.fromtimestamp(event_data.event_timestamp / 1000).isoformat() + "Z"
             }
 
             issue_and_record_credential(
@@ -126,7 +126,9 @@ app = create_base_app(
 
 @app.on_event("startup")
 def startup_event():
-    app.state.event_publisher = EventPublisher()
+    pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
+    app.state.event_publisher = EventPublisher(pulsar_url=pulsar_url)
+    app.state.event_publisher.connect()
     app.state.stop_event = threading.Event()
     thread = threading.Thread(target=credential_issuer_loop, args=(app,), daemon=True)
     thread.start()
@@ -137,6 +139,8 @@ def shutdown_event():
     logger.info("Shutdown signal received, stopping consumer thread.")
     app.state.stop_event.set()
     app.state.consumer_thread.join()
+    if app.state.event_publisher:
+        app.state.event_publisher.close()
     logger.info("Consumer thread stopped.")
 
 
@@ -159,6 +163,7 @@ class IssueRequest(BaseModel):
 @app.post("/api/v1/issue", status_code=201)
 def issue_credential(
     req: IssueRequest,
+    request: Request,
     context: dict = Depends(get_current_tenant_and_user),
 ):
     """
@@ -166,7 +171,7 @@ def issue_credential(
     on the private Hyperledger Fabric blockchain.
     """
     tenant_id = str(context["tenant_id"])
-    publisher = req.app.state.event_publisher
+    publisher = request.app.state.event_publisher
     
     return issue_and_record_credential(
         tenant_id=tenant_id,

@@ -25,13 +25,31 @@ asset_links = Table('asset_links', Base.metadata,
     Column('link_type', String, nullable=False)
 )
 
+class AssetProcessingRule(Base):
+    __tablename__ = 'asset_processing_rules'
+
+    # Using asset_type as the key for the rule for simplicity.
+    # A composite key with tenant_id would be needed for tenant-specific rules.
+    asset_type = Column(String, primary_key=True, index=True)
+    wasm_module_id = Column(String, nullable=False, comment="The ID/name of the WASM module in the functions-service")
+    
+    # Auditability
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    created_by_id = Column(UUID(as_uuid=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+
+    # Relationship to DigitalAsset
+    # This allows us to potentially look up assets by their rule
+    assets = relationship("DigitalAsset", back_populates="processing_rule")
+
+
 class DigitalAsset(Base):
     __tablename__ = 'digital_assets'
 
     # Core Fields
     asset_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
     asset_name = Column(String, nullable=False)
-    asset_type = Column(String, nullable=False, index=True)
+    asset_type = Column(String, ForeignKey('asset_processing_rules.asset_type'), nullable=False, index=True)
     owner_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
     
@@ -45,6 +63,8 @@ class DigitalAsset(Base):
     asset_metadata = Column("metadata", JsonBCompat)
 
     # Relationships
+    processing_rule = relationship("AssetProcessingRule", back_populates="assets")
+    
     # This relationship represents the assets linked *from* this asset.
     links: Mapped[list["DigitalAsset"]] = relationship(
         "DigitalAsset",

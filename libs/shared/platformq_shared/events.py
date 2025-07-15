@@ -3,6 +3,7 @@ from typing import ClassVar, Type
 from avro.schema import RecordSchema, make_avsc_object
 import uuid
 import time
+from pulsar.schema import *
 
 # Base class for all platform events
 @dataclass
@@ -59,6 +60,45 @@ class SubscriptionChangedEvent(Record):
     subscription_id = String(required=True)
     new_tier = String(required=True)
     new_status = String(required=True)
+    event_timestamp = Long(required=True, default=lambda: int(time.time() * 1000))
+
+class IssueVerifiableCredential(Record):
+    tenant_id = String(required=True)
+    proposal_id = String(required=True)
+    approver_id = String(required=True)
+    customer_name = String(required=True)
+    event_timestamp = Long(required=True, default=lambda: int(time.time() * 1000))
+
+class VerifiableCredentialIssued(Record):
+    tenant_id = String(required=True)
+    proposal_id = String(required=True)
+    credential_id = String(required=True)
+    issuer_service = String(default="verifiable-credential-service")
+    event_timestamp = Long(required=True, default=lambda: int(time.time() * 1000))
+
+class ExecuteWasmFunction(Record):
+    tenant_id = String(required=True)
+    asset_id = String(required=True)
+    asset_uri = String(required=True)
+    wasm_module_id = String(required=True)
+    event_timestamp = Long(required=True, default=lambda: int(time.time() * 1000))
+
+class FunctionExecutionCompleted(Record):
+    tenant_id = String(required=True)
+    asset_id = String(required=True)
+    wasm_module_id = String(required=True)
+    status = String(required=True)
+    results = Map(String(), required=False)
+    error_message = String(required=False)
+    event_timestamp = Long(required=True, default=lambda: int(time.time() * 1000))
+
+class DigitalAssetCreated(Record):
+    tenant_id = String(required=True)
+    asset_id = String(required=True)
+    asset_name = String(required=True)
+    asset_type = String(required=True)
+    owner_id = String(required=True)
+    raw_data_uri = String(required=False)
     event_timestamp = Long(required=True, default=lambda: int(time.time() * 1000))
 
 # ... (and so on for all other event types) 

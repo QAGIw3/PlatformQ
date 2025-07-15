@@ -1,0 +1,15 @@
+
+{
+    "type": "record",
+    "namespace": "com.platformq.events",
+    "name": "FunctionExecutionCompleted",
+    "fields": [
+        { "name": "tenant_id", "type": "string" },
+        { "name": "asset_id", "type": "string" },
+        { "name": "wasm_module_id", "type": "string" },
+        { "name": "status", "type": "string", "doc": "SUCCESS or FAILURE" },
+        { "name": "results", "type": ["null", { "type": "map", "values": "string" }], "default": null, "doc": "A map of key-value pairs representing the new metadata to be added to the asset." },
+        { "name": "error_message", "type": ["null", "string"], "default": null, "doc": "Details of the error if status is FAILURE" },
+        { "name": "event_timestamp", "type": "long", "logicalType": "timestamp-millis" }
+    ]
+} 

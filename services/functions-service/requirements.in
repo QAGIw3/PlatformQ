@@ -1,7 +1,10 @@
 -r ../../requirements/base.in
 
 # Service-specific dependencies
+kubernetes
 wasmtime
+grpcio-tools
+python-multipart
  
 # Development and Testing
 pytest

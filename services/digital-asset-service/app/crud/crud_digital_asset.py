@@ -53,6 +53,28 @@ def update_asset(db: Session, asset_id: uuid.UUID, asset_update: schemas.Digital
     db.refresh(db_asset)
     return db_asset
 
+def update_asset_metadata(db: Session, asset_id: uuid.UUID, new_metadata: dict) -> Optional[models.DigitalAsset]:
+    """
+    Updates an existing digital asset's metadata by merging the new metadata.
+    """
+    db_asset = get_asset(db, asset_id)
+    if not db_asset:
+        return None
+
+    # Merge the new metadata with the existing metadata
+    if db_asset.asset_metadata is None:
+        db_asset.asset_metadata = {}
+    
+    updated_metadata = db_asset.asset_metadata.copy()
+    updated_metadata.update(new_metadata)
+    
+    db_asset.asset_metadata = updated_metadata
+    
+    db.add(db_asset)
+    db.commit()
+    db.refresh(db_asset)
+    return db_asset
+
 def delete_asset(db: Session, asset_id: uuid.UUID) -> Optional[models.DigitalAsset]:
     """
     Deletes a digital asset from the database.

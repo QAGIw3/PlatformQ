@@ -1,0 +1,15 @@
+
+{
+    "type": "record",
+    "namespace": "com.platformq.events",
+    "name": "DigitalAssetCreated",
+    "fields": [
+        { "name": "tenant_id", "type": "string" },
+        { "name": "asset_id", "type": "string" },
+        { "name": "asset_name", "type": "string" },
+        { "name": "asset_type", "type": "string" },
+        { "name": "owner_id", "type": "string" },
+        { "name": "raw_data_uri", "type": ["null", "string"], "default": null },
+        { "name": "event_timestamp", "type": "long", "logicalType": "timestamp-millis" }
+    ]
+} 

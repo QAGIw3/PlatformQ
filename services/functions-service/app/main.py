@@ -10,6 +10,15 @@ import asyncio
 import pulsar
 import json
 import logging
+import httpx
+from .db import create_db_and_tables, get_db
+from .api.endpoints import wasm_modules
+from . import wasm_module_crud
+from platformq_shared.event_publisher import EventPublisher
+from platformq_shared.config import ConfigLoader
+from platformq_shared.events import ExecuteWasmFunction, FunctionExecutionCompleted
+from pulsar.schema import AvroSchema
+from sqlalchemy.orm import Session
 
 # Assuming the generate_grpc.sh script has been run
 from .grpc_generated import connector_pb2, connector_pb2_grpc
@@ -40,51 +49,56 @@ wasm_engine = Engine()
 wasm_store = Store(wasm_engine)
 # ---
 
-# --- Pulsar Consumer Setup ---
-async def consume_asset_events():
-    """
-    A background task that listens for asset creation events and
-    triggers the asset-linker WASM module.
-    """
-    logger.info("Starting Pulsar consumer for asset events...")
-    client = pulsar.Client(PULSAR_URL) # Should be from config
-    consumer = client.subscribe('non-persistent://public/default/digital_asset_created', 'functions-service-subscriber')
+# --- Pulsar Consumer for WASM Execution ---
+async def consume_execution_requests(app):
+    logger.info("Starting Pulsar consumer for WASM execution requests...")
+    publisher = app.state.event_publisher
     
-    # Pre-load the WASM module for efficiency
-    try:
-        # In a real app, this would be fetched from a registry or secure storage
-        with open("examples/asset-linker-wasm/target/wasm32-unknown-unknown/release/asset_linker_wasm.wasm", "rb") as f:
-            wasm_bytes = f.read()
-        wasm_module = Module(wasm_engine, wasm_bytes)
-    except FileNotFoundError:
-        logger.warning("WARNING: asset_linker_wasm.wasm not found. The event consumer will not work.")
-        logger.warning("Build it with: cd examples/asset-linker-wasm && cargo build --target wasm32-unknown-unknown --release")
-        client.close()
-        return
+    # We create a new DB session for the consumer thread
+    db_session = next(get_db())
 
-    while True:
+    client = pulsar.Client(PULSAR_URL)
+    consumer = client.subscribe(
+        topic_pattern="persistent://platformq/.*/wasm-function-execution-requests",
+        subscription_name="functions-service-execution-sub",
+        schema=AvroSchema(ExecuteWasmFunction)
+    )
+
+    while True: # In a real app, we'd need a graceful shutdown mechanism
         try:
             msg = await asyncio.to_thread(consumer.receive)
-            logger.info("Received asset creation event")
-            
-            # Here we would use an Avro schema to decode, but for PoC we'll assume JSON
-            event_data = json.loads(msg.data().decode('utf-8'))
-            
-            # --- Execute WASM ---
-            # This logic is very similar to the run_embedded_wasm endpoint
+            event = msg.value()
+            logger.info(f"Received execution request for module '{event.wasm_module_id}' on asset '{event.asset_id}'")
+
+            # 1. Get module metadata from the database
+            module_meta = wasm_module_crud.get_wasm_module(db_session, event.wasm_module_id)
+            if not module_meta:
+                raise Exception(f"WASM module '{event.wasm_module_id}' not found in registry.")
+
+            # 2. Load the WASM module from disk
+            with open(module_meta.filepath, "rb") as f:
+                wasm_bytes = f.read()
+            wasm_module = Module(wasm_engine, wasm_bytes)
+
+            # 3. Fetch the asset data from the URI
+            async with httpx.AsyncClient() as http_client:
+                response = await http_client.get(event.asset_uri, timeout=60.0)
+                response.raise_for_status()
+                asset_bytes = response.content
+
+            # 4. Execute the WASM module
+            # This follows the same ABI as the old `run_embedded_wasm` endpoint
             linker = wasmtime.Linker(wasm_engine)
             instance = linker.instantiate(wasm_store, wasm_module)
             memory = instance.exports(wasm_store).get("memory")
             alloc_func = instance.exports(wasm_store).get("allocate")
             run_func = instance.exports(wasm_store).get("run")
 
-            input_bytes = json.dumps(event_data).encode('utf-8')
-            input_ptr = alloc_func(wasm_store, len(input_bytes))
-            memory.write(wasm_store, input_bytes, input_ptr)
+            input_ptr = alloc_func(wasm_store, len(asset_bytes))
+            memory.write(wasm_store, asset_bytes, input_ptr)
             
-            output_ptr = run_func(wasm_store, input_ptr, len(input_bytes))
+            output_ptr = run_func(wasm_store, input_ptr, len(asset_bytes))
             
-            # Read back the result
             result_bytes = []
             i = output_ptr
             while True:
@@ -93,105 +107,53 @@ async def consume_asset_events():
                 result_bytes.append(byte)
                 i += 1
             result_json = b"".join(result_bytes).decode('utf-8')
-            api_call = json.loads(result_json)
-            # --- End WASM Execution ---
-
-            logger.info("--- MOCKING OpenProject API Call ---")
-            logger.info(f"  METHOD: {api_call['method']}")
-            logger.info(f"  URL:    {api_call['url']}")
-            logger.info(f"  BODY:   {api_call['body']}")
-            logger.info("------------------------------------")
-
+            results_map = json.loads(result_json)
+            
+            # 5. Publish completion event
+            completion_event = FunctionExecutionCompleted(
+                tenant_id=event.tenant_id,
+                asset_id=event.asset_id,
+                wasm_module_id=event.wasm_module_id,
+                status="SUCCESS",
+                results=results_map
+            )
+            publisher.publish(
+                topic_base='function-execution-completed-events',
+                tenant_id=event.tenant_id,
+                schema_class=FunctionExecutionCompleted,
+                data=completion_event
+            )
+            logger.info(f"Successfully executed module '{event.wasm_module_id}' and published results.")
             consumer.acknowledge(msg)
+
         except Exception as e:
-            logger.error(f"Error processing event: {e}")
-            # In a real app, you would handle message redelivery (nack)
+            logger.error(f"Error processing execution request: {e}")
+            # Also publish a failure event
+            if 'event' in locals():
+                failure_event = FunctionExecutionCompleted(
+                    tenant_id=event.tenant_id,
+                    asset_id=event.asset_id,
+                    wasm_module_id=event.wasm_module_id,
+                    status="FAILURE",
+                    error_message=str(e)
+                )
+                publisher.publish(
+                    topic_base='function-execution-completed-events',
+                    tenant_id=event.tenant_id,
+                    schema_class=FunctionExecutionCompleted,
+                    data=failure_event
+                )
+            if 'msg' in locals():
+                consumer.negative_acknowledge(msg)
+    
+    db_session.close()
 
-async def trigger_connector_service(uri: str, tenant_id: str):
-    """
-    Calls the connector-service via gRPC to create a digital asset.
-    """
-    logger.info(f"Calling connector-service gRPC for URI: {uri}")
-    try:
-        async with grpc.aio.insecure_channel(CONNECTOR_SERVICE_GRPC_TARGET) as channel:
-            stub = connector_pb2_grpc.ConnectorServiceStub(channel)
-            request = connector_pb2.CreateAssetFromURIRequest(uri=uri, tenant_id=tenant_id)
-            response = await stub.CreateAssetFromURI(request)
-            logger.info(f"gRPC response from connector-service: {response.message}")
-            return response
-    except grpc.aio.AioRpcError as e:
-        logger.error(f"Error calling connector-service via gRPC: {e.details()}")
-        return None
-
-async def consume_simulation_events():
-    """
-    A background task that listens for simulation completion events,
-    analyzes the logs, and triggers follow-up actions.
-    """
-    logger.info("Starting Pulsar consumer for simulation events...")
-    client = pulsar.Client(PULSAR_URL)
-    consumer = client.subscribe('non-persistent://public/default/simulation-lifecycle-events', 'functions-service-sim-subscriber')
-
-    try:
-        with open("examples/log-analyzer-wasm/target/wasm32-unknown-unknown/release/log_analyzer_wasm.wasm", "rb") as f:
-            log_analyzer_wasm_module = Module(wasm_engine, f.read())
-    except FileNotFoundError:
-        logger.warning("WARNING: log_analyzer_wasm.wasm not found. The simulation event consumer will not work.")
-        client.close()
-        return
-
-    while True:
-        try:
-            msg = await asyncio.to_thread(consumer.receive)
-            event_data = json.loads(msg.data().decode('utf-8'))
-            tenant_id = "default" # TODO: Extract tenant from event or topic
-            logger.info(f"Received simulation completion event for run: {event_data['run_id']}")
-
-            # 1. MOCK: Fetch log content from the URI
-            log_content = "This is a log file. It contains some INFO and some WARNINGS. Oh no, a FAILURE occurred."
-            
-            # 2. Execute WASM analyzer
-            linker = wasmtime.Linker(wasm_engine)
-            instance = linker.instantiate(wasm_store, log_analyzer_wasm_module)
-            memory = instance.exports(wasm_store).get("memory")
-            alloc_func = instance.exports(wasm_store).get("allocate")
-            run_func = instance.exports(wasm_store).get("run")
-
-            input_bytes = log_content.encode('utf-8')
-            input_ptr = alloc_func(wasm_store, len(input_bytes))
-            memory.write(wasm_store, input_bytes, input_ptr)
-            
-            output_ptr = run_func(wasm_store, input_ptr, len(input_bytes))
-            result_bytes = []
-            i = output_ptr
-            while True:
-                byte = memory.read(wasm_store, i, 1)
-                if byte == b'\0': break
-                result_bytes.append(byte)
-                i += 1
-            analysis_result = json.loads(b"".join(result_bytes).decode('utf-8'))
-            
-            logger.info(f"  -> Analysis result: {analysis_result['status']}")
-
-            # 3. If failure, orchestrate follow-up actions
-            if analysis_result['status'] == 'FAILURE':
-                logger.info("  -> Failure detected. Orchestrating response...")
-                # Replace the MOCK call with the actual gRPC call
-                await trigger_connector_service(uri=event_data['log_uri'], tenant_id=tenant_id)
-
-                # MOCK: Call OpenProject API to create an issue
-                logger.info("     - MOCK: Creating issue in OpenProject with summary:", analysis_result['summary'])
-                # MOCK: Link asset to issue
-                logger.info("     - MOCK: Linking new asset to OpenProject issue.")
-
-            consumer.acknowledge(msg)
-        except Exception as e:
-            logger.error(f"Error processing simulation event: {e}")
 
 # ---
 
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["functions-service"])
+app.include_router(wasm_modules.router, prefix="/api/v1", tags=["wasm-modules"])
 
 # Load the in-cluster Kubernetes configuration
 config.load_incluster_config()
@@ -263,9 +225,24 @@ def deploy_function(
 
 @app.on_event("startup")
 async def startup_event():
+    # Create the SQLite database and tables
+    create_db_and_tables()
+
+    # Setup the event publisher
+    config_loader = ConfigLoader()
+    settings = config_loader.load_settings()
+    pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
+    publisher = EventPublisher(pulsar_url=pulsar_url)
+    publisher.connect()
+    app.state.event_publisher = publisher
+
     # Start the background event consumers
-    asyncio.create_task(consume_asset_events())
-    asyncio.create_task(consume_simulation_events())
+    asyncio.create_task(consume_execution_requests(app))
+
+@app.on_event("shutdown")
+def shutdown_event():
+    if app.state.event_publisher:
+        app.state.event_publisher.close()
 
 class WasmRunRequest(BaseModel):
     wasm_module_b64: str = Field(..., description="The WASM module, encoded in Base64.")
