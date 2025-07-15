@@ -1,3 +1,6 @@
 click
 ruamel.yaml
-Jinja2 
+Jinja2
+httpx
+pulsar-client
+trino 

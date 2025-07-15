@@ -1,0 +1,19 @@
+{
+  "namespace": "com.platformq.events",
+  "type": "record",
+  "name": "PlatformEvent",
+  "fields": [
+    { "name": "event_id", "type": "string" },
+    { "name": "event_type", "type": "string", "doc": "e.g., digital_asset_created, digital_asset_updated" },
+    { "name": "event_timestamp", "type": "long", "logicalType": "timestamp-millis" },
+    { "name": "correlation_id", "type": ["null", "string"], "default": null, "doc": "ID to correlate related events across services" },
+    { "name": "service_origin", "type": "string", "doc": "The name of the service that published the event" },
+    {
+      "name": "data",
+      "type": [
+        "com.platformq.events.DigitalAsset"
+      ],
+      "doc": "The event payload. Add other record types to this union as the platform grows."
+    }
+  ]
+}

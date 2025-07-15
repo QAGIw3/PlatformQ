@@ -1,14 +1,16 @@
 fastapi
 uvicorn[standard]
 pydantic
+cassandra-driver
 python-dotenv
 passlib[bcrypt]
 python-jose[cryptography]
 authlib
 pulsar-client
 avro
+apscheduler
+httpx
 kubernetes
-wasmtime
 -e ../shared
 
 # Development and Testing

@@ -17,6 +17,7 @@ const userManager = new UserManager(oidcSettings);
 // New Components (files would be created for these)
 const Dashboard = () => <h2>Dashboard</h2>;
 const SimulationManager = () => <h2>Simulation Manager</h2>;
+import AssetExplorerPage from './features/assets/AssetExplorerPage';
 
 function App() {
   const [user, setUser] = useState(null);
@@ -69,6 +70,7 @@ function App() {
           <ul>
             <li><Link to="/">Dashboard</Link></li>
             <li><Link to="/simulations">Simulations</Link></li>
+            <li><Link to="/assets">Asset Explorer</Link></li>
             <li><button onClick={handleLogout}>Logout</button></li>
           </ul>
         </nav>
@@ -76,6 +78,7 @@ function App() {
           <Routes>
             <Route path="/" element={<Dashboard />} />
             <Route path="/simulations" element={<SimulationManager />} />
+            <Route path="/assets" element={<AssetExplorerPage user={user} />} />
           </Routes>
         </main>
       </div>

@@ -1,0 +1,43 @@
+{
+  "namespace": "com.platformq.events",
+  "type": "record",
+  "name": "DigitalAsset",
+  "fields": [
+    { "name": "asset_id", "type": "string" },
+    { "name": "asset_name", "type": "string" },
+    { "name": "asset_type", "type": "string", "doc": "e.g., CRM_CONTACT, 3D_MODEL, SIMULATION_LOG" },
+    { "name": "owner_id", "type": "string" },
+    { "name": "created_at", "type": "long", "logicalType": "timestamp-millis" },
+    { "name": "source_tool", "type": ["null", "string"], "default": null, "doc": "e.g., Blender, SuiteCRM, OpenFOAM" },
+    { "name": "source_asset_id", "type": ["null", "string"], "default": null, "doc": "The ID of the asset in the source system" },
+    {
+      "name": "tags",
+      "type": { "type": "array", "items": "string" },
+      "default": []
+    },
+    {
+      "name": "metadata",
+      "type": { "type": "map", "values": "string" },
+      "default": {},
+      "doc": "Flexible key-value store for extracted metadata. e.g., {'poly_count': '12400', 'is_animated': 'true'}"
+    },
+    {
+      "name": "links",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "AssetLink",
+          "fields": [
+            { "name": "target_asset_id", "type": "string" },
+            { "name": "link_type", "type": "string", "doc": "e.g., 'derived_from', 'related_to', 'part_of'" }
+          ]
+        }
+      },
+      "default": []
+    },
+    { "name": "payload_schema_version", "type": "string", "doc": "Version of the schema for the payload, e.g., 'crm_contact.v1'" },
+    { "name": "payload", "type": "bytes", "doc": "The specific asset data, serialized using its own Avro schema (defined by payload_schema_version)" },
+    { "name": "raw_data_uri", "type": ["null", "string"], "default": null, "doc": "URI to the original raw data, e.g., 'nextcloud://files/user/project_a/model.blend'" }
+  ]
+}

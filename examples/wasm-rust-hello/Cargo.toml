@@ -3,6 +3,16 @@ name = "wasm-rust-hello"
 version = "0.1.0"
 edition = "2021"
 
+# This tells the Rust compiler to produce a C-style dynamic library,
+# which is the correct format for a WASM module intended to be
+# loaded by a host application.
+[lib]
+crate-type = ["cdylib"]
+
 [dependencies]
-wasi-http = "0.1.0"
-# Add other dependencies here 
+
+# To build this, you need the wasm32-unknown-unknown target:
+# rustup target add wasm32-unknown-unknown
+#
+# Then, build with:
+# cargo build --target wasm32-unknown-unknown --release 

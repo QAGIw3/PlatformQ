@@ -1,14 +1,14 @@
 fastapi
 uvicorn[standard]
 pydantic
+sqlalchemy
+psycopg2-binary
 python-dotenv
 passlib[bcrypt]
 python-jose[cryptography]
 authlib
 pulsar-client
 avro
-kubernetes
-wasmtime
 -e ../shared
 
 # Development and Testing
