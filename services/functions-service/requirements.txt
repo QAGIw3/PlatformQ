@@ -1,0 +1,21 @@
+fastapi
+uvicorn[standard]
+pydantic
+cassandra-driver
+python-dotenv
+passlib[bcrypt]
+python-jose[cryptography]
+authlib
+pulsar-client
+avro
+-e ../shared
+requests
+kubernetes
+
+# Development and Testing
+pytest
+black
+ruff
+python-consul
+hvac
+redoc-cli 

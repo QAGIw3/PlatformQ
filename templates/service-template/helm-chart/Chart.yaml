@@ -1,0 +1,6 @@
+apiVersion: v2
+name: __SERVICE_NAME__
+description: A Helm chart for deploying the __SERVICE_NAME__.
+type: application
+version: 0.1.0
+appVersion: "0.1.0" 

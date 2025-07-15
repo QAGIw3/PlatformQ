@@ -1,0 +1,8 @@
+[package]
+name = "wasm-rust-hello"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+wasi-http = "0.1.0"
+# Add other dependencies here 

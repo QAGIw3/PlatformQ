@@ -1,0 +1,306 @@
+# Global settings for the platformQ stack
+# These values will override the defaults of the sub-charts.
+
+consul:
+  global:
+    name: consul
+  ui:
+    enabled: true
+  server:
+    replicas: 1
+    bootstrapExpect: 1
+
+vault:
+  global:
+    enabled: true
+  server:
+    dev:
+      enabled: false # DISABLED for production
+    # Production configuration
+    ha:
+      enabled: true
+      replicas: 1 # For a simple setup, can be increased for HA
+      config: |
+        ui = true
+        
+        # Use Consul as the storage backend
+        storage "consul" {
+          address = "consul-server:8500"
+          path    = "vault/"
+        }
+        
+        # Use TCP listener
+        listener "tcp" {
+          address     = "0.0.0.0:8200"
+          tls_disable = "true" # Not recommended for real production
+        }
+
+  # Enable the Vault Kubernetes Auth Method
+  injector:
+    enabled: true
+
+kong:
+  # We will use Kong's built-in Postgres sub-chart for simplicity.
+  postgresql:
+    enabled: true
+  env:
+    database: postgres
+  # Tell Kong to use Consul for service discovery
+  dns_resolver: consul
+  admin:
+    type: LoadBalancer
+
+pulsar:
+  # This is an advanced setup for geo-replication.
+  # It deploys two separate Pulsar clusters.
+  cluster1:
+    name: us-east-1
+    # ... (full standalone pulsar config)
+    
+  cluster2:
+    name: eu-west-1
+    # ... (full standalone pulsar config)
+
+  # This part is conceptual as the Helm chart may not directly support
+  # configuring replication via values. It would typically be done via
+  # post-install scripts using the pulsar-admin CLI.
+  replication:
+    enabled: true
+    sourceCluster: us-east-1
+    targetCluster: eu-west-1
+
+cassandra:
+  # A non-production, single-node setup
+  cluster:
+    size: 1
+
+prometheus-stack:
+  prometheus:
+    prometheusSpec:
+      # Add our custom rules file
+      ruleSelector:
+        matchLabels:
+          app: kube-prometheus-stack
+          release: platformq
+      ruleNamespaceSelector:
+        matchLabels:
+          app.kubernetes.io/instance: platformq
+  
+  grafana:
+    adminPassword: "strongpassword"
+    # Add Loki as a second data source
+    additionalDataSources:
+      - name: Loki
+        type: loki
+        url: http://platformq-loki:3100
+        access: proxy
+    # Sidecar is enabled by default in this chart
+
+  alertmanager:
+    enabled: true
+
+nextcloud:
+  # Use MariaDB as the database, which comes as a sub-chart
+  mariadb:
+    enabled: true
+    auth:
+      rootPassword: "mariadb-root-password"
+  
+  # Configure Nextcloud itself
+  nextcloud:
+    username: "nc-admin"
+    password: "strongpassword"
+    host: "nextcloud.example.com"
+
+  # Enable and configure the ONLYOFFICE connector app
+  extraApps:
+    - name: onlyoffice
+      enabled: true
+  
+  extraEnv:
+    - name: ONLYOFFICE_JWT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: onlyoffice-jwt-secret
+          key: jwt_secret
+    - name: ONLYOFFICE_DOCUMENT_SERVER_URL
+      value: "http://platformq-onlyoffice-docs"
+  
+  # Expose the service via a LoadBalancer for easy access
+  service:
+    type: LoadBalancer
+
+ipfs:
+  # A simple, single-node setup for development
+  replicaCount: 1
+
+superset:
+  # Use the bitnami postgresql sub-chart
+  postgresql:
+    enabled: true
+
+  # Bootstrap script to initialize Superset
+  init:
+    # This script runs on first install
+    script: |
+      #!/bin/sh
+      superset fab create-admin --username admin --firstname Superset --lastname Admin --email admin@superset.com --password strongpassword
+      superset init
+      # Install the Trino DB driver
+      pip install trino
+  
+  # Expose the UI via a LoadBalancer
+  service:
+    type: LoadBalancer
+
+  # Mount our custom OIDC configuration file
+  extraConfigs:
+    - name: superset_config.py
+      mountPath: "/app/pythonpath/"
+      data: |
+        import os
+        from flask_appbuilder.security.manager import AUTH_OAUTH
+        # ... (paste entire content of superset_config.py here) ...
+
+mlflow:
+  # Use the bitnami postgresql sub-chart for the backend store
+  postgresql:
+    enabled: true
+    auth:
+      database: mlflow
+      username: mlflow
+      password: "mlflow-password" # CHANGE THIS
+
+  # Configure MLflow server settings
+  backendStore:
+    # Use the postgresql sub-chart we enabled
+    postgresql:
+      host: "{{ .Release.Name }}-mlflow-postgresql"
+      port: 5432
+      database: "{{ .Values.postgresql.auth.database }}"
+      username: "{{ .Values.postgresql.auth.username }}"
+      password: "{{ .Values.postgresql.auth.password }}"
+
+  # Use our existing Minio instance as the artifact store
+  defaultArtifactRoot: "s3://mlflow/"
+  
+  extraEnvVars:
+    - name: MLFLOW_S3_ENDPOINT_URL
+      value: "http://platformq-minio:9000"
+    - name: AWS_ACCESS_KEY_ID
+      value: "minioadmin"
+    - name: AWS_SECRET_ACCESS_KEY
+      value: "minioadmin"
+    # OIDC Configuration
+    - name: MLFLOW_OIDC_CLIENT_ID
+      value: "mlflow"
+    - name: MLFLOW_OIDC_CLIENT_SECRET
+      value: "mlflow-secret" # Should come from Vault
+    - name: MLFLOW_OIDC_DISCOVERY_URL
+      value: "http://platformq-kong-proxy/auth/api/v1/.well-known/openid-configuration"
+    - name: MLFLOW_OIDC_LOGOUT_URL
+      value: "http://platformq-kong-proxy/auth/api/v1/logout" # Placeholder
+
+  # We need to add the OIDC config to the server properties
+  # This part is complex and depends on the specific chart's capabilities.
+  # We will assume the chart supports a generic properties file.
+
+onlyoffice-docs:
+  # Configure the document server to use the JWT secret for securing traffic
+  server:
+    secret:
+      # We would use the Vault injector to get this secret into the pod
+      # For now, we reference a placeholder Kubernetes secret
+      name: onlyoffice-jwt-secret
+      key: jwt_secret
+
+openproject:
+  # Set admin email and password for first login
+  openprojectEmail: "admin@platformq.local"
+  openprojectPassword: "strongpassword" # CHANGE THIS
+  
+  # Expose the service via a LoadBalancer
+  service:
+    type: LoadBalancer
+
+zulip:
+  # Use the sub-charts for dependencies
+  postgresql:
+    enabled: true
+  rabbitmq:
+    enabled: true
+  
+  # Set admin email and password for first login
+  zulip:
+    admin_email: "admin@platformq.local"
+    admin_password: "strongpassword" # CHANGE THIS
+    
+  # Expose the service via a LoadBalancer
+  service:
+    type: LoadBalancer
+
+prometheus-adapter:
+  enabled: true
+  prometheus:
+    url: http://platformq-prometheus-stack-prometheus.platformq.svc.cluster.local
+    port: 9090
+
+auth-service:
+  replicaCount: 1
+  image:
+    repository: gcr.io/your-gcp-project/auth-service # Placeholder
+    tag: latest
+
+provisioning-service:
+  replicaCount: 1
+  image:
+    repository: gcr.io/your-gcp-project/provisioning-service # Placeholder
+    tag: latest
+
+projects-service:
+  replicaCount: 1
+  image:
+    repository: gcr.io/your-gcp-project/projects-service # Placeholder
+    tag: latest
+
+loki:
+  # A simple, single-binary deployment for development
+  singleNode:
+    replicas: 1
+  
+  # Promtail is the agent that collects logs
+  promtail:
+    enabled: true 
+
+opencost:
+  # Integrate with GCP billing for accurate pricing
+  opencost:
+    prometheus:
+      # Tell OpenCost where to find the Prometheus server from the kube-prometheus-stack
+      internal:
+        server: "http://platformq-prometheus-stack-prometheus.platformq.svc:9090"
+    
+    # This requires creating a GCP service account with 'Billing Account Viewer' role
+    # and providing its key as a Kubernetes secret.
+    gcp:
+      enabled: true
+      project_id: "<YOUR_GCP_PROJECT_ID>" # Should be a variable
+      billing_data_bucket: "<YOUR_GCP_BILLING_BUCKET_NAME>"
+      service_account_key_secret: "gcp-billing-service-account" 
+
+nextcloud:
+  # Enable and configure the ONLYOFFICE connector app
+  extraApps:
+    - name: onlyoffice
+      enabled: true
+  
+  # Pass configuration to Nextcloud via environment variables
+  # This will pre-configure the connector settings.
+  extraEnv:
+    - name: ONLYOFFICE_JWT_SECRET
+      valueFrom:
+        secretKeyRef:
+          name: onlyoffice-jwt-secret # Assumes a K8s secret is created from Vault
+          key: jwt_secret
+    - name: ONLYOFFICE_DOCUMENT_SERVER_URL
+      value: "http://platformq-onlyoffice-docs" # Internal Kubernetes service name 

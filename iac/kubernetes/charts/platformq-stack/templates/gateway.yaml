@@ -1,0 +1,16 @@
+apiVersion: networking.istio.io/v1alpha3
+kind: Gateway
+metadata:
+  name: platformq-gateway
+  namespace: {{ .Release.Namespace }}
+spec:
+  selector:
+    # Use the default Istio ingress gateway that comes with the installation
+    istio: ingressgateway
+  servers:
+  - port:
+      number: 80
+      name: http
+      protocol: HTTP
+    hosts:
+    - "*" # Accept traffic for any hostname 

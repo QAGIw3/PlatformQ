@@ -1,0 +1,6 @@
+replicaCount: 1
+
+image:
+  repository: your-docker-registry/provisioning-service # CHANGE THIS
+  pullPolicy: IfNotPresent
+  tag: "latest" 

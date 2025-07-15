@@ -1,0 +1,41 @@
+# IDEs and editors
+.idea/
+.vscode/
+*.swp
+*~
+*.bak
+
+# OS-generated files
+.DS_Store
+Thumbs.db
+
+# Build artifacts and dependencies
+/build/
+/dist/
+/target/
+/bin/
+/vendor/
+node_modules/
+*.pyc
+__pycache__/
+
+# Log files
+*.log
+
+# Local environment files
+.env
+.env.*
+!.env.example
+
+# Docker
+docker-compose.override.yml
+docker-compose.local.yml
+
+# Terraform
+.terraform/
+*.tfstate
+*.tfstate.backup
+
+# Data volumes (from docker-compose)
+cassandra_data/
+minio_data/ 

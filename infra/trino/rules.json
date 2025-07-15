@@ -1,0 +1,16 @@
+{
+  "catalogs": [
+    {
+      "allow": "all"
+    }
+  ],
+  "tables": [
+    {
+      "user": ".*",
+      "catalog": "cassandra",
+      "schema": "auth_keyspace",
+      "table": ".*",
+      "filter": "tenant_id = Uuid(CONTEXT.identity.groups[0])"
+    }
+  ]
+} 

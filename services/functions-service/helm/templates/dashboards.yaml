@@ -1,0 +1,15 @@
+{{- range $path, $_ :=  .Files.Glob  "dashboards/*.json" }}
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ printf "%s-%s" (include "auth-service.fullname" $) (base $path | trimSuffix ".json") | trunc 63 | trimSuffix "-" }}
+  labels:
+    {{- include "auth-service.labels" . | nindent 4 }}
+    grafana_dashboard: "1" # This label is what the Grafana sidecar looks for
+  annotations:
+    k8s-sidecar-target-directory: "/tmp/dashboards"
+data:
+  {{ base $path }}: |
+    {{- $.Files.Get $path | nindent 4 }}
+{{- end }} 

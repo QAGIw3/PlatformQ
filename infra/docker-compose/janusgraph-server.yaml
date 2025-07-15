@@ -1,0 +1,36 @@
+# Gremlin Server configuration
+host: 0.0.0.0
+port: 8182
+scriptEvaluationTimeout: 30000
+channelizer: org.apache.tinkerpop.gremlin.server.channel.WebSocketChannelizer
+
+# Graph configuration
+graph:
+  # A unique name for the graph, which is required for graph management and traversal source binding.
+  graph-name: platformqGraph
+
+  # The primary storage backend configuration.
+  # We are using Cassandra for its scalability and performance.
+  storage:
+    backend: cassandra
+    hostname: cassandra # The hostname of the Cassandra container in our Docker network
+    cql:
+      keyspace: janusgraph
+
+  # The indexing backend configuration.
+  # Using Elasticsearch or Solr is recommended for production for better query performance.
+  # For local development, we will start without a separate indexing backend.
+  # index:
+  #   search:
+  #     backend: elasticsearch
+  #     hostname: elasticsearch-host
+
+# Schema and type definitions for Gremlin Server.
+# This allows Gremlin Server to manage graph-specific schemas.
+gremlin:
+  graph: org.janusgraph.core.JanusGraphFactory
+  schema:
+    # Set to true to automatically create schema elements (property keys, edge labels)
+    # when they are first used. This is convenient for development.
+    # For production, it's recommended to set this to false and manage the schema explicitly.
+    auto-schema: true 

@@ -1,0 +1,9 @@
+# Application dependencies
+-e ../shared
+
+# Development and Testing
+pytest
+black
+ruff
+python-consul
+hvac 

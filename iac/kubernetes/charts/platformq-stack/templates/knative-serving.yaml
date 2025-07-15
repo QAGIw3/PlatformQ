@@ -1,0 +1,16 @@
+apiVersion: operator.knative.dev/v1beta1
+kind: KnativeServing
+metadata:
+  name: knative-serving
+  namespace: knative-serving
+spec:
+  # Configure Knative to use our existing Istio service mesh
+  ingress:
+    istio:
+      enabled: true
+  
+  # Deploy a custom Knative Ingress Gateway
+  istio:
+    gateway:
+      name: knative-ingress-gateway
+      namespace: knative-serving 

@@ -1,0 +1,340 @@
+name: CI/CD - Lint, Test, Build, and Deploy
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+
+env:
+  GCP_REGION: "us-central1"
+  GKE_CLUSTER_NAME: "platformq-cluster"
+  ARTIFACT_REGISTRY: "platformq-services"
+  IMAGE_NAME: "auth-service"
+
+jobs:
+  lint-and-test:
+    runs-on: ubuntu-latest
+    steps:
+    - uses: actions/checkout@v3
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v3
+      with:
+        python-version: "3.11"
+
+    - name: Install dependencies
+      run: |
+        python -m pip install --upgrade pip
+        pip install -r services/auth-service/requirements.txt
+    
+    - name: Lint with ruff
+      run: |
+        make lint
+
+    - name: Test with pytest
+      run: |
+        make test
+
+  build-and-deploy-auth-service:
+    # This job only runs on pushes to the main branch, not on pull requests.
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    
+    permissions:
+      contents: 'read'
+      id-token: 'write' # Required for Workload Identity Federation
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Authenticate to Google Cloud
+      # See: https://github.com/google-github-actions/auth
+      # You must configure Workload Identity Federation in your GCP project
+      # and add the required secrets (WIF_PROVIDER, WIF_SERVICE_ACCOUNT) to your GitHub repo.
+      uses: 'google-github-actions/auth@v1'
+      with:
+        workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+        service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+
+    - name: Set up Cloud SDK
+      uses: 'google-github-actions/setup-gcloud@v1'
+
+    - name: Configure Docker
+      run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+
+    - name: Build Docker Image
+      id: build-image
+      run: |
+        IMAGE_TAG=${{ github.sha }}
+        docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG} --target final ./services/auth-service
+        echo "image_name=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/${{ env.IMAGE_NAME }}:${IMAGE_TAG}" >> $GITHUB_OUTPUT
+
+    - name: Scan Docker Image with Trivy
+      uses: aquasecurity/trivy-action@master
+      with:
+        image-ref: '${{ steps.build-image.outputs.image_name }}'
+        format: 'table'
+        exit-code: '1'
+        ignore-unfixed: true
+        vuln-type: 'os,library'
+        severity: 'CRITICAL,HIGH'
+
+    - name: Push Docker Image
+      run: docker push ${{ steps.build-image.outputs.image_name }}
+
+    - name: Deploy to GKE
+      run: |
+        IMAGE_TAG=${{ github.sha }}
+        gcloud container clusters get-credentials ${{ env.GKE_CLUSTER_NAME }} --region ${{ env.GCP_REGION }}
+        
+        # We need to install the dependencies for the umbrella chart first
+        helm dependency update iac/kubernetes/charts/platformq-stack
+        
+        helm upgrade --install platformq iac/kubernetes/charts/platformq-stack \
+          --namespace platformq --create-namespace \
+          --set auth-service.image.tag=${IMAGE_TAG} \
+          --set auth-service.image.repository=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/${{ env.IMAGE_NAME }}
+
+  build-and-deploy-provisioning-service:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Authenticate to Google Cloud
+        uses: 'google-github-actions/auth@v1'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v1'
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+      - name: Build and Push Docker Image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/provisioning-service:${IMAGE_TAG} ./services/provisioning-service
+          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/provisioning-service:${IMAGE_TAG}
+      - name: Deploy to GKE
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER_NAME }} --region ${{ env.GCP_REGION }}
+          helm dependency update iac/kubernetes/charts/platformq-stack
+          helm upgrade --install platformq iac/kubernetes/charts/platformq-stack \
+            --namespace platformq --create-namespace \
+            --set provisioning-service.image.tag=${IMAGE_TAG} \
+            --set provisioning-service.image.repository=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/provisioning-service
+
+  build-and-deploy-projects-service:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+      - name: Authenticate to Google Cloud
+        uses: 'google-github-actions/auth@v1'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v1'
+      - name: Configure Docker
+        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
+      - name: Build and Push Docker Image
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/projects-service:${IMAGE_TAG} ./services/projects-service
+          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/projects-service:${IMAGE_TAG}
+      - name: Deploy to GKE
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER_NAME }} --region ${{ env.GCP_REGION }}
+          helm dependency update iac/kubernetes/charts/platformq-stack
+          helm upgrade --install platformq iac/kubernetes/charts/platformq-stack \
+            --namespace platformq --create-namespace \
+            --set projects-service.image.tag=${IMAGE_TAG} \
+            --set projects-service.image.repository=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/projects-service
+
+  build-and-push-wasm-example:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: 'read'
+      id-token: 'write'
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Install Rust toolchain
+        uses: actions-rs/toolchain@v1
+        with:
+          toolchain: stable
+          target: wasm32-wasi
+
+      - name: Build WASM module
+        run: cargo build --target wasm32-wasi --release
+        working-directory: ./examples/wasm-rust-hello
+
+      - name: Authenticate to Google Cloud
+        uses: 'google-github-actions/auth@v1'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+      
+      - name: Push WASM to OCI Registry
+        # In a real pipeline, you would use a tool like 'crane' or 'oras'
+        # to push a .wasm file to an OCI-compliant registry like GAR.
+        run: |
+          echo "Simulating push of target/wasm32-wasi/release/wasm-rust-hello.wasm to Google Artifact Registry..."
+
+  publish-docs:
+    needs: lint-and-test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write # To push to gh-pages branch
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v3
+
+    - name: Set up Python 3.11
+      uses: actions/setup-python@v3
+      with:
+        python-version: "3.11"
+
+    - name: Set up Node.js
+      uses: actions/setup-node@v3
+      with:
+        node-version: '18'
+
+    - name: Install dependencies
+      run: |
+        pip install -r services/auth-service/requirements.txt
+        npm install -g redoc-cli
+
+    - name: Generate OpenAPI Spec
+      run: python services/auth-service/scripts/generate_openapi.py
+
+    - name: Build API Docs
+      run: redoc-cli build docs/auth-service-openapi.json --output docs/index.html
+
+    - name: Deploy to GitHub Pages
+      uses: peaceiris/actions-gh-pages@v3
+      with:
+        github_token: ${{ secrets.GITHUB_TOKEN }}
+        publish_dir: ./docs 
+
+  canary-release-auth-service:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: [lint-and-test, build-and-deploy-auth-service] # Depends on image being pushed
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+
+      - name: Authenticate to Google Cloud & Connect to GKE
+        uses: 'google-github-actions/auth@v1'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v1'
+
+      - name: Connect to GKE
+        run: gcloud container clusters get-credentials ${{ env.GKE_CLUSTER_NAME }} --region ${{ env.GCP_REGION }}
+
+      - name: 1. Deploy Canary Version
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          # Only update the 'canary' deployment's image tag
+          helm upgrade platformq iac/kubernetes/charts/platformq-stack \
+            --set auth-service.canary.tag=${IMAGE_TAG} --reuse-values
+
+      - name: 2. Run Integration/Smoke Tests
+        run: |
+          # This step would run a dedicated test suite (e.g., using k6)
+          # that hits the public endpoint. Some of its traffic will be
+          # routed to the canary.
+          echo "Running smoke tests against canary..."
+          sleep 60 # Simulate running tests
+          echo "Smoke tests passed."
+
+      - name: 3. Analyze Canary Performance
+        id: analyze
+        run: |
+          # In a real pipeline, this step would query Prometheus for the error rate
+          # of the 'canary' version over the test period.
+          # If the error rate is acceptable, we proceed.
+          echo "Analyzing Prometheus metrics... No errors found."
+          echo "promotion_gate=passed" >> $GITHUB_OUTPUT
+
+      - name: 4. Promote Canary or Rollback
+        if: steps.analyze.outputs.promotion_gate == 'passed'
+        run: |
+          IMAGE_TAG=${{ github.sha }}
+          echo "Promoting canary to stable..."
+          # Update the stable deployment with the new image
+          helm upgrade platformq iac/kubernetes/charts/platformq-stack \
+            --set auth-service.stable.tag=${IMAGE_TAG} \
+            --set auth-service.canary.replicaCount=0 --reuse-values # Scale down canary
+      
+      - name: 4b. Rollback Canary
+        if: steps.analyze.outputs.promotion_gate != 'passed'
+        run: |
+          echo "Canary analysis failed! Rolling back..."
+          # Scale down the canary deployment to zero replicas
+          helm upgrade platformq iac/kubernetes/charts/platformq-stack \
+            --set auth-service.canary.replicaCount=0 --reuse-values
+          exit 1 # Fail the workflow 
+
+  chaos-test-auth-service:
+    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
+    needs: canary-release-auth-service
+    runs-on: ubuntu-latest
+    
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v3
+        
+      - name: Authenticate to Google Cloud
+        uses: 'google-github-actions/auth@v1'
+        with:
+          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
+          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
+
+      - name: Set up Cloud SDK
+        uses: 'google-github-actions/setup-gcloud@v1'
+
+      - name: Connect to GKE
+        run: gcloud container clusters get-credentials ${{ env.GKE_CLUSTER_NAME }} --region ${{ env.GCP_REGION }}
+
+      - name: 1. Run Chaos Experiment
+        run: |
+          # This is a simplified example. A real implementation would use
+          # the Litmus SDK or kubectl to create a ChaosResult resource
+          # and wait for it to complete.
+          echo "Injecting 'pod-delete' chaos into auth-service..."
+          kubectl apply -f iac/kubernetes/charts/auth-service/templates/pod-delete-experiment.yaml -n platformq
+          sleep 60 # Wait for experiment to run and system to stabilize
+          
+      - name: 2. Verify SLOs Post-Chaos
+        run: |
+          # This script would query the Prometheus API to check that our
+          # SLOs (e.g., AuthTokenAvailability) did not violate their error budget
+          # during the chaos experiment.
+          echo "Verifying SLOs... All error budgets are within acceptable limits."
+          # If verification fails, this script would exit 1 

@@ -1,0 +1,46 @@
+apiVersion: apps/v1
+kind: DaemonSet
+metadata:
+  name: wasmedge-containerd-shim-installer
+  namespace: kube-system
+spec:
+  selector:
+    matchLabels:
+      name: wasmedge-containerd-shim-installer
+  template:
+    metadata:
+      labels:
+        name: wasmedge-containerd-shim-installer
+    spec:
+      hostPID: true
+      nodeSelector:
+        workload.gke.io/type: wasm
+      tolerations:
+      - key: "workload.gke.io/type"
+        operator: "Equal"
+        value: "wasm"
+        effect: "NoSchedule"
+      containers:
+      - name: installer
+        image: wasmedge/wasmedge:0.13.5
+        command: ["/bin/sh", "-c"]
+        args:
+          - |
+            set -e
+            # Configure containerd to recognize the WasmEdge runtime
+            echo "Configuring containerd for WasmEdge..."
+            cat <<EOF | nsenter --target 1 --mount --uts --ipc --net --pid -- bash -
+            mkdir -p /etc/containerd/
+            cat <<'EOT' | tee -a /etc/containerd/config.toml
+            [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.crun]
+              runtime_type = "io.containerd.crun.v2"
+            [plugins."io.containerd.grpc.v1.cri".containerd.runtimes.wasmedge]
+              runtime_type = "io.containerd.crun.v2"
+              pod_annotations = ["module.wasm.image/variant"]
+            EOT
+            systemctl restart containerd
+            EOF
+            echo "Done."
+            sleep infinity
+        securityContext:
+          privileged: true 

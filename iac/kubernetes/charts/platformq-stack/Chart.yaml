@@ -1,0 +1,78 @@
+apiVersion: v2
+name: platformq-stack
+description: An umbrella Helm chart to deploy the entire platformQ stack.
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+
+dependencies:
+  - name: consul
+    version: "1.2.1"
+    repository: "https://helm.releases.hashicorp.com"
+  - name: vault
+    version: "0.27.0"
+    repository: "https://helm.releases.hashicorp.com"
+  - name: kong
+    version: "2.30.0"
+    repository: "https://charts.konghq.com"
+  - name: pulsar
+    version: "3.1.2"
+    repository: "https://pulsar.apache.org/charts"
+    # Note: A production Pulsar deployment is complex. We'll use a simple setup.
+  - name: cassandra
+    version: "9.7.1"
+    repository: "https://charts.bitnami.com/bitnami"
+  - name: prometheus-community/kube-prometheus-stack
+    version: "45.2.1"
+    name: prometheus-stack
+    # This chart bundles Prometheus, Grafana, and Alertmanager together
+  - name: prometheus-adapter/prometheus-adapter
+    version: "4.5.1"
+    name: prometheus-adapter
+    repository: "https://prometheus-community.github.io/helm-charts"
+  - name: litmus
+    version: "2.13.0"
+    repository: "https://litmuschaos.github.io/litmus-helm/"
+  - name: loki
+    version: "5.5.3"
+    repository: "https://grafana.github.io/helm-charts"
+  - name: gatekeeper
+    version: "3.11.1"
+    repository: "https://open-policy-agent.github.io/gatekeeper/charts"
+  - name: opencost
+    version: "1.25.0"
+    repository: "https://opencost.github.io/opencost-helm-chart"
+  - name: knative-operator
+    version: "1.10.1"
+    repository: "https://project-knative.github.io/knative-operators/charts"
+  - name: mlflow
+    version: "2.8.1"
+    repository: "https://community-charts.github.io/helm-charts"
+  - name: onlyoffice-docs
+    version: "2.1.0"
+    repository: "https://onlyoffice.github.io/helm-charts/"
+  - name: superset
+    version: "0.11.2"
+    repository: "https://apache.github.io/superset"
+  - name: ipfs
+    version: "0.1.0"
+    repository: "https://ipfs.github.io/helm-charts/"
+    # Using the Kubo chart
+  - name: nextcloud
+    version: "4.3.1"
+    repository: "https://nextcloud.github.io/helm/"
+  - name: zulip
+    version: "1.2.1"
+    repository: "https://zulip.github.io/helm-charts/"
+  - name: openproject
+    version: "14.2.1"
+    repository: "https://charts.bitnami.com/bitnami"
+  - name: auth-service
+    version: "0.1.0"
+    repository: "file://./../auth-service" # Link to our local chart 
+  - name: provisioning-service
+    version: "0.1.0"
+    repository: "file://./../provisioning-service" 
+  - name: projects-service
+    version: "0.1.0"
+    repository: "file://./../projects-service" 
