@@ -40,7 +40,54 @@ def create_service(service_name):
             except UnicodeDecodeError:
                 # Ignore binary files that can't be read
                 click.echo(f"Skipping binary file: {filename}")
+    
+    # 3. Automatically add the new service to the platformq-stack chart
+    try:
+        update_platform_stack(service_name)
+        click.echo(f"Service '{service_name}' added as a dependency to the platformq-stack Helm chart.")
+    except Exception as e:
+        click.echo(f"Warning: Could not automatically update platformq-stack Helm chart: {e}", err=True)
+        click.echo("Please add it to the platformq-stack Helm chart and CI/CD workflows manually.")
+        return
 
+    click.echo(f"Service '{service_name}' created and registered successfully.")
 
-    click.echo(f"Service '{service_name}' created successfully in '{target_dir}'.")
-    click.echo("Remember to add it to the platformq-stack Helm chart and CI/CD workflows if it's a deployable service.")
+def update_platform_stack(service_name):
+    """
+    Adds the new service as a dependency to the platformq-stack Helm chart.
+    """
+    stack_chart_path = os.path.join(SERVICES_DIR, "..", "iac", "kubernetes", "charts", "platformq-stack", "Chart.yaml")
+    stack_values_path = os.path.join(SERVICES_DIR, "..", "iac", "kubernetes", "charts", "platformq-stack", "values.yaml")
+    
+    # Read the template chart to get its version
+    template_chart_path = os.path.join(TEMPLATE_DIR, "helm", "Chart.yaml")
+    with open(template_chart_path, 'r') as f:
+        template_chart = yaml.load(f)
+    
+    # 1. Update platformq-stack/Chart.yaml
+    with open(stack_chart_path, 'r') as f:
+        stack_chart = yaml.load(f)
+
+    if 'dependencies' not in stack_chart:
+        stack_chart['dependencies'] = []
+    
+    # Avoid adding if it already exists
+    if not any(d['name'] == service_name for d in stack_chart['dependencies']):
+        stack_chart['dependencies'].append({
+            'name': service_name,
+            'version': template_chart['version'],
+            'repository': f'file://../../../services/{service_name}/helm'
+        })
+
+        with open(stack_chart_path, 'w') as f:
+            yaml.dump(stack_chart, f)
+
+    # 2. Update platformq-stack/values.yaml
+    with open(stack_values_path, 'r') as f:
+        stack_values = yaml.load(f)
+
+    if service_name not in stack_values:
+        # Add a default enabled: false configuration for the new service
+        stack_values[service_name] = {'enabled': False}
+        with open(stack_values_path, 'w') as f:
+            yaml.dump(stack_values, f)

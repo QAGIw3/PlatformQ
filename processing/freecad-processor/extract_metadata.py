@@ -2,17 +2,13 @@ import sys
 import json
 import FreeCAD
 import Part
+from platformq_shared.processor_utils import run_processor
 
 def extract_freecad_metadata(filepath):
     """
     Opens a FreeCAD file and extracts metadata and physical properties.
     """
-    try:
-        doc = FreeCAD.open(filepath)
-    except Exception as e:
-        error_message = {"error": f"Failed to open FreeCAD file: {e}"}
-        print(json.dumps(error_message))
-        sys.exit(1)
+    doc = FreeCAD.open(filepath)
 
     metadata = {
         "document": {
@@ -52,13 +48,7 @@ def extract_freecad_metadata(filepath):
         
         metadata["objects"].append(obj_data)
 
-    print(json.dumps(metadata, indent=4))
-    sys.exit(0)
+    return metadata
 
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        error_message = {"error": "No FreeCAD file path provided."}
-        print(json.dumps(error_message))
-        sys.exit(1)
-    else:
-        extract_freecad_metadata(sys.argv[1]) 
+    run_processor(extract_freecad_metadata) 

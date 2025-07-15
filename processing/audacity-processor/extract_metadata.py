@@ -2,14 +2,15 @@ import sys
 import json
 import sqlite3
 import xml.etree.ElementTree as ET
+from platformq_shared.processor_utils import run_processor
 
 def extract_audacity_metadata(filepath):
     """
     Connects to an Audacity project file (.aup3) as an SQLite database
     and extracts project metadata.
     """
+    con = sqlite3.connect(filepath)
     try:
-        con = sqlite3.connect(filepath)
         cur = con.cursor()
         
         # The main project metadata is in the 'project' table
@@ -34,22 +35,11 @@ def extract_audacity_metadata(filepath):
             }
         }
         
-        print(json.dumps(metadata, indent=4))
+        return metadata
 
-    except Exception as e:
-        error_message = {"error": f"Failed to process Audacity file: {e}"}
-        print(json.dumps(error_message))
-        sys.exit(1)
     finally:
         if 'con' in locals():
             con.close()
 
-    sys.exit(0)
-
 if __name__ == '__main__':
-    if len(sys.argv) < 2:
-        error_message = {"error": "No .aup3 file path provided."}
-        print(json.dumps(error_message))
-        sys.exit(1)
-    else:
-        extract_audacity_metadata(sys.argv[1]) 
+    run_processor(extract_audacity_metadata) 

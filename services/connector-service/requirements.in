@@ -1,0 +1,11 @@
+-r ../../requirements/base.in
+
+# Service-specific dependencies
+apscheduler
+httpx
+
+# Development and Testing
+pytest
+black
+ruff
+redoc 

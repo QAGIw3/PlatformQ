@@ -1,0 +1,7 @@
+-r ../../requirements/base.in
+
+# Development and Testing
+pytest
+black
+ruff
+redoc 

@@ -12,6 +12,12 @@ from platformq_shared.events import UserCreatedEvent, DocumentUpdatedEvent
 from pulsar.schema import AvroSchema
 import schedule
 import time
+import os
+import grpc
+import asyncio
+
+# Assuming the generate_grpc.sh script has been run
+from .grpc_generated import graph_intelligence_pb2, graph_intelligence_pb2_grpc
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -23,6 +29,7 @@ settings = config_loader.load_settings()
 ZULIP_API_KEY = config_loader.get_secret("platformq/zulip", "api_key")
 ZULIP_EMAIL = config_loader.get_secret("platformq/zulip", "email")
 ZULIP_SITE = config_loader.get_config("platformq/zulip/site")
+GRAPH_INTELLIGENCE_SERVICE_GRPC_TARGET = os.environ.get("GRAPH_INTELLIGENCE_SERVICE_GRPC_TARGET", "graph-intelligence-service:50052")
 
 # --- Zulip Client ---
 zulip_client = zulip.Client(api_key=ZULIP_API_KEY, email=ZULIP_EMAIL, site=ZULIP_SITE)
@@ -71,31 +78,41 @@ def notification_consumer_loop():
             client.negative_acknowledge(msg)
 
 # --- Background Task for Graph Intelligence ---
-def check_for_graph_insights():
-    logger.info("Checking for new graph insights...")
+async def check_for_graph_insights_async():
+    logger.info("Checking for new graph insights via gRPC...")
     try:
-        # In a real app, we would need a way to get a service-to-service auth token
-        # to call the graph-intelligence-service securely.
-        # response = requests.get("http://kong:8000/graph/api/v1/insights/community-detection", headers=...)
-        # new_communities = response.json()['data']
+        # For now, we assume a single 'default' tenant for notifications.
+        # This could be expanded to check insights for all tenants.
+        tenant_id = "default"
         
-        # Conceptual: If new_communities have been found since the last check...
-        # For this example, we'll just simulate a finding.
-        new_communities = [{"community_id": 1, "users": ["user1", "user2", "user3"]}]
+        async with grpc.aio.insecure_channel(GRAPH_INTELLIGENCE_SERVICE_GRPC_TARGET) as channel:
+            stub = graph_intelligence_pb2_grpc.GraphIntelligenceServiceStub(channel)
+            request = graph_intelligence_pb2.GetCommunityInsightsRequest(tenant_id=tenant_id)
+            response = await stub.GetCommunityInsights(request)
 
-        for community in new_communities:
-            user_list = ", ".join(community['users'])
+        if not response.communities:
+            logger.info("No new communities found.")
+            return
+
+        for community in response.communities:
+            user_list = ", ".join(community.user_ids)
             message = {
                 "type": "stream",
                 "to": "general",
                 "topic": "Platform Insights",
-                "content": f"**New Collaboration Hub Detected!**\nA new community of users has formed around a recent project, including: {user_list}. Consider creating a dedicated Zulip channel for them to collaborate!"
+                "content": f"**New Collaboration Hub Detected!**\nA new community of users (ID: {community.community_id}) has formed, including: {user_list}. Consider creating a dedicated Zulip channel for them to collaborate!"
             }
             zulip_client.send_message(message)
-            logger.info("Sent graph insight notification to Zulip.")
+            logger.info(f"Sent graph insight notification for community {community.community_id} to Zulip.")
 
+    except grpc.aio.AioRpcError as e:
+        logger.error(f"Failed to check for graph insights via gRPC: {e.details()}")
     except Exception as e:
-        logger.error(f"Failed to check for graph insights: {e}")
+        logger.error(f"An unexpected error occurred while checking for graph insights: {e}")
+
+def check_for_graph_insights():
+    """Synchronous wrapper for the async gRPC call."""
+    asyncio.run(check_for_graph_insights_async())
 
 def intelligence_scheduler_loop():
     schedule.every(1).hour.do(check_for_graph_insights)

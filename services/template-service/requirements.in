@@ -1,0 +1,9 @@
+-r ../../requirements/base.in
+
+# Service-specific dependencies
+GitPython
+
+# Development and Testing
+pytest
+black
+ruff 

@@ -1,0 +1,38 @@
+# This file contains the common dependencies for all Python services.
+# Use pip-compile to generate the corresponding .txt file:
+# pip-compile requirements/base.in -o requirements/base.txt
+
+# --- Core Web Framework ---
+fastapi==0.104.1
+uvicorn[standard]==0.24.0.post1
+pydantic==2.5.2
+
+# --- Database & Events ---
+cassandra-driver==3.28.0
+pulsar-client==3.3.0
+avro==1.11.3
+gremlinpython==3.7.0
+
+# --- Authentication & Security ---
+passlib[bcrypt]==1.7.4
+python-jose[cryptography]==3.3.0
+authlib==1.2.1
+
+# --- Observability & gRPC ---
+grpcio==1.59.2
+grpcio-tools==1.59.2
+protobuf==4.25.1
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-exporter-otlp==1.21.0
+opentelemetry-instrumentation-fastapi==0.42b0
+opentelemetry-instrumentation-grpc==0.42b0
+
+# --- Other Shared Libs ---
+python-dotenv==1.0.0
+requests==2.31.0
+kubernetes==28.1.0
+
+# --- Configuration ---
+python-consul==1.1.0
+hvac==1.2.1 

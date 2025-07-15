@@ -1,21 +1,32 @@
-from fastapi import FastAPI
+from shared_lib.base_service import create_base_app
 from .api import endpoints
+from .postgres_db import get_db_session
+from . import crud
 
 # The database tables are now managed by Alembic migrations.
 # No need for Base.metadata.create_all(bind=engine) here anymore.
 
-app = FastAPI(
-    title="Digital Asset Service",
-    description="Manages metadata for all Digital Assets on the platformQ.",
-    version="0.1.0",
+# TODO: Create real CRUD functions and a real password verifier.
+def get_api_key_crud_placeholder():
+    return None
+
+def get_user_crud_placeholder():
+    return None
+    
+def get_password_verifier_placeholder():
+    return None
+
+app = create_base_app(
+    service_name="digital-asset-service",
+    db_session_dependency=get_db_session,
+    api_key_crud_dependency=get_api_key_crud_placeholder,
+    user_crud_dependency=get_user_crud_placeholder,
+    password_verifier_dependency=get_password_verifier_placeholder,
 )
 
 # Include the API router
-app.include_router(endpoints.router, prefix="/api/v1/assets", tags=["Digital Assets"])
+app.include_router(endpoints.router, prefix="/api/v1", tags=["Digital Assets"])
 
 @app.get("/")
 def read_root():
     return {"message": "digital-asset-service is running"}
-
-# TODO: Replace placeholder dependencies with real ones.
-# TODO: Integrate with the shared_lib.base_service factory function.

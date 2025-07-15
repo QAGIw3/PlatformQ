@@ -4,10 +4,26 @@ from git import Repo
 import os
 import tempfile
 
-# ... (app creation using the base factory) ...
+# Placeholder dependencies for create_base_app, as this service is self-contained.
+def get_db_session(): return None
+def get_api_key_crud_placeholder(): return None
+def get_user_crud_placeholder(): return None
+def get_password_verifier_placeholder(): return None
+
+app = create_base_app(
+    service_name="template-service",
+    db_session_dependency=get_db_session,
+    api_key_crud_dependency=get_api_key_crud_placeholder,
+    user_crud_dependency=get_user_crud_placeholder,
+    password_verifier_dependency=get_password_verifier_placeholder,
+)
 
 # In a real system, this would come from Vault/Consul
 TEMPLATE_REPO_URL = "https://github.com/your-company/service-templates.git"
+
+@app.get("/")
+def read_root():
+    return {"message": "template-service is running"}
 
 @app.get("/api/v1/templates")
 def list_templates():

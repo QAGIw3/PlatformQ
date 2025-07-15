@@ -1,0 +1,12 @@
+-r ../../requirements/base.in
+
+# This service uses PostgreSQL and Alembic for migrations
+sqlalchemy
+alembic
+psycopg2-binary
+
+# Development and Testing
+pytest
+black
+ruff
+redoc 

@@ -16,9 +16,12 @@ class ConfigLoader:
             logger.error(f"Failed to connect to Vault: {e}")
             self.vault_client = None
 
-    def get_config(self, key):
+    def get_config(self, key, default=None):
         index, data = self.consul_client.kv.get(key)
         if data is None:
+            if default is not None:
+                logger.warning(f"Config key '{key}' not found in Consul, using default value.")
+                return default
             raise RuntimeError(f"Config key '{key}' not found in Consul.")
         return data['Value'].decode('utf-8')
 
@@ -39,4 +42,5 @@ class ConfigLoader:
             "CASSANDRA_USER": self.get_config("platformq/cassandra/user"),
             "CASSANDRA_PASSWORD": self.get_secret("platformq/cassandra", "password"),
             "PULSAR_URL": self.get_config("platformq/pulsar/url"),
+            "OTEL_EXPORTER_OTLP_ENDPOINT": self.get_config("platformq/opentelemetry/endpoint", default="otel-collector:4317"),
         } 

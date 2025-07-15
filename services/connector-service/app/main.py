@@ -4,14 +4,12 @@ from fastapi import FastAPI, Request, HTTPException
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from typing import Dict
 import asyncio
-import grpc
-from concurrent import futures
 import logging
 
 # Assuming the generate_grpc.sh script has been run
 from .grpc_generated import connector_pb2, connector_pb2_grpc
-
 from . import plugins
+from shared_lib.base_service import create_base_app
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
@@ -35,29 +33,21 @@ class ConnectorServiceServicer(connector_pb2_grpc.ConnectorServiceServicer):
             message=f"Successfully triggered asset creation for {request.uri}"
         )
 
-# Function to run the gRPC server
-async def serve_grpc():
-    """
-    Starts the gRPC server in a separate thread pool.
-    """
-    server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=10))
-    connector_pb2_grpc.add_ConnectorServiceServicer_to_server(ConnectorServiceServicer(), server)
-    server.add_insecure_port('[::]:50051')
-    logger.info("Starting gRPC server on port 50051...")
-    await server.start()
-    
-    # Keep the server running in the background
-    try:
-        await server.wait_for_termination()
-    except asyncio.CancelledError:
-        logger.info("gRPC server is shutting down.")
-        await server.stop(0)
+# Placeholder dependencies for create_base_app as this service is self-contained
+def get_db_session(): return None
+def get_api_key_crud_placeholder(): return None
+def get_user_crud_placeholder(): return None
+def get_password_verifier_placeholder(): return None
 
-
-app = FastAPI(
-    title="Connector Service",
-    description="Hosts and manages data connectors for ingesting data into platformQ.",
-    version="0.1.0",
+app = create_base_app(
+    service_name="connector-service",
+    db_session_dependency=get_db_session,
+    api_key_crud_dependency=get_api_key_crud_placeholder,
+    user_crud_dependency=get_user_crud_placeholder,
+    password_verifier_dependency=get_password_verifier_placeholder,
+    grpc_servicer=ConnectorServiceServicer(),
+    grpc_add_servicer_func=connector_pb2_grpc.add_ConnectorServiceServicer_to_server,
+    grpc_port=50051,
 )
 
 # The scheduler is used to run connectors that have a cron schedule defined.
@@ -109,15 +99,11 @@ def discover_and_schedule_plugins():
 @app.on_event("startup")
 async def startup_event():
     """
-    On startup, run the plugin discovery, start the global scheduler,
-    and start the gRPC server.
+    On startup, run the plugin discovery and start the global scheduler.
+    The gRPC server is now started automatically by the base service factory.
     """
     discover_and_schedule_plugins()
     scheduler.start()
-    
-    # Start the gRPC server in the background
-    asyncio.create_task(serve_grpc())
-    
     logger.info("Connector Service started. Scheduler and gRPC server are running.")
 
 

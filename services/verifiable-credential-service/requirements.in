@@ -1,0 +1,10 @@
+-r ../../requirements/base.in
+
+# Service-specific dependencies
+didkit
+fabric-sdk-py
+
+# Development and Testing
+pytest
+black
+ruff 

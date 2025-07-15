@@ -10,7 +10,11 @@ from opentelemetry.sdk.trace import TracerProvider
 from opentelemetry.sdk.trace.export import BatchSpanProcessor
 from opentelemetry.exporter.otlp.proto.grpc.trace_exporter import OTLPSpanExporter
 from opentelemetry.instrumentation.fastapi import FastAPIInstrumentor
+from opentelemetry.instrumentation.grpc import GrpcInstrumentorServer
 from opentelemetry.sdk.resources import Resource
+import asyncio
+from concurrent import futures
+import grpc
 
 from .db import CassandraSessionManager
 from .event_publisher import EventPublisher
@@ -52,12 +56,13 @@ def setup_structured_logging():
     logging.config.dictConfig(config)
 
 
-def setup_observability(app: FastAPI, service_name: str):
+def setup_observability(app: FastAPI, service_name: str, otel_endpoint: str, instrument_grpc: bool = False):
     """
     Configures OpenTelemetry for the application.
     This function sets up a "TracerProvider" which manages the lifecycle of traces.
     It exports these traces in OTLP format to our OpenTelemetry Collector.
-    Finally, it auto-instruments the FastAPI application to trace all incoming requests.
+    Finally, it auto-instruments the FastAPI application to trace all incoming requests,
+    and optionally instruments the gRPC server.
     """
     resource = Resource(attributes={
         "service.name": service_name
@@ -65,12 +70,28 @@ def setup_observability(app: FastAPI, service_name: str):
     
     # Set up tracing
     provider = TracerProvider(resource=resource)
-    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint="otel-collector:4317", insecure=True))
+    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otel_endpoint, insecure=True))
     provider.add_span_processor(processor)
     trace.set_tracer_provider(provider)
     
     # Instrument FastAPI
     FastAPIInstrumentor.instrument_app(app)
+
+    # Instrument gRPC server if enabled
+    if instrument_grpc:
+        grpc_server_instrumentor = GrpcInstrumentorServer()
+        grpc_server_instrumentor.instrument()
+        logger.info("gRPC server instrumentation enabled.")
+
+
+async def _serve_grpc(servicer: object, add_servicer_func: Callable, port: int):
+    """Helper to start a gRPC server."""
+    server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=10))
+    add_servicer_func(servicer, server)
+    server.add_insecure_port(f'[::]:{port}')
+    logger.info(f"Starting gRPC server on port {port}...")
+    await server.start()
+    await server.wait_for_termination()
 
 
 def create_base_app(
@@ -79,6 +100,9 @@ def create_base_app(
     api_key_crud_dependency: Callable,
     user_crud_dependency: Callable,
     password_verifier_dependency: Callable,
+    grpc_servicer: object = None,
+    grpc_add_servicer_func: Callable = None,
+    grpc_port: int = 50051,
 ) -> FastAPI:
     """
     Factory function to create a standardized, production-ready FastAPI application.
@@ -88,22 +112,29 @@ def create_base_app(
     platform is automatically configured with:
     - Structured Logging
     - OpenTelemetry Tracing
+    - Optional gRPC server
     - Centralized Configuration from Consul & Vault
     - Database & Event Publisher connections
     - Standardized Security Dependency wiring
     """
     
-    # --- Step 1: Setup Core Application Concerns ---
-    setup_structured_logging()
-    app = FastAPI(title=service_name)
-    setup_observability(app, service_name)
-
-    # --- Step 2: Load All External Configuration ---
+    # --- Step 1: Load All External Configuration ---
     # This uses our shared ConfigLoader to connect to Consul and Vault
     # and load all necessary runtime configuration and secrets.
     config_loader = ConfigLoader()
     settings = config_loader.load_settings()
-    
+
+    # --- Step 2: Setup Core Application Concerns ---
+    has_grpc = grpc_servicer and grpc_add_servicer_func
+    setup_structured_logging()
+    app = FastAPI(title=service_name)
+    setup_observability(
+        app, 
+        service_name, 
+        otel_endpoint=settings["OTEL_EXPORTER_OTLP_ENDPOINT"], 
+        instrument_grpc=has_grpc
+    )
+
     # --- Step 3: Wire up Shared Security Dependencies ---
     # This is a critical step for our "trusted subsystem" model.
     # We use FastAPI's dependency_overrides to "inject" the concrete,
@@ -149,6 +180,15 @@ def create_base_app(
         publisher = EventPublisher(pulsar_url=settings["PULSAR_URL"])
         publisher.connect()
         app.state.event_publisher = publisher
+
+        # --- Start gRPC Server (if configured) ---
+        if has_grpc:
+            logger.info("gRPC servicer configured, starting gRPC server.")
+            asyncio.create_task(_serve_grpc(
+                servicer=grpc_servicer,
+                add_servicer_func=grpc_add_servicer_func,
+                port=grpc_port
+            ))
 
     @app.on_event("shutdown")
     def on_shutdown():

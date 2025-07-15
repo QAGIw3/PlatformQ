@@ -1,0 +1,10 @@
+-r ../../requirements/base.in
+
+# Service-specific dependencies
+ipfshttpclient
+
+# Development and Testing
+pytest
+black
+ruff
+redoc 
