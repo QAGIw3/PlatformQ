@@ -88,7 +88,8 @@ class FunctionExecutionCompleted(Record):
     asset_id = String(required=True)
     wasm_module_id = String(required=True)
     status = String(required=True)
-    results = Map(String(), required=False)
+    payload_schema_version = String(required=False)
+    payload = Bytes(required=False)
     error_message = String(required=False)
     event_timestamp = Long(required=True, default=lambda: int(time.time() * 1000))
 
@@ -101,4 +102,26 @@ class DigitalAssetCreated(Record):
     raw_data_uri = String(required=False)
     event_timestamp = Long(required=True, default=lambda: int(time.time() * 1000))
 
-# ... (and so on for all other event types) 
+
+class ProjectCreatedEvent(Record):
+    tenant_id = String(required=True)
+    project_id = String(required=True)
+    name = String(required=True)
+    openproject_id = Long(required=True)
+    nextcloud_folder_path = String(required=True)
+    zulip_stream_name = String(required=True)
+    public = Boolean(required=True)
+    dao_contract_address = String(required=False, default=None)
+    dao_did = String(required=False, default=None)
+    event_timestamp = Long(required=True, default=lambda: int(time.time() * 1000))
+
+
+class DAOEvent(Record):
+    tenant_id = String(required=True)
+    dao_id = String(required=True)
+    event_type = String(required=True, doc="Type of DAO event, e.g., 'ProposalCreated', 'VoteCast', 'ProposalExecuted'")
+    blockchain_tx_hash = String(required=False, doc="Transaction hash of the on-chain event")
+    proposal_id = String(required=False, doc="ID of the proposal if the event is related to a proposal")
+    voter_id = String(required=False, doc="ID of the voter if the event is a vote cast")
+    event_data = String(required=False, doc="JSON string of additional event-specific data") # Generic field for flexibility
+    event_timestamp = Long(required=True, default=lambda: int(time.time() * 1000)) 

@@ -62,7 +62,7 @@ def create_tenant_endpoint(
     user_service = UserService(db)
     
     # Create the first admin user for this new tenant
-    admin_user_in = UserCreate(email=tenant_in.admin_email, full_name=tenant_in.admin_full_name)
+    admin_user_in = UserCreate(email=tenant_in.admin_email, full_name=tenant_in.admin_full_name, did=tenant_in.admin_did) # Pass did
     new_user = user_service.create_full_user(tenant_id=new_tenant['id'], user_in=admin_user_in)
     crud_role.assign_role_to_user(db, tenant_id=new_tenant['id'], user_id=new_user.id, role='admin')
     
@@ -109,7 +109,7 @@ def create_user_endpoint(
             detail="Email already registered",
         )
 
-    new_user = crud_user.create_user(db=db, user=user)
+    new_user = crud_user.create_user(db=db, user=user, did=user.did) # Pass did
 
     # Assign a default 'member' role
     crud_role.assign_role_to_user(db, user_id=new_user.id, role="member")
@@ -158,7 +158,7 @@ def update_current_user(
     """
     Update current user's profile.
     """
-    user = crud_user.update_user(db, user_id=current_user.id, user_update=user_in)
+    user = crud_user.update_user(db, user_id=current_user.id, user_update=user_in) # `user_update` already contains did
     return user
 
 

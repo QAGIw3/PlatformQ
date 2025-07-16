@@ -1,0 +1,62 @@
+{
+  "type": "record",
+  "name": "BillOfMaterialsItem",
+  "namespace": "com.platformq.kicad",
+  "doc": "Schema for a single item in a Bill of Materials.",
+  "fields": [
+    {
+      "name": "partNumber",
+      "type": "string",
+      "doc": "Manufacturer's part number for the component."
+    },
+    {
+      "name": "manufacturer",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Name of the component manufacturer."
+    },
+    {
+      "name": "description",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Description of the component."
+    },
+    {
+      "name": "quantity",
+      "type": "int",
+      "doc": "Quantity of this component required."
+    },
+    {
+      "name": "referenceDesignators",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "doc": "List of reference designators (e.g., R1, C5, U2) for this part in the schematic."
+    },
+    {
+      "name": "supplierPartNumber",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Supplier's part number for the component."
+    },
+    {
+      "name": "supplier",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Name of the supplier."
+    },
+    {
+      "name": "unitCost",
+      "type": ["null", "double"],
+      "default": null,
+      "doc": "Unit cost of the component."
+    },
+    {
+      "name": "currency",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Currency of the unit cost (e.g., USD, EUR)."
+    }
+  ]
+} 

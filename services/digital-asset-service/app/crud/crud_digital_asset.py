@@ -30,6 +30,8 @@ def create_asset(db: Session, asset: schemas.DigitalAssetCreate) -> models.Digit
         raw_data_uri=asset.raw_data_uri,
         tags=asset.tags,
         asset_metadata=asset.metadata,
+        payload_schema_version=asset.payload_schema_version,
+        payload=asset.payload
     )
     db.add(db_asset)
     db.commit()
@@ -45,30 +47,44 @@ def update_asset(db: Session, asset_id: uuid.UUID, asset_update: schemas.Digital
         return None
 
     update_data = asset_update.dict(exclude_unset=True)
+    # Special handling for payload and payload_schema_version
+    if 'payload_schema_version' in update_data:
+        db_asset.payload_schema_version = update_data['payload_schema_version']
+    if 'payload' in update_data:
+        db_asset.payload = update_data['payload']
+
+    # Update other fields normally, excluding payload-related ones handled above
     for key, value in update_data.items():
-        setattr(db_asset, key, value)
+        if key not in ['payload_schema_version', 'payload']:
+            setattr(db_asset, key, value)
     
     db.add(db_asset)
     db.commit()
     db.refresh(db_asset)
     return db_asset
 
-def update_asset_metadata(db: Session, asset_id: uuid.UUID, new_metadata: dict) -> Optional[models.DigitalAsset]:
+def update_asset_metadata(db: Session, asset_id: uuid.UUID, new_metadata: dict, payload_schema_version: Optional[str] = None, payload: Optional[bytes] = None) -> Optional[models.DigitalAsset]:
     """
-    Updates an existing digital asset's metadata by merging the new metadata.
+    Updates an existing digital asset's metadata and/or payload.
+    If payload and payload_schema_version are provided, they will update the respective fields.
+    Otherwise, new_metadata will be merged into the existing asset_metadata.
     """
     db_asset = get_asset(db, asset_id)
     if not db_asset:
         return None
 
-    # Merge the new metadata with the existing metadata
-    if db_asset.asset_metadata is None:
-        db_asset.asset_metadata = {}
-    
-    updated_metadata = db_asset.asset_metadata.copy()
-    updated_metadata.update(new_metadata)
-    
-    db_asset.asset_metadata = updated_metadata
+    if payload is not None and payload_schema_version is not None:
+        db_asset.payload = payload
+        db_asset.payload_schema_version = payload_schema_version
+    elif new_metadata is not None:
+        # Merge the new metadata with the existing metadata
+        if db_asset.asset_metadata is None:
+            db_asset.asset_metadata = {}
+        
+        updated_metadata = db_asset.asset_metadata.copy()
+        updated_metadata.update(new_metadata)
+        
+        db_asset.asset_metadata = updated_metadata
     
     db.add(db_asset)
     db.commit()

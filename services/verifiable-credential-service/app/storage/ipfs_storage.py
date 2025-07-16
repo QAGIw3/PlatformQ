@@ -16,6 +16,7 @@ from cryptography.fernet import Fernet
 from cryptography.hazmat.primitives import hashes
 from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
 import base64
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -31,6 +32,7 @@ class IPFSCredentialStorage:
         self.encryption_key = encryption_key or Fernet.generate_key()
         self.cipher_suite = Fernet(self.encryption_key)
         self.credential_index: Dict[str, str] = {}  # credential_id -> IPFS CID
+        self.dao_data_index: Dict[str, str] = {} # dao_data_id -> IPFS CID
         
     async def store_credential(
         self,
@@ -340,6 +342,128 @@ class IPFSCredentialStorage:
             current_hash = hashlib.sha256(combined.encode()).hexdigest()
             
         return current_hash == root_hash
+        
+    async def store_dao_data(
+        self,
+        data: Dict[str, Any],
+        tenant_id: str,
+        data_type: str,
+        data_id: Optional[str] = None,
+        encrypt: bool = True,
+        pin: bool = True
+    ) -> Dict[str, Any]:
+        """
+        Store arbitrary DAO-related data on IPFS with optional encryption.
+        
+        Args:
+            data: The DAO data to store (e.g., proposal details, member lists).
+            tenant_id: Tenant ID for multi-tenancy.
+            data_type: A string indicating the type of DAO data (e.g., "dao_proposal", "dao_member_list").
+            data_id: Optional unique identifier for the data. If not provided, a UUID will be generated.
+            encrypt: Whether to encrypt the data before storage.
+            pin: Whether to pin the content on IPFS.
+            
+        Returns:
+            Dictionary containing CID and metadata.
+        """
+        data_id = data_id or f"dao_data_{data_type}_{uuid.uuid4().hex}"
+        
+        # Prepare data for storage
+        raw_data_str = json.dumps(data, sort_keys=True)
+        
+        # Encrypt if requested
+        if encrypt:
+            encrypted_data = self.cipher_suite.encrypt(raw_data_str.encode())
+            storage_payload = {
+                "encrypted": True,
+                "data": base64.b64encode(encrypted_data).decode(),
+                "algorithm": "Fernet",
+                "tenant_id": tenant_id,
+                "data_type": data_type,
+                "stored_at": datetime.utcnow().isoformat()
+            }
+        else:
+            storage_payload = {
+                "encrypted": False,
+                "data": raw_data_str,
+                "tenant_id": tenant_id,
+                "data_type": data_type,
+                "stored_at": datetime.utcnow().isoformat()
+            }
+            
+        # Upload to IPFS via storage proxy
+        files = {'file': (f'{data_id}.json', json.dumps(storage_payload).encode())}
+        response = await self.client.post(
+            f"{self.storage_proxy_url}/upload",
+            files=files
+        )
+        response.raise_for_status()
+        
+        result = response.json()
+        cid = result["cid"]
+        
+        # Store in local index
+        self.dao_data_index[data_id] = cid
+        
+        storage_receipt = {
+            "data_id": data_id,
+            "cid": cid,
+            "data_type": data_type,
+            "encrypted": encrypt,
+            "pinned": pin,
+            "stored_at": datetime.utcnow().isoformat(),
+            "content_hash": hashlib.sha256(raw_data_str.encode()).hexdigest()
+        }
+        
+        logger.info(f"Stored DAO data {data_id} of type {data_type} on IPFS: {cid}")
+        return storage_receipt
+
+
+    async def retrieve_dao_data(
+        self,
+        cid: str,
+        tenant_id: str,
+        decrypt: bool = True
+    ) -> Optional[Dict[str, Any]]:
+        """
+        Retrieve arbitrary DAO-related data from IPFS.
+        
+        Args:
+            cid: IPFS Content Identifier.
+            tenant_id: Tenant ID for verification.
+            decrypt: Whether to decrypt the data if it was encrypted.
+            
+        Returns:
+            The DAO data or None if not found or unauthorized.
+        """
+        try:
+            # Download from IPFS
+            response = await self.client.get(
+                f"{self.storage_proxy_url}/download/{cid}"
+            )
+            response.raise_for_status()
+            
+            # Parse storage payload
+            storage_payload = json.loads(response.content)
+            
+            # Verify tenant
+            if storage_payload.get("tenant_id") != tenant_id:
+                logger.warning(f"Tenant mismatch for DAO data CID {cid}. Expected {tenant_id}, got {storage_payload.get('tenant_id')}")
+                return None
+            
+            # Decrypt if needed
+            if storage_payload.get("encrypted") and decrypt:
+                encrypted_data = base64.b64decode(storage_payload["data"])
+                decrypted_data = self.cipher_suite.decrypt(encrypted_data)
+                data = json.loads(decrypted_data)
+            else:
+                data = json.loads(storage_payload["data"]) if isinstance(storage_payload["data"], str) else storage_payload["data"]
+            
+            return data
+            
+        except Exception as e:
+            logger.error(f"Failed to retrieve DAO data from IPFS for CID {cid}: {e}")
+            return None
         
     async def close(self):
         """Close the HTTP client"""

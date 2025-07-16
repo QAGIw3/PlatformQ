@@ -1,0 +1,86 @@
+{
+  "type": "record",
+  "name": "FreeCADMetadata",
+  "namespace": "com.platformq.freecad",
+  "doc": "Structured metadata for FreeCAD design files.",
+  "fields": [
+    {
+      "name": "documentType",
+      "type": "string",
+      "doc": "Type of FreeCAD document (e.g., 'Part', 'Assembly', 'Drawing')."
+    },
+    {
+      "name": "fileName",
+      "type": "string",
+      "doc": "Name of the FreeCAD file (e.g., my_part.FCStd)."
+    },
+    {
+      "name": "creationDate",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "Timestamp of when the FreeCAD document was created."
+    },
+    {
+      "name": "lastModifiedDate",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "Timestamp of when the FreeCAD document was last modified."
+    },
+    {
+      "name": "partCount",
+      "type": "int",
+      "doc": "Number of distinct parts in the FreeCAD document."
+    },
+    {
+      "name": "assemblyConstraints",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "default": [],
+      "doc": "List of assembly constraints applied in the document (e.g., coincident, parallel, perpendicular)."
+    },
+    {
+      "name": "parameters",
+      "type": {
+        "type": "map",
+        "values": "string"
+      },
+      "default": {},
+      "doc": "Key-value pairs of user-defined parameters or expressions within the FreeCAD document."
+    },
+    {
+      "name": "features",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "FreeCADFeature",
+          "fields": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "type",
+              "type": "string",
+              "doc": "Type of the feature (e.g., 'Pad', 'Pocket', 'Revolution', 'Fillet')."
+            },
+            {
+              "name": "value",
+              "type": ["null", "string"],
+              "default": null,
+              "doc": "Value associated with the feature (e.g., depth of a pad, radius of a fillet)."
+            }
+          ]
+        }
+      },
+      "default": [],
+      "doc": "List of parametric features in the FreeCAD document."
+    }
+  ]
+} 

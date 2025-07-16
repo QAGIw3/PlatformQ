@@ -2,6 +2,7 @@ import datetime
 import secrets
 from datetime import timedelta
 from uuid import UUID, uuid4
+from typing import Optional
 
 from cassandra.cluster import Session
 
@@ -13,13 +14,13 @@ def get_user_by_email(db: Session, *, email: str):
     """
     Retrieves a user from the database by their email address.
     """
-    query = "SELECT tenant_id, id, email, full_name, status, created_at, updated_at FROM users WHERE email = %s ALLOW FILTERING"
+    query = "SELECT tenant_id, id, email, full_name, status, created_at, updated_at, did FROM users WHERE email = %s ALLOW FILTERING"
     prepared = db.prepare(query)
     rows = db.execute(prepared, [email])
     return rows.one()
 
 
-def create_user(db: Session, *, tenant_id: UUID, user: UserCreate):
+def create_user(db: Session, *, tenant_id: UUID, user: UserCreate, did: Optional[str] = None):
     """
     Creates a new user in the database.
     """
@@ -27,13 +28,13 @@ def create_user(db: Session, *, tenant_id: UUID, user: UserCreate):
     created_time = datetime.datetime.now(datetime.timezone.utc)
 
     query = """
-    INSERT INTO users (tenant_id, id, email, full_name, status, created_at, updated_at)
-    VALUES (%s, %s, %s, %s, %s, %s, %s)
+    INSERT INTO users (tenant_id, id, email, full_name, status, created_at, updated_at, did)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
     """
     prepared_statement = db.prepare(query)
     db.execute(
         prepared_statement,
-        [tenant_id, user_id, user.email, user.full_name, "active", created_time, created_time],
+        [tenant_id, user_id, user.email, user.full_name, "active", created_time, created_time, did],
     )
 
     # Retrieve the just-created user to return it
@@ -44,7 +45,7 @@ def get_user_by_id(db: Session, *, tenant_id: UUID, user_id: UUID):
     """
     Retrieves a user from the database by their ID.
     """
-    query = "SELECT tenant_id, id, email, full_name, status, created_at, updated_at FROM users WHERE tenant_id = %s AND id = %s"
+    query = "SELECT tenant_id, id, email, full_name, status, created_at, updated_at, did FROM users WHERE tenant_id = %s AND id = %s"
     prepared_statement = db.prepare(query)
     rows = db.execute(prepared_statement, [tenant_id, user_id])
     return rows.one()
@@ -54,19 +55,25 @@ def update_user(db: Session, *, tenant_id: UUID, user_id: UUID, user_update: Use
     """
     Updates a user's information.
     """
-    # For now, we only allow updating the full_name
+    # For now, we only allow updating the full_name. Add DID update if needed.
+    updates = {}
     if user_update.full_name is not None:
-        query = "UPDATE users SET full_name = %s, updated_at = %s WHERE tenant_id = %s AND id = %s"
-        prepared = db.prepare(query)
-        db.execute(
-            prepared,
-            [
-                user_update.full_name,
-                datetime.datetime.now(datetime.timezone.utc),
-                tenant_id,
-                user_id,
-            ],
-        )
+        updates["full_name"] = user_update.full_name
+    if user_update.did is not None:
+        updates["did"] = user_update.did
+
+    if not updates:
+        return get_user_by_id(db, tenant_id=tenant_id, user_id=user_id)
+
+    updates["updated_at"] = datetime.datetime.now(datetime.timezone.utc)
+
+    update_parts = [f"{key} = %s" for key in updates.keys()]
+    query = f"UPDATE users SET {', '.join(update_parts)} WHERE tenant_id = %s AND id = %s"
+    prepared = db.prepare(query)
+    db.execute(
+        prepared,
+        [*updates.values(), tenant_id, user_id],
+    )
 
     return get_user_by_id(db, tenant_id=tenant_id, user_id=user_id)
 

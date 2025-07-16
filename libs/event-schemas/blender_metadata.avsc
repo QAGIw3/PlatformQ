@@ -1,0 +1,132 @@
+{
+  "type": "record",
+  "name": "BlenderMetadata",
+  "namespace": "com.platformq.blender",
+  "doc": "Structured metadata for Blender 3D models.",
+  "fields": [
+    {
+      "name": "polyCount",
+      "type": "long",
+      "doc": "Total polygon count in the Blender scene."
+    },
+    {
+      "name": "objectCount",
+      "type": "int",
+      "doc": "Number of objects in the Blender scene."
+    },
+    {
+      "name": "hasAnimation",
+      "type": "boolean",
+      "default": false,
+      "doc": "True if the Blender file contains animation data."
+    },
+    {
+      "name": "renderEngine",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "The rendering engine configured for the scene (e.g., 'CYCLES', 'EEVEE')."
+    },
+    {
+      "name": "materials",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "BlenderMaterial",
+          "fields": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "type",
+              "type": ["null", "string"],
+              "default": null
+            }
+          ]
+        }
+      },
+      "default": [],
+      "doc": "List of materials used in the scene."
+    },
+    {
+      "name": "cameras",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "BlenderCamera",
+          "fields": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "type",
+              "type": ["null", "string"],
+              "default": null
+            },
+            {
+              "name": "focalLength",
+              "type": ["null", "double"],
+              "default": null
+            }
+          ]
+        }
+      },
+      "default": [],
+      "doc": "List of cameras in the scene."
+    },
+    {
+      "name": "lights",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "BlenderLight",
+          "fields": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "type",
+              "type": ["null", "string"],
+              "default": null
+            },
+            {
+              "name": "energy",
+              "type": ["null", "double"],
+              "default": null
+            }
+          ]
+        }
+      },
+      "default": [],
+      "doc": "List of lights in the scene."
+    },
+    {
+      "name": "textures",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "BlenderTexture",
+          "fields": [
+            {
+              "name": "name",
+              "type": "string"
+            },
+            {
+              "name": "path",
+              "type": ["null", "string"],
+              "default": null
+            }
+          ]
+        }
+      },
+      "default": [],
+      "doc": "List of textures used in the scene, including their paths."
+    }
+  ]
+} 

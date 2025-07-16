@@ -1,0 +1,76 @@
+{
+  "type": "record",
+  "name": "KiCadProject",
+  "namespace": "com.platformq.kicad",
+  "doc": "Schema for a KiCad project, encompassing all its design files and associated data.",
+  "fields": [
+    {
+      "name": "projectId",
+      "type": "string",
+      "doc": "Unique identifier for the KiCad project."
+    },
+    {
+      "name": "name",
+      "type": "string",
+      "doc": "Name of the KiCad project."
+    },
+    {
+      "name": "description",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Optional description of the project."
+    },
+    {
+      "name": "version",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Version of the KiCad project design."
+    },
+    {
+      "name": "creationDate",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "Timestamp of when the project was created."
+    },
+    {
+      "name": "lastModifiedDate",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "Timestamp of when the project was last modified."
+    },
+    {
+      "name": "schematics",
+      "type": {
+        "type": "array",
+        "items": "KiCadSchematic"
+      },
+      "doc": "List of schematics within the project."
+    },
+    {
+      "name": "pcbs",
+      "type": {
+        "type": "array",
+        "items": "KiCadPCB"
+      },
+      "doc": "List of PCB layouts within the project."
+    },
+    {
+      "name": "billOfMaterials",
+      "type": ["null", "BillOfMaterials"],
+      "default": null,
+      "doc": "The Bill of Materials for the project."
+    },
+    {
+      "name": "associatedFiles",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "doc": "List of paths to other associated files (e.g., footprints, 3D models, custom libraries)."
+    }
+  ]
+} 

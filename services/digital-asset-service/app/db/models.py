@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, ForeignKey, Table, TypeDecorator, JSON
+from sqlalchemy import Column, String, DateTime, ForeignKey, Table, TypeDecorator, JSON, LargeBinary
 from sqlalchemy.orm import relationship, Mapped
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
@@ -61,6 +61,8 @@ class DigitalAsset(Base):
     # Flexible Metadata using JSONB
     tags = Column(JsonBCompat)
     asset_metadata = Column("metadata", JsonBCompat)
+    payload_schema_version = Column(String, nullable=True) # New field
+    payload = Column(LargeBinary, nullable=True) # New field for Avro-serialized data
 
     # Relationships
     processing_rule = relationship("AssetProcessingRule", back_populates="assets")

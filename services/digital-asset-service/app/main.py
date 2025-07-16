@@ -52,13 +52,23 @@ def result_consumer_loop(app):
             if msg is None: continue
             
             event = msg.value()
-            if event.status == "SUCCESS" and event.results:
+            if event.status == "SUCCESS" and (event.payload is not None or event.results):
                 logger.info(f"Received successful execution result for asset {event.asset_id}. Updating metadata.")
-                crud.crud_digital_asset.update_asset_metadata(
-                    db=db_session,
-                    asset_id=uuid.UUID(event.asset_id),
-                    new_metadata=event.results
-                )
+                # If payload and payload_schema_version are present, use them for update
+                if event.payload is not None and event.payload_schema_version is not None:
+                    crud.crud_digital_asset.update_asset_metadata(
+                        db=db_session,
+                        asset_id=uuid.UUID(event.asset_id),
+                        new_metadata=None, # No generic metadata update
+                        payload_schema_version=event.payload_schema_version,
+                        payload=event.payload
+                    )
+                elif event.results is not None: # Fallback for old events or generic metadata
+                    crud.crud_digital_asset.update_asset_metadata(
+                        db=db_session,
+                        asset_id=uuid.UUID(event.asset_id),
+                        new_metadata=event.results
+                    )
             elif event.status == "FAILURE":
                 logger.error(f"Received failure event for asset {event.asset_id}: {event.error_message}")
 

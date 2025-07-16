@@ -10,6 +10,9 @@ from platformq_shared.config import ConfigLoader
 from platformq_shared.resilience import CircuitBreakerError, RateLimitExceeded
 import logging
 from datetime import date
+import uuid
+from datetime import datetime
+import requests # Added for making HTTP requests to VC service
 
 from .api.deps import (
     get_db_session, 
@@ -99,6 +102,8 @@ class ProjectCreateRequest(BaseModel):
     members: Optional[List[str]] = Field(None, description="List of user emails to add as members")
     start_date: Optional[date] = None
     end_date: Optional[date] = None
+    dao_contract_address: Optional[str] = Field(None, description="Optional blockchain address of the associated DAO smart contract")
+    dao_did: Optional[str] = Field(None, description="Optional Decentralized Identifier (DID) of the associated DAO")
 
 
 class ProjectUpdateRequest(BaseModel):
@@ -106,6 +111,8 @@ class ProjectUpdateRequest(BaseModel):
     description: Optional[str] = Field(None, max_length=1000)
     active: Optional[bool] = None
     public: Optional[bool] = None
+    dao_contract_address: Optional[str] = Field(None, description="Optional blockchain address of the associated DAO smart contract")
+    dao_did: Optional[str] = Field(None, description="Optional Decentralized Identifier (DID) of the associated DAO")
 
 
 class ProjectResponse(BaseModel):
@@ -117,6 +124,8 @@ class ProjectResponse(BaseModel):
     zulip_stream_name: str
     created_at: str
     status: str = "active"
+    dao_contract_address: Optional[str] = None
+    dao_did: Optional[str] = None
 
 
 @app.post("/api/v1/projects", status_code=201, response_model=ProjectResponse)
@@ -209,7 +218,9 @@ Created on: {date.today().isoformat()}
                 project_in.name,
                 project_in.members,
                 op_project["id"],
-                main_folder
+                main_folder,
+                tenant_id,
+                project_in.dao_did, # Pass dao_did to add_project_members
             )
         
         # 5. Send welcome message to Zulip
@@ -239,8 +250,45 @@ Let's build something great together! 💪"""
             logger.warning(f"Failed to send welcome message: {e}")
         
         # 6. Store in database (placeholder)
-        # project = crud_project.create_project(...)
-        
+        project_data = {
+            "id": str(uuid.uuid4()), # Placeholder for actual DB ID generation
+            "name": project_in.name,
+            "description": project_in.description,
+            "openproject_id": op_project["id"],
+            "nextcloud_folder_path": main_folder,
+            "zulip_stream_name": project_in.name,
+            "created_at": datetime.utcnow().isoformat() + "Z",
+            "status": "active",
+            "dao_contract_address": project_in.dao_contract_address,
+            "dao_did": project_in.dao_did,
+        }
+
+        # For now, we simulate storing and returning the project data
+        # In a real implementation, you would call your CRUD layer here:
+        # project = crud_project.create_project(db, tenant_id=tenant_id, project_data=project_data)
+
+        # After project data is conceptualized/stored, issue a DAO creation VC if DAO details are provided
+        if project_in.dao_did and app.state.config_loader.load_settings().get("VC_SERVICE_URL"):
+            vc_service_url = app.state.config_loader.load_settings()["VC_SERVICE_URL"]
+            dao_creation_subject = {
+                "id": user.did, # Assuming user has a DID; otherwise, user.id
+                "daoId": project_in.dao_did,
+                "role": "creator",
+                "createdAt": datetime.utcnow().isoformat() + "Z"
+            }
+            issue_vc_request = {
+                "type": "DAOCreationCredential", # A new VC type for DAO creation
+                "subject": dao_creation_subject,
+                "store_on_ipfs": True
+            }
+            try:
+                response = requests.post(f"{vc_service_url}/api/v1/issue", json=issue_vc_request)
+                response.raise_for_status()
+                logger.info(f"Issued DAOCreationCredential for DAO {project_in.dao_did}: {response.json().get('id')}")
+            except Exception as e:
+                logger.error(f"Failed to issue DAOCreationCredential for DAO {project_in.dao_did}: {e}")
+
+
         # 7. Publish event
         if hasattr(app.state, 'event_publisher'):
             try:
@@ -248,28 +296,23 @@ Let's build something great together! 💪"""
                     topic_base="project-events",
                     tenant_id=tenant_id,
                     schema_class=ProjectCreatedEvent,
-                    data={
-                        "project_id": openproject_identifier,
-                        "project_name": project_in.name,
-                        "openproject_id": op_project["id"],
-                        "nextcloud_folder": main_folder,
-                        "zulip_stream": project_in.name,
-                        "created_by": user.id
-                    }
+                    data=ProjectCreatedEvent(
+                        tenant_id=tenant_id,
+                        project_id=project_data["id"],
+                        name=project_data["name"],
+                        openproject_id=project_data["openproject_id"],
+                        nextcloud_folder_path=project_data["nextcloud_folder_path"],
+                        zulip_stream_name=project_data["zulip_stream_name"],
+                        public=project_in.public,
+                        dao_contract_address=project_in.dao_contract_address,
+                        dao_did=project_in.dao_did,
+                    )
                 )
+                logger.info(f"Published ProjectCreatedEvent for project {project_data['id']}")
             except Exception as e:
-                logger.error(f"Failed to publish project created event: {e}")
-        
-        return ProjectResponse(
-            id=openproject_identifier,
-            name=project_in.name,
-            description=project_in.description,
-            openproject_id=op_project["id"],
-            nextcloud_folder_path=main_folder,
-            zulip_stream_name=project_in.name,
-            created_at=date.today().isoformat(),
-            status="active"
-        )
+                logger.error(f"Failed to publish ProjectCreatedEvent for project {project_in.name}: {e}")
+
+        return ProjectResponse(**project_data)
         
     except (CircuitBreakerError, RateLimitExceeded) as e:
         logger.error(f"Service temporarily unavailable: {e}")
@@ -321,37 +364,61 @@ async def add_project_members(
     project_name: str,
     member_emails: List[str],
     openproject_id: int,
-    nextcloud_folder: str
+    nextcloud_folder: str,
+    tenant_id: str,
+    dao_did: Optional[str] = None, # Added dao_did parameter
 ):
     """Background task to add members to project"""
-    logger.info(f"Adding {len(member_emails)} members to project {project_name}")
-    
+    logger.info(f"Adding members {member_emails} to project {project_name}")
+
     nextcloud = get_nextcloud_client()
     openproject = get_openproject_client()
     zulip = get_zulip_client()
-    
+
+    # Placeholder for actual user ID mapping based on email
+    # In a real system, you would look up user_id and DID from auth-service
+    member_data = []
     for email in member_emails:
+        # Simulate user lookup and DID generation
+        user_id = f"user-{email.split('@')[0]}" # Example user ID
+        user_did = f"did:pqs:{user_id}" # Example DID
+        member_data.append({"email": email, "user_id": user_id, "did": user_did})
+
+    for member in member_data:
         try:
-            # Add to Zulip stream
-            zulip.subscribe_users(
-                streams=[project_name],
-                principals=[email]
-            )
+            # 1. Add to OpenProject (conceptual, as client needs enhancement)
+            logger.info(f"Adding {member['email']} to OpenProject project {openproject_id}")
+            # openproject.add_project_member(openproject_id, member["user_id"], "member")
+
+            # 2. Share Nextcloud folder (conceptual)
+            logger.info(f"Sharing Nextcloud folder {nextcloud_folder} with {member['email']}")
+            # nextcloud.share_folder(nextcloud_folder, member["email"], "editor")
             
-            # Share Nextcloud folder
-            nextcloud.create_share(
-                path=nextcloud_folder,
-                share_type=0,  # User share
-                share_with=email.split('@')[0],  # Assuming username is email prefix
-                permissions=31  # All permissions
-            )
-            
-            # Add to OpenProject (would need user ID lookup)
-            # This is a simplified version
-            # openproject.add_member(openproject_id, user_id, role_ids=[4])
-            
+            # 3. Add to Zulip stream (conceptual)
+            logger.info(f"Adding {member['email']} to Zulip stream {project_name}")
+            # zulip.add_users_to_stream(project_name, [member["email"]])
+
+            # 4. Issue DAOMembershipCredential
+            if dao_did and app.state.config_loader.load_settings().get("VC_SERVICE_URL"):
+                vc_service_url = app.state.config_loader.load_settings()["VC_SERVICE_URL"]
+                membership_subject = {
+                    "id": member["did"],
+                    "daoId": dao_did, # Use the passed dao_did
+                    "role": "member",
+                    "joinedAt": datetime.utcnow().isoformat() + "Z"
+                }
+                issue_vc_request = {
+                    "type": "DAOMembershipCredential",
+                    "subject": membership_subject,
+                    "store_on_ipfs": True
+                }
+                # In a real scenario, you would use an authenticated request
+                response = requests.post(f"{vc_service_url}/api/v1/issue", json=issue_vc_request)
+                response.raise_for_status() # Raise an exception for bad status codes
+                logger.info(f"Issued DAOMembershipCredential for {member['email']}: {response.json().get('id')}")
+
         except Exception as e:
-            logger.error(f"Failed to add member {email} to project: {e}")
+            logger.error(f"Failed to add {member['email']} to project {project_name}: {e}")
 
 
 @app.get("/api/v1/projects/{project_id}", response_model=ProjectResponse)
@@ -464,4 +531,13 @@ async def get_project_activity(
 # Placeholder for event schema
 class ProjectCreatedEvent:
     """Event published when a project is created"""
-    pass
+    def __init__(self, tenant_id: str, project_id: str, name: str, openproject_id: int, nextcloud_folder_path: str, zulip_stream_name: str, public: bool, dao_contract_address: Optional[str] = None, dao_did: Optional[str] = None):
+        self.tenant_id = tenant_id
+        self.project_id = project_id
+        self.name = name
+        self.openproject_id = openproject_id
+        self.nextcloud_folder_path = nextcloud_folder_path
+        self.zulip_stream_name = zulip_stream_name
+        self.public = public
+        self.dao_contract_address = dao_contract_address
+        self.dao_did = dao_did

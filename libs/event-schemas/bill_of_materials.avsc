@@ -1,0 +1,46 @@
+{
+  "type": "record",
+  "name": "BillOfMaterials",
+  "namespace": "com.platformq.kicad",
+  "doc": "Schema for a Bill of Materials, containing multiple items.",
+  "fields": [
+    {
+      "name": "bomId",
+      "type": "string",
+      "doc": "Unique identifier for the Bill of Materials."
+    },
+    {
+      "name": "projectId",
+      "type": "string",
+      "doc": "ID of the KiCad project this BOM belongs to."
+    },
+    {
+      "name": "generatedDate",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "Timestamp of when the BOM was generated."
+    },
+    {
+      "name": "items",
+      "type": {
+        "type": "array",
+        "items": "BillOfMaterialsItem"
+      },
+      "doc": "List of individual items in the Bill of Materials."
+    },
+    {
+      "name": "totalCost",
+      "type": ["null", "double"],
+      "default": null,
+      "doc": "Calculated total cost of all items in the BOM, if unit costs are available."
+    },
+    {
+      "name": "currency",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Currency of the total cost."
+    }
+  ]
+} 

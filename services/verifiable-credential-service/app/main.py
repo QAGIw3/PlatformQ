@@ -17,6 +17,7 @@ from pulsar.schema import AvroSchema
 from platformq_shared.event_publisher import EventPublisher
 from platformq_shared.config import ConfigLoader
 from platformq_shared.events import IssueVerifiableCredential, VerifiableCredentialIssued
+from .schemas.dao_schemas import DAOMembershipCredentialSubject, VotingPowerCredentialSubject, ReputationScoreCredentialSubject, ProposalApprovalCredentialSubject
 
 # Import blockchain components
 from .blockchain import BlockchainClient, ChainType, EthereumClient, PolygonClient, FabricClient
@@ -124,11 +125,12 @@ def get_tenant_from_topic(topic: str) -> str:
     return None
 
 # --- Main Credential Issuance Logic ---
-async def issue_and_record_credential(tenant_id: str, subject: dict, credential_type: str, 
+async def issue_and_record_credential(tenant_id: str, subject: Dict[str, Any], credential_type: str, 
                                     publisher: EventPublisher, options: Optional[Dict[str, Any]] = None):
     """
     Core logic to create, sign, and record a credential, then publish an event.
     Enhanced with blockchain anchoring, IPFS storage, and trust network integration.
+    Extended to handle DAO-specific credential subjects.
     """
     options = options or {}
     logger.info(f"Issuing '{credential_type}' for tenant {tenant_id}...")
@@ -139,17 +141,33 @@ async def issue_and_record_credential(tenant_id: str, subject: dict, credential_
         issuer_did_doc = did_manager.create_did_for_tenant(tenant_id, method="web")
         issuer_did = issuer_did_doc.did
     
+    # Prepare credential subject based on type
+    vc_subject_data = subject
+    if credential_type == "DAOMembershipCredential":
+        DAOMembershipCredentialSubject.model_validate(subject) # Validate subject against schema
+        vc_subject_data = DAOMembershipCredentialSubject(**subject).model_dump(mode='json', exclude_unset=True)
+    elif credential_type == "VotingPowerCredential":
+        VotingPowerCredentialSubject.model_validate(subject) # Validate subject against schema
+        vc_subject_data = VotingPowerCredentialSubject(**subject).model_dump(mode='json', exclude_unset=True)
+    elif credential_type == "ReputationScoreCredential":
+        ReputationScoreCredentialSubject.model_validate(subject) # Validate subject against schema
+        vc_subject_data = ReputationScoreCredentialSubject(**subject).model_dump(mode='json', exclude_unset=True)
+    elif credential_type == "ProposalApprovalCredential":
+        ProposalApprovalCredentialSubject.model_validate(subject) # Validate subject against schema
+        vc_subject_data = ProposalApprovalCredentialSubject(**subject).model_dump(mode='json', exclude_unset=True)
+
     # Create the verifiable credential
     vc = VerifiableCredential({
         "@context": [
             "https://www.w3.org/2018/credentials/v1",
-            "https://w3id.org/security/v2"
+            "https://w3id.org/security/v2",
+            "https://platformq.com/contexts/dao-v1.jsonld" # Add DAO context
         ],
         "id": f"urn:uuid:{uuid.uuid4()}",
         "type": ["VerifiableCredential", credential_type],
         "issuer": issuer_did,
         "issuanceDate": datetime.utcnow().isoformat() + "Z",
-        "credentialSubject": subject,
+        "credentialSubject": vc_subject_data,
     })
     
     # Add proof (using DID-based signing)
@@ -214,11 +232,19 @@ async def issue_and_record_credential(tenant_id: str, subject: dict, credential_
     logger.info(f"Recorded credential {vc.data['id']} with blockchain anchor(s) and IPFS storage")
 
     # Publish an event to notify that the credential has been issued
-    event = VerifiableCredentialIssued(
-        tenant_id=tenant_id,
-        proposal_id=subject.get("id", "").replace("urn:platformq:proposal:", ""), # Extract from subject
-        credential_id=vc.data['id'],
-    )
+    if credential_type == "ProposalApprovalCredential":
+        event = VerifiableCredentialIssued(
+            tenant_id=tenant_id,
+            proposal_id=subject.get("proposalId", ""),
+            credential_id=vc.data['id'],
+        )
+    else:
+        event = VerifiableCredentialIssued(
+            tenant_id=tenant_id,
+            proposal_id=subject.get("id", "").replace("urn:platformq:proposal:", ""), # Default behavior
+            credential_id=vc.data['id'],
+        )
+
     publisher.publish(
         topic_base='verifiable-credential-issued-events',
         tenant_id=tenant_id,
@@ -448,7 +474,7 @@ class CredentialSubject(BaseModel):
     
 class IssueRequest(BaseModel):
     subject: Dict[str, Any]
-    credential_type: str = Field(alias="type")
+    credential_type: str = Field(alias="type", description="Type of the credential, e.g., 'DAOMembershipCredential'")
     blockchain: Optional[str] = "ethereum"
     multi_chain: Optional[bool] = False
     issuer_did: Optional[str] = None

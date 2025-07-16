@@ -1,0 +1,33 @@
+{{- if .Values.deployment.enabled }}
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: {{ include "dao-contracts.fullname" . }}-deploy
+  labels:
+    {{- include "dao-contracts.labels" . | nindent 4 }}
+spec:
+  template:
+    metadata:
+      labels:
+        {{- include "dao-contracts.selectorLabels" . | nindent 8 }}
+    spec:
+      restartPolicy: OnFailure
+      containers:
+        - name: deploy-contracts
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          command: ["/bin/bash", "-c"]
+          args:
+            - |
+              npm install && npx hardhat run scripts/deploy_contracts.js --network {{ .Values.deployment.network }}
+          env:
+            - name: ETHEREUM_PRIVATE_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ .Values.deployment.privateKeySecretName }}
+                  key: private_key
+            - name: ETHEREUM_RPC_URL # Or other network specific RPC URL
+              value: "{{ .Values.deployment.network | upper }}_RPC_URL" # Placeholder, actual value injected via configmap or direct
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+{{- end }} 

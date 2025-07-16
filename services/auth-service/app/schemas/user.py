@@ -9,6 +9,7 @@ from pydantic import BaseModel, EmailStr
 class UserBase(BaseModel):
     email: EmailStr
     full_name: Optional[str] = None
+    did: Optional[str] = None # Added for DID
 
 
 # Properties to receive via API on creation
@@ -18,6 +19,7 @@ class UserCreate(UserBase):
 
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
+    did: Optional[str] = None # Added for DID
 
 
 # Properties to return to client
@@ -26,6 +28,7 @@ class User(UserBase):
     status: str
     created_at: datetime.datetime
     updated_at: Optional[datetime.datetime] = None
+    did: Optional[str] = None # New field for Decentralized Identifier
 
     class Config:
         orm_mode = True

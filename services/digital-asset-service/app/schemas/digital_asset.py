@@ -42,6 +42,8 @@ class DigitalAssetBase(BaseModel):
     tags: List[str] = []
     metadata: Dict[str, str] = Field(default_factory=dict, alias="asset_metadata")
     raw_data_uri: Optional[str] = None
+    payload_schema_version: Optional[str] = None # New field for schema version of the payload
+    payload: Optional[bytes] = None # New field for structured, serialized payload data
 
 class DigitalAssetCreate(DigitalAssetBase):
     links: List[AssetLinkCreate] = []
@@ -52,6 +54,8 @@ class DigitalAssetUpdate(BaseModel):
     asset_name: Optional[str] = None
     tags: Optional[List[str]] = None
     metadata: Optional[Dict[str, str]] = Field(default=None, alias="asset_metadata")
+    payload_schema_version: Optional[str] = None # Allow updating payload schema version
+    payload: Optional[bytes] = None # Allow updating payload data
 
 class DigitalAsset(DigitalAssetBase):
     asset_id: uuid.UUID

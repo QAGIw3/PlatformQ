@@ -10,7 +10,7 @@ from datetime import datetime
 from fastapi import Request, Response, status, HTTPException, Query
 from platformq_shared.events import (
     IssueVerifiableCredential, DigitalAssetCreated, ExecuteWasmFunction, 
-    DocumentUpdatedEvent, ProjectCreatedEvent
+    DocumentUpdatedEvent, ProjectCreatedEvent, DAOEvent
 )
 from pulsar.schema import AvroSchema
 from .airflow_bridge import AirflowBridge, EventToDAGProcessor
@@ -295,6 +295,90 @@ def trust_activity_consumer_loop(app):
     client.close()
 
 
+# --- DAO Event Consumer ---
+def dao_event_consumer_loop(app):
+    """
+    Consumes DAO events from Pulsar and triggers Airflow DAGs.
+    """
+    logger.info("Starting DAO event consumer...")
+    
+    publisher = app.state.event_publisher
+    client = pulsar.Client(settings["PULSAR_URL"])
+    
+    consumer = client.subscribe(
+        topic_pattern="persistent://platformq/.*/dao-events",
+        subscription_name="workflow-dao-event-sub",
+        consumer_type=pulsar.ConsumerType.Shared,
+        schema=AvroSchema(DAOEvent)
+    )
+    
+    while not app.state.stop_event.is_set():
+        try:
+            msg = consumer.receive(timeout_millis=1000)
+            if msg is None:
+                continue
+                
+            event = msg.value()
+            tenant_id = get_tenant_from_topic(msg.topic_name())
+            
+            if not tenant_id:
+                logger.warning(f"Skipping DAO event from topic {msg.topic_name()} due to missing tenant ID.")
+                consumer.acknowledge(msg)
+                continue
+
+            logger.info(f"Processing DAO event for tenant {tenant_id}: {event.event_type} (DAO: {event.dao_id})")
+            
+            # Map DAO event type to specific Airflow DAGs
+            dag_id = None
+            conf = {
+                "tenant_id": tenant_id,
+                "dao_id": event.dao_id,
+                "event_type": event.event_type,
+                "blockchain_tx_hash": event.blockchain_tx_hash,
+                "event_timestamp": event.event_timestamp
+            }
+
+            if event.proposal_id: # For proposal-related events
+                conf["proposal_id"] = event.proposal_id
+            if event.voter_id: # For vote-related events
+                conf["voter_id"] = event.voter_id
+            if event.event_data: # For generic extra data
+                try:
+                    conf["event_data"] = json.loads(event.event_data)
+                except json.JSONDecodeError:
+                    logger.warning(f"Could not parse event_data for DAO event {event.dao_id}: {event.event_data}")
+                    conf["event_data"] = event.event_data
+            
+            # Example mappings:
+            if event.event_type == "ProposalCreated":
+                dag_id = "dao_proposal_created_workflow"
+            elif event.event_type == "VoteCast":
+                dag_id = "dao_vote_cast_workflow"
+            elif event.event_type == "ProposalExecuted":
+                dag_id = "dao_proposal_executed_workflow"
+            elif event.event_type == "DaoInitialized":
+                dag_id = "dao_initialization_workflow"
+
+            if dag_id and hasattr(app.state, 'airflow_bridge'):
+                app.state.airflow_bridge.trigger_dag(
+                    dag_id,
+                    conf=conf
+                )
+                logger.info(f"Triggered Airflow DAG '{dag_id}' for DAO event {event.event_type} (DAO: {event.dao_id})")
+            elif not dag_id:
+                logger.info(f"No specific Airflow DAG mapping found for DAO event type: {event.event_type}")
+            
+            consumer.acknowledge(msg)
+            
+        except Exception as e:
+            logger.error(f"Error in DAO event consumer: {e}", exc_info=True)
+            if 'msg' in locals() and msg:
+                consumer.negative_acknowledge(msg)
+                
+    consumer.close()
+    client.close()
+
+
 def check_reputation_milestones(entity_id: str, activity_type: str, metadata: dict, publisher):
     """
     Check if entity has reached reputation milestones and trigger rewards.
@@ -498,6 +582,11 @@ def startup_event():
     trust_thread = threading.Thread(target=trust_activity_consumer_loop, args=(app,), daemon=True)
     trust_thread.start()
     app.state.trust_thread = trust_thread
+
+    # DAO event consumer
+    dao_thread = threading.Thread(target=dao_event_consumer_loop, args=(app,), daemon=True)
+    dao_thread.start()
+    app.state.dao_event_consumer_thread = dao_thread
     
     logger.info("All consumer threads started")
 
@@ -518,6 +607,8 @@ def shutdown_event():
         app.state.document_thread.join(timeout=5)
     if hasattr(app.state, 'trust_thread'):
         app.state.trust_thread.join(timeout=5)
+    if hasattr(app.state, 'dao_event_consumer_thread'): # Join the new thread
+        app.state.dao_event_consumer_thread.join()
     
     # Stop event publisher
     if app.state.event_publisher:

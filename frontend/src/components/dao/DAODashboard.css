@@ -1,0 +1,103 @@
+.dao-dashboard-container {
+    padding: 20px;
+    font-family: Arial, sans-serif;
+    max-width: 1200px;
+    margin: 0 auto;
+}
+
+.dao-dashboard-container h2 {
+    color: #333;
+    margin-bottom: 20px;
+    text-align: center;
+}
+
+.create-dao-button {
+    display: block;
+    margin: 20px auto;
+    padding: 10px 20px;
+    background-color: #007bff;
+    color: white;
+    border: none;
+    border-radius: 5px;
+    cursor: pointer;
+    font-size: 16px;
+    transition: background-color 0.3s ease;
+}
+
+.create-dao-button:hover {
+    background-color: #0056b3;
+}
+
+.dao-list {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(300px, 1fr));
+    gap: 20px;
+}
+
+.dao-card {
+    background-color: #f9f9f9;
+    border: 1px solid #ddd;
+    border-radius: 8px;
+    padding: 15px;
+    box-shadow: 0 2px 4px rgba(0, 0, 0, 0.1);
+    display: flex;
+    flex-direction: column;
+    justify-content: space-between;
+}
+
+.dao-card h3 {
+    color: #007bff;
+    margin-top: 0;
+    margin-bottom: 10px;
+}
+
+.dao-card p {
+    font-size: 14px;
+    color: #555;
+    flex-grow: 1;
+    margin-bottom: 15px;
+}
+
+.dao-stats {
+    display: flex;
+    justify-content: space-between;
+    font-size: 13px;
+    color: #777;
+    margin-bottom: 15px;
+}
+
+.dao-stats .status {
+    padding: 3px 8px;
+    border-radius: 4px;
+    font-weight: bold;
+    color: white;
+}
+
+.dao-stats .status.active {
+    background-color: #28a745;
+}
+
+.dao-stats .status.paused {
+    background-color: #ffc107;
+}
+
+.dao-actions button {
+    background-color: #6c757d;
+    color: white;
+    border: none;
+    padding: 8px 12px;
+    border-radius: 4px;
+    cursor: pointer;
+    margin-right: 10px;
+    transition: background-color 0.3s ease;
+}
+
+.dao-actions button:hover {
+    background-color: #5a6268;
+}
+
+.dao-dashboard-container.error {
+    color: red;
+    text-align: center;
+    font-weight: bold;
+} 

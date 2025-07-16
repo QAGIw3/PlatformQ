@@ -18,6 +18,7 @@ const userManager = new UserManager(oidcSettings);
 const Dashboard = () => <h2>Dashboard</h2>;
 const SimulationManager = () => <h2>Simulation Manager</h2>;
 import AssetExplorerPage from './features/assets/AssetExplorerPage';
+import DAODashboard from './components/dao/DAODashboard';
 
 function App() {
   const [user, setUser] = useState(null);
@@ -71,6 +72,7 @@ function App() {
             <li><Link to="/">Dashboard</Link></li>
             <li><Link to="/simulations">Simulations</Link></li>
             <li><Link to="/assets">Asset Explorer</Link></li>
+            <li><Link to="/daos">DAO Dashboard</Link></li>
             <li><button onClick={handleLogout}>Logout</button></li>
           </ul>
         </nav>
@@ -79,6 +81,7 @@ function App() {
             <Route path="/" element={<Dashboard />} />
             <Route path="/simulations" element={<SimulationManager />} />
             <Route path="/assets" element={<AssetExplorerPage user={user} />} />
+            <Route path="/daos" element={<DAODashboard />} />
           </Routes>
         </main>
       </div>

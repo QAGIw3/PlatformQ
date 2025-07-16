@@ -1,0 +1,6 @@
+apiVersion: v2
+name: dao-contracts
+description: A Helm chart for deploying DAO smart contracts (Gnosis Safe, Reputation Oracle).
+type: application
+version: 0.1.0
+appVersion: "0.1.0" 

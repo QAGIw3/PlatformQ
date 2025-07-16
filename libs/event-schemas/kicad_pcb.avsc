@@ -1,0 +1,116 @@
+{
+  "type": "record",
+  "name": "KiCadPCB",
+  "namespace": "com.platformq.kicad",
+  "doc": "Schema for a KiCad PCB layout file.",
+  "fields": [
+    {
+      "name": "pcbId",
+      "type": "string",
+      "doc": "Unique identifier for the PCB."
+    },
+    {
+      "name": "fileName",
+      "type": "string",
+      "doc": "Name of the PCB file (e.g., main.kicad_pcb)."
+    },
+    {
+      "name": "lastModifiedDate",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "Timestamp of when the PCB was last modified."
+    },
+    {
+      "name": "boardDimensions",
+      "type": {
+        "type": "record",
+        "name": "BoardDimensions",
+        "fields": [
+          {
+            "name": "width",
+            "type": "double",
+            "doc": "Width of the PCB in mm."
+          },
+          {
+            "name": "height",
+            "type": "double",
+            "doc": "Height of the PCB in mm."
+          }
+        ]
+      },
+      "doc": "Dimensions of the PCB board."
+    },
+    {
+      "name": "layers",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "BoardLayer",
+          "fields": [
+            {
+              "name": "name",
+              "type": "string",
+              "doc": "Name of the PCB layer (e.g., F.Cu, B.Cu, F.SilkS)."
+            },
+            {
+              "name": "type",
+              "type": "string",
+              "doc": "Type of the layer (e.g., copper, silk, mask)."
+            }
+          ]
+        }
+      },
+      "doc": "List of layers in the PCB."
+    },
+    {
+      "name": "footprints",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "PCBFootprint",
+          "fields": [
+            {
+              "name": "reference",
+              "type": "string",
+              "doc": "Component reference (e.g., R1, C1)."
+            },
+            {
+              "name": "footprintName",
+              "type": "string",
+              "doc": "Name of the footprint used."
+            },
+            {
+              "name": "positionX",
+              "type": "double",
+              "doc": "X coordinate of the footprint on the PCB."
+            },
+            {
+              "name": "positionY",
+              "type": "double",
+              "doc": "Y coordinate of the footprint on the PCB."
+            },
+            {
+              "name": "rotation",
+              "type": "double",
+              "doc": "Rotation of the footprint in degrees."
+            }
+          ]
+        }
+      },
+      "doc": "List of footprints placed on the PCB."
+    },
+    {
+      "name": "designRules",
+      "type": ["null", {
+        "type": "array",
+        "items": "string"
+      }],
+      "default": null,
+      "doc": "List of design rules applied to the PCB."
+    }
+  ]
+} 

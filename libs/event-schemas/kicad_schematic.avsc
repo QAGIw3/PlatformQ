@@ -1,0 +1,99 @@
+{
+  "type": "record",
+  "name": "KiCadSchematic",
+  "namespace": "com.platformq.kicad",
+  "doc": "Schema for a KiCad schematic file.",
+  "fields": [
+    {
+      "name": "schematicId",
+      "type": "string",
+      "doc": "Unique identifier for the schematic."
+    },
+    {
+      "name": "fileName",
+      "type": "string",
+      "doc": "Name of the schematic file (e.g., main.kicad_sch)."
+    },
+    {
+      "name": "sheetName",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Name of the sheet within the schematic, if applicable."
+    },
+    {
+      "name": "lastModifiedDate",
+      "type": {
+        "type": "long",
+        "logicalType": "timestamp-millis"
+      },
+      "doc": "Timestamp of when the schematic was last modified."
+    },
+    {
+      "name": "components",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "SchematicComponent",
+          "fields": [
+            {
+              "name": "reference",
+              "type": "string",
+              "doc": "Component reference (e.g., R1, C1, U1)."
+            },
+            {
+              "name": "value",
+              "type": "string",
+              "doc": "Component value (e.g., 10k, 10uF, ATmega328P)."
+            },
+            {
+              "name": "footprint",
+              "type": ["null", "string"],
+              "default": null,
+              "doc": "Component footprint (e.g., Resistor_SMD:R_0603_1608Metric)."
+            },
+            {
+              "name": "partNumber",
+              "type": ["null", "string"],
+              "default": null,
+              "doc": "Manufacturer part number for the component."
+            },
+            {
+              "name": "description",
+              "type": ["null", "string"],
+              "default": null,
+              "doc": "Description of the component."
+            }
+          ]
+        }
+      },
+      "doc": "List of components in the schematic."
+    },
+    {
+      "name": "connections",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "SchematicConnection",
+          "fields": [
+            {
+              "name": "netName",
+              "type": "string",
+              "doc": "Name of the net."
+            },
+            {
+              "name": "connectedComponents",
+              "type": {
+                "type": "array",
+                "items": "string"
+              },
+              "doc": "List of component references connected to this net."
+            }
+          ]
+        }
+      },
+      "doc": "List of connections (nets) in the schematic."
+    }
+  ]
+} 

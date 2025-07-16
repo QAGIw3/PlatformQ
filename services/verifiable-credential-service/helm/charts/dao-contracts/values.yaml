@@ -1,0 +1,27 @@
+replicaCount: 1
+
+image:
+  repository: your-docker-registry/hardhat-deployer # This image will contain Hardhat and deployment scripts
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+# Configuration for smart contract deployment
+deployment:
+  enabled: true
+  network: "sepolia" # Default network to deploy to (e.g., sepolia, mumbai, ethereum, polygon)
+  # Private key for the deployer account (should be managed securely, e.g., via Kubernetes Secrets)
+  privateKeySecretName: "dao-deployer-private-key"
+  # Contract addresses if already deployed (optional, for connecting to existing contracts)
+  registryContractAddress: ""
+  verifierContractAddress: ""
+  gnosisSafeContractAddress: ""
+  reputationOracleContractAddress: ""
+
+# Resource limits for the deployment job
+resources:
+  requests:
+    cpu: 100m
+    memory: 256Mi
+  limits:
+    cpu: 500m
+    memory: 512Mi 
