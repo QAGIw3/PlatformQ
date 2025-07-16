@@ -20,7 +20,17 @@ def get_user_by_email(db: Session, *, email: str):
     return rows.one()
 
 
-def create_user(db: Session, *, tenant_id: UUID, user: UserCreate, did: Optional[str] = None):
+def get_user_by_wallet_address(db: Session, *, wallet_address: str):
+    """
+    Retrieves a user from the database by their wallet address.
+    """
+    query = "SELECT tenant_id, id, email, full_name, status, created_at, updated_at, did, wallet_address FROM users WHERE wallet_address = %s ALLOW FILTERING"
+    prepared = db.prepare(query)
+    rows = db.execute(prepared, [wallet_address])
+    return rows.one()
+
+
+def create_user(db: Session, *, tenant_id: UUID, user: UserCreate):
     """
     Creates a new user in the database.
     """
@@ -28,13 +38,13 @@ def create_user(db: Session, *, tenant_id: UUID, user: UserCreate, did: Optional
     created_time = datetime.datetime.now(datetime.timezone.utc)
 
     query = """
-    INSERT INTO users (tenant_id, id, email, full_name, status, created_at, updated_at, did)
-    VALUES (%s, %s, %s, %s, %s, %s, %s, %s)
+    INSERT INTO users (tenant_id, id, email, full_name, status, created_at, updated_at, did, wallet_address)
+    VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
     """
     prepared_statement = db.prepare(query)
     db.execute(
         prepared_statement,
-        [tenant_id, user_id, user.email, user.full_name, "active", created_time, created_time, did],
+        [tenant_id, user_id, user.email, user.full_name, "active", created_time, created_time, user.did, user.wallet_address],
     )
 
     # Retrieve the just-created user to return it
@@ -61,6 +71,12 @@ def update_user(db: Session, *, tenant_id: UUID, user_id: UUID, user_update: Use
         updates["full_name"] = user_update.full_name
     if user_update.did is not None:
         updates["did"] = user_update.did
+    if user_update.wallet_address is not None:
+        updates["wallet_address"] = user_update.wallet_address
+    if user_update.storage_backend is not None:
+        updates["storage_backend"] = user_update.storage_backend
+    if user_update.storage_config is not None:
+        updates["storage_config"] = user_update.storage_config
 
     if not updates:
         return get_user_by_id(db, tenant_id=tenant_id, user_id=user_id)

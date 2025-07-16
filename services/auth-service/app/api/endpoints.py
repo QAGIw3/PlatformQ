@@ -17,7 +17,8 @@ from ..crud import (
     crud_subscription,
     crud_user,
     crud_oidc,
-    crud_tenant
+    crud_tenant,
+    crud_siwe
 )
 from ..db.session import get_db_session
 from ..schemas.api_key import ApiKeyCreate, ApiKeyCreateResponse, ApiKeyInfo
@@ -33,11 +34,14 @@ from ..schemas.user import (
     User,
     UserCreate,
     UserUpdate,
+    LinkWalletRequest,
+    StorageConfigUpdate,
 )
 from ..schemas.tenant import Tenant, TenantCreate
-from .deps import get_current_tenant_and_user, require_role
+from .deps import get_current_tenant_and_user, require_role, get_current_user, require_service_token
 from ..services.user_service import UserService
 from platformq_shared.events import UserCreatedEvent, SubscriptionChangedEvent
+from siwe import SiweMessage
 
 router = APIRouter()
 
@@ -160,6 +164,59 @@ def update_current_user(
     """
     user = crud_user.update_user(db, user_id=current_user.id, user_update=user_in) # `user_update` already contains did
     return user
+
+
+@router.put("/users/me/storage", response_model=User)
+def update_storage_config(
+    storage_in: StorageConfigUpdate,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Update the current user's storage configuration.
+    """
+    # In a real app, you would add validation for the storage_config JSON
+    # and ensure the storage_backend is a valid choice.
+    user_update = UserUpdate(
+        storage_backend=storage_in.storage_backend,
+        storage_config=storage_in.storage_config
+    )
+    updated_user = crud_user.update_user(db, user_id=current_user.id, user_update=user_update)
+    return updated_user
+
+
+@router.post("/users/me/link-wallet", response_model=User)
+def link_wallet(
+    request: LinkWalletRequest,
+    db: Session = Depends(get_db_session),
+    current_user: User = Depends(get_current_user),
+):
+    """
+    Link a wallet to the current user's account using SIWE.
+    """
+    siwe_message = SiweMessage(message=request.message)
+
+    if not crud_siwe.use_nonce(db, siwe_message.nonce):
+        raise HTTPException(status_code=422, detail="Invalid nonce.")
+
+    try:
+        siwe_message.verify(request.signature)
+    except Exception as e:
+        raise HTTPException(status_code=422, detail=f"Invalid signature: {e}")
+
+    wallet_address = siwe_message.address
+    
+    # Check if this wallet is already linked to another user
+    existing_user = crud_user.get_user_by_wallet_address(db, wallet_address=wallet_address)
+    if existing_user and existing_user.id != current_user.id:
+        raise HTTPException(status_code=400, detail="Wallet is already linked to another account.")
+
+    # Update the user with wallet address and DID
+    did = f"did:ethr:{wallet_address}"
+    user_update = UserUpdate(wallet_address=wallet_address, did=did)
+    
+    updated_user = crud_user.update_user(db, user_id=current_user.id, user_update=user_update)
+    return updated_user
 
 
 @router.post("/users/me/deactivate", response_model=User)
@@ -511,6 +568,25 @@ def revoke_api_key_endpoint(
         details=f"API key with prefix {key_prefix} revoked.",
     )
     return
+
+
+# ==============================================================================
+# Internal Service-to-Service Endpoints
+# ==============================================================================
+
+@router.get("/internal/users/{user_id}", response_model=User)
+def get_user_details_for_s2s(
+    user_id: UUID,
+    db: Session = Depends(get_db_session),
+    service_token: dict = Depends(require_service_token),
+):
+    """
+    Internal endpoint for services to retrieve user details.
+    """
+    user = crud_user.get_user_by_id(db, user_id=user_id)
+    if not user:
+        raise HTTPException(status_code=404, detail="User not found")
+    return user
 
 
 # ==============================================================================

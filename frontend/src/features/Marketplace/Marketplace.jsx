@@ -127,7 +127,7 @@ const Marketplace = () => {
 
   const handleListAsset = async (values) => {
     try {
-      const response = await api.post(`/digital-asset-service/api/v1/digital-assets/${values.assetId}/list-for-sale`, null, {
+      const response = await api.post(`/digital-asset-service/api/v1/digital-assets/${values.cid}/list-for-sale`, null, {
         params: {
           price: values.price,
           currency: values.currency || 'ETH',
@@ -451,11 +451,11 @@ const Marketplace = () => {
           onFinish={handleListAsset}
         >
           <Form.Item
-            name="assetId"
-            label="Asset ID"
-            rules={[{ required: true, message: 'Please enter asset ID' }]}
+            name="cid"
+            label="Asset CID"
+            rules={[{ required: true, message: 'Please enter asset CID' }]}
           >
-            <Input placeholder="Enter your asset ID" />
+            <Input placeholder="Enter your asset CID" />
           </Form.Item>
           
           <Form.Item

@@ -1,57 +1,34 @@
-from shared_lib.base_service import create_base_app
-from fastapi import Depends, HTTPException, UploadFile, File, Response, Query
-import ipfshttpclient
-from .api import endpoints
-from .api.deps import (
-    get_db_session, 
-    get_api_key_crud_placeholder, 
-    get_user_crud_placeholder, 
-    get_password_verifier_placeholder,
-    get_current_tenant_and_user
-)
+from fastapi import Depends, HTTPException, UploadFile, File, Query
+from fastapi.responses import StreamingResponse
 from typing import Optional
 import httpx
 import logging
 from datetime import datetime
 
+from platformq_shared.base_service import create_base_app
+from .api.deps import get_current_tenant_and_user
+from .storage.base import BaseStorage
+from .storage.factory import get_storage_backend
+
 logger = logging.getLogger(__name__)
 
-app = create_base_app(
-    service_name="storage-proxy-service",
-    db_session_dependency=get_db_session,
-    api_key_crud_dependency=get_api_key_crud_placeholder,
-    user_crud_dependency=get_user_crud_placeholder,
-    password_verifier_dependency=get_password_verifier_placeholder,
-)
-
-# Include service-specific routers
-app.include_router(endpoints.router, prefix="/api/v1", tags=["storage-proxy-service"])
-
-# Service-specific root endpoint
-@app.get("/")
-def read_root():
-    return {"message": "storage-proxy-service is running"}
-
-# In a real app, this would come from config/vault
-IPFS_API_URL = "/dns/platformq-ipfs-kubo/tcp/5001/http"
+app = create_base_app()
 
 @app.post("/upload")
-async def upload_to_ipfs(
+async def upload_file(
     context: dict = Depends(get_current_tenant_and_user),
-    file: UploadFile = File(...)
+    file: UploadFile = File(...),
+    storage: BaseStorage = Depends(get_storage_backend)
 ):
     """
-    Uploads a file to the IPFS node and returns its CID.
+    Uploads a file to the configured storage backend.
     """
-    try:
-        with ipfshttpclient.connect(IPFS_API_URL) as client:
-            result = client.add(file.file, pin=True)
-            cid = result['Hash']
-            # In a real app, we would store the mapping from
-            # (tenant_id, file_path) -> cid in a database.
-            return {"cid": cid, "filename": file.filename}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=f"Failed to upload to IPFS: {e}")
+    tenant_id = context.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant ID not found in context.")
+        
+    identifier = await storage.upload(file, tenant_id)
+    return {"identifier": identifier, "filename": file.filename}
 
 async def check_license_validity(
     asset_id: str,
@@ -100,22 +77,26 @@ async def check_license_validity(
             detail="Unable to verify license at this time"
         )
 
-@app.get("/download/{cid}")
-async def download_from_ipfs(
-    cid: str,
+@app.get("/download/{identifier}")
+async def download_file(
+    identifier: str,
     asset_id: Optional[str] = Query(None, description="Asset ID for license verification"),
     license_id: Optional[str] = Query(None, description="Specific license ID to use"),
     context: dict = Depends(get_current_tenant_and_user),
+    storage: BaseStorage = Depends(get_storage_backend),
     require_license: bool = Query(False, description="Enforce license check")
 ):
     """
-    Downloads a file from IPFS by its CID.
+    Downloads a file from the configured storage backend by its identifier.
     If asset_id is provided and require_license is True, enforces license check.
     """
+    headers = {}
     # Check license if required
     if require_license and asset_id:
-        user = context.get("user")
-        if not user or not hasattr(user, "blockchain_address"):
+        user = context.get("user", {}) # Use .get for safety
+        user_blockchain_address = user.get("blockchain_address")
+
+        if not user_blockchain_address:
             raise HTTPException(
                 status_code=401,
                 detail="User must have blockchain address for licensed content"
@@ -124,7 +105,7 @@ async def download_from_ipfs(
         # Verify license
         license_info = await check_license_validity(
             asset_id=asset_id,
-            user_address=user.blockchain_address,
+            user_address=user_blockchain_address,
             license_id=license_id
         )
         
@@ -132,21 +113,20 @@ async def download_from_ipfs(
         if license_info.get("max_usage") and license_info.get("max_usage") > 0:
             # In production, this would call smart contract to record usage
             logger.info(f"Recording usage for license {license_info.get('license_id')}")
-    
-    try:
-        with ipfshttpclient.connect(IPFS_API_URL) as client:
-            file_content = client.cat(cid)
-            
-            # Add license headers if applicable
-            headers = {}
-            if require_license and asset_id:
-                headers["X-License-Type"] = license_info.get("license_type", "standard")
-                headers["X-License-Expires"] = str(license_info.get("expires_at", ""))
-            
-            return Response(
-                content=file_content, 
-                media_type="application/octet-stream",
-                headers=headers
-            )
-    except Exception as e:
-        raise HTTPException(status_code=404, detail=f"Failed to download from IPFS: {e}")
+
+        headers["X-License-Type"] = license_info.get("license_type", "standard")
+        headers["X-License-Expires"] = str(license_info.get("expires_at", ""))
+
+    tenant_id = context.get("tenant_id")
+    if not tenant_id:
+        raise HTTPException(status_code=400, detail="Tenant ID not found in context.")
+
+    return StreamingResponse(
+        storage.download(identifier, tenant_id),
+        media_type="application/octet-stream",
+        headers=headers
+    )
+
+@app.get("/")
+def read_root():
+    return {"message": "storage-proxy-service is running"}

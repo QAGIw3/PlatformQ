@@ -1,5 +1,5 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, ForeignKey, Table, TypeDecorator, JSON, LargeBinary, Integer, BigInteger
+from sqlalchemy import Column, String, DateTime, ForeignKey, Table, TypeDecorator, JSON, LargeBinary, Integer, BigInteger, Boolean, Numeric
 from sqlalchemy.orm import relationship, Mapped
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
@@ -21,8 +21,8 @@ class JsonBCompat(TypeDecorator):
 
 # Association Table for the many-to-many relationship between assets
 asset_links = Table('asset_links', Base.metadata,
-    Column('source_asset_id', UUID(as_uuid=True), ForeignKey('digital_assets.asset_id'), primary_key=True),
-    Column('target_asset_id', UUID(as_uuid=True), ForeignKey('digital_assets.asset_id'), primary_key=True),
+    Column('source_asset_cid', String, ForeignKey('digital_assets.cid'), primary_key=True),
+    Column('target_asset_cid', String, ForeignKey('digital_assets.cid'), primary_key=True),
     Column('link_type', String, nullable=False)
 )
 
@@ -48,7 +48,7 @@ class DigitalAsset(Base):
     __tablename__ = 'digital_assets'
 
     # Core Fields
-    asset_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    cid = Column(String, primary_key=True, index=True)
     asset_name = Column(String, nullable=False)
     asset_type = Column(String, ForeignKey('asset_processing_rules.asset_type'), nullable=False, index=True)
     owner_id = Column(UUID(as_uuid=True), nullable=False, index=True)
@@ -86,8 +86,8 @@ class DigitalAsset(Base):
     links: Mapped[list["DigitalAsset"]] = relationship(
         "DigitalAsset",
         secondary=asset_links,
-        primaryjoin=asset_id == asset_links.c.source_asset_id,
-        secondaryjoin=asset_id == asset_links.c.target_asset_id,
+        primaryjoin=cid == asset_links.c.source_asset_cid,
+        secondaryjoin=cid == asset_links.c.target_asset_cid,
         back_populates="linked_from"
     )
 
@@ -95,8 +95,8 @@ class DigitalAsset(Base):
     linked_from: Mapped[list["DigitalAsset"]] = relationship(
         "DigitalAsset",
         secondary=asset_links,
-        primaryjoin=asset_id == asset_links.c.target_asset_id,
-        secondaryjoin=asset_id == asset_links.c.source_asset_id,
+        primaryjoin=cid == asset_links.c.target_asset_cid,
+        secondaryjoin=cid == asset_links.c.source_asset_cid,
         back_populates="links"
     )
     
@@ -109,7 +109,7 @@ class CADSession(Base):
     __tablename__ = 'cad_sessions'
     
     session_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    asset_id = Column(UUID(as_uuid=True), ForeignKey('digital_assets.asset_id'), nullable=False)
+    asset_cid = Column(String, ForeignKey('digital_assets.cid'), nullable=False)
     tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
     created_by = Column(UUID(as_uuid=True), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -152,7 +152,7 @@ class GeometryVersion(Base):
     __tablename__ = 'geometry_versions'
     
     version_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
-    asset_id = Column(UUID(as_uuid=True), ForeignKey('digital_assets.asset_id'), nullable=False)
+    asset_cid = Column(String, ForeignKey('digital_assets.cid'), nullable=False)
     version_number = Column(Integer, nullable=False)
     created_by = Column(UUID(as_uuid=True), nullable=False)
     created_at = Column(DateTime(timezone=True), server_default=func.now())
@@ -177,5 +177,5 @@ class GeometryVersion(Base):
     
     # Add unique constraint to ensure version numbers are unique per asset
     __table_args__ = (
-        UniqueConstraint('asset_id', 'version_number', name='_asset_version_uc'),
+        UniqueConstraint('asset_cid', 'version_number', name='_asset_version_uc'),
     ) 

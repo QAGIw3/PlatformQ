@@ -19,7 +19,10 @@ export const completeMilestone = (projectId, milestoneId) => apiClient.post(`/pr
 // Digital Asset Service
 export const getDigitalAssets = () => apiClient.get('/digital-asset-service/digital-assets');
 export const createDigitalAsset = (assetData) => apiClient.post('/digital-asset-service/digital-assets', assetData);
-export const createPeerReview = (assetId, reviewData) => apiClient.post(`/digital-asset-service/digital-assets/${assetId}/reviews`, reviewData);
+export const getAssetLineage = (assetId) => apiClient.get(`/digital-asset-service/digital-assets/${assetId}/lineage`);
+export const createPeerReview = (cid, reviewData) => apiClient.post(`/digital-asset-service/digital-assets/${cid}/reviews`, reviewData);
+export const listAssetForSale = (assetId, params) => apiClient.post(`/digital-asset-service/digital-assets/${assetId}/list-for-sale`, null, { params });
+export const createLicenseOffer = (assetId, terms) => apiClient.post(`/digital-asset-service/digital-assets/${assetId}/create-license-offer`, terms);
 
 // Graph Intelligence Service
 export const getTrustScore = (userId) => apiClient.get(`/graph-intelligence-service/trust-score/${userId}`); 

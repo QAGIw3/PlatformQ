@@ -4,6 +4,10 @@
 ipfshttpclient
 python-jose[cryptography]
 httpx
+minio
+pydantic-settings
+arweave-python-client
+hvac
  
 # Development and Testing
 pytest

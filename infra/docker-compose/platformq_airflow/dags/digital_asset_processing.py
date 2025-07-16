@@ -11,6 +11,7 @@ from airflow import DAG
 from airflow.operators.python import PythonOperator, BranchPythonOperator
 from airflow.operators.dummy import DummyOperator
 from airflow.utils.trigger_rule import TriggerRule
+from airflow.operators.http_operator import SimpleHttpOperator
 
 # Import PlatformQ custom operators
 import sys
@@ -66,7 +67,23 @@ dag = DAG(
 )
 
 # Task 1: Wait for asset creation event
-wait_for_asset = PulsarSensorOperator(
+create_asset_task = SimpleHttpOperator(
+    task_id="create_digital_asset",
+    http_conn_id="platformq_api",
+    endpoint="/api/v1/digital-assets",
+    method="POST",
+    data={
+        "tenant_id": "{{ ti.xcom_pull(task_ids='wait_for_asset_created', key='tenant_id') }}",
+        "asset_id": "{{ ti.xcom_pull(task_ids='wait_for_asset_created', key='event')['asset_id'] }}",
+        "asset_type": "{{ ti.xcom_pull(task_ids='wait_for_asset_created', key='event')['asset_type'] }}",
+        "raw_data_uri": "{{ ti.xcom_pull(task_ids='wait_for_asset_created', key='event')['raw_data_uri'] }}",
+        "created_by": "{{ ti.xcom_pull(task_ids='wait_for_asset_created', key='event')['created_by'] }}",
+        "created_at": "{{ ti.xcom_pull(task_ids='wait_for_asset_created', key='event')['created_at'] }}"
+    },
+    headers={"Authorization": "Bearer your_service_account_token"}
+)
+
+wait_for_asset_created = PulsarSensorOperator(
     task_id='wait_for_asset_created',
     topic_pattern='persistent://platformq/.*/digital-asset-created-events',
     schema_class=DigitalAssetCreated,
@@ -251,7 +268,8 @@ handle_error = DummyOperator(
 )
 
 # Define task dependencies
-wait_for_asset >> branch_processor
+create_asset_task >> wait_for_asset_created
+wait_for_asset_created >> branch_processor
 branch_processor >> [process_blender, process_freecad, process_gimp, process_openfoam,
                     process_audacity, process_openshot, process_flightgear, process_wasm]
 

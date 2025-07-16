@@ -49,3 +49,23 @@ export const getAssetById = async (assetId, accessToken) => {
 
     return response.json();
 };
+
+/**
+ * Sends a request to migrate an asset's storage.
+ * @param {string} assetId - The UUID of the asset.
+ * @param {string} accessToken - The OIDC access token for authorization.
+ * @returns {Promise<void>}
+ */
+export const migrateAssetStorage = async (cid, accessToken) => {
+    const response = await fetch(`${API_BASE_URL}/internal/digital-assets/${cid}/migrate`, {
+        method: 'POST',
+        headers: {
+            'Authorization': `Bearer ${accessToken}`,
+        },
+    });
+
+    if (!response.ok) {
+        const errorData = await response.json().catch(() => ({ detail: response.statusText }));
+        throw new Error(`Failed to migrate asset ${cid}: ${errorData.detail}`);
+    }
+};

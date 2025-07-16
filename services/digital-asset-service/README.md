@@ -52,20 +52,20 @@ This service manages the lifecycle of digital assets including:
 ### Asset Management
 - `GET /api/v1/digital-assets` - List all assets with filtering
 - `POST /api/v1/digital-assets` - Create new asset
-- `GET /api/v1/digital-assets/{asset_id}` - Get asset details
-- `PUT /api/v1/digital-assets/{asset_id}` - Update asset
-- `DELETE /api/v1/digital-assets/{asset_id}` - Delete asset
+- `GET /api/v1/digital-assets/{cid}` - Get asset details
+- `PUT /api/v1/digital-assets/{cid}` - Update asset
+- `DELETE /api/v1/digital-assets/{cid}` - Delete asset
 
 ### Marketplace Operations
 - `GET /api/v1/marketplace/assets` - Browse marketplace listings
-- `POST /api/v1/digital-assets/{asset_id}/list-for-sale` - List asset for sale
-- `POST /api/v1/digital-assets/{asset_id}/create-license-offer` - Create license terms
-- `DELETE /api/v1/digital-assets/{asset_id}/unlist` - Remove from marketplace
-- `GET /api/v1/digital-assets/{asset_id}/marketplace-info` - Get marketplace details
+- `POST /api/v1/digital-assets/{cid}/list-for-sale` - List asset for sale
+- `POST /api/v1/digital-assets/{cid}/create-license-offer` - Create license terms
+- `DELETE /api/v1/digital-assets/{cid}/unlist` - Remove from marketplace
+- `GET /api/v1/digital-assets/{cid}/marketplace-info` - Get marketplace details
 
 ### Peer Reviews
-- `GET /api/v1/digital-assets/{asset_id}/reviews` - Get asset reviews
-- `POST /api/v1/digital-assets/{asset_id}/reviews` - Submit review
+- `GET /api/v1/digital-assets/{cid}/reviews` - Get asset reviews
+- `POST /api/v1/digital-assets/{cid}/reviews` - Submit review
 - `PUT /api/v1/reviews/{review_id}` - Update review
 - `DELETE /api/v1/reviews/{review_id}` - Delete review
 

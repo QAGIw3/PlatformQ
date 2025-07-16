@@ -43,6 +43,7 @@ from .blockchain.reputation_oracle import reputation_oracle_service
 import requests
 from functools import lru_cache, wraps
 from datetime import datetime, timedelta
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -262,6 +263,27 @@ async def issue_and_record_credential(tenant_id: str, subject: Dict[str, Any], c
     logger.info(f"Published VerifiableCredentialIssued event for proposal {event.proposal_id}")
     return vc.data
 
+@lru_cache(maxsize=128)
+def get_user_did_from_id(user_id: str) -> Optional[str]:
+    """
+    Retrieves a user's DID from the auth-service, with caching.
+    """
+    try:
+        response = httpx.get(f"{AUTH_SERVICE_URL}/internal/users/{user_id}")
+        response.raise_for_status()
+        user_data = response.json()
+        return user_data.get("did")
+    except httpx.RequestError as e:
+        logger.error(f"Failed to get user DID from auth-service for user {user_id}: {e}")
+        return None
+    except httpx.HTTPStatusError as e:
+        if e.response.status_code == 404:
+            logger.warning(f"User {user_id} not found in auth-service.")
+        else:
+            logger.error(f"HTTP error getting user DID for {user_id}: {e}")
+        return None
+
+
 async def handle_trust_event(event_type: str, event_data: dict, publisher: EventPublisher):
     """
     Handles events from the trust-engine-events topic, issues a corresponding
@@ -302,9 +324,13 @@ async def handle_trust_event(event_type: str, event_data: dict, publisher: Event
         logger.error(f"Missing user_id or activity_id in event: {event_data}")
         return
 
+    # Resolve user_id to DID
+    user_did = get_user_did_from_id(user_id)
+    subject_id = user_did if user_did else f"urn:platformq:user:{user_id}"
+
     # Construct the credential subject based on the event
     subject = {
-        "id": f"urn:platformq:user:{user_id}",
+        "id": subject_id,
         "activity": f"urn:platformq:{config['activity_id_field']}:{activity_id}",
         "awardedFor": event_type,
         "eventTimestamp": datetime.fromtimestamp(event_data["timestamp"] / 1000).isoformat() + "Z"
@@ -957,9 +983,10 @@ app.include_router(endpoints.router, prefix="/api/v1", tags=["verifiable-credent
 
 # Import and include new routers
 try:
-    from .api import cross_chain, presentations
+    from .api import cross_chain, presentations, direct_issuance
     app.include_router(cross_chain.router, prefix="/api/v1/cross-chain", tags=["cross-chain"])
     app.include_router(presentations.router, prefix="/api/v1", tags=["presentations"])
+    app.include_router(direct_issuance.router, prefix="/api/v1", tags=["direct-issuance"])
 except ImportError as e:
     logger.warning(f"Could not import additional routers: {e}")
 

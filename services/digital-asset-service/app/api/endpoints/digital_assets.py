@@ -2,38 +2,63 @@
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any
-from uuid import UUID
 from datetime import datetime
 from ....platformq_shared.db_models import User
-from ....platformq_shared.api.deps import get_db_session, get_current_tenant_and_user
-from ...crud import crud_digital_asset, crud_processing_rule
+from ....platformq_shared.api.deps import get_db_session, get_current_tenant_and_user, require_service_token
+from ...crud import crud_digital_asset
 from ...schemas import digital_asset as schemas
-from ...schemas.asset import PeerReviewCreate, DigitalAsset
 from ....platformq_shared.events import DigitalAssetCreated
 from ....platformq_shared.event_publisher import EventPublisher
 import logging
-from ...crud.asset import asset as crud_asset
-from .deps import get_current_context
 import hashlib
 import json
-from pulsar.schema import Record, String, Long, Array
+import httpx
+from ...utils.cid import compute_cid
 
 logger = logging.getLogger(__name__)
 
-# Define VC request events (if not in shared lib yet)
-class AssetCreationCredentialRequested(Record):
-    tenant_id = String()
-    asset_id = String()
-    asset_hash = String()
-    creator_did = String()
-    asset_name = String()
-    asset_type = String()
-    asset_metadata = String()  # JSON string
-    raw_data_uri = String(required=False)
-    creation_timestamp = Long()
-    source_tool = String(required=False)
+STORAGE_PROXY_URL = "http://storage-proxy-service:8000"
 
 router = APIRouter()
+
+@router.post("/internal/digital-assets/{cid}/migrate", status_code=204)
+async def migrate_digital_asset_storage(
+    cid: str,
+    db: Session = Depends(get_db_session),
+    service_token: dict = Depends(require_service_token),
+):
+    db_asset = crud_digital_asset.get_asset(db, cid=cid)
+    if not db_asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    if not db_asset.raw_data_uri:
+        raise HTTPException(status_code=400, detail="Asset has no data to migrate.")
+
+    try:
+        async with httpx.AsyncClient() as client:
+            download_url = f"{STORAGE_PROXY_URL}/download/{db_asset.raw_data_uri}"
+            response = await client.get(download_url)
+            response.raise_for_status()
+            file_content = response.content
+
+            files = {'file': (db_asset.asset_name, file_content, 'application/octet-stream')}
+            headers = { "X-Authenticated-Userid": str(db_asset.owner_id) }
+            
+            upload_url = f"{STORAGE_PROXY_URL}/upload"
+            upload_response = await client.post(upload_url, files=files, headers=headers)
+            upload_response.raise_for_status()
+            
+            upload_data = upload_response.json()
+            new_identifier = upload_data["identifier"]
+
+            crud_digital_asset.update_asset_storage_uri(
+                db=db, cid=cid, new_uri=new_identifier
+            )
+            
+    except httpx.RequestError as e:
+        raise HTTPException(status_code=503, detail=f"Failed to communicate with storage proxy: {e}")
+    except httpx.HTTPStatusError as e:
+        raise HTTPException(status_code=e.response.status_code, detail=f"Error during storage migration: {e.response.text}")
 
 # High-value asset thresholds by type
 HIGH_VALUE_THRESHOLDS = {
@@ -126,21 +151,14 @@ def create_digital_asset(
     db: Session = Depends(get_db_session),
     context: dict = Depends(get_current_tenant_and_user),
 ):
-    """
-    Create a new digital asset.
+    cid = compute_cid(asset)
+    db_asset = crud_digital_asset.create_asset(db=db, asset=asset, cid=cid)
     
-    After creation, this endpoint:
-    1. Publishes a `DigitalAssetCreated` event
-    2. For high-value assets, requests SBT issuance
-    """
-    db_asset = crud_digital_asset.create_asset(db=db, asset=asset)
-    
-    # Publish the asset created event
     publisher: EventPublisher = request.app.state.event_publisher
     if publisher:
         event = DigitalAssetCreated(
             tenant_id=str(context["tenant_id"]),
-            asset_id=str(db_asset.asset_id),
+            asset_id=str(db_asset.cid),
             asset_name=db_asset.asset_name,
             asset_type=db_asset.asset_type,
             owner_id=str(db_asset.owner_id),
@@ -157,9 +175,25 @@ def create_digital_asset(
         asset_hash = compute_asset_hash(db_asset)
         creator_did = get_user_did(str(db_asset.owner_id), str(context["tenant_id"]))
         
+        # Define VC request events (if not in shared lib yet)
+        class AssetCreationCredentialRequested(Record):
+            tenant_id = String()
+            asset_id = String()
+            asset_hash = String()
+            creator_did = String()
+            asset_name = String()
+            asset_type = String()
+            asset_metadata = String()  # JSON string
+            raw_data_uri = String(required=False)
+            creation_timestamp = Long()
+            source_tool = String(required=False)
+        
+        # Import the Record class
+        from pulsar.schema import Record, String, Long
+        
         vc_request = AssetCreationCredentialRequested(
             tenant_id=str(context["tenant_id"]),
-            asset_id=str(db_asset.asset_id),
+            asset_id=str(db_asset.cid),
             asset_hash=asset_hash,
             creator_did=creator_did,
             asset_name=db_asset.asset_name,
@@ -176,7 +210,7 @@ def create_digital_asset(
             schema_class=AssetCreationCredentialRequested,
             data=vc_request
         )
-        logger.info(f"Requested creation VC for asset {db_asset.asset_id}")
+        logger.info(f"Requested creation VC for asset {db_asset.cid}")
         
         # Assess asset value
         metadata = db_asset.metadata or {}
@@ -184,7 +218,7 @@ def create_digital_asset(
         
         # Check if this is a high-value asset
         if is_high_value_asset(db_asset.asset_type, asset_value):
-            logger.info(f"High-value asset detected: {db_asset.asset_id} (value: ${asset_value:.2f})")
+            logger.info(f"High-value asset detected: {db_asset.cid} (value: ${asset_value:.2f})")
             
             # Get owner's blockchain address (from user profile or metadata)
             owner_address = metadata.get("owner_address")
@@ -214,7 +248,7 @@ def create_digital_asset(
                 import json
                 sbt_event = SBTIssuanceRequested(
                     tenant_id=str(context["tenant_id"]),
-                    asset_id=str(db_asset.asset_id),
+                    asset_id=str(db_asset.cid),
                     asset_type=db_asset.asset_type,
                     asset_value=asset_value,
                     owner_address=owner_address,
@@ -233,21 +267,18 @@ def create_digital_asset(
                     schema_class=SBTIssuanceRequested,
                     data=sbt_event
                 )
-                logger.info(f"SBT issuance requested for high-value asset {db_asset.asset_id}")
+                logger.info(f"SBT issuance requested for high-value asset {db_asset.cid}")
             else:
-                logger.warning(f"High-value asset {db_asset.asset_id} detected but no owner address available")
+                logger.warning(f"High-value asset {db_asset.cid} detected but no owner address available")
 
     return db_asset
 
-@router.get("/digital-assets/{asset_id}", response_model=schemas.DigitalAsset)
+@router.get("/digital-assets/{cid}", response_model=schemas.DigitalAsset)
 def read_digital_asset(
-    asset_id: UUID,
+    cid: str,
     db: Session = Depends(get_db_session),
 ):
-    """
-    Retrieve a single digital asset by its ID.
-    """
-    db_asset = crud_digital_asset.get_asset(db, asset_id=asset_id)
+    db_asset = crud_digital_asset.get_asset(db, cid=cid)
     if db_asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
     return db_asset
@@ -258,18 +289,15 @@ def read_digital_assets(
     limit: int = 100,
     db: Session = Depends(get_db_session),
 ):
-    """
-    Retrieve a list of all digital assets.
-    """
     assets = crud_digital_asset.get_assets(db, skip=skip, limit=limit)
     return assets
 
 @router.post("/{asset_id}/reviews", response_model=schemas.PeerReview)
 def create_peer_review(
-    asset_id: UUID,
+    asset_id: str,
     review: schemas.PeerReviewCreate,
     db: Session = Depends(get_db_session),
-    context: dict = Depends(get_current_context),
+    context: dict = Depends(get_current_tenant_and_user),
 ):
     """
     Create a new peer review for a digital asset.
@@ -290,9 +318,9 @@ def create_peer_review(
 
 @router.post("/{asset_id}/approve", response_model=schemas.DigitalAsset)
 def approve_digital_asset(
-    asset_id: UUID,
+    asset_id: str,
     db: Session = Depends(get_db_session),
-    context: dict = Depends(get_current_context)
+    context: dict = Depends(get_current_tenant_and_user)
 ):
     """
     Manually attempts to approve a digital asset. Approval is granted if the
@@ -313,7 +341,7 @@ def approve_digital_asset(
 
 @router.get("/digital-assets/{asset_id}/lineage", response_model=Dict[str, Any])
 def get_asset_lineage(
-    asset_id: UUID,
+    asset_id: str,
     db: Session = Depends(get_db_session),
     context: dict = Depends(get_current_tenant_and_user),
 ):

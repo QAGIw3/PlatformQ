@@ -8,18 +8,40 @@ from pydantic import BaseModel, EmailStr
 # Base model for User properties
 class UserBase(BaseModel):
     email: EmailStr
+    username: str
     full_name: Optional[str] = None
-    did: Optional[str] = None # Added for DID
+    bio: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    did: Optional[str] = None
+    wallet_address: Optional[str] = None
+    storage_backend: Optional[str] = None
+    storage_config: Optional[str] = None
+
+
+class StorageConfigUpdate(BaseModel):
+    storage_backend: str
+    storage_config: str # Should be a JSON string
+
+
+class LinkWalletRequest(BaseModel):
+    message: dict
+    signature: str
 
 
 # Properties to receive via API on creation
 class UserCreate(UserBase):
-    pass
+    password: str
 
 
 class UserUpdate(BaseModel):
     full_name: Optional[str] = None
-    did: Optional[str] = None # Added for DID
+    email: Optional[EmailStr] = None
+    bio: Optional[str] = None
+    profile_picture_url: Optional[str] = None
+    did: Optional[str] = None
+    wallet_address: Optional[str] = None
+    storage_backend: Optional[str] = None
+    storage_config: Optional[str] = None
 
 
 # Properties to return to client
@@ -28,10 +50,9 @@ class User(UserBase):
     status: str
     created_at: datetime.datetime
     updated_at: Optional[datetime.datetime] = None
-    did: Optional[str] = None # New field for Decentralized Identifier
 
     class Config:
-        orm_mode = True
+        from_attributes = True
 
 
 # Pydantic models for tokens

@@ -1,8 +1,10 @@
 import datetime
+import os
 
 from cassandra.cluster import Session
-from fastapi import Depends, HTTPException, Security, status, Header
+from fastapi import Depends, HTTPException, Security, status, Header, Request
 from fastapi.security.api_key import APIKeyHeader
+from jose import jwt, JWTError
 
 # --- Placeholder Dependencies ---
 # These functions act as an "interface" that the shared security dependencies
@@ -26,6 +28,44 @@ def get_db_session_dependency():
 
 def get_password_verifier_dependency():
     raise NotImplementedError("This dependency must be overridden by the service.")
+
+def require_service_token(
+    request: Request,
+    token: str = Security(api_key_header), # Re-using for X-API-Key header
+):
+    """
+    A dependency to protect service-to-service endpoints.
+    It expects a JWT in the X-API-Key header and verifies it.
+    """
+    if token is None:
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Service token required",
+        )
+    try:
+        # In a real app, you would fetch the public key for the auth-service
+        # to verify the JWT signature. For now, we'll assume it's symmetric.
+        # This secret would be stored in Vault.
+        secret_key = os.getenv("S2S_JWT_SECRET")
+        if not secret_key:
+            raise RuntimeError("S2S_JWT_SECRET not configured.")
+            
+        payload = jwt.decode(token, secret_key, algorithms=["HS256"])
+        # The 'sub' of the token is the service's role_id
+        service_role_id = payload.get("sub")
+        if service_role_id is None:
+            raise HTTPException(status_code=403, detail="Invalid service token")
+        
+        # You could add more checks here, e.g., that the service_role_id
+        # is in an approved list of services.
+        
+        return payload
+
+    except JWTError:
+        raise HTTPException(
+            status_code=status.HTTP_403_FORBIDDEN,
+            detail="Could not validate service token",
+        )
 
 
 # --- Authentication Dependencies ---

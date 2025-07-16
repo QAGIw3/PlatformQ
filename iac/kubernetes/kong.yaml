@@ -1,0 +1,57 @@
+_format_version: "2.1"
+_comment: "Declarative Kong configuration for platformQ"
+
+services:
+  - name: auth-service
+    url: http://auth-service:8000
+    routes:
+      - name: auth-routes
+        paths:
+          - /auth
+  - name: digital-asset-service
+    url: http://digital-asset-service:8000
+    routes:
+      - name: digital-asset-routes
+        paths:
+          - /digital-assets
+
+plugins:
+  - name: rate-limiting
+    service: auth-service
+    config:
+      minute: 100
+      policy: local
+  - name: rate-limiting
+    service: digital-asset-service
+    config:
+      minute: 100
+      policy: local 
+
+consumers:
+  - username: end-users
+  - username: internal-services
+
+acls:
+  - consumer: end-users
+    group: public-routes
+  - consumer: internal-services
+    group: internal-routes
+
+routes:
+  - name: auth-routes-public
+    paths:
+      - /auth/api/v1/siwe/nonce
+      - /auth/api/v1/siwe/login
+    plugins:
+      - name: acl
+        config:
+          whitelist:
+            - public-routes
+  - name: auth-routes-internal
+    paths:
+      - /auth/api/v1/internal
+    plugins:
+      - name: acl
+        config:
+          whitelist:
+            - internal-routes 

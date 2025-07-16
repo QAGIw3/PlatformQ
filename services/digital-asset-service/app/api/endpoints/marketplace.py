@@ -12,6 +12,8 @@ from ...schemas import digital_asset as schemas
 from ...db import models
 from ....platformq_shared.event_publisher import EventPublisher
 from pulsar.schema import Record, String, Long, Double, Boolean
+from .deps import get_current_context
+import httpx
 
 logger = logging.getLogger(__name__)
 
@@ -98,10 +100,10 @@ def list_marketplace_assets(
     }
 
 
-@router.post("/digital-assets/{asset_id}/list-for-sale")
+@router.post("/digital-assets/{cid}/list-for-sale")
 def list_asset_for_sale(
-    asset_id: UUID,
-    price: float = Query(..., gt=0),
+    cid: str,
+    price: float = Query(..., gt=0, description="The sale price in a standard currency (e.g., ETH, MATIC)"),
     currency: str = Query("ETH", regex="^(ETH|MATIC|USDC)$"),
     royalty_percentage: Optional[int] = Query(None, ge=0, le=5000),  # Max 50%
     db: Session = Depends(get_db_session),
@@ -151,7 +153,7 @@ def list_asset_for_sale(
         POST /digital-assets/123e4567-e89b-12d3-a456-426614174000/list-for-sale?price=0.5&currency=ETH&royalty_percentage=250
     """
     # Get the asset
-    asset = crud_digital_asset.get_asset(db, asset_id)
+    asset = crud_digital_asset.get_asset(db, cid)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     
@@ -184,13 +186,13 @@ def list_asset_for_sale(
     else:
         raise HTTPException(status_code=400, detail="User must have blockchain address")
     
-    asset = crud_digital_asset.update_asset(db, asset_id, schemas.DigitalAssetUpdate(**update_data))
+    asset = crud_digital_asset.update_asset(db, cid, schemas.DigitalAssetUpdate(**update_data))
     
     # Publish event
     if publisher:
         event = AssetListedForSale(
             tenant_id=str(context["tenant_id"]),
-            asset_id=str(asset_id),
+            asset_id=str(cid),
             seller_address=user.blockchain_address,
             price=price,
             currency=currency,
@@ -207,7 +209,7 @@ def list_asset_for_sale(
     if royalty_percentage is not None and asset.creation_vc_id:
         royalty_event = RoyaltyConfigured(
             tenant_id=str(context["tenant_id"]),
-            asset_id=str(asset_id),
+            asset_id=str(cid),
             beneficiary_address=user.blockchain_address,
             percentage=royalty_percentage,
             creation_vc_id=asset.creation_vc_id,
@@ -223,9 +225,9 @@ def list_asset_for_sale(
     return asset
 
 
-@router.post("/digital-assets/{asset_id}/create-license-offer")
+@router.post("/digital-assets/{cid}/create-license-offer")
 def create_license_offer(
-    asset_id: UUID,
+    cid: str,
     license_type: str = Query(..., regex="^(view|edit|commercial|exclusive)$"),
     price: float = Query(..., gt=0),
     duration: int = Query(..., gt=0),  # Duration in seconds
@@ -239,7 +241,7 @@ def create_license_offer(
     Create a license offer for an asset.
     """
     # Get the asset
-    asset = crud_digital_asset.get_asset(db, asset_id)
+    asset = crud_digital_asset.get_asset(db, cid)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     
@@ -274,13 +276,13 @@ def create_license_offer(
         "blockchain_address": user.blockchain_address
     }
     
-    asset = crud_digital_asset.update_asset(db, asset_id, schemas.DigitalAssetUpdate(**update_data))
+    asset = crud_digital_asset.update_asset(db, cid, schemas.DigitalAssetUpdate(**update_data))
     
     # Publish event
     if publisher:
         event = AssetLicenseOffered(
             tenant_id=str(context["tenant_id"]),
-            asset_id=str(asset_id),
+            asset_id=str(cid),
             licensor_address=user.blockchain_address,
             license_type=license_type,
             price=price,
@@ -297,9 +299,9 @@ def create_license_offer(
     return asset
 
 
-@router.delete("/digital-assets/{asset_id}/unlist")
+@router.delete("/digital-assets/{cid}/unlist")
 def unlist_asset(
-    asset_id: UUID,
+    cid: str,
     db: Session = Depends(get_db_session),
     context: dict = Depends(get_current_tenant_and_user),
 ):
@@ -307,7 +309,7 @@ def unlist_asset(
     Remove an asset from sale/licensing.
     """
     # Get the asset
-    asset = crud_digital_asset.get_asset(db, asset_id)
+    asset = crud_digital_asset.get_asset(db, cid)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     
@@ -323,21 +325,21 @@ def unlist_asset(
         "license_terms": None
     }
     
-    asset = crud_digital_asset.update_asset(db, asset_id, schemas.DigitalAssetUpdate(**update_data))
+    asset = crud_digital_asset.update_asset(db, cid, schemas.DigitalAssetUpdate(**update_data))
     
     return {"message": "Asset unlisted successfully", "asset": asset}
 
 
-@router.get("/digital-assets/{asset_id}/marketplace-info")
+@router.get("/digital-assets/{cid}/marketplace-info")
 def get_asset_marketplace_info(
-    asset_id: UUID,
+    cid: str,
     db: Session = Depends(get_db_session),
     context: dict = Depends(get_current_tenant_and_user),
 ):
     """
     Get detailed marketplace information for an asset.
     """
-    asset = crud_digital_asset.get_asset(db, asset_id)
+    asset = crud_digital_asset.get_asset(db, cid)
     if not asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     

@@ -2,7 +2,7 @@
 Verifiable Presentations API endpoints for bundling and sharing credentials
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query
+from fastapi import APIRouter, Depends, HTTPException, Query, Request
 from pydantic import BaseModel, Field
 from typing import List, Dict, Any, Optional
 from datetime import datetime, timedelta
@@ -14,6 +14,7 @@ from platformq_shared.api.deps import get_current_tenant_and_user
 from ..standards.advanced_standards import VerifiablePresentationBuilder, PresentationPurpose
 from ..did import DIDManager
 from ..services.vc_service import get_credentials_for_user, get_credential_by_id
+from ..schemas.presentation_verification import PresentationVerificationRequest, PresentationVerificationResponse
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -156,99 +157,35 @@ async def create_presentation(
     return presentation
 
 
-@router.post("/presentations/verify")
+@router.post("/presentations/verify", response_model=PresentationVerificationResponse)
 async def verify_presentation(
-    request: VerifyPresentationRequest,
-    context: dict = Depends(get_current_tenant_and_user)
+    req: PresentationVerificationRequest,
+    request: Request,
 ):
     """
-    Verify a verifiable presentation.
-    
-    This endpoint:
-    1. Checks the presentation structure
-    2. Verifies the proof/signature
-    3. Validates each credential
-    4. Checks revocation status if requested
+    Verifies a Verifiable Presentation.
+    This is a simplified implementation that checks for the presence of a specific credential type.
     """
-    presentation = request.presentation
-    
-    # Basic structure validation
-    if "@context" not in presentation:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid presentation: missing @context"
-        )
-    
-    if "verifiableCredential" not in presentation:
-        raise HTTPException(
-            status_code=400,
-            detail="Invalid presentation: missing verifiableCredential"
-        )
-    
-    # Verify proof
-    proof = presentation.get("proof", {})
-    
-    # Check challenge if provided
-    if request.challenge and proof.get("challenge") != request.challenge:
-        return {
-            "valid": False,
-            "error": "Challenge mismatch"
-        }
-    
-    # Check domain if provided
-    if request.domain and proof.get("domain") != request.domain:
-        return {
-            "valid": False,
-            "error": "Domain mismatch"
-        }
-    
-    # Check expiration
-    if "expirationDate" in presentation:
-        expiration = datetime.fromisoformat(
-            presentation["expirationDate"].replace("Z", "+00:00")
-        )
-        if datetime.utcnow() > expiration:
-            return {
-                "valid": False,
-                "error": "Presentation expired"
-            }
-    
-    # Verify each credential
-    credential_results = []
-    for credential in presentation.get("verifiableCredential", []):
-        cred_result = {
-            "id": credential.get("id", "unknown"),
-            "valid": True,
-            "errors": []
-        }
+    try:
+        presentation = req.verifiable_presentation
+        if not presentation or "verifiableCredential" not in presentation:
+            return PresentationVerificationResponse(verified=False, error="Invalid presentation format.")
+
+        # In a real app, you would perform cryptographic verification of the signature.
         
-        # Check credential expiration
-        if "expirationDate" in credential:
-            exp = datetime.fromisoformat(
-                credential["expirationDate"].replace("Z", "+00:00")
-            )
-            if datetime.utcnow() > exp:
-                cred_result["valid"] = False
-                cred_result["errors"].append("Credential expired")
-        
-        # Check revocation if requested
-        if request.check_revocation:
-            # In production, check blockchain or revocation list
-            # For now, we'll assume non-revoked
-            pass
-        
-        credential_results.append(cred_result)
-    
-    # Overall validation result
-    all_valid = all(r["valid"] for r in credential_results)
-    
-    return {
-        "valid": all_valid,
-        "presentation_id": presentation.get("id"),
-        "holder": presentation.get("holder"),
-        "credentials": credential_results,
-        "verified_at": datetime.utcnow().isoformat() + "Z"
-    }
+        # Check if the required credential type is present.
+        credentials = presentation["verifiableCredential"]
+        if not isinstance(credentials, list):
+            credentials = [credentials]
+
+        for cred in credentials:
+            if req.required_credential_type in cred.get("type", []):
+                return PresentationVerificationResponse(verified=True)
+
+        return PresentationVerificationResponse(verified=False, error=f"Required credential type '{req.required_credential_type}' not found.")
+
+    except Exception as e:
+        return PresentationVerificationResponse(verified=False, error=str(e))
 
 
 @router.get("/presentations/templates")

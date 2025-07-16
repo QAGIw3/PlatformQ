@@ -5,11 +5,11 @@ import uuid
 from ..db import models
 from ..schemas import digital_asset as schemas
 
-def get_asset(db: Session, asset_id: uuid.UUID) -> Optional[models.DigitalAsset]:
+def get_asset(db: Session, cid: str) -> Optional[models.DigitalAsset]:
     """
-    Retrieves a single digital asset by its UUID.
+    Retrieves a single digital asset by its CID.
     """
-    return db.query(models.DigitalAsset).filter(models.DigitalAsset.asset_id == asset_id).first()
+    return db.query(models.DigitalAsset).filter(models.DigitalAsset.cid == cid).first()
 
 def get_assets(db: Session, skip: int = 0, limit: int = 100) -> List[models.DigitalAsset]:
     """
@@ -17,11 +17,12 @@ def get_assets(db: Session, skip: int = 0, limit: int = 100) -> List[models.Digi
     """
     return db.query(models.DigitalAsset).offset(skip).limit(limit).all()
 
-def create_asset(db: Session, asset: schemas.DigitalAssetCreate) -> models.DigitalAsset:
+def create_asset(db: Session, asset: schemas.DigitalAssetCreate, cid: str) -> models.DigitalAsset:
     """
     Creates a new digital asset in the database.
     """
     db_asset = models.DigitalAsset(
+        cid=cid,
         asset_name=asset.asset_name,
         asset_type=asset.asset_type,
         owner_id=asset.owner_id,
@@ -38,11 +39,11 @@ def create_asset(db: Session, asset: schemas.DigitalAssetCreate) -> models.Digit
     db.refresh(db_asset)
     return db_asset
 
-def update_asset(db: Session, asset_id: uuid.UUID, asset_update: schemas.DigitalAssetUpdate) -> Optional[models.DigitalAsset]:
+def update_asset(db: Session, cid: str, asset_update: schemas.DigitalAssetUpdate) -> Optional[models.DigitalAsset]:
     """
     Updates an existing digital asset's fields.
     """
-    db_asset = get_asset(db, asset_id)
+    db_asset = get_asset(db, cid)
     if not db_asset:
         return None
 
@@ -63,13 +64,13 @@ def update_asset(db: Session, asset_id: uuid.UUID, asset_update: schemas.Digital
     db.refresh(db_asset)
     return db_asset
 
-def update_asset_metadata(db: Session, asset_id: uuid.UUID, new_metadata: dict, payload_schema_version: Optional[str] = None, payload: Optional[bytes] = None) -> Optional[models.DigitalAsset]:
+def update_asset_metadata(db: Session, cid: str, new_metadata: dict, payload_schema_version: Optional[str] = None, payload: Optional[bytes] = None) -> Optional[models.DigitalAsset]:
     """
     Updates an existing digital asset's metadata and/or payload.
     If payload and payload_schema_version are provided, they will update the respective fields.
     Otherwise, new_metadata will be merged into the existing asset_metadata.
     """
-    db_asset = get_asset(db, asset_id)
+    db_asset = get_asset(db, cid)
     if not db_asset:
         return None
 
@@ -91,11 +92,25 @@ def update_asset_metadata(db: Session, asset_id: uuid.UUID, new_metadata: dict, 
     db.refresh(db_asset)
     return db_asset
 
-def delete_asset(db: Session, asset_id: uuid.UUID) -> Optional[models.DigitalAsset]:
+def update_asset_storage_uri(db: Session, cid: str, new_uri: str) -> Optional[models.DigitalAsset]:
+    """
+    Updates the raw_data_uri for a digital asset.
+    """
+    db_asset = get_asset(db, cid)
+    if not db_asset:
+        return None
+    
+    db_asset.raw_data_uri = new_uri
+    db.add(db_asset)
+    db.commit()
+    db.refresh(db_asset)
+    return db_asset
+
+def delete_asset(db: Session, cid: str) -> Optional[models.DigitalAsset]:
     """
     Deletes a digital asset from the database.
     """
-    db_asset = get_asset(db, asset_id)
+    db_asset = get_asset(db, cid)
     if not db_asset:
         return None
         

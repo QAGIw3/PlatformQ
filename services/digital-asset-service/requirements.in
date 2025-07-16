@@ -1,8 +1,10 @@
 -r ../../requirements/base.in
-alembic
+
+# Service-specific dependencies
 psycopg2-binary
-SQLAlchemy
-requests
+alembic
+httpx
+hvac
 
 # Development and Testing
 pytest
