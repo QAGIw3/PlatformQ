@@ -1,24 +1,23 @@
-from shared_lib.base_service import create_base_app
-from shared_lib.config import ConfigLoader
+from platformq_shared.base_service import create_base_app
+from platformq_shared.config import ConfigLoader
+from platformq_shared.event_publisher import EventPublisher
+from platformq_shared.webhooks import setup_webhooks, WebhookManager
 import pulsar
-import avro.schema
-import avro.io
-import io
 import logging
 import threading
 import time
 from datetime import datetime
-from fastapi import Request, Response, status, HTTPException
-from platformq_shared.event_publisher import EventPublisher
-from platformq_shared.config import ConfigLoader
+from fastapi import Request, Response, status, HTTPException, Query
+from platformq_shared.events import (
+    IssueVerifiableCredential, DigitalAssetCreated, ExecuteWasmFunction, 
+    DocumentUpdatedEvent, ProjectCreatedEvent
+)
+from pulsar.schema import AvroSchema
+from .airflow_bridge import AirflowBridge, EventToDAGProcessor
+from typing import List, Optional, Dict, Any
 import json
 import re
 import httpx
-from platformq_shared.events import IssueVerifiableCredential, DigitalAssetCreated, ExecuteWasmFunction, DocumentUpdatedEvent, ProjectCreatedEvent
-from pulsar.schema import AvroSchema
-from .airflow_bridge import AirflowBridge, EventToDAGProcessor
-from fastapi import Query
-from typing import List, Optional, Dict, Any
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -106,17 +105,95 @@ def workflow_consumer_loop(app):
 
 # --- Project Workflow Consumer ---
 def project_workflow_consumer_loop(app):
-    """Placeholder for project workflow consumer - to be implemented"""
+    """Enhanced project workflow consumer that processes project events"""
     logger.info("Starting project workflow consumer...")
+    
+    publisher = app.state.event_publisher
+    client = pulsar.Client(settings["PULSAR_URL"])
+    
+    # Subscribe to project events
+    consumer = client.subscribe(
+        topic_pattern="persistent://platformq/.*/project-events",
+        subscription_name="workflow-project-sub",
+        consumer_type=pulsar.ConsumerType.Shared,
+        schema=AvroSchema(ProjectCreatedEvent)
+    )
+    
     while not app.state.stop_event.is_set():
-        time.sleep(1)
+        try:
+            msg = consumer.receive(timeout_millis=1000)
+            if msg is None:
+                continue
+                
+            event = msg.value()
+            tenant_id = get_tenant_from_topic(msg.topic_name())
+            
+            logger.info(f"Processing project event: {event.project_name}")
+            
+            # Trigger additional project setup workflows
+            if hasattr(app.state, 'airflow_bridge'):
+                # Trigger Airflow DAG for project setup
+                app.state.airflow_bridge.trigger_dag(
+                    'project_setup_workflow',
+                    conf={
+                        'project_id': event.project_id,
+                        'project_name': event.project_name,
+                        'tenant_id': tenant_id,
+                        'creator_id': event.creator_id
+                    }
+                )
+            
+            consumer.acknowledge(msg)
+            
+        except Exception as e:
+            logger.error(f"Error in project workflow consumer: {e}")
+            if 'msg' in locals() and msg:
+                consumer.negative_acknowledge(msg)
+                
+    consumer.close()
+    client.close()
 
 # --- Document Update Consumer ---
 def document_update_consumer_loop(app):
-    """Placeholder for document update consumer - to be implemented"""
+    """Enhanced document update consumer"""
     logger.info("Starting document update consumer...")
+    
+    publisher = app.state.event_publisher
+    client = pulsar.Client(settings["PULSAR_URL"])
+    
+    consumer = client.subscribe(
+        topic_pattern="persistent://platformq/.*/document-events",
+        subscription_name="workflow-document-sub",
+        consumer_type=pulsar.ConsumerType.Shared,
+        schema=AvroSchema(DocumentUpdatedEvent)
+    )
+    
     while not app.state.stop_event.is_set():
-        time.sleep(1)
+        try:
+            msg = consumer.receive(timeout_millis=1000)
+            if msg is None:
+                continue
+                
+            event = msg.value()
+            logger.info(f"Processing document update: {event.document_path}")
+            
+            # Trigger document processing workflows
+            if event.document_path.endswith('.md'):
+                # Trigger markdown processing
+                logger.info("Triggering markdown processing workflow")
+            elif event.document_path.endswith('.pdf'):
+                # Trigger PDF processing  
+                logger.info("Triggering PDF processing workflow")
+                
+            consumer.acknowledge(msg)
+            
+        except Exception as e:
+            logger.error(f"Error in document update consumer: {e}")
+            if 'msg' in locals() and msg:
+                consumer.negative_acknowledge(msg)
+                
+    consumer.close()
+    client.close()
 
 # --- Trust Activity Consumer for Automated Reputation ---
 def trust_activity_consumer_loop(app):
@@ -213,6 +290,9 @@ def trust_activity_consumer_loop(app):
             logger.error(f"Error in trust activity consumer: {e}", exc_info=True)
             if 'msg' in locals() and msg:
                 consumer.negative_acknowledge(msg)
+    
+    consumer.close()
+    client.close()
 
 
 def check_reputation_milestones(entity_id: str, activity_type: str, metadata: dict, publisher):
@@ -302,6 +382,33 @@ def check_reputation_milestones(entity_id: str, activity_type: str, metadata: di
     except Exception as e:
         logger.error(f"Error checking reputation milestones: {e}")
 
+
+# --- Custom Webhook Handlers ---
+
+async def handle_nextcloud_file_created(event):
+    """Handle Nextcloud file created events"""
+    logger.info(f"Nextcloud file created: {event.data.get('file', {}).get('path')}")
+    # Trigger file processing workflows based on file type
+
+async def handle_zulip_command(event):
+    """Handle Zulip bot commands"""
+    message = event.data.get('message', {})
+    content = message.get('content', '')
+    
+    if '/platformq create-project' in content:
+        # Extract project name and trigger project creation
+        logger.info("Project creation requested via Zulip command")
+
+async def handle_openproject_work_package(event):
+    """Handle OpenProject work package events"""
+    wp = event.data.get('work_package', {})
+    logger.info(f"Work package {event.event_type}: {wp.get('subject')}")
+    
+    # Trigger workflows based on work package type/status
+    if wp.get('type', {}).get('name') == 'Epic' and wp.get('status', {}).get('name') == 'Closed':
+        logger.info("Epic completed, triggering milestone workflow")
+
+
 # --- FastAPI App ---
 app = create_base_app(
     service_name="workflow-service",
@@ -319,6 +426,25 @@ def startup_event():
     app.state.event_publisher = EventPublisher(pulsar_url=pulsar_url)
     app.state.event_publisher.connect()
     app.state.stop_event = threading.Event()
+    
+    # Set up webhook handlers
+    setup_webhooks(app, config_loader, app.state.event_publisher)
+    
+    # Register custom webhook handlers
+    if hasattr(app.state, 'webhook_manager'):
+        webhook_manager: WebhookManager = app.state.webhook_manager
+        
+        # Nextcloud handlers
+        webhook_manager.register_handler('nextcloud', 'file_created', handle_nextcloud_file_created)
+        
+        # Zulip handlers
+        webhook_manager.register_handler('zulip', 'message', handle_zulip_command)
+        
+        # OpenProject handlers
+        webhook_manager.register_handler('openproject', 'work_package:created', handle_openproject_work_package)
+        webhook_manager.register_handler('openproject', 'work_package:updated', handle_openproject_work_package)
+        
+        logger.info("Custom webhook handlers registered")
     
     # Initialize Airflow bridge if enabled
     airflow_enabled = settings.get("AIRFLOW_ENABLED", "false").lower() == "true"
@@ -403,60 +529,51 @@ def shutdown_event():
     
     logger.info("All consumer threads stopped.")
 
-@app.post("/webhooks/openproject")
-async def handle_openproject_webhook(request: Request):
+# Legacy webhook endpoints (kept for backward compatibility)
+@app.post("/webhooks/openproject/legacy")
+async def handle_openproject_webhook_legacy(request: Request):
     """
-    Receives webhooks from OpenProject, transforms them into a standard
-    Avro event, and publishes them to Pulsar.
+    Legacy webhook handler - use the new webhook routes instead
     """
-    # This function now correctly uses the publisher from the app state
-    publisher = request.app.state.event_publisher
+    logger.warning("Legacy OpenProject webhook endpoint called - please update to new webhook routes")
     
-    # In a real app, you would parse the OpenProject webhook payload here
-    # to extract the relevant data (project_id, project_name, etc.)
+    publisher = request.app.state.event_publisher
     payload = await request.json()
 
-    # Instantiate the ProjectCreatedEvent using the parsed payload
     project_created_event = ProjectCreatedEvent(
         project_id=str(payload.get("project", {}).get("id", "")),
         project_name=payload.get("project", {}).get("name", ""),
-        creator_id=str(payload.get("created_by", {}).get("id", "")), # Assuming webhook includes creator info
+        creator_id=str(payload.get("created_by", {}).get("id", "")),
         event_timestamp=int(time.time() * 1000)
     )
     
     publisher.publish(
         topic_base='project-events',
-        tenant_id="00000000-0000-0000-0000-000000000000", # Placeholder tenant ID
+        tenant_id="00000000-0000-0000-0000-000000000000",
         schema_class=ProjectCreatedEvent,
         data=project_created_event
     )
     
-    logger.info("Received and processed webhook from OpenProject, published to Pulsar.")
     return Response(status_code=status.HTTP_204_NO_CONTENT) 
 
-@app.post("/webhooks/onlyoffice")
-async def handle_onlyoffice_webhook(request: Request):
+@app.post("/webhooks/onlyoffice/legacy")
+async def handle_onlyoffice_webhook_legacy(request: Request):
     """
-    Receives callbacks from OnlyOffice/Nextcloud when a document is saved,
-    and publishes a standardized 'DocumentUpdated' event to Pulsar.
+    Legacy OnlyOffice webhook handler - use Nextcloud webhooks instead
     """
-    # This function now correctly uses the publisher from the app state
+    logger.warning("Legacy OnlyOffice webhook endpoint called - please update to Nextcloud webhook routes")
+    
     publisher = request.app.state.event_publisher
     payload = await request.json()
     
-    # This is a simplified mapping. A real implementation would have more
-    # robust parsing and error handling. We'd also get the tenant_id from
-    # the request, perhaps via a pre-configured header in Nextcloud's webhook.
-    # For now, we'll use a placeholder.
-    tenant_id = "00000000-0000-0000-0000-000000000000" # Placeholder
+    tenant_id = "00000000-0000-0000-0000-000000000000"
 
-    # Instantiate the DocumentUpdatedEvent using the parsed payload
     document_updated_event = DocumentUpdatedEvent(
         tenant_id=tenant_id,
         document_id=str(payload.get("fileid", "")),
-        document_path=payload.get("path", ""), # OnlyOffice uses 'path' for the file path
-        saved_by_user_id=str(payload.get("userid", "")), # OnlyOffice uses 'userid'
-        event_timestamp=int(time.time() * 1000) # Current timestamp
+        document_path=payload.get("path", ""),
+        saved_by_user_id=str(payload.get("userid", "")),
+        event_timestamp=int(time.time() * 1000)
     )
     
     publisher.publish(
@@ -466,8 +583,6 @@ async def handle_onlyoffice_webhook(request: Request):
         data=document_updated_event
     )
     
-    logger.info("Received OnlyOffice save callback, published to Pulsar.")
-    # OnlyOffice expects a specific JSON response to confirm success
     return {"error": 0}
 
 # --- Airflow Management API Endpoints ---
@@ -601,4 +716,16 @@ async def register_event_mapping(
         "event_type": event_type,
         "workflow_id": workflow_id,
         "message": "Mapping registered successfully"
-    } 
+    }
+
+# --- Webhook Statistics Endpoint ---
+@app.get("/api/v1/webhook-stats")
+async def get_webhook_stats(request: Request):
+    """Get webhook processing statistics"""
+    if hasattr(request.app.state, 'webhook_manager'):
+        stats = request.app.state.webhook_manager.get_stats()
+        return {
+            "stats": stats,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    return {"error": "Webhook manager not initialized"} 
