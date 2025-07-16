@@ -18,7 +18,7 @@ from platformq_shared.events import IssueVerifiableCredential, DigitalAssetCreat
 from pulsar.schema import AvroSchema
 from .airflow_bridge import AirflowBridge, EventToDAGProcessor
 from fastapi import Query
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -102,6 +102,206 @@ def workflow_consumer_loop(app):
             if 'asset_consumer' in locals() and msg:
                 asset_consumer.negative_acknowledge(msg)
 
+
+
+# --- Project Workflow Consumer ---
+def project_workflow_consumer_loop(app):
+    """Placeholder for project workflow consumer - to be implemented"""
+    logger.info("Starting project workflow consumer...")
+    while not app.state.stop_event.is_set():
+        time.sleep(1)
+
+# --- Document Update Consumer ---
+def document_update_consumer_loop(app):
+    """Placeholder for document update consumer - to be implemented"""
+    logger.info("Starting document update consumer...")
+    while not app.state.stop_event.is_set():
+        time.sleep(1)
+
+# --- Trust Activity Consumer for Automated Reputation ---
+def trust_activity_consumer_loop(app):
+    """
+    Consumes trust activity events and updates reputation scores automatically.
+    Tracks activities like:
+    - Successful credential issuance/verification
+    - Cross-chain bridge operations
+    - High-value asset creation
+    - Dispute resolutions
+    """
+    logger.info("Starting trust activity consumer...")
+    publisher = app.state.event_publisher
+    client = pulsar.Client(settings["PULSAR_URL"])
+    
+    consumer = client.subscribe(
+        "persistent://platformq/trust/activity-events",
+        subscription_name="workflow-trust-activity-sub",
+        consumer_type=pulsar.ConsumerType.Shared
+    )
+    
+    # Activity impact scores
+    activity_impacts = {
+        'credential_issued': 0.02,
+        'credential_verified': 0.03,
+        'bridge_transfer_completed': 0.05,
+        'high_value_asset_created': 0.04,
+        'dispute_resolved_positive': 0.10,
+        'dispute_resolved_negative': -0.15,
+        'event_published': 0.001,
+        'verification_failed': -0.05,
+        'suspicious_activity': -0.20,
+    }
+    
+    vc_service_url = settings.get("VC_SERVICE_URL", "http://verifiable-credential-service:8000")
+    graph_service_url = settings.get("GRAPH_SERVICE_URL", "http://graph-intelligence-service:8000")
+    
+    while not app.state.stop_event.is_set():
+        try:
+            msg = consumer.receive(timeout_millis=1000)
+            if msg is None:
+                continue
+                
+            # Parse activity event
+            activity_data = json.loads(msg.data().decode('utf-8'))
+            entity_id = activity_data['entity_id']
+            activity_type = activity_data['activity_type']
+            metadata = activity_data.get('metadata', {})
+            
+            logger.info(f"Processing trust activity: {activity_type} for entity {entity_id}")
+            
+            # Calculate trust impact
+            base_impact = activity_impacts.get(activity_type, 0.0)
+            
+            # Adjust impact based on metadata
+            if activity_type == 'credential_issued':
+                # Higher impact for more valuable credentials
+                cred_type = metadata.get('credential_type', '')
+                if 'HighValue' in cred_type or 'SoulBound' in cred_type:
+                    base_impact *= 1.5
+                    
+            elif activity_type == 'bridge_transfer_completed':
+                # Higher impact for larger transfers
+                transfer_value = metadata.get('transfer_value', 0)
+                if transfer_value > 10000:
+                    base_impact *= 2.0
+                elif transfer_value > 1000:
+                    base_impact *= 1.5
+                    
+            # Send trust event to graph intelligence service
+            try:
+                with httpx.Client() as http_client:
+                    response = http_client.post(
+                        f"{graph_service_url}/api/v1/graph/ingest-trust-event",
+                        json={
+                            "event_type": activity_type,
+                            "entity_id": entity_id,
+                            "trust_delta": base_impact,
+                            "metadata": metadata
+                        }
+                    )
+                    response.raise_for_status()
+                    logger.info(f"Trust event ingested for {entity_id}: delta={base_impact}")
+            except Exception as e:
+                logger.error(f"Failed to ingest trust event: {e}")
+                
+            # Check for reputation milestones
+            if base_impact > 0:
+                check_reputation_milestones(entity_id, activity_type, metadata, publisher)
+                
+            consumer.acknowledge(msg)
+            
+        except Exception as e:
+            logger.error(f"Error in trust activity consumer: {e}", exc_info=True)
+            if 'msg' in locals() and msg:
+                consumer.negative_acknowledge(msg)
+
+
+def check_reputation_milestones(entity_id: str, activity_type: str, metadata: dict, publisher):
+    """
+    Check if entity has reached reputation milestones and trigger rewards.
+    
+    Milestones:
+    - First verified credential: Award "Trusted Member" badge
+    - 10 successful verifications: Award "Verification Expert" credential
+    - 100 trust score: Award "Community Leader" SBT
+    - 5 successful bridges: Award "Cross-Chain Pioneer" credential
+    """
+    vc_service_url = settings.get("VC_SERVICE_URL", "http://verifiable-credential-service:8000")
+    
+    try:
+        # Get current entity stats
+        with httpx.Client() as client:
+            response = client.get(f"{vc_service_url}/api/v1/trust/entities/{entity_id}")
+            if response.status_code != 200:
+                return
+                
+            entity_data = response.json()
+            trust_score = entity_data.get('trust_score', 0)
+            activity_counts = entity_data.get('activity_counts', {})
+            
+        # Check milestones
+        milestones_triggered = []
+        
+        # First verification milestone
+        if (activity_type == 'credential_verified' and 
+            activity_counts.get('credential_verified', 0) == 1):
+            milestones_triggered.append({
+                'type': 'TrustedMemberBadge',
+                'reason': 'First credential verification completed'
+            })
+            
+        # Verification expert milestone
+        if activity_counts.get('credential_verified', 0) >= 10:
+            milestones_triggered.append({
+                'type': 'VerificationExpertCredential',
+                'reason': '10 successful verifications completed'
+            })
+            
+        # Community leader milestone
+        if trust_score >= 0.9:  # 90% trust score
+            milestones_triggered.append({
+                'type': 'CommunityLeaderSBT',
+                'reason': 'Achieved exceptional trust score',
+                'is_sbt': True
+            })
+            
+        # Cross-chain pioneer milestone
+        if activity_counts.get('bridge_transfer_completed', 0) >= 5:
+            milestones_triggered.append({
+                'type': 'CrossChainPioneerCredential',
+                'reason': '5 successful cross-chain transfers'
+            })
+            
+        # Issue milestone credentials
+        for milestone in milestones_triggered:
+            logger.info(f"Milestone reached for {entity_id}: {milestone['type']}")
+            
+            # Request credential issuance
+            issue_event = IssueVerifiableCredential(
+                tenant_id="platform",  # Platform-wide milestone
+                subject={
+                    "id": entity_id,
+                    "achievement": milestone['type'],
+                    "reason": milestone['reason'],
+                    "achieved_at": datetime.utcnow().isoformat() + "Z"
+                },
+                credential_type=milestone['type'],
+                options={
+                    "store_on_ipfs": True,
+                    "create_sbt": milestone.get('is_sbt', False)
+                }
+            )
+            
+            if publisher:
+                publisher.publish(
+                    topic_base='issue-verifiable-credential-events',
+                    tenant_id="platform",
+                    schema_class=IssueVerifiableCredential,
+                    data=issue_event
+                )
+                
+    except Exception as e:
+        logger.error(f"Error checking reputation milestones: {e}")
+
 # --- FastAPI App ---
 app = create_base_app(
     service_name="workflow-service",
@@ -118,6 +318,7 @@ def startup_event():
     pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
     app.state.event_publisher = EventPublisher(pulsar_url=pulsar_url)
     app.state.event_publisher.connect()
+    app.state.stop_event = threading.Event()
     
     # Initialize Airflow bridge if enabled
     airflow_enabled = settings.get("AIRFLOW_ENABLED", "false").lower() == "true"
@@ -154,16 +355,53 @@ def startup_event():
         # Start the legacy Pulsar consumer in a background thread
         thread = threading.Thread(target=workflow_consumer_loop, args=(app,), daemon=True)
         thread.start()
+        app.state.workflow_thread = thread
         logger.info("Running in legacy mode without Airflow integration")
+    
+    # Start project workflow consumer
+    proj_thread = threading.Thread(target=project_workflow_consumer_loop, args=(app,), daemon=True)
+    proj_thread.start()
+    app.state.project_thread = proj_thread
+    
+    # Start document update consumer
+    doc_thread = threading.Thread(target=document_update_consumer_loop, args=(app,), daemon=True)
+    doc_thread.start()
+    app.state.document_thread = doc_thread
+    
+    # Start trust activity tracking consumer
+    trust_thread = threading.Thread(target=trust_activity_consumer_loop, args=(app,), daemon=True)
+    trust_thread.start()
+    app.state.trust_thread = trust_thread
+    
+    logger.info("All consumer threads started")
 
 @app.on_event("shutdown")
 def shutdown_event():
+    logger.info("Shutdown signal received, stopping consumer threads.")
+    
+    # Signal all threads to stop
+    if hasattr(app.state, 'stop_event'):
+        app.state.stop_event.set()
+    
+    # Wait for threads to complete
+    if hasattr(app.state, 'workflow_thread'):
+        app.state.workflow_thread.join(timeout=5)
+    if hasattr(app.state, 'project_thread'):
+        app.state.project_thread.join(timeout=5)
+    if hasattr(app.state, 'document_thread'):
+        app.state.document_thread.join(timeout=5)
+    if hasattr(app.state, 'trust_thread'):
+        app.state.trust_thread.join(timeout=5)
+    
+    # Stop event publisher
     if app.state.event_publisher:
         app.state.event_publisher.close()
     
     # Stop Airflow event processor if running
     if hasattr(app.state, 'event_processor'):
         app.state.event_processor.stop()
+    
+    logger.info("All consumer threads stopped.")
 
 @app.post("/webhooks/openproject")
 async def handle_openproject_webhook(request: Request):

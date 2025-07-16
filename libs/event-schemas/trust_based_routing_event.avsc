@@ -1,0 +1,74 @@
+{
+  "type": "record",
+  "name": "TrustBasedRoutingEvent",
+  "namespace": "platformq.events",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "Unique identifier for this event"
+    },
+    {
+      "name": "original_event_type",
+      "type": "string",
+      "doc": "The type of the original event being routed"
+    },
+    {
+      "name": "sender_entity_id",
+      "type": "string",
+      "doc": "Entity ID of the event sender"
+    },
+    {
+      "name": "sender_trust_score",
+      "type": "double",
+      "doc": "Trust score of the sender"
+    },
+    {
+      "name": "sender_trust_level",
+      "type": "string",
+      "doc": "Trust level: VERIFIED, HIGH, MEDIUM, LOW, UNTRUSTED"
+    },
+    {
+      "name": "routing_priority",
+      "type": "string",
+      "doc": "Priority level based on trust: CRITICAL, HIGH, NORMAL, LOW"
+    },
+    {
+      "name": "processing_requirements",
+      "type": ["null", {"type": "array", "items": "string"}],
+      "default": null,
+      "doc": "Special processing requirements based on trust level"
+    },
+    {
+      "name": "credential_gates",
+      "type": ["null", {"type": "array", "items": {
+        "type": "record",
+        "name": "CredentialGate",
+        "fields": [
+          {"name": "credential_type", "type": "string"},
+          {"name": "required", "type": "boolean"},
+          {"name": "minimum_score", "type": ["null", "double"], "default": null}
+        ]
+      }}],
+      "default": null,
+      "doc": "Required credentials for accessing certain features"
+    },
+    {
+      "name": "original_event_data",
+      "type": "string",
+      "doc": "JSON-encoded original event data"
+    },
+    {
+      "name": "routing_metadata",
+      "type": ["null", {"type": "map", "values": "string"}],
+      "default": null,
+      "doc": "Additional routing metadata"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis",
+      "doc": "When this routing decision was made"
+    }
+  ]
+} 
