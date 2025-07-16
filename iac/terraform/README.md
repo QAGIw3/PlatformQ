@@ -41,4 +41,27 @@ This directory contains the Terraform code to provision the core Kubernetes infr
     terraform apply
     ```
 
-After applying, Terraform will output the necessary information to connect to your new cluster with `kubectl`. 
+After applying, Terraform will output the necessary information to connect to your new cluster with `kubectl`.
+
+## Vault Configuration
+
+To configure the Vault server running in the local Docker Compose environment, navigate to the `iac/terraform/vault` directory and run the following commands:
+
+```bash
+cd iac/terraform/vault
+terraform init
+terraform apply
+```
+
+This will configure Vault with the necessary policies, roles, and secrets for the platform to function.
+
+### Production Deployment
+
+The Terraform configuration in this directory also includes a conceptual setup for a production-grade Vault cluster using the Raft storage backend and Google Cloud KMS for auto-unsealing. To deploy this configuration, you will need to:
+
+1.  **Authenticate with GCP**: Ensure your local environment is authenticated with GCP with permissions to manage KMS resources.
+2.  **Provide GCP Variables**: Create a `terraform.tfvars` file in this directory with your GCP project ID:
+    ```tfvars
+    gcp_project_id = "<YOUR_GCP_PROJECT_ID>"
+    ```
+3.  **Deploy the Infrastructure**: Run `terraform apply`. This will provision the KMS resources in your GCP project. The `vault_config` resource is conceptual and would need to be adapted to your chosen deployment method (e.g., Helm, Kubernetes Operator). 

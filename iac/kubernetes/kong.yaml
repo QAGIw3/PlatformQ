@@ -8,12 +8,40 @@ services:
       - name: auth-routes
         paths:
           - /auth
+      - name: auth-docs
+        paths:
+          - /auth/docs
+          - /auth/redoc
   - name: digital-asset-service
     url: http://digital-asset-service:8000
     routes:
       - name: digital-asset-routes
         paths:
           - /digital-assets
+      - name: digital-asset-docs
+        paths:
+          - /digital-assets/docs
+          - /digital-assets/redoc
+  - name: storage-proxy-service
+    url: http://storage-proxy-service:8000
+    routes:
+      - name: storage-proxy-routes
+        paths:
+          - /storage
+      - name: storage-proxy-docs
+        paths:
+          - /storage/docs
+          - /storage/redoc
+  - name: verifiable-credential-service
+    url: http://verifiable-credential-service:8000
+    routes:
+      - name: vc-routes
+        paths:
+          - /vc
+      - name: vc-docs
+        paths:
+          - /vc/docs
+          - /vc/redoc
 
 plugins:
   - name: rate-limiting
