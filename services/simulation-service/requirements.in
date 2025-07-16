@@ -2,6 +2,9 @@
 
 # Service-specific dependencies
 python-jose[cryptography]
+websockets>=11.0.0
+pyignite>=0.6.0
+numpy>=1.24.0
 
 # No service-specific Python dependencies are needed for this service.
 

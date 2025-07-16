@@ -170,7 +170,9 @@ hexbytes==0.3.1
 httptools==0.6.4
     # via uvicorn
 hvac==1.2.1
-    # via -r /Users/m/Downloads/platformQ/requirements/base.in
+    # via
+    #   -r /Users/m/Downloads/platformQ/requirements/base.in
+    #   -r services/auth-service/requirements.in
 idna==3.10
     # via
     #   anyio

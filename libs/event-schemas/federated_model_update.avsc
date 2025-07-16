@@ -1,0 +1,72 @@
+{
+  "namespace": "com.platformq.events.ml",
+  "type": "record",
+  "name": "FederatedModelUpdate",
+  "doc": "Event containing model updates from a participant",
+  "fields": [
+    {
+      "name": "session_id",
+      "type": "string"
+    },
+    {
+      "name": "round_number",
+      "type": "int"
+    },
+    {
+      "name": "participant_id",
+      "type": "string"
+    },
+    {
+      "name": "update_id",
+      "type": "string",
+      "doc": "Unique identifier for this update"
+    },
+    {
+      "name": "model_weights_uri",
+      "type": "string",
+      "doc": "URI to encrypted model weights in MinIO"
+    },
+    {
+      "name": "model_metrics",
+      "type": {
+        "type": "record",
+        "name": "ModelMetrics",
+        "fields": [
+          {"name": "loss", "type": "double"},
+          {"name": "accuracy", "type": ["null", "double"], "default": null},
+          {"name": "custom_metrics", "type": {"type": "map", "values": "double"}, "default": {}}
+        ]
+      }
+    },
+    {
+      "name": "training_metadata",
+      "type": {
+        "type": "record",
+        "name": "TrainingMetadata",
+        "fields": [
+          {"name": "samples_used", "type": "long"},
+          {"name": "epochs_completed", "type": "int"},
+          {"name": "training_time_seconds", "type": "double"},
+          {"name": "differential_privacy_applied", "type": "boolean"}
+        ]
+      }
+    },
+    {
+      "name": "cryptographic_proof",
+      "type": {
+        "type": "record",
+        "name": "CryptographicProof",
+        "fields": [
+          {"name": "proof_type", "type": "string", "doc": "ZKP or signature type"},
+          {"name": "proof_value", "type": "string"},
+          {"name": "commitment", "type": ["null", "string"], "default": null}
+        ]
+      }
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis"
+    }
+  ]
+} 

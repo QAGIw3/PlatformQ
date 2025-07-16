@@ -1,0 +1,78 @@
+{
+  "namespace": "com.platformq.events.ml",
+  "type": "record",
+  "name": "FederatedParticipantJoined",
+  "doc": "Event when a participant joins a federated learning session",
+  "fields": [
+    {
+      "name": "session_id",
+      "type": "string"
+    },
+    {
+      "name": "participant_id",
+      "type": "string",
+      "doc": "Unique identifier for the participant"
+    },
+    {
+      "name": "tenant_id",
+      "type": "string"
+    },
+    {
+      "name": "dataset_stats",
+      "type": {
+        "type": "record",
+        "name": "DatasetStats",
+        "fields": [
+          {"name": "num_samples", "type": "long"},
+          {"name": "num_features", "type": "int"},
+          {"name": "data_hash", "type": "string", "doc": "Hash of data for verification"},
+          {"name": "class_distribution", "type": ["null", {"type": "map", "values": "long"}], "default": null}
+        ]
+      }
+    },
+    {
+      "name": "compute_capabilities",
+      "type": {
+        "type": "record",
+        "name": "ComputeCapabilities",
+        "fields": [
+          {"name": "spark_executors", "type": "int"},
+          {"name": "memory_gb", "type": "double"},
+          {"name": "gpu_available", "type": "boolean"},
+          {"name": "estimated_training_speed", "type": ["null", "double"], "default": null}
+        ]
+      }
+    },
+    {
+      "name": "verified_credentials",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "VerifiedCredential",
+          "fields": [
+            {"name": "credential_id", "type": "string"},
+            {"name": "credential_type", "type": "string"},
+            {"name": "issuer", "type": "string"},
+            {"name": "verification_timestamp", "type": "long"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "reputation_score",
+      "type": ["null", "int"],
+      "default": null
+    },
+    {
+      "name": "public_key",
+      "type": "string",
+      "doc": "Public key for secure aggregation"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis"
+    }
+  ]
+} 

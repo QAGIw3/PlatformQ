@@ -23,6 +23,7 @@ import time
 from .grpc_generated import graph_intelligence_pb2, graph_intelligence_pb2_grpc
 from fastapi import FastAPI
 from .messaging.pulsar_consumer import start_consumer, stop_consumer
+from .simulation_lineage import SimulationLineageTracker
 
 app = FastAPI()
 
@@ -168,6 +169,14 @@ class TrustNetworkSync:
 
 # Global sync instance
 trust_sync = TrustNetworkSync()
+
+# Initialize simulation lineage tracker
+@app.on_event("startup")
+async def extended_startup():
+    """Initialize simulation lineage tracker"""
+    app.state.simulation_lineage = SimulationLineageTracker()
+    await app.state.simulation_lineage.initialize_schema()
+    logger.info("Simulation lineage tracker initialized")
 
 @app.on_event("startup")
 async def startup_event():
@@ -339,4 +348,106 @@ async def ingest_trust_event(
         "event_type": event_type,
         "entity_id": entity_id,
         "trust_impact": trust_delta
+    }
+
+# Add simulation lineage endpoints after existing endpoints
+
+@app.post("/api/v1/simulations/{simulation_id}/lineage/track-creation")
+async def track_simulation_creation(
+    simulation_id: str,
+    name: str,
+    created_by: str,
+    metadata: Dict[str, Any] = {},
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """Track new simulation creation in the graph"""
+    await app.state.simulation_lineage.track_simulation_created(
+        simulation_id, name, created_by, metadata
+    )
+    return {"status": "tracked", "simulation_id": simulation_id}
+
+@app.post("/api/v1/simulations/{simulation_id}/lineage/session-started")
+async def track_session_started(
+    simulation_id: str,
+    session_id: str,
+    user_id: str,
+    initial_parameters: Dict[str, Any],
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """Track new collaboration session start"""
+    await app.state.simulation_lineage.track_session_started(
+        session_id, simulation_id, user_id, initial_parameters
+    )
+    return {"status": "tracked", "session_id": session_id}
+
+@app.post("/api/v1/simulations/lineage/operation")
+async def track_simulation_operation(
+    session_id: str,
+    operation_id: str,
+    operation_type: str,
+    user_id: str,
+    target_type: str,
+    target_id: str,
+    operation_data: Dict[str, Any],
+    parent_operations: List[str] = [],
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """Track a simulation operation"""
+    await app.state.simulation_lineage.track_operation(
+        session_id, operation_id, operation_type, user_id,
+        target_type, target_id, operation_data, parent_operations
+    )
+    return {"status": "tracked", "operation_id": operation_id}
+
+@app.get("/api/v1/simulations/{simulation_id}/lineage")
+async def get_simulation_lineage(
+    simulation_id: str,
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """Get complete lineage graph for a simulation"""
+    lineage = await app.state.simulation_lineage.get_simulation_lineage(simulation_id)
+    return lineage
+
+@app.get("/api/v1/simulations/lineage/parameter-history")
+async def get_parameter_history(
+    session_id: str,
+    parameter_name: str,
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """Get parameter evolution history"""
+    history = await app.state.simulation_lineage.get_parameter_history(
+        session_id, parameter_name
+    )
+    return {"parameter": parameter_name, "history": history}
+
+@app.post("/api/v1/simulations/lineage/result")
+async def track_simulation_result(
+    session_id: str,
+    result_id: str,
+    metric_type: str,
+    value: float,
+    contributing_params: List[str],
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """Track simulation result with provenance"""
+    await app.state.simulation_lineage.track_result(
+        session_id, result_id, metric_type, value, contributing_params
+    )
+    return {"status": "tracked", "result_id": result_id}
+
+@app.get("/api/v1/simulations/lineage/parameter-influence")
+async def find_parameter_influence(
+    session_id: str,
+    parameter_name: str,
+    result_metric: str,
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """Find how a parameter influenced a specific result"""
+    paths = await app.state.simulation_lineage.find_parameter_influence(
+        session_id, parameter_name, result_metric
+    )
+    return {
+        "parameter": parameter_name,
+        "result_metric": result_metric,
+        "influence_paths": paths
     }

@@ -1,5 +1,5 @@
 from platformq_shared.base_service import create_base_app
-from fastapi import Depends, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import Depends, HTTPException, BackgroundTasks, UploadFile, File, Request, Query
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List, Union
@@ -10,7 +10,7 @@ import yaml
 import json
 import asyncio
 import httpx
-from datetime import datetime
+from datetime import datetime, timedelta
 import subprocess
 import threading
 import time
@@ -27,6 +27,9 @@ import pulsar
 from pulsar.schema import AvroSchema
 from kubernetes import client, config as k8s_config
 from kubernetes.client.rest import ApiException
+from .pipeline_generator import PipelineGenerator, PipelineOptimizer, PipelinePattern
+import re
+from .monitoring import PipelineMonitor, AlertSeverity, IgniteMetricsStore
 
 # Database models
 Base = declarative_base()
@@ -384,6 +387,7 @@ class JobMonitor(threading.Thread):
         self.app_state = app_state
         self.k8s_manager = KubernetesJobManager()
         self.running = True
+        self.monitors = {}  # Store active pipeline monitors
         
     def run(self):
         """Monitor running jobs and update their status"""
@@ -403,12 +407,25 @@ class JobMonitor(threading.Thread):
                             job.tenant_id
                         )
                         
+                        # Initialize monitoring if not exists
+                        if job.id not in self.monitors:
+                            self._init_job_monitoring(job)
+                        
+                        # Update metrics
+                        if job.id in self.monitors:
+                            self._update_job_metrics(job, status)
+                        
                         # Update job status based on K8s job status
                         if status.get("succeeded", 0) > 0:
                             job.status = JobStatus.COMPLETED
                             job.metrics = self._extract_metrics_from_logs(
                                 status.get("logs", "")
                             )
+                            
+                            # Stop monitoring
+                            if job.id in self.monitors:
+                                self.monitors[job.id].stop_monitoring()
+                                del self.monitors[job.id]
                             
                             # Publish completion event
                             self._publish_job_completed(job)
@@ -419,15 +436,119 @@ class JobMonitor(threading.Thread):
                                 status.get("logs", "")
                             )
                             
+                            # Record error in monitoring
+                            if job.id in self.monitors:
+                                self.monitors[job.id].record_metric(
+                                    "errors", 1, 
+                                    {"error_type": "job_failed"}
+                                )
+                                self.monitors[job.id].stop_monitoring()
+                                del self.monitors[job.id]
+                            
                         job.updated_at = datetime.utcnow()
                         db.commit()
+                
+                # Cleanup monitors for non-running jobs
+                self._cleanup_monitors(running_jobs)
                 
                 db.close()
                 
             except Exception as e:
                 logger.error(f"Error in job monitor: {e}")
-                
-            time.sleep(10)  # Check every 10 seconds
+            
+            time.sleep(30)  # Check every 30 seconds
+    
+    def _init_job_monitoring(self, job: SeaTunnelJob):
+        """Initialize monitoring for a job"""
+        try:
+            # Determine pipeline pattern from job config
+            pattern = job.config.get("metadata", {}).get("pattern", "etl")
+            
+            # Setup alert configuration
+            alert_config = {
+                "webhook_url": os.getenv("ALERT_WEBHOOK_URL"),
+                "rules": job.config.get("monitoring", {}).get("alert_rules", [
+                    {
+                        "metric": "error_rate",
+                        "threshold": 0.05,
+                        "window": "5m",
+                        "severity": "warning"
+                    },
+                    {
+                        "metric": "processing_lag",
+                        "threshold": 300,  # 5 minutes
+                        "window": "10m",
+                        "severity": "critical"
+                    }
+                ])
+            }
+            
+            # Create monitor
+            monitor = PipelineMonitor(
+                job_id=job.id,
+                pattern=pattern,
+                alert_config=alert_config
+            )
+            
+            # Start monitoring
+            asyncio.create_task(monitor.start_monitoring(interval=60))
+            
+            self.monitors[job.id] = monitor
+            logger.info(f"Initialized monitoring for job {job.id}")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize monitoring for job {job.id}: {e}")
+    
+    def _update_job_metrics(self, job: SeaTunnelJob, status: Dict[str, Any]):
+        """Update job metrics from status"""
+        monitor = self.monitors.get(job.id)
+        if not monitor:
+            return
+        
+        try:
+            logs = status.get("logs", "")
+            
+            # Extract metrics from logs (patterns depend on SeaTunnel output)
+            import re
+            
+            # Rows processed
+            rows_match = re.search(r"rows processed: (\d+)", logs, re.IGNORECASE)
+            if rows_match:
+                rows = int(rows_match.group(1))
+                monitor.record_metric("rows_processed", rows)
+            
+            # Processing time
+            time_match = re.search(r"processing time: ([\d.]+)s", logs, re.IGNORECASE)
+            if time_match:
+                proc_time = float(time_match.group(1))
+                monitor.record_metric("processing_time", proc_time)
+            
+            # Throughput calculation
+            if rows_match and time_match and float(time_match.group(1)) > 0:
+                throughput = int(rows_match.group(1)) / float(time_match.group(1))
+                monitor.record_metric("throughput", throughput)
+            
+            # Error count
+            error_matches = re.findall(r"(error|exception|failed)", logs, re.IGNORECASE)
+            if error_matches:
+                monitor.record_metric("errors", len(error_matches), {"error_type": "runtime"})
+            
+        except Exception as e:
+            logger.error(f"Failed to update metrics for job {job.id}: {e}")
+    
+    def _cleanup_monitors(self, running_jobs: List[SeaTunnelJob]):
+        """Cleanup monitors for jobs that are no longer running"""
+        running_job_ids = {job.id for job in running_jobs}
+        
+        monitors_to_remove = []
+        for job_id, monitor in self.monitors.items():
+            if job_id not in running_job_ids:
+                monitor.stop_monitoring()
+                monitors_to_remove.append(job_id)
+        
+        for job_id in monitors_to_remove:
+            del self.monitors[job_id]
+            logger.info(f"Cleaned up monitor for job {job_id}")
     
     def _extract_metrics_from_logs(self, logs: str) -> Dict[str, Any]:
         """Extract job metrics from SeaTunnel logs"""
@@ -794,6 +915,413 @@ async def get_job_templates():
     
     return templates
 
+# Pipeline auto-generation endpoints
+@app.post("/api/v1/pipelines/generate")
+async def generate_pipeline_from_metadata(
+    request: Request,
+    asset_metadata: Dict[str, Any],
+    auto_deploy: bool = False,
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate a SeaTunnel pipeline configuration from asset metadata
+    
+    This endpoint analyzes asset metadata and automatically generates
+    an optimized pipeline configuration based on asset type, data
+    characteristics, and best practices.
+    """
+    tenant_id = context["tenant_id"]
+    
+    try:
+        # Initialize pipeline generator
+        generator = PipelineGenerator()
+        optimizer = PipelineOptimizer()
+        
+        # Generate pipeline configuration
+        pipeline_config, pattern = generator.generate_pipeline(
+            asset_metadata=asset_metadata,
+            tenant_id=tenant_id
+        )
+        
+        # Optimize the pipeline
+        optimized_config = optimizer.optimize_pipeline(pipeline_config)
+        
+        # Convert to SeaTunnel format
+        # For multi-sink support, we'll use the first sink as primary
+        primary_sink = optimized_config["sinks"][0] if optimized_config["sinks"] else None
+        
+        seatunnel_job = SeaTunnelJobCreate(
+            name=optimized_config["name"],
+            description=optimized_config["description"],
+            source=ConnectorConfig(
+                connector_type=optimized_config["source"]["connector_type"],
+                connection_params=optimized_config["source"]["connection_params"],
+                table_or_topic=optimized_config["source"].get("table_or_topic", ""),
+                options=optimized_config["source"].get("options", {})
+            ),
+            sink=ConnectorConfig(
+                connector_type=primary_sink["connector_type"],
+                connection_params=primary_sink["connection_params"],
+                table_or_topic=primary_sink.get("table_or_topic", ""),
+                options=primary_sink.get("options", {})
+            ) if primary_sink else None,
+            transforms=[
+                TransformConfig(type=t["type"], config=t["config"])
+                for t in optimized_config.get("transforms", [])
+            ],
+            sync_mode=SyncMode(optimized_config["sync_mode"]),
+            schedule=optimized_config.get("schedule"),
+            parallelism=optimized_config.get("parallelism", 4),
+            checkpoint_interval=optimized_config.get("checkpoint_interval", 10000)
+        )
+        
+        response = {
+            "pipeline_config": optimized_config,
+            "pattern": pattern.value,
+            "estimated_cost": _estimate_pipeline_cost(optimized_config),
+            "recommendations": _get_pipeline_recommendations(pattern, optimized_config)
+        }
+        
+        # Auto-deploy if requested
+        if auto_deploy:
+            # Create and deploy the job
+            job_config = SeaTunnelConfigGenerator.generate_config(seatunnel_job, tenant_id)
+            
+            job = SeaTunnelJob(
+                tenant_id=tenant_id,
+                name=seatunnel_job.name,
+                description=seatunnel_job.description,
+                config=job_config,
+                sync_mode=seatunnel_job.sync_mode,
+                schedule=seatunnel_job.schedule,
+                status=JobStatus.PENDING
+            )
+            
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            
+            # Launch job
+            await launch_job(job.id, tenant_id, job_config, seatunnel_job.sync_mode)
+            
+            response["job_id"] = job.id
+            response["status"] = "deployed"
+        
+        return response
+        
+    except Exception as e:
+        logger.error(f"Failed to generate pipeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/pipelines/analyze")
+async def analyze_data_source(
+    source_uri: str,
+    source_type: str = Query(..., regex="^(file|database|streaming)$"),
+    sample_size: int = Query(1000, ge=100, le=10000),
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """
+    Analyze a data source and provide pipeline recommendations
+    
+    This endpoint samples data from the source and provides
+    recommendations for pipeline configuration.
+    """
+    try:
+        analysis = await _analyze_source(source_uri, source_type, sample_size)
+        
+        # Generate recommendations based on analysis
+        recommendations = {
+            "suggested_transformations": _suggest_transformations(analysis),
+            "optimal_sinks": _suggest_sinks(analysis),
+            "performance_settings": _suggest_performance_settings(analysis),
+            "monitoring_metrics": _suggest_metrics(analysis)
+        }
+        
+        return {
+            "source_analysis": analysis,
+            "recommendations": recommendations
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to analyze source: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/pipelines/patterns")
+async def get_pipeline_patterns():
+    """Get available pipeline patterns with descriptions and use cases"""
+    patterns = {
+        pattern.value: {
+            "name": pattern.name,
+            "description": _get_pattern_description(pattern),
+            "use_cases": _get_pattern_use_cases(pattern),
+            "typical_sources": _get_pattern_sources(pattern),
+            "typical_sinks": _get_pattern_sinks(pattern)
+        }
+        for pattern in PipelinePattern
+    }
+    
+    return {"patterns": patterns}
+
+@app.post("/api/v1/pipelines/batch/generate")
+async def batch_generate_pipelines(
+    assets: List[Dict[str, Any]],
+    pipeline_template: Optional[Dict[str, Any]] = None,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """
+    Generate multiple pipelines in batch for a list of assets
+    
+    Useful for bulk processing of similar assets with consistent
+    pipeline configurations.
+    """
+    tenant_id = context["tenant_id"]
+    generator = PipelineGenerator()
+    optimizer = PipelineOptimizer()
+    
+    results = []
+    
+    for asset in assets:
+        try:
+            # Apply template overrides if provided
+            if pipeline_template:
+                asset_metadata = {**asset, **pipeline_template}
+            else:
+                asset_metadata = asset
+            
+            # Generate and optimize pipeline
+            pipeline_config, pattern = generator.generate_pipeline(
+                asset_metadata=asset_metadata,
+                tenant_id=tenant_id
+            )
+            optimized = optimizer.optimize_pipeline(pipeline_config)
+            
+            results.append({
+                "asset_id": asset.get("asset_id"),
+                "pipeline_name": optimized["name"],
+                "pattern": pattern.value,
+                "status": "generated"
+            })
+            
+        except Exception as e:
+            results.append({
+                "asset_id": asset.get("asset_id"),
+                "status": "failed",
+                "error": str(e)
+            })
+    
+    return {
+        "total": len(assets),
+        "successful": len([r for r in results if r["status"] == "generated"]),
+        "failed": len([r for r in results if r["status"] == "failed"]),
+        "results": results
+    }
+
+# Helper functions for pipeline generation
+def _estimate_pipeline_cost(config: Dict[str, Any]) -> Dict[str, Any]:
+    """Estimate resource costs for pipeline execution"""
+    base_cost = 0.1  # Base cost per hour
+    
+    # Factor in parallelism
+    parallelism = config.get("parallelism", 4)
+    cost_multiplier = 1 + (parallelism - 1) * 0.3
+    
+    # Factor in sync mode
+    if config.get("sync_mode") == "streaming":
+        cost_multiplier *= 2.5  # Streaming is more expensive
+    
+    # Factor in number of sinks
+    sink_count = len(config.get("sinks", []))
+    cost_multiplier *= (1 + (sink_count - 1) * 0.2)
+    
+    hourly_cost = base_cost * cost_multiplier
+    
+    return {
+        "estimated_hourly_cost": round(hourly_cost, 2),
+        "estimated_monthly_cost": round(hourly_cost * 24 * 30, 2),
+        "cost_factors": {
+            "parallelism": parallelism,
+            "sync_mode": config.get("sync_mode"),
+            "sink_count": sink_count
+        }
+    }
+
+def _get_pipeline_recommendations(pattern: PipelinePattern, config: Dict[str, Any]) -> List[str]:
+    """Get recommendations for pipeline optimization"""
+    recommendations = []
+    
+    # Pattern-specific recommendations
+    if pattern == PipelinePattern.STREAMING:
+        recommendations.append("Consider implementing backpressure handling for streaming sources")
+        recommendations.append("Enable checkpointing with appropriate intervals for fault tolerance")
+    
+    elif pattern == PipelinePattern.CDC:
+        recommendations.append("Ensure CDC slots are properly managed to avoid storage issues")
+        recommendations.append("Consider implementing snapshot isolation for initial loads")
+    
+    elif pattern == PipelinePattern.AGGREGATION:
+        recommendations.append("Use incremental aggregation for better performance")
+        recommendations.append("Consider pre-aggregation at ingestion time if possible")
+    
+    # General recommendations
+    if config.get("parallelism", 0) > 8:
+        recommendations.append("High parallelism detected - ensure cluster has sufficient resources")
+    
+    transforms = config.get("transforms", [])
+    if len(transforms) > 5:
+        recommendations.append("Complex transformation chain - consider breaking into multiple pipelines")
+    
+    return recommendations
+
+async def _analyze_source(source_uri: str, source_type: str, sample_size: int) -> Dict[str, Any]:
+    """Analyze data source characteristics"""
+    # This is a simplified implementation
+    # In production, this would actually sample and analyze the data
+    
+    analysis = {
+        "source_uri": source_uri,
+        "source_type": source_type,
+        "sample_size": sample_size,
+        "detected_schema": {},
+        "data_characteristics": {
+            "estimated_volume": "medium",
+            "update_frequency": "daily",
+            "data_quality_score": 0.85
+        }
+    }
+    
+    if source_type == "file":
+        # Analyze file-based sources
+        if source_uri.endswith(".csv"):
+            analysis["detected_format"] = "csv"
+            analysis["detected_schema"] = {
+                "fields": ["id", "name", "value", "timestamp"],
+                "types": ["integer", "string", "float", "timestamp"]
+            }
+        elif source_uri.endswith(".json"):
+            analysis["detected_format"] = "json"
+    
+    elif source_type == "database":
+        # Analyze database sources
+        analysis["detected_format"] = "relational"
+        analysis["table_count"] = 5
+        analysis["relationship_count"] = 3
+    
+    return analysis
+
+def _suggest_transformations(analysis: Dict[str, Any]) -> List[str]:
+    """Suggest transformations based on data analysis"""
+    suggestions = []
+    
+    if analysis.get("data_characteristics", {}).get("data_quality_score", 1.0) < 0.9:
+        suggestions.append("data_quality_validation")
+        suggestions.append("data_cleansing")
+    
+    if "timestamp" in str(analysis.get("detected_schema", {})):
+        suggestions.append("time_based_partitioning")
+        suggestions.append("watermarking")
+    
+    return suggestions
+
+def _suggest_sinks(analysis: Dict[str, Any]) -> List[str]:
+    """Suggest optimal sinks based on data characteristics"""
+    sinks = []
+    
+    volume = analysis.get("data_characteristics", {}).get("estimated_volume", "medium")
+    
+    if volume in ["large", "xlarge"]:
+        sinks.append("minio")  # Object storage for large volumes
+    
+    if "timestamp" in str(analysis.get("detected_schema", {})):
+        sinks.append("ignite")  # For time-series caching
+    
+    if analysis.get("source_type") == "streaming":
+        sinks.append("pulsar")  # Stream to stream
+    
+    # Always include data lake
+    if "minio" not in sinks:
+        sinks.append("minio")
+    
+    return sinks
+
+def _suggest_performance_settings(analysis: Dict[str, Any]) -> Dict[str, Any]:
+    """Suggest performance settings based on data characteristics"""
+    volume = analysis.get("data_characteristics", {}).get("estimated_volume", "medium")
+    
+    volume_settings = {
+        "small": {"parallelism": 2, "memory": "1Gi"},
+        "medium": {"parallelism": 4, "memory": "2Gi"},
+        "large": {"parallelism": 8, "memory": "4Gi"},
+        "xlarge": {"parallelism": 16, "memory": "8Gi"}
+    }
+    
+    return volume_settings.get(volume, volume_settings["medium"])
+
+def _suggest_metrics(analysis: Dict[str, Any]) -> List[str]:
+    """Suggest monitoring metrics based on data characteristics"""
+    metrics = ["rows_processed", "processing_time", "error_rate"]
+    
+    if analysis.get("source_type") == "streaming":
+        metrics.extend(["lag", "throughput", "backpressure"])
+    
+    if analysis.get("data_characteristics", {}).get("data_quality_score", 1.0) < 0.9:
+        metrics.extend(["validation_failures", "data_quality_score"])
+    
+    return metrics
+
+def _get_pattern_description(pattern: PipelinePattern) -> str:
+    """Get description for pipeline pattern"""
+    descriptions = {
+        PipelinePattern.INGESTION: "Basic data ingestion from source to data lake",
+        PipelinePattern.ETL: "Extract, transform, and load data between systems",
+        PipelinePattern.STREAMING: "Real-time stream processing pipeline",
+        PipelinePattern.CDC: "Change data capture for database replication",
+        PipelinePattern.ENRICHMENT: "Enrich data with additional context or reference data",
+        PipelinePattern.AGGREGATION: "Aggregate and summarize data for analytics",
+        PipelinePattern.REPLICATION: "Replicate data to multiple target systems",
+        PipelinePattern.FEDERATION: "Federate data from multiple sources into unified view"
+    }
+    return descriptions.get(pattern, "")
+
+def _get_pattern_use_cases(pattern: PipelinePattern) -> List[str]:
+    """Get use cases for pipeline pattern"""
+    use_cases = {
+        PipelinePattern.INGESTION: [
+            "Initial data lake population",
+            "Batch file uploads",
+            "API data extraction"
+        ],
+        PipelinePattern.STREAMING: [
+            "Real-time IoT data processing",
+            "Live event stream analytics",
+            "Real-time dashboards"
+        ],
+        PipelinePattern.CDC: [
+            "Database synchronization",
+            "Real-time data warehouse updates",
+            "Audit trail capture"
+        ]
+    }
+    return use_cases.get(pattern, [])
+
+def _get_pattern_sources(pattern: PipelinePattern) -> List[str]:
+    """Get typical sources for pipeline pattern"""
+    sources = {
+        PipelinePattern.INGESTION: ["S3/MinIO", "FTP", "REST APIs"],
+        PipelinePattern.STREAMING: ["Pulsar", "Kafka", "IoT devices"],
+        PipelinePattern.CDC: ["PostgreSQL", "MySQL", "MongoDB"]
+    }
+    return sources.get(pattern, [])
+
+def _get_pattern_sinks(pattern: PipelinePattern) -> List[str]:
+    """Get typical sinks for pipeline pattern"""
+    sinks = {
+        PipelinePattern.INGESTION: ["Data Lake (MinIO)", "Cassandra"],
+        PipelinePattern.STREAMING: ["Ignite", "Elasticsearch", "Pulsar"],
+        PipelinePattern.CDC: ["Data Warehouse", "Elasticsearch", "Data Lake"]
+    }
+    return sinks.get(pattern, [])
+
 # Startup event
 @app.on_event("startup")
 async def startup_event():
@@ -803,7 +1331,199 @@ async def startup_event():
     monitor.start()
     app.state.job_monitor = monitor
     
+    # Start asset event consumer for auto-pipeline generation
+    consumer_thread = threading.Thread(
+        target=asset_event_consumer,
+        args=(app.state,),
+        daemon=True
+    )
+    consumer_thread.start()
+    app.state.asset_consumer_thread = consumer_thread
+    
     logger.info("SeaTunnel service started")
+
+# Asset event consumer for auto-pipeline generation
+def asset_event_consumer(app_state):
+    """Consume DigitalAssetCreated events and auto-generate pipelines"""
+    logger.info("Starting asset event consumer for pipeline auto-generation...")
+    
+    config_loader = ConfigLoader()
+    settings = config_loader.load_settings()
+    pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
+    
+    client = pulsar.Client(pulsar_url)
+    
+    # Import the event schema
+    from platformq_shared.events import DigitalAssetCreated
+    
+    try:
+        consumer = client.subscribe(
+            topic_pattern="persistent://platformq/.*/digital-asset-created-events",
+            subscription_name="seatunnel-pipeline-generator",
+            schema=AvroSchema(DigitalAssetCreated),
+            consumer_type=pulsar.ConsumerType.Shared
+        )
+        
+        generator = PipelineGenerator()
+        optimizer = PipelineOptimizer()
+        db = SessionLocal()
+        
+        while True:
+            try:
+                msg = consumer.receive(timeout_millis=1000)
+                if msg is None:
+                    continue
+                
+                event = msg.value()
+                logger.info(f"Received DigitalAssetCreated event for asset: {event.asset_id}")
+                
+                # Extract tenant ID from topic
+                topic = msg.topic_name()
+                tenant_match = re.search(r'platformq/([a-f0-9-]+)/', topic)
+                tenant_id = tenant_match.group(1) if tenant_match else 'default'
+                
+                # Check if auto-generation is enabled for this asset type
+                if should_auto_generate_pipeline(event.asset_type):
+                    try:
+                        # Prepare asset metadata
+                        asset_metadata = {
+                            "asset_id": event.asset_id,
+                            "asset_type": event.asset_type,
+                            "asset_name": event.asset_name,
+                            "raw_data_uri": event.raw_data_uri,
+                            "owner_id": event.owner_id,
+                            "created_at": event.created_at
+                        }
+                        
+                        # Generate pipeline
+                        pipeline_config, pattern = generator.generate_pipeline(
+                            asset_metadata=asset_metadata,
+                            tenant_id=tenant_id
+                        )
+                        
+                        # Optimize pipeline
+                        optimized_config = optimizer.optimize_pipeline(pipeline_config)
+                        
+                        # Create SeaTunnel job from generated config
+                        job_name = f"auto_{event.asset_type.lower()}_{event.asset_id[:8]}"
+                        primary_sink = optimized_config["sinks"][0] if optimized_config["sinks"] else None
+                        
+                        if primary_sink:
+                            # Generate SeaTunnel configuration
+                            seatunnel_config = {
+                                "env": {
+                                    "execution.parallelism": optimized_config.get("parallelism", 4),
+                                    "execution.checkpoint.interval": optimized_config.get("checkpoint_interval", 60000)
+                                },
+                                "source": [optimized_config["source"]],
+                                "transform": optimized_config.get("transforms", []),
+                                "sink": optimized_config["sinks"]
+                            }
+                            
+                            # Create job record
+                            job = SeaTunnelJob(
+                                tenant_id=tenant_id,
+                                name=job_name,
+                                description=f"Auto-generated {pattern.value} pipeline for {event.asset_type}",
+                                config=seatunnel_config,
+                                sync_mode=SyncMode(optimized_config["sync_mode"]),
+                                schedule=optimized_config.get("schedule"),
+                                status=JobStatus.PENDING
+                            )
+                            
+                            db.add(job)
+                            db.commit()
+                            
+                            # Launch job asynchronously
+                            asyncio.create_task(
+                                launch_job(
+                                    job.id,
+                                    tenant_id,
+                                    seatunnel_config,
+                                    SyncMode(optimized_config["sync_mode"])
+                                )
+                            )
+                            
+                            logger.info(f"Auto-generated and launched pipeline {job_name} for asset {event.asset_id}")
+                            
+                            # Publish pipeline creation event
+                            publish_pipeline_created_event(
+                                tenant_id=tenant_id,
+                                asset_id=event.asset_id,
+                                pipeline_id=job.id,
+                                pattern=pattern.value
+                            )
+                        
+                    except Exception as e:
+                        logger.error(f"Failed to auto-generate pipeline for asset {event.asset_id}: {e}")
+                
+                # Acknowledge message
+                consumer.acknowledge(msg)
+                
+            except Exception as e:
+                if "Timeout" not in str(e):
+                    logger.error(f"Error processing asset event: {e}")
+                    
+    except Exception as e:
+        logger.error(f"Failed to start asset event consumer: {e}")
+    finally:
+        if 'consumer' in locals():
+            consumer.close()
+        if 'client' in locals():
+            client.close()
+        if 'db' in locals():
+            db.close()
+
+def should_auto_generate_pipeline(asset_type: str) -> bool:
+    """Determine if pipeline should be auto-generated for asset type"""
+    # Auto-generate for known structured data types
+    auto_generate_types = [
+        "CSV", "EXCEL", "PARQUET", "AVRO", "JSON",
+        "CRM_CONTACT", "CRM_ACCOUNT", "CRM_OPPORTUNITY",
+        "IOT_SENSOR", "TELEMETRY", "LOG", "EVENT",
+        "DATABASE_EXPORT", "SQL_DUMP"
+    ]
+    
+    return any(asset_type.upper().startswith(t) for t in auto_generate_types)
+
+def publish_pipeline_created_event(tenant_id: str, asset_id: str, pipeline_id: str, pattern: str):
+    """Publish event when pipeline is created"""
+    try:
+        # Define event schema if not exists
+        from pulsar.schema import Record, String, Long
+        
+        class PipelineCreatedEvent(Record):
+            tenant_id = String()
+            asset_id = String()
+            pipeline_id = String()
+            pattern = String()
+            created_at = Long()
+        
+        config_loader = ConfigLoader()
+        publisher = EventPublisher(
+            pulsar_url=config_loader.load_settings().get("PULSAR_URL", "pulsar://pulsar:6650")
+        )
+        publisher.connect()
+        
+        event = PipelineCreatedEvent(
+            tenant_id=tenant_id,
+            asset_id=asset_id,
+            pipeline_id=pipeline_id,
+            pattern=pattern,
+            created_at=int(datetime.utcnow().timestamp() * 1000)
+        )
+        
+        publisher.publish(
+            topic_base='seatunnel-pipeline-created-events',
+            tenant_id=tenant_id,
+            schema_class=PipelineCreatedEvent,
+            data=event
+        )
+        
+        publisher.close()
+        
+    except Exception as e:
+        logger.error(f"Failed to publish pipeline created event: {e}")
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -816,4 +1536,161 @@ async def shutdown_event():
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {"status": "healthy", "service": "seatunnel-service"} 
+    return {"status": "healthy", "service": "seatunnel-service"}
+
+# Monitoring endpoints
+@app.get("/api/v1/jobs/{job_id}/metrics")
+async def get_job_metrics(
+    job_id: str,
+    time_range_hours: int = Query(1, ge=1, le=24),
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db)
+):
+    """Get metrics for a specific job"""
+    tenant_id = context["tenant_id"]
+    
+    # Verify job exists and belongs to tenant
+    job = db.query(SeaTunnelJob).filter(
+        SeaTunnelJob.id == job_id,
+        SeaTunnelJob.tenant_id == tenant_id
+    ).first()
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Get monitor from job monitor thread
+    monitor = None
+    if hasattr(app.state, 'job_monitor') and hasattr(app.state.job_monitor, 'monitors'):
+        monitor = app.state.job_monitor.monitors.get(job_id)
+    
+    if monitor:
+        # Get dashboard data from active monitor
+        dashboard_data = monitor.get_dashboard_data(
+            time_range=timedelta(hours=time_range_hours)
+        )
+        return dashboard_data
+    else:
+        # Job not currently running, get historical data
+        pattern = job.config.get("metadata", {}).get("pattern", "etl")
+        
+        # Create temporary monitor to retrieve historical data
+        metrics_store = IgniteMetricsStore()
+        
+        cache_name = f"pipeline_metrics_{job_id}"
+        metrics = metrics_store.get_metrics(cache_name)
+        
+        metrics_store.close()
+        
+        return {
+            "job_id": job_id,
+            "pattern": pattern,
+            "status": job.status.value,
+            "historical_metrics": metrics
+        }
+
+@app.get("/api/v1/monitoring/dashboard")
+async def get_monitoring_dashboard(
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db)
+):
+    """Get overall monitoring dashboard for tenant"""
+    tenant_id = context["tenant_id"]
+    
+    # Get all jobs for tenant
+    jobs = db.query(SeaTunnelJob).filter(
+        SeaTunnelJob.tenant_id == tenant_id,
+        SeaTunnelJob.is_active == True
+    ).all()
+    
+    dashboard = {
+        "tenant_id": tenant_id,
+        "timestamp": datetime.utcnow().isoformat(),
+        "summary": {
+            "total_jobs": len(jobs),
+            "running_jobs": len([j for j in jobs if j.status == JobStatus.RUNNING]),
+            "completed_jobs": len([j for j in jobs if j.status == JobStatus.COMPLETED]),
+            "failed_jobs": len([j for j in jobs if j.status == JobStatus.FAILED])
+        },
+        "jobs": []
+    }
+    
+    # Get monitors from job monitor thread
+    monitors = {}
+    if hasattr(app.state, 'job_monitor') and hasattr(app.state.job_monitor, 'monitors'):
+        monitors = app.state.job_monitor.monitors
+    
+    for job in jobs:
+        job_info = {
+            "job_id": job.id,
+            "name": job.name,
+            "status": job.status.value,
+            "sync_mode": job.sync_mode.value,
+            "last_run": job.last_run.isoformat() if job.last_run else None,
+            "metrics": {}
+        }
+        
+        # Get current metrics if job is monitored
+        if job.id in monitors:
+            monitor = monitors[job.id]
+            try:
+                current_metrics = monitor.get_dashboard_data(timedelta(minutes=5))
+                job_info["metrics"] = current_metrics.get("metrics", {})
+            except Exception as e:
+                logger.error(f"Failed to get metrics for job {job.id}: {e}")
+        
+        dashboard["jobs"].append(job_info)
+    
+    return dashboard
+
+@app.post("/api/v1/jobs/{job_id}/alerts")
+async def configure_job_alerts(
+    job_id: str,
+    alert_rules: List[Dict[str, Any]],
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db)
+):
+    """Configure alert rules for a job"""
+    tenant_id = context["tenant_id"]
+    
+    # Verify job exists and belongs to tenant
+    job = db.query(SeaTunnelJob).filter(
+        SeaTunnelJob.id == job_id,
+        SeaTunnelJob.tenant_id == tenant_id
+    ).first()
+    
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
+    
+    # Update job configuration with alert rules
+    config = job.config
+    if "monitoring" not in config:
+        config["monitoring"] = {}
+    
+    config["monitoring"]["alert_rules"] = alert_rules
+    
+    job.config = config
+    db.commit()
+    
+    # Update monitor if job is running
+    if hasattr(app.state, 'job_monitor') and hasattr(app.state.job_monitor, 'monitors'):
+        monitor = app.state.job_monitor.monitors.get(job_id)
+        if monitor:
+            monitor.alert_rules = alert_rules
+    
+    return {"message": "Alert rules updated successfully", "job_id": job_id}
+
+@app.get("/api/v1/monitoring/metrics/export")
+async def export_metrics_prometheus(
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Export metrics in Prometheus format"""
+    from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+    from fastapi.responses import Response
+    
+    # Collect metrics from all monitors
+    metrics_data = generate_latest()
+    
+    return Response(
+        content=metrics_data,
+        media_type=CONTENT_TYPE_LATEST
+    ) 

@@ -1,0 +1,67 @@
+{
+  "namespace": "com.platformq.events.ml",
+  "type": "record",
+  "name": "FederatedRoundCompleted",
+  "doc": "Event when a federated learning round is completed",
+  "fields": [
+    {
+      "name": "session_id",
+      "type": "string"
+    },
+    {
+      "name": "round_number",
+      "type": "int"
+    },
+    {
+      "name": "aggregated_model_uri",
+      "type": "string",
+      "doc": "URI to the aggregated model in MinIO"
+    },
+    {
+      "name": "participants",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "RoundParticipant",
+          "fields": [
+            {"name": "participant_id", "type": "string"},
+            {"name": "contribution_weight", "type": "double"},
+            {"name": "update_received", "type": "boolean"}
+          ]
+        }
+      }
+    },
+    {
+      "name": "aggregation_metrics",
+      "type": {
+        "type": "record",
+        "name": "AggregationMetrics",
+        "fields": [
+          {"name": "aggregation_method", "type": "string"},
+          {"name": "total_samples", "type": "long"},
+          {"name": "avg_loss", "type": "double"},
+          {"name": "model_divergence", "type": ["null", "double"], "default": null},
+          {"name": "convergence_score", "type": ["null", "double"], "default": null}
+        ]
+      }
+    },
+    {
+      "name": "verifiable_credential_id",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "VC issued for this round's completion"
+    },
+    {
+      "name": "next_round_start",
+      "type": ["null", "long"],
+      "default": null,
+      "doc": "Timestamp for next round start"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis"
+    }
+  ]
+} 

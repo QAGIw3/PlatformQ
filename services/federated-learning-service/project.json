@@ -1,0 +1,37 @@
+{
+  "name": "federated-learning-service",
+  "root": "services/federated-learning-service",
+  "sourceRoot": "services/federated-learning-service/app",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "@nx/docker:build",
+      "options": {
+        "dockerfile": "services/federated-learning-service/Dockerfile",
+        "context": ".",
+        "tags": ["platformq/federated-learning-service:latest"]
+      }
+    },
+    "serve": {
+      "executor": "@nx/python:run",
+      "options": {
+        "command": "uvicorn app.main:app --reload --host 0.0.0.0 --port 8000",
+        "cwd": "services/federated-learning-service"
+      }
+    },
+    "test": {
+      "executor": "@nx/python:test",
+      "options": {
+        "testFiles": ["services/federated-learning-service/tests"],
+        "coverage": true
+      }
+    },
+    "lint": {
+      "executor": "@nx/python:flake8",
+      "options": {
+        "src": "services/federated-learning-service"
+      }
+    }
+  },
+  "tags": ["ml", "privacy", "coordinator"]
+} 

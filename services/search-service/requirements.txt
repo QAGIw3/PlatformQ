@@ -110,7 +110,9 @@ h11==0.16.0
 httptools==0.6.4
     # via uvicorn
 hvac==1.2.1
-    # via -r /Users/m/Downloads/platformQ/requirements/base.in
+    # via
+    #   -r /Users/m/Downloads/platformQ/requirements/base.in
+    #   -r services/search-service/requirements.in
 idna==3.10
     # via
     #   anyio

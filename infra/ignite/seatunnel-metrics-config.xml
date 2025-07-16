@@ -1,0 +1,191 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="
+       http://www.springframework.org/schema/beans
+       http://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean id="ignite.cfg" class="org.apache.ignite.configuration.IgniteConfiguration">
+        <!-- Set to true to enable distributed class loading for examples -->
+        <property name="peerClassLoadingEnabled" value="true"/>
+
+        <!-- Cache configurations for SeaTunnel metrics -->
+        <property name="cacheConfiguration">
+            <list>
+                <!-- Pipeline metrics cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="pipeline_metrics_*"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    <property name="statisticsEnabled" value="true"/>
+                    
+                    <!-- Expiry policy for automatic cleanup -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="DAYS"/>
+                                    <constructor-arg value="30"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                    
+                    <!-- Eviction policy -->
+                    <property name="evictionPolicyFactory">
+                        <bean class="org.apache.ignite.cache.eviction.lru.LruEvictionPolicyFactory">
+                            <property name="maxSize" value="1000000"/>
+                        </bean>
+                    </property>
+                    
+                    <!-- Query entity for SQL queries -->
+                    <property name="queryEntities">
+                        <list>
+                            <bean class="org.apache.ignite.cache.QueryEntity">
+                                <property name="keyType" value="java.lang.String"/>
+                                <property name="valueType" value="java.lang.String"/>
+                                <property name="tableName" value="PIPELINE_METRICS"/>
+                                
+                                <property name="fields">
+                                    <map>
+                                        <entry key="metricName" value="java.lang.String"/>
+                                        <entry key="jobId" value="java.lang.String"/>
+                                        <entry key="value" value="java.lang.Double"/>
+                                        <entry key="timestamp" value="java.sql.Timestamp"/>
+                                        <entry key="pattern" value="java.lang.String"/>
+                                    </map>
+                                </property>
+                                
+                                <property name="indexes">
+                                    <list>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="jobId"/>
+                                        </bean>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="timestamp"/>
+                                        </bean>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="metricName"/>
+                                        </bean>
+                                    </list>
+                                </property>
+                            </bean>
+                        </list>
+                    </property>
+                </bean>
+
+                <!-- Alert history cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="seatunnel_alerts"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="statisticsEnabled" value="true"/>
+                    
+                    <!-- Expiry policy for alerts -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="DAYS"/>
+                                    <constructor-arg value="7"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+
+                <!-- Dashboard cache for pre-computed metrics -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="seatunnel_dashboards"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    <property name="statisticsEnabled" value="true"/>
+                    
+                    <!-- Short TTL for dashboard data -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="MINUTES"/>
+                                    <constructor-arg value="5"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+
+                <!-- Pipeline configuration cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="pipeline_configs"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="statisticsEnabled" value="true"/>
+                    <property name="readThrough" value="true"/>
+                    <property name="writeThrough" value="true"/>
+                </bean>
+            </list>
+        </property>
+
+        <!-- Discovery SPI configuration -->
+        <property name="discoverySpi">
+            <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+                <property name="ipFinder">
+                    <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.kubernetes.TcpDiscoveryKubernetesIpFinder">
+                        <property name="namespace" value="default"/>
+                        <property name="serviceName" value="ignite"/>
+                    </bean>
+                </property>
+            </bean>
+        </property>
+
+        <!-- Memory configuration -->
+        <property name="dataStorageConfiguration">
+            <bean class="org.apache.ignite.configuration.DataStorageConfiguration">
+                <!-- Default data region for SeaTunnel metrics -->
+                <property name="defaultDataRegionConfiguration">
+                    <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                        <property name="name" value="SeaTunnelMetrics"/>
+                        <property name="initialSize" value="#{100L * 1024 * 1024}"/>
+                        <property name="maxSize" value="#{1L * 1024 * 1024 * 1024}"/>
+                        <property name="persistenceEnabled" value="true"/>
+                        
+                        <!-- Enable metrics -->
+                        <property name="metricsEnabled" value="true"/>
+                        
+                        <!-- Page eviction mode -->
+                        <property name="pageEvictionMode" value="RANDOM_2_LRU"/>
+                    </bean>
+                </property>
+                
+                <!-- Enable WAL for persistence -->
+                <property name="walMode" value="LOG_ONLY"/>
+                <property name="walSegmentSize" value="#{64 * 1024 * 1024}"/>
+                <property name="writeThrottlingEnabled" value="true"/>
+            </bean>
+        </property>
+
+        <!-- Metrics export configuration -->
+        <property name="metricExporterSpi">
+            <list>
+                <!-- JMX metrics export -->
+                <bean class="org.apache.ignite.spi.metric.jmx.JmxMetricExporterSpi"/>
+                
+                <!-- OpenCensus metrics export for Prometheus -->
+                <bean class="org.apache.ignite.spi.metric.opencensus.OpenCensusMetricExporterSpi">
+                    <property name="period" value="30000"/>
+                </bean>
+            </list>
+        </property>
+
+        <!-- SQL configuration -->
+        <property name="sqlConfiguration">
+            <bean class="org.apache.ignite.configuration.SqlConfiguration">
+                <property name="queryEnginesConfiguration">
+                    <list>
+                        <bean class="org.apache.ignite.indexing.IndexingQueryEngineConfiguration">
+                            <property name="default" value="true"/>
+                        </bean>
+                    </list>
+                </property>
+            </bean>
+        </property>
+    </bean>
+</beans> 

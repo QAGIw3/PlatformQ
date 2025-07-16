@@ -1,4 +1,4 @@
-# Default values for auth-service chart.
+# Default values for simulation-service chart.
 replicaCount: 1
 
 image:
@@ -14,13 +14,107 @@ image:
 service:
   type: ClusterIP
   port: 80
+  websocketPort: 8080
 
 autoscaling:
-  enabled: false # Disabled by default for new services
-  minReplicas: 1
-  maxReplicas: 5
-  targetCPUUtilizationPercentage: 80
-  # targetMemoryUtilizationPercentage: 80 # Can also scale on memory
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
 
-# We don't need to define resources, ingresses, etc. for this basic chart,
-# as Kong will handle external access. 
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+  requests:
+    cpu: 1000m
+    memory: 2Gi
+
+# Application configuration
+config:
+  logLevel: INFO
+  
+  # Ignite configuration
+  ignite:
+    hosts:
+      - ignite-0.ignite.default.svc.cluster.local:10800
+      - ignite-1.ignite.default.svc.cluster.local:10800
+      - ignite-2.ignite.default.svc.cluster.local:10800
+    
+  # Pulsar configuration
+  pulsar:
+    serviceUrl: pulsar://pulsar-broker.default.svc.cluster.local:6650
+    adminUrl: http://pulsar-broker.default.svc.cluster.local:8080
+    
+  # Cassandra configuration
+  cassandra:
+    hosts:
+      - cassandra-0.cassandra.default.svc.cluster.local
+      - cassandra-1.cassandra.default.svc.cluster.local
+    port: 9042
+    keyspace: platformq_simulations
+    
+  # JanusGraph configuration
+  janusgraph:
+    host: janusgraph.default.svc.cluster.local
+    port: 8182
+    
+  # WebSocket configuration
+  websocket:
+    maxConnections: 500
+    pingInterval: 30
+    pongTimeout: 10
+    
+  # Collaboration configuration
+  collaboration:
+    updateFrequency: 60  # Hz
+    bufferFlushInterval: 100  # ms
+    maxAgentsPerUpdate: 1000
+    sessionTimeout: 300  # seconds (5 minutes)
+    
+  # Simulation limits
+  simulation:
+    maxAgentsPerSimulation: 100000
+    maxUsersPerSession: 50
+    checkpointInterval: 1000  # ticks
+
+# Environment variables
+env:
+  - name: PYTHONUNBUFFERED
+    value: "1"
+  - name: SERVICE_NAME
+    value: "simulation-service"
+
+# Probes
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+
+# Enable WebSocket support
+websocket:
+  enabled: true
+  
+# Network policies
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: platformq
+      ports:
+      - protocol: TCP
+        port: 80
+      - protocol: TCP
+        port: 8080 

@@ -1,0 +1,309 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="
+       http://www.springframework.org/schema/beans
+       http://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean id="ignite.cfg" class="org.apache.ignite.configuration.IgniteConfiguration">
+        <!-- Cluster name for federated learning -->
+        <property name="igniteInstanceName" value="federated-learning-cluster"/>
+        
+        <!-- Enable peer class loading -->
+        <property name="peerClassLoadingEnabled" value="true"/>
+        
+        <!-- Memory configuration optimized for ML workloads -->
+        <property name="dataStorageConfiguration">
+            <bean class="org.apache.ignite.configuration.DataStorageConfiguration">
+                <!-- Default memory region -->
+                <property name="defaultDataRegionConfiguration">
+                    <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                        <property name="name" value="Default_Region"/>
+                        <property name="initialSize" value="#{1L * 1024 * 1024 * 1024}"/> <!-- 1GB -->
+                        <property name="maxSize" value="#{4L * 1024 * 1024 * 1024}"/> <!-- 4GB -->
+                        <property name="persistenceEnabled" value="true"/>
+                        <property name="metricsEnabled" value="true"/>
+                    </bean>
+                </property>
+                
+                <!-- Specialized regions for different FL data types -->
+                <property name="dataRegionConfigurations">
+                    <list>
+                        <!-- Model weights region with high memory allocation -->
+                        <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                            <property name="name" value="ModelWeightsRegion"/>
+                            <property name="initialSize" value="#{2L * 1024 * 1024 * 1024}"/> <!-- 2GB -->
+                            <property name="maxSize" value="#{8L * 1024 * 1024 * 1024}"/> <!-- 8GB -->
+                            <property name="persistenceEnabled" value="false"/> <!-- In-memory only for speed -->
+                            <property name="metricsEnabled" value="true"/>
+                            <property name="evictionMode" value="RANDOM_2_LRU"/>
+                            <property name="pageEvictionMode" value="RANDOM_2_LRU"/>
+                        </bean>
+                        
+                        <!-- Aggregation workspace region -->
+                        <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                            <property name="name" value="AggregationRegion"/>
+                            <property name="initialSize" value="#{1L * 1024 * 1024 * 1024}"/> <!-- 1GB -->
+                            <property name="maxSize" value="#{4L * 1024 * 1024 * 1024}"/> <!-- 4GB -->
+                            <property name="persistenceEnabled" value="false"/>
+                            <property name="metricsEnabled" value="true"/>
+                        </bean>
+                        
+                        <!-- Session metadata region -->
+                        <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                            <property name="name" value="SessionMetadataRegion"/>
+                            <property name="initialSize" value="#{512 * 1024 * 1024}"/> <!-- 512MB -->
+                            <property name="maxSize" value="#{2L * 1024 * 1024 * 1024}"/> <!-- 2GB -->
+                            <property name="persistenceEnabled" value="true"/>
+                            <property name="metricsEnabled" value="true"/>
+                        </bean>
+                    </list>
+                </property>
+                
+                <!-- Enable memory metrics -->
+                <property name="metricsEnabled" value="true"/>
+                
+                <!-- WAL configuration for persistence -->
+                <property name="walMode" value="LOG_ONLY"/>
+                <property name="walSegmentSize" value="#{128 * 1024 * 1024}"/> <!-- 128MB segments -->
+                <property name="writeThrottlingEnabled" value="true"/>
+            </bean>
+        </property>
+
+        <!-- Cache configurations -->
+        <property name="cacheConfiguration">
+            <list>
+                <!-- Model updates cache (encrypted) -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="fl_model_updates_*"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="backups" value="2"/>
+                    <property name="dataRegionName" value="ModelWeightsRegion"/>
+                    <property name="writeSynchronizationMode" value="PRIMARY_SYNC"/>
+                    
+                    <!-- Expiry policy: 24 hours -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="HOURS"/>
+                                    <constructor-arg value="24"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                    
+                    <!-- Query entity for searching -->
+                    <property name="queryEntities">
+                        <list>
+                            <bean class="org.apache.ignite.cache.QueryEntity">
+                                <property name="keyType" value="java.lang.String"/>
+                                <property name="valueType" value="java.lang.String"/>
+                                <property name="tableName" value="MODEL_UPDATES"/>
+                                <property name="fields">
+                                    <map>
+                                        <entry key="sessionId" value="java.lang.String"/>
+                                        <entry key="roundNumber" value="java.lang.Integer"/>
+                                        <entry key="participantId" value="java.lang.String"/>
+                                        <entry key="updateUri" value="java.lang.String"/>
+                                        <entry key="zkpValid" value="java.lang.Boolean"/>
+                                        <entry key="timestamp" value="java.sql.Timestamp"/>
+                                    </map>
+                                </property>
+                                <property name="indexes">
+                                    <list>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="sessionId,roundNumber"/>
+                                        </bean>
+                                    </list>
+                                </property>
+                            </bean>
+                        </list>
+                    </property>
+                </bean>
+
+                <!-- Aggregated models cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="fl_aggregated_models_*"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="dataRegionName" value="AggregationRegion"/>
+                    
+                    <!-- Near cache for faster local access -->
+                    <property name="nearConfiguration">
+                        <bean class="org.apache.ignite.configuration.NearCacheConfiguration">
+                            <property name="nearEvictionPolicyFactory">
+                                <bean class="org.apache.ignite.cache.eviction.lru.LruEvictionPolicyFactory">
+                                    <property name="maxSize" value="100"/>
+                                </bean>
+                            </property>
+                        </bean>
+                    </property>
+                </bean>
+
+                <!-- Session state cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="fl_sessions"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="dataRegionName" value="SessionMetadataRegion"/>
+                    <property name="writeSynchronizationMode" value="FULL_SYNC"/>
+                    
+                    <!-- Query support -->
+                    <property name="queryEntities">
+                        <list>
+                            <bean class="org.apache.ignite.cache.QueryEntity">
+                                <property name="keyType" value="java.lang.String"/>
+                                <property name="valueType" value="java.lang.String"/>
+                                <property name="tableName" value="FL_SESSIONS"/>
+                                <property name="fields">
+                                    <map>
+                                        <entry key="sessionId" value="java.lang.String"/>
+                                        <entry key="tenantId" value="java.lang.String"/>
+                                        <entry key="status" value="java.lang.String"/>
+                                        <entry key="currentRound" value="java.lang.Integer"/>
+                                        <entry key="totalRounds" value="java.lang.Integer"/>
+                                        <entry key="participantCount" value="java.lang.Integer"/>
+                                        <entry key="createdAt" value="java.sql.Timestamp"/>
+                                    </map>
+                                </property>
+                            </bean>
+                        </list>
+                    </property>
+                </bean>
+
+                <!-- Participant registry cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="fl_participants"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="backups" value="1"/>
+                    <property name="dataRegionName" value="SessionMetadataRegion"/>
+                    
+                    <!-- TTL: Session duration + 1 day -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="DAYS"/>
+                                    <constructor-arg value="2"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+
+                <!-- Round metrics cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="fl_round_metrics_*"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="backups" value="1"/>
+                    <property name="statisticsEnabled" value="true"/>
+                    
+                    <!-- Keep metrics for 30 days -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="DAYS"/>
+                                    <constructor-arg value="30"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+
+                <!-- Secure aggregation keys cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="fl_secure_keys"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="encryptionEnabled" value="true"/>
+                    
+                    <!-- Very short TTL for security -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="HOURS"/>
+                                    <constructor-arg value="1"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+            </list>
+        </property>
+
+        <!-- Discovery configuration -->
+        <property name="discoverySpi">
+            <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+                <property name="ipFinder">
+                    <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.kubernetes.TcpDiscoveryKubernetesIpFinder">
+                        <property name="namespace" value="platformq"/>
+                        <property name="serviceName" value="ignite-federated-learning"/>
+                    </bean>
+                </property>
+                <property name="networkTimeout" value="5000"/>
+                <property name="joinTimeout" value="10000"/>
+            </bean>
+        </property>
+
+        <!-- Communication SPI optimized for ML workloads -->
+        <property name="communicationSpi">
+            <bean class="org.apache.ignite.spi.communication.tcp.TcpCommunicationSpi">
+                <property name="messageQueueLimit" value="10240"/>
+                <property name="slowClientQueueLimit" value="5000"/>
+                <property name="tcpNoDelay" value="true"/>
+                <property name="socketWriteTimeout" value="15000"/>
+                <property name="connectionsPerNode" value="10"/>
+            </bean>
+        </property>
+
+        <!-- SQL configuration -->
+        <property name="sqlConfiguration">
+            <bean class="org.apache.ignite.configuration.SqlConfiguration">
+                <property name="queryEnginesConfiguration">
+                    <list>
+                        <bean class="org.apache.ignite.indexing.IndexingQueryEngineConfiguration">
+                            <property name="default" value="true"/>
+                        </bean>
+                    </list>
+                </property>
+                <property name="queryThreadPoolSize" value="16"/>
+            </bean>
+        </property>
+
+        <!-- Metrics configuration -->
+        <property name="metricsLogFrequency" value="30000"/> <!-- Log metrics every 30 seconds -->
+        <property name="metricExporterSpi">
+            <list>
+                <!-- JMX metrics -->
+                <bean class="org.apache.ignite.spi.metric.jmx.JmxMetricExporterSpi"/>
+                
+                <!-- OpenCensus metrics for Prometheus -->
+                <bean class="org.apache.ignite.spi.metric.opencensus.OpenCensusMetricExporterSpi">
+                    <property name="period" value="30000"/>
+                </bean>
+            </list>
+        </property>
+
+        <!-- Event recording for monitoring -->
+        <property name="includeEventTypes">
+            <list>
+                <util:constant static-field="org.apache.ignite.events.EventType.EVT_CACHE_OBJECT_PUT"/>
+                <util:constant static-field="org.apache.ignite.events.EventType.EVT_CACHE_OBJECT_READ"/>
+                <util:constant static-field="org.apache.ignite.events.EventType.EVT_CACHE_OBJECT_REMOVED"/>
+                <util:constant static-field="org.apache.ignite.events.EventType.EVT_CACHE_QUERY_EXECUTED"/>
+            </list>
+        </property>
+
+        <!-- Failure detection -->
+        <property name="failureDetectionTimeout" value="10000"/>
+        
+        <!-- Client mode configuration (for services connecting to this cluster) -->
+        <property name="clientMode" value="false"/>
+    </bean>
+</beans> 

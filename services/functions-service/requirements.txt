@@ -98,7 +98,9 @@ grpcio==1.59.2
     #   grpcio-tools
     #   opentelemetry-exporter-otlp-proto-grpc
 grpcio-tools==1.59.2
-    # via -r /Users/m/Downloads/platformQ/requirements/base.in
+    # via
+    #   -r /Users/m/Downloads/platformQ/requirements/base.in
+    #   -r services/functions-service/requirements.in
 h11==0.16.0
     # via uvicorn
 httptools==0.6.4
@@ -121,7 +123,9 @@ isodate==0.7.2
 jinja2==3.1.6
     # via redoc
 kubernetes==28.1.0
-    # via -r /Users/m/Downloads/platformQ/requirements/base.in
+    # via
+    #   -r /Users/m/Downloads/platformQ/requirements/base.in
+    #   -r services/functions-service/requirements.in
 markdown-it-py==3.0.0
     # via rich
 markupsafe==3.0.2
@@ -265,6 +269,8 @@ python-dotenv==1.0.0
     #   uvicorn
 python-jose[cryptography]==3.3.0
     # via -r /Users/m/Downloads/platformQ/requirements/base.in
+python-multipart==0.0.20
+    # via -r services/functions-service/requirements.in
 pyyaml==6.0.2
     # via
     #   kubernetes

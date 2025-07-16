@@ -11,6 +11,18 @@ from platformq_shared.events import SimulationStartedEvent, SimulationRunComplet
 from platformq_shared.event_publisher import EventPublisher
 from platformq_shared.base_service import create_base_app
 
+from fastapi import WebSocket, WebSocketDisconnect, BackgroundTasks
+import asyncio
+from .collaboration import SimulationCollaborationManager
+from .ignite_manager import SimulationIgniteManager
+from .api import endpoints
+
+import logging
+from datetime import datetime
+import uuid
+
+logger = logging.getLogger(__name__)
+
 app = create_base_app(
     service_name="simulation-service",
     db_session_dependency=get_db_session,
@@ -21,6 +33,34 @@ app = create_base_app(
 
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["simulation-service"])
+
+# Initialize services on startup
+@app.on_event("startup")
+async def startup_event():
+    """Initialize Ignite and collaboration manager"""
+    # Initialize Ignite connection
+    app.state.ignite_manager = SimulationIgniteManager()
+    await app.state.ignite_manager.connect()
+    
+    # Initialize collaboration manager
+    app.state.collaboration_manager = SimulationCollaborationManager(
+        ignite_manager=app.state.ignite_manager,
+        event_publisher=app.state.event_publisher
+    )
+    await app.state.collaboration_manager.start()
+    
+    logger.info("Simulation service started with collaboration features")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Cleanup on shutdown"""
+    if hasattr(app.state, "collaboration_manager"):
+        await app.state.collaboration_manager.stop()
+    
+    if hasattr(app.state, "ignite_manager"):
+        await app.state.ignite_manager.disconnect()
+    
+    logger.info("Simulation service shutdown complete")
 
 # Service-specific root endpoint
 @app.get("/")
@@ -132,3 +172,150 @@ def get_simulation_state(
     return crud_agent_state.get_agent_states_for_simulation(
         db, tenant_id=tenant_id, simulation_id=simulation_id
     )
+
+@app.post("/api/v1/simulations/{simulation_id}/collaborate")
+async def create_collaboration_session(
+    simulation_id: UUID,
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db_session)
+):
+    """Create a new collaboration session for a simulation"""
+    tenant_id = context["tenant_id"]
+    user_id = context["user"]["id"]
+    
+    # Verify simulation exists and user has access
+    sim = crud_simulation.get_simulation(db, tenant_id=tenant_id, simulation_id=simulation_id)
+    if not sim:
+        raise HTTPException(status_code=404, detail="Simulation not found")
+    
+    # Create collaboration session
+    session_id = await app.state.collaboration_manager.create_session(
+        str(simulation_id), user_id
+    )
+    
+    return {
+        "session_id": session_id,
+        "websocket_url": f"/api/v1/ws/collaborate/{session_id}"
+    }
+
+@app.get("/api/v1/simulations/{simulation_id}/sessions")
+async def get_active_sessions(
+    simulation_id: UUID,
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """Get active collaboration sessions for a simulation"""
+    # Get sessions from Ignite
+    sessions = await app.state.ignite_manager.get_active_sessions()
+    
+    # Filter by simulation_id
+    simulation_sessions = [
+        s for s in sessions 
+        if s.get("simulation_id") == str(simulation_id)
+    ]
+    
+    return {"sessions": simulation_sessions}
+
+@app.websocket("/api/v1/ws/collaborate/{session_id}")
+async def websocket_collaborate(
+    websocket: WebSocket,
+    session_id: str,
+    user_id: str = None  # In production, extract from auth token
+):
+    """WebSocket endpoint for real-time simulation collaboration"""
+    await websocket.accept()
+    
+    if not user_id:
+        user_id = "anonymous"  # In production, require auth
+    
+    try:
+        # Join collaboration session
+        await app.state.collaboration_manager.join_session(
+            session_id, user_id, websocket
+        )
+        
+        # Handle messages
+        while True:
+            message = await websocket.receive_json()
+            await app.state.collaboration_manager.handle_websocket_message(
+                session_id, user_id, message
+            )
+            
+    except WebSocketDisconnect:
+        logger.info(f"User {user_id} disconnected from session {session_id}")
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        # Leave session
+        await app.state.collaboration_manager.leave_session(session_id, user_id)
+
+@app.post("/api/v1/simulations/{simulation_id}/checkpoints")
+async def create_checkpoint(
+    simulation_id: UUID,
+    session_id: str,
+    name: str = "Checkpoint",
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """Create a checkpoint of current simulation state"""
+    tenant_id = context["tenant_id"]
+    user_id = context["user"]["id"]
+    
+    # Get current state from session
+    state_data = await app.state.ignite_manager.get_simulation_state(session_id)
+    if not state_data:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    # Create checkpoint
+    checkpoint_id = str(uuid.uuid4())
+    await app.state.ignite_manager.create_checkpoint(
+        session_id,
+        checkpoint_id,
+        state_data,
+        {
+            "name": name,
+            "created_by": user_id,
+            "simulation_id": str(simulation_id)
+        }
+    )
+    
+    return {
+        "checkpoint_id": checkpoint_id,
+        "created_at": datetime.utcnow().isoformat()
+    }
+
+@app.get("/api/v1/simulations/{simulation_id}/checkpoints")
+async def list_checkpoints(
+    simulation_id: UUID,
+    session_id: str,
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """List checkpoints for a simulation session"""
+    checkpoints = await app.state.ignite_manager.list_checkpoints(session_id)
+    return {"checkpoints": checkpoints}
+
+@app.post("/api/v1/simulations/{simulation_id}/restore/{checkpoint_id}")
+async def restore_checkpoint(
+    simulation_id: UUID,
+    checkpoint_id: str,
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """Restore simulation from a checkpoint"""
+    # Get checkpoint
+    checkpoint = await app.state.ignite_manager.get_checkpoint(checkpoint_id)
+    if not checkpoint:
+        raise HTTPException(status_code=404, detail="Checkpoint not found")
+    
+    # Create new session from checkpoint
+    user_id = context["user"]["id"]
+    session_id = await app.state.collaboration_manager.create_session(
+        str(simulation_id), user_id
+    )
+    
+    # Restore state
+    await app.state.ignite_manager.save_simulation_state(
+        session_id, checkpoint["state_data"]
+    )
+    
+    return {
+        "session_id": session_id,
+        "restored_from": checkpoint_id
+    }

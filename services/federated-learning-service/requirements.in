@@ -1,0 +1,15 @@
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+pulsar-client
+apache-pulsar
+pyignite
+cryptography
+numpy
+scikit-learn
+diffprivlib
+pyspark
+mlflow
+pytest
+pytest-asyncio 

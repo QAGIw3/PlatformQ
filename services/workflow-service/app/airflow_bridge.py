@@ -45,7 +45,11 @@ class AirflowBridge:
             'ProjectCreationRequested': 'create_collaborative_project',
             'ProposalApproved': 'verifiable_credential_issuance',
             'SimulationStartRequested': 'simulation_orchestration',
-            'DocumentUpdated': 'document_processing_workflow'
+            'DocumentUpdated': 'document_processing_workflow',
+            # SeaTunnel pipeline orchestration
+            'SeaTunnelPipelineRequested': 'seatunnel_pipeline_orchestration',
+            'DataSourceDiscovered': 'seatunnel_pipeline_orchestration',
+            'BatchDataReady': 'seatunnel_pipeline_orchestration'
         }
     
     def trigger_dag(self, dag_id: str, conf: Dict[str, Any], 

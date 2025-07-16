@@ -10,13 +10,21 @@ from .operators.pulsar_sensor_operator import PulsarSensorOperator
 from .operators.platformq_service_operator import PlatformQServiceOperator
 from .operators.processor_job_operator import ProcessorJobOperator
 from .operators.wasm_function_operator import WASMFunctionOperator
+from .operators.seatunnel_operator import (
+    SeaTunnelOperator,
+    SeaTunnelMonitoringOperator,
+    SeaTunnelBatchOperator
+)
 
 __all__ = [
     'PulsarEventOperator',
     'PulsarSensorOperator', 
     'PlatformQServiceOperator',
     'ProcessorJobOperator',
-    'WASMFunctionOperator'
+    'WASMFunctionOperator',
+    'SeaTunnelOperator',
+    'SeaTunnelMonitoringOperator',
+    'SeaTunnelBatchOperator'
 ]
 
 __version__ = '0.1.0' 

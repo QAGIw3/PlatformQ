@@ -1,0 +1,87 @@
+{
+  "namespace": "com.platformq.events.simulation",
+  "type": "record",
+  "name": "SimulationCollaborationEvent",
+  "doc": "Event for real-time simulation collaboration activities",
+  "fields": [
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "The tenant ID where this collaboration occurred"
+    },
+    {
+      "name": "simulation_id",
+      "type": "string",
+      "doc": "The simulation being collaborated on"
+    },
+    {
+      "name": "session_id",
+      "type": "string",
+      "doc": "The collaborative session ID"
+    },
+    {
+      "name": "user_id",
+      "type": "string",
+      "doc": "The user who triggered this event"
+    },
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "Unique identifier for this event"
+    },
+    {
+      "name": "event_type",
+      "type": {
+        "type": "enum",
+        "name": "SimulationEventType",
+        "symbols": [
+          "PARAMETER_CHANGED",
+          "AGENT_ADDED",
+          "AGENT_REMOVED",
+          "AGENT_MODIFIED",
+          "SIMULATION_STARTED",
+          "SIMULATION_PAUSED",
+          "SIMULATION_STEPPED",
+          "SIMULATION_RESET",
+          "BRANCH_CREATED",
+          "VIEW_CHANGED",
+          "CHECKPOINT_CREATED"
+        ]
+      },
+      "doc": "Type of collaboration event"
+    },
+    {
+      "name": "operation_data",
+      "type": "bytes",
+      "doc": "CRDT operation data for the event"
+    },
+    {
+      "name": "vector_clock",
+      "type": {
+        "type": "map",
+        "values": "long"
+      },
+      "doc": "Vector clock for CRDT synchronization"
+    },
+    {
+      "name": "parent_operations",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "default": [],
+      "doc": "Parent operation IDs for causal ordering"
+    },
+    {
+      "name": "simulation_time",
+      "type": "long",
+      "doc": "Simulation time when event occurred (in simulation ticks)"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis",
+      "doc": "Real-world time when event occurred"
+    }
+  ]
+} 

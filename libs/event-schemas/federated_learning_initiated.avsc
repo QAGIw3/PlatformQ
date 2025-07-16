@@ -1,0 +1,115 @@
+{
+  "namespace": "com.platformq.events.ml",
+  "type": "record",
+  "name": "FederatedLearningInitiated",
+  "doc": "Event for initiating a new federated learning session",
+  "fields": [
+    {
+      "name": "session_id",
+      "type": "string",
+      "doc": "Unique identifier for the federated learning session"
+    },
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "Tenant initiating the federated learning"
+    },
+    {
+      "name": "model_type",
+      "type": {
+        "type": "enum",
+        "name": "ModelType",
+        "symbols": ["CLASSIFICATION", "REGRESSION", "CLUSTERING", "ANOMALY_DETECTION", "CUSTOM"]
+      },
+      "doc": "Type of ML model being trained"
+    },
+    {
+      "name": "algorithm",
+      "type": "string",
+      "doc": "Algorithm name (e.g., RandomForest, NeuralNetwork, LogisticRegression)"
+    },
+    {
+      "name": "dataset_requirements",
+      "type": {
+        "type": "record",
+        "name": "DatasetRequirements",
+        "fields": [
+          {"name": "min_samples", "type": "int"},
+          {"name": "feature_schema", "type": "string", "doc": "JSON schema of expected features"},
+          {"name": "label_column", "type": ["null", "string"], "default": null},
+          {"name": "data_format", "type": "string", "default": "parquet"}
+        ]
+      }
+    },
+    {
+      "name": "privacy_parameters",
+      "type": {
+        "type": "record",
+        "name": "PrivacyParameters",
+        "fields": [
+          {"name": "differential_privacy_enabled", "type": "boolean", "default": true},
+          {"name": "epsilon", "type": ["null", "double"], "default": 1.0},
+          {"name": "delta", "type": ["null", "double"], "default": 1e-5},
+          {"name": "secure_aggregation", "type": "boolean", "default": true},
+          {"name": "homomorphic_encryption", "type": "boolean", "default": false}
+        ]
+      }
+    },
+    {
+      "name": "training_parameters",
+      "type": {
+        "type": "record",
+        "name": "TrainingParameters",
+        "fields": [
+          {"name": "rounds", "type": "int", "doc": "Number of federated rounds"},
+          {"name": "min_participants", "type": "int"},
+          {"name": "max_participants", "type": "int"},
+          {"name": "round_timeout_seconds", "type": "int", "default": 3600},
+          {"name": "aggregation_strategy", "type": "string", "default": "FedAvg"},
+          {"name": "model_hyperparameters", "type": {"type": "map", "values": "string"}}
+        ]
+      }
+    },
+    {
+      "name": "participation_criteria",
+      "type": {
+        "type": "record",
+        "name": "ParticipationCriteria",
+        "fields": [
+          {
+            "name": "required_credentials",
+            "type": {
+              "type": "array",
+              "items": {
+                "type": "record",
+                "name": "CredentialRequirement",
+                "fields": [
+                  {"name": "credential_type", "type": "string"},
+                  {"name": "issuer", "type": ["null", "string"], "default": null},
+                  {"name": "min_trust_score", "type": ["null", "double"], "default": null}
+                ]
+              }
+            }
+          },
+          {"name": "min_reputation_score", "type": ["null", "int"], "default": null},
+          {"name": "allowed_tenants", "type": ["null", {"type": "array", "items": "string"}], "default": null}
+        ]
+      }
+    },
+    {
+      "name": "coordinator_endpoint",
+      "type": "string",
+      "doc": "Endpoint for participants to connect to"
+    },
+    {
+      "name": "created_by",
+      "type": "string",
+      "doc": "User ID who initiated the session"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis"
+    }
+  ]
+} 

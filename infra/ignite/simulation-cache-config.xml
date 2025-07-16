@@ -1,0 +1,214 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="
+       http://www.springframework.org/schema/beans
+       http://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean class="org.apache.ignite.configuration.IgniteConfiguration">
+        <property name="igniteInstanceName" value="simulation-cluster"/>
+        
+        <!-- Memory configuration -->
+        <property name="dataStorageConfiguration">
+            <bean class="org.apache.ignite.configuration.DataStorageConfiguration">
+                <property name="defaultDataRegionConfiguration">
+                    <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                        <property name="name" value="Default_Region"/>
+                        <property name="initialSize" value="#{2L * 1024 * 1024 * 1024}"/> <!-- 2GB -->
+                        <property name="maxSize" value="#{8L * 1024 * 1024 * 1024}"/> <!-- 8GB -->
+                        <property name="persistenceEnabled" value="true"/>
+                        <property name="metricsEnabled" value="true"/>
+                    </bean>
+                </property>
+                
+                <!-- Simulation state region with higher memory allocation -->
+                <property name="dataRegionConfigurations">
+                    <list>
+                        <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                            <property name="name" value="SimulationRegion"/>
+                            <property name="initialSize" value="#{4L * 1024 * 1024 * 1024}"/> <!-- 4GB -->
+                            <property name="maxSize" value="#{16L * 1024 * 1024 * 1024}"/> <!-- 16GB -->
+                            <property name="persistenceEnabled" value="true"/>
+                            <property name="metricsEnabled" value="true"/>
+                            <property name="evictionMode" value="RANDOM_2_LRU"/>
+                        </bean>
+                    </list>
+                </property>
+            </bean>
+        </property>
+
+        <!-- Cache configurations -->
+        <property name="cacheConfiguration">
+            <list>
+                <!-- Simulation states cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="simulation-states"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="2"/>
+                    <property name="dataRegionName" value="SimulationRegion"/>
+                    <property name="partitionLossPolicy" value="READ_WRITE_SAFE"/>
+                    <property name="rebalanceMode" value="ASYNC"/>
+                    <property name="rebalanceThrottle" value="100"/>
+                    
+                    <!-- SQL query support -->
+                    <property name="queryEntities">
+                        <list>
+                            <bean class="org.apache.ignite.cache.QueryEntity">
+                                <property name="keyType" value="java.lang.String"/>
+                                <property name="valueType" value="java.util.HashMap"/>
+                                <property name="tableName" value="SIMULATION_STATES"/>
+                                <property name="fields">
+                                    <map>
+                                        <entry key="sessionId" value="java.lang.String"/>
+                                        <entry key="simulationId" value="java.lang.String"/>
+                                        <entry key="lastUpdated" value="java.sql.Timestamp"/>
+                                        <entry key="compressedSize" value="java.lang.Long"/>
+                                    </map>
+                                </property>
+                                <property name="indexes">
+                                    <list>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="simulationId"/>
+                                        </bean>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="lastUpdated"/>
+                                        </bean>
+                                    </list>
+                                </property>
+                            </bean>
+                        </list>
+                    </property>
+                </bean>
+
+                <!-- Agent states cache with spatial indexing -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="agent-states"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    <property name="dataRegionName" value="SimulationRegion"/>
+                    
+                    <!-- Expiry policy for agent states -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="HOURS"/>
+                                    <constructor-arg value="1"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                    
+                    <!-- Spatial indexing for agent positions -->
+                    <property name="queryEntities">
+                        <list>
+                            <bean class="org.apache.ignite.cache.QueryEntity">
+                                <property name="keyType" value="java.lang.String"/>
+                                <property name="valueType" value="java.util.HashMap"/>
+                                <property name="tableName" value="AGENT_STATES"/>
+                                <property name="fields">
+                                    <map>
+                                        <entry key="agentId" value="java.lang.String"/>
+                                        <entry key="sessionId" value="java.lang.String"/>
+                                        <entry key="posX" value="java.lang.Double"/>
+                                        <entry key="posY" value="java.lang.Double"/>
+                                        <entry key="posZ" value="java.lang.Double"/>
+                                        <entry key="velocityX" value="java.lang.Double"/>
+                                        <entry key="velocityY" value="java.lang.Double"/>
+                                        <entry key="velocityZ" value="java.lang.Double"/>
+                                        <entry key="lastUpdated" value="java.sql.Timestamp"/>
+                                    </map>
+                                </property>
+                                <property name="indexes">
+                                    <list>
+                                        <!-- Composite index for spatial queries -->
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="sessionId,posX,posY,posZ"/>
+                                        </bean>
+                                    </list>
+                                </property>
+                            </bean>
+                        </list>
+                    </property>
+                </bean>
+
+                <!-- Session metadata cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="simulation-sessions"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="writeSynchronizationMode" value="FULL_SYNC"/>
+                </bean>
+
+                <!-- Metrics cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="simulation-metrics"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    
+                    <!-- TTL for metrics -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="MINUTES"/>
+                                    <constructor-arg value="5"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+
+                <!-- Checkpoints cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="simulation-checkpoints"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="2"/>
+                    <property name="dataRegionName" value="SimulationRegion"/>
+                </bean>
+            </list>
+        </property>
+
+        <!-- Enable metrics -->
+        <property name="metricsLogFrequency" value="60000"/> <!-- Log metrics every minute -->
+        
+        <!-- Discovery configuration for cluster -->
+        <property name="discoverySpi">
+            <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+                <property name="ipFinder">
+                    <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.multicast.TcpDiscoveryMulticastIpFinder">
+                        <property name="addresses">
+                            <list>
+                                <value>ignite-0.ignite:47500..47509</value>
+                                <value>ignite-1.ignite:47500..47509</value>
+                                <value>ignite-2.ignite:47500..47509</value>
+                            </list>
+                        </property>
+                    </bean>
+                </property>
+            </bean>
+        </property>
+
+        <!-- Communication configuration for 60Hz updates -->
+        <property name="communicationSpi">
+            <bean class="org.apache.ignite.spi.communication.tcp.TcpCommunicationSpi">
+                <property name="messageQueueLimit" value="10000"/>
+                <property name="socketWriteTimeout" value="5000"/>
+                <property name="selectorsCount" value="8"/>
+            </bean>
+        </property>
+
+        <!-- Enable event recording for monitoring -->
+        <property name="includeEventTypes">
+            <list>
+                <util:constant static-field="org.apache.ignite.events.EventType.EVT_CACHE_OBJECT_PUT"/>
+                <util:constant static-field="org.apache.ignite.events.EventType.EVT_CACHE_OBJECT_READ"/>
+                <util:constant static-field="org.apache.ignite.events.EventType.EVT_CACHE_OBJECT_REMOVED"/>
+            </list>
+        </property>
+    </bean>
+</beans> 

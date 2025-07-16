@@ -23,7 +23,9 @@ anyio==3.7.1
 asgiref==3.9.1
     # via opentelemetry-instrumentation-asgi
 attrs==25.3.0
-    # via aiohttp
+    # via
+    #   aiohttp
+    #   pyignite
 authlib[starlette]==1.2.1
     # via -r /Users/m/Downloads/platformQ/requirements/base.in
 avro==1.11.3
@@ -201,6 +203,8 @@ platformdirs==4.3.8
     # via black
 pluggy==1.6.0
     # via pytest
+prometheus-client==0.19.0
+    # via -r services/seatunnel-service/requirements.in
 propcache==0.3.2
     # via
     #   aiohttp
@@ -230,6 +234,8 @@ pydantic-core==2.14.5
     # via pydantic
 pyhcl==0.4.5
     # via hvac
+pyignite==0.6.1
+    # via -r services/seatunnel-service/requirements.in
 pytest==8.2.0
     # via
     #   -r /Users/m/Downloads/platformQ/requirements/base.in

@@ -1,0 +1,64 @@
+{
+  "namespace": "com.platformq.events.simulation",
+  "type": "record",
+  "name": "SimulationStateEvent",
+  "doc": "Event for simulation state updates and synchronization",
+  "fields": [
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "The tenant ID"
+    },
+    {
+      "name": "simulation_id",
+      "type": "string",
+      "doc": "The simulation ID"
+    },
+    {
+      "name": "state_type",
+      "type": {
+        "type": "enum",
+        "name": "StateType",
+        "symbols": ["FULL_SNAPSHOT", "INCREMENTAL_UPDATE", "CHECKPOINT", "METRICS_UPDATE"]
+      },
+      "doc": "Type of state update"
+    },
+    {
+      "name": "simulation_tick",
+      "type": "long",
+      "doc": "Current simulation tick/time"
+    },
+    {
+      "name": "agent_count",
+      "type": "int",
+      "doc": "Number of active agents"
+    },
+    {
+      "name": "state_data",
+      "type": ["null", "bytes"],
+      "default": null,
+      "doc": "Compressed state data (for snapshots/updates)"
+    },
+    {
+      "name": "metrics",
+      "type": ["null", {
+        "type": "map",
+        "values": "double"
+      }],
+      "default": null,
+      "doc": "Simulation metrics (fps, agent density, etc.)"
+    },
+    {
+      "name": "state_uri",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "URI to full state in object storage (for large states)"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis",
+      "doc": "When this state was captured"
+    }
+  ]
+} 
