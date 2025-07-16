@@ -42,6 +42,9 @@ from .deps import get_current_tenant_and_user, require_role, get_current_user, r
 from ..services.user_service import UserService
 from platformq_shared.events import UserCreatedEvent, SubscriptionChangedEvent
 from siwe import SiweMessage
+from jose import jwt
+from jose.constants import ALGORITHMS
+from platformq_shared.jwt import create_access_token
 
 router = APIRouter()
 
@@ -658,10 +661,14 @@ def get_access_token_from_passwordless(
         )
 
     user = crud_user.get_user_by_email(db, email=request.email)
+    roles = crud_role.get_roles_for_user(db, user_id=user.id, tenant_id=user.tenant_id)
 
     # In a real app, you would use a library like Authlib to create the token.
     # For this example, we'll just return a placeholder.
-    access_token = "your_access_token_here"
+    access_token = create_access_token(
+        data={"sub": str(user.id), "tid": str(user.tenant_id)},
+        groups=roles,
+    )
     refresh_token = crud_refresh_token.create_refresh_token(db, user_id=user.id)
 
     crud_audit.create_audit_log(

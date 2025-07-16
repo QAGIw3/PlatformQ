@@ -64,4 +64,25 @@ The Terraform configuration in this directory also includes a conceptual setup f
     ```tfvars
     gcp_project_id = "<YOUR_GCP_PROJECT_ID>"
     ```
-3.  **Deploy the Infrastructure**: Run `terraform apply`. This will provision the KMS resources in your GCP project. The `vault_config` resource is conceptual and would need to be adapted to your chosen deployment method (e.g., Helm, Kubernetes Operator). 
+3.  **Deploy the Infrastructure**: Run `terraform apply`. This will provision the KMS resources in your GCP project. The `vault_config` resource is conceptual and would need to be adapted to your chosen deployment method (e.g., Helm, Kubernetes Operator).
+
+### Developer Authentication with GCP
+
+Developers can authenticate to the local Vault instance using their GCP credentials. To do so, they must:
+
+1.  **Authenticate with GCP**: Ensure your local environment is authenticated with GCP.
+2.  **Set Environment Variables**: Set the `VAULT_ADDR` and `VAULT_GCP_ROLE` environment variables:
+    ```bash
+    export VAULT_ADDR="http://127.0.0.1:8200"
+    export VAULT_GCP_ROLE="developer"
+    ```
+3.  **Run Application**: The application will now authenticate to Vault using your GCP credentials.
+
+### OIDC Authentication for Vault UI
+
+Administrators can log in to the Vault UI using their platformQ account via OIDC.
+
+1.  **Navigate to the Vault UI**: Open your browser to `http://127.0.0.1:8200`.
+2.  **Select OIDC Method**: Choose the OIDC authentication method.
+3.  **Log In**: You will be redirected to the platformQ login page. Log in with your admin credentials.
+4.  **Redirect to Vault**: You will be redirected back to the Vault UI, fully authenticated. 

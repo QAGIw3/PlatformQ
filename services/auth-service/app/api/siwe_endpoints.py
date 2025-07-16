@@ -6,7 +6,7 @@ from datetime import datetime, timedelta
 import secrets
 
 from .deps import get_db_session
-from ..crud import crud_user, crud_tenant, crud_siwe
+from ..crud import crud_user, crud_tenant, crud_siwe, crud_role
 from ..core.security import create_access_token
 from ..schemas.user import UserCreate
 
@@ -46,7 +46,9 @@ async def siwe_login(message: dict = Body(...), signature: str = Body(...), db: 
         )
         user = crud_user.create_user(db, tenant_id=tenant.id, user=user_create)
 
+    roles = crud_role.get_roles_for_user(db, user_id=user.id, tenant_id=user.tenant_id)
     access_token = create_access_token(
-        data={"sub": str(user.id), "tid": str(user.tenant_id)}
+        data={"sub": str(user.id), "tid": str(user.tenant_id)},
+        groups=roles,
     )
     return {"access_token": access_token, "token_type": "bearer"} 

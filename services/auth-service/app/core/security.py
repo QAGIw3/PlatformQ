@@ -7,7 +7,7 @@ from passlib.context import CryptContext
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
 
 
-def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
+def create_access_token(data: dict, expires_delta: Optional[timedelta] = None, groups: Optional[list] = None):
     """
     Creates a new JWT access token.
     """
@@ -20,6 +20,8 @@ def create_access_token(data: dict, expires_delta: Optional[timedelta] = None):
         )
 
     to_encode.update({"exp": expire})
+    if groups:
+        to_encode.update({"groups": groups})
     encoded_jwt = jwt.encode(
         to_encode, settings.SECRET_KEY, algorithm=settings.ALGORITHM
     )

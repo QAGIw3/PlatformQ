@@ -5,6 +5,8 @@ import logging
 
 logger = logging.getLogger(__name__)
 
+KUBE_SA_TOKEN_PATH = "/var/run/secrets/kubernetes.io/serviceaccount/token"
+
 class ConfigLoader:
     def __init__(self, consul_host="consul"):
         self.consul_client = consul.Consul(host=consul_host, port=8500)
@@ -12,25 +14,58 @@ class ConfigLoader:
 
     def _init_vault_client(self):
         vault_addr = os.getenv("VAULT_ADDR")
+        if not vault_addr:
+            logger.warning("VAULT_ADDR not set. Vault client will not be available.")
+            return None
+
+        client = hvac.Client(url=vault_addr)
+
+        # 1. Try Kubernetes Service Account auth first
+        if os.path.exists(KUBE_SA_TOKEN_PATH):
+            try:
+                with open(KUBE_SA_TOKEN_PATH, 'r') as f:
+                    jwt = f.read()
+                
+                # The 'role' here should match the 'role_name' in the Terraform config
+                # We can get this from an env var, e.g., VAULT_K8S_ROLE
+                k8s_role = os.getenv("VAULT_K8S_ROLE")
+                if k8s_role:
+                    client.auth.kubernetes.login(role=k8s_role, jwt=jwt)
+                    if client.is_authenticated():
+                        logger.info("Successfully connected to Vault using Kubernetes auth.")
+                        return client
+            except Exception as e:
+                logger.warning(f"Kubernetes auth failed, falling back: {e}")
+
+        # 2. Try GCP auth
+        try:
+            # The role here should match the 'role' in the Terraform config
+            gcp_role = os.getenv("VAULT_GCP_ROLE")
+            if gcp_role:
+                client.auth.gcp.login(role=gcp_role)
+                if client.is_authenticated():
+                    logger.info("Successfully connected to Vault using GCP auth.")
+                    return client
+        except Exception as e:
+            logger.warning(f"GCP auth failed, falling back: {e}")
+
+        # 3. Fallback to AppRole auth
         role_id = os.getenv("VAULT_ROLE_ID")
         secret_id = os.getenv("VAULT_SECRET_ID")
-
-        if not all([vault_addr, role_id, secret_id]):
-            logger.warning("Vault environment variables not set. Vault client will not be available.")
-            return None
+        if role_id and secret_id:
+            try:
+                client.auth.approle.login(
+                    role_id=role_id,
+                    secret_id=secret_id,
+                )
+                if client.is_authenticated():
+                    logger.info("Successfully connected to Vault using AppRole auth.")
+                    return client
+            except Exception as e:
+                logger.warning(f"AppRole auth failed: {e}")
         
-        try:
-            client = hvac.Client(url=vault_addr)
-            client.auth.approle.login(
-                role_id=role_id,
-                secret_id=secret_id,
-            )
-            assert client.is_authenticated()
-            logger.info("Successfully connected to Vault using AppRole.")
-            return client
-        except Exception as e:
-            logger.error(f"Failed to connect to Vault with AppRole: {e}")
-            return None
+        logger.error("Could not authenticate to Vault with any available method.")
+        return None
 
     def get_config(self, key, default=None):
         index, data = self.consul_client.kv.get(key)
