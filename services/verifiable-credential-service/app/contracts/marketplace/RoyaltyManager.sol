@@ -4,6 +4,21 @@ pragma solidity ^0.8.19;
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "@openzeppelin/contracts/security/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/utils/math/SafeMath.sol";
+
+/**
+ * @title RoyaltyManager
+ * @author PlatformQ Team
+ * @notice Manages royalty distribution for digital asset sales with lineage tracking
+ * @dev This contract handles the complex royalty calculations when assets are resold,
+ *      ensuring original creators and contributors receive fair compensation.
+ *      
+ *      Key features:
+ *      - Tracks asset lineage (parent-child relationships)
+ *      - Distributes royalties to all creators in the lineage chain
+ *      - Configurable royalty percentages per asset
+ *      - Maximum royalty cap to prevent excessive fees
+ *      - Automatic payment splitting
+ */
 import "../CredentialRegistry.sol";
 
 /**

@@ -8,6 +8,45 @@ const { TabPane } = Tabs;
 const { Option } = Select;
 const { Title, Text, Paragraph } = Typography;
 
+/**
+ * TrustWallet Component
+ * 
+ * A comprehensive trust management interface for PlatformQ users.
+ * This component serves as the central hub for managing verifiable credentials,
+ * reputation scores, and cross-chain credential exports.
+ * 
+ * Main Features:
+ * 1. Credential Management
+ *    - View all earned verifiable credentials
+ *    - Check credential validity and expiration
+ *    - Export credentials to blockchain as SoulBound Tokens
+ *    - Create verifiable presentations for external verification
+ * 
+ * 2. Reputation Dashboard
+ *    - Multi-dimensional reputation visualization
+ *    - Real-time score updates across 5 dimensions
+ *    - Progress tracking for each reputation aspect
+ *    - Overall trust score calculation
+ * 
+ * 3. Cross-Chain Integration
+ *    - Support for multiple blockchain networks
+ *    - Real-time network status monitoring
+ *    - Gas fee estimation
+ *    - SBT deployment status
+ * 
+ * State Management:
+ * - credentials: Array of user's verifiable credentials
+ * - reputationScores: Object with multi-dimensional scores
+ * - supportedChains: Array of blockchain network configurations
+ * - presentationTemplates: Pre-defined presentation templates
+ * 
+ * API Integration:
+ * - Fetches credentials from verifiable-credential-service
+ * - Retrieves reputation scores from graph-intelligence-service
+ * - Manages cross-chain exports via blockchain bridge
+ * 
+ * @component
+ */
 const TrustWallet = () => {
   const [credentials, setCredentials] = useState([]);
   const [loading, setLoading] = useState(true);

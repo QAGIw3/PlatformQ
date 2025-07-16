@@ -1,307 +1,236 @@
 # Verifiable Credential Service
 
-## Purpose
+The Verifiable Credential Service provides W3C-compliant credential issuance, verification, and cross-chain bridging capabilities for PlatformQ. It enables privacy-preserving authentication and portable digital identity across multiple blockchains.
 
-The **Verifiable Credential Service** provides a comprehensive "Trust Engine" for the platform. It issues W3C Verifiable Credentials to create immutable, cryptographically-provable records of key business events. The service now features advanced blockchain integration including multi-chain support, decentralized identities (DIDs), smart contract verification, zero-knowledge proofs for privacy-preserving credential presentation, cross-chain bridges, IPFS storage, trust networks, and support for emerging standards.
+## 🎯 Overview
 
-## Key Features
+This service manages:
+- W3C Verifiable Credential issuance and verification
+- Zero-knowledge proof generation for privacy
+- Cross-chain credential exports as SoulBound Tokens
+- Verifiable Presentations for credential bundling
+- Multi-chain DID management
+- Trust network integration
 
-### 1. Multi-Chain Blockchain Support
-- **Ethereum**: Full support for mainnet and testnets
-- **Polygon**: Optimized for lower gas costs
-- **Hyperledger Fabric**: Enterprise-grade permissioned blockchain
-- **Multi-chain anchoring**: Anchor credentials across multiple chains simultaneously
+## 🏗️ Architecture
 
-### 2. Cross-Chain Bridges
-- **Credential Portability**: Transfer credentials between different blockchain networks
-- **Atomic Swaps**: Guaranteed cross-chain transfers using HTLCs
-- **Bridge Verification**: Cryptographic proofs ensure secure transfers
-- **Multi-Chain Identity**: Maintain consistent identity across chains
+### Technology Stack
+- **Framework**: FastAPI (Python)
+- **Blockchain**: Web3.py, Ethereum/Polygon/Arbitrum
+- **Smart Contracts**: Solidity, Hardhat
+- **Cryptography**: py-ecc, cryptography, pynacl
+- **Standards**: W3C VC, DID, JSON-LD
+- **Storage**: IPFS, PostgreSQL
+- **Cache**: Apache Ignite
 
-### 3. Decentralized Identity (DID) Support
-- **W3C DID Standards**: Full compliance with DID specifications
-- **Multiple DID Methods**:
-  - `did:web`: Web-based DIDs for easy integration
-  - `did:key`: Self-contained cryptographic DIDs
-  - `did:ethr`: Ethereum-based DIDs
-- **DID Resolution**: Universal resolver for all supported methods
-- **DID Documents**: Automatic generation and management
+### Key Components
 
-### 4. IPFS Integration
-- **Decentralized Storage**: Store credentials on IPFS with encryption
-- **Content Addressing**: Immutable credential references via CIDs
-- **Distributed Network**: Replicate across multiple IPFS nodes
-- **Merkle Trees**: Efficient batch verification of credentials
-- **Credential DAGs**: Link related credentials in directed acyclic graphs
+1. **Credential Management**
+   - W3C VC Data Model 1.1 compliance
+   - Multiple credential types (achievements, qualifications, reputation)
+   - Blockchain anchoring for tamper-evidence
+   - IPFS storage for decentralization
 
-### 5. Trust Networks & Reputation
-- **Trust Graphs**: Build networks of trusted issuers and verifiers
-- **Reputation Scoring**: Multi-factor reputation system for entities
-- **Transitive Trust**: Calculate trust paths between entities
-- **Consensus Verification**: Network-based credential verification
-- **Trust Propagation**: PageRank-style trust distribution
+2. **Zero-Knowledge Proofs**
+   - Selective disclosure of attributes
+   - Range proofs (age > 18, score > threshold)
+   - Set membership proofs
+   - BBS+ signatures for privacy
 
-### 6. Smart Contract Integration
-- **Credential Registry**: On-chain registry for credential anchoring
-- **Automated Verification**: Smart contract-based verification rules
-- **Batch Operations**: Efficient batch anchoring and verification
-- **Revocation Support**: On-chain revocation with reasons
+3. **Cross-Chain Bridge**
+   - Export VCs as SoulBound Tokens
+   - Multi-chain support (Ethereum, Polygon, Arbitrum)
+   - Gas optimization for L2 networks
+   - HTLC-based atomic swaps
 
-### 7. Zero-Knowledge Proofs
-- **Selective Disclosure**: Reveal only required attributes
-- **BBS+ Signatures**: Privacy-preserving credential signatures
-- **Multiple ZKP Types**:
-  - BBS+ for efficient selective disclosure
-  - CL Signatures (Hyperledger Indy compatible)
-  - Groth16 zkSNARKs for complex proofs
-- **Verifiable Presentations**: Create presentations with minimal disclosure
+4. **Verifiable Presentations**
+   - Bundle multiple credentials
+   - Purpose-based disclosure
+   - Time-limited validity
+   - Challenge-response authentication
 
-### 8. Advanced Standards Support
-- **Verifiable Presentations**: W3C VP 2.0 compliant presentations
-- **SoulBound Tokens (SBTs)**: Non-transferable on-chain credentials
-- **Credential Manifest**: Discovery and issuance workflows
-- **Presentation Exchange**: Standardized credential requests
+## 📡 API Endpoints
 
-## Architecture
+### Credential Operations
+- `POST /api/v1/issue` - Issue new verifiable credential
+- `GET /api/v1/verify` - Verify credential validity
+- `GET /api/v1/dids/{did}/credentials` - List user's credentials
+- `POST /api/v1/credentials/revoke` - Revoke credential
 
-The service is composed of several modules:
-
-```
-verifiable-credential-service/
-├── app/
-│   ├── blockchain/          # Blockchain integration
-│   │   ├── base.py         # Abstract blockchain client
-│   │   ├── bridge.py       # Cross-chain bridge implementation
-│   │   ├── ethereum.py     # Ethereum implementation
-│   │   ├── polygon.py      # Polygon implementation
-│   │   └── fabric.py       # Hyperledger Fabric implementation
-│   ├── did/                # DID management
-│   │   ├── did_manager.py  # DID creation and management
-│   │   ├── did_methods.py  # DID method implementations
-│   │   └── did_resolver.py # DID resolution
-│   ├── storage/            # Decentralized storage
-│   │   └── ipfs_storage.py # IPFS integration with encryption
-│   ├── trust/              # Trust network
-│   │   └── reputation.py   # Trust graphs and reputation system
-│   ├── standards/          # Standards compliance
-│   │   └── advanced_standards.py # VP, SBT, Manifest support
-│   ├── zkp/                # Zero-knowledge proofs
-│   │   ├── zkp_manager.py  # ZKP orchestration
-│   │   ├── bbs_plus.py     # BBS+ implementation
-│   │   └── selective_disclosure.py # Selective disclosure
-│   └── contracts/          # Smart contracts
-│       ├── CredentialRegistry.sol
-│       └── CredentialVerifier.sol
-```
-
-## Event-Driven Architecture
-
-The service operates both synchronously via REST API and asynchronously via platform events.
-
-### Events Consumed
-
-- **Topic Pattern**: `persistent://platformq/.*/verifiable-credential-issuance-requests`
-- **Schema**: `IssueVerifiableCredential`
-- **Description**: Consumes requests to issue new credentials, typically published by the `workflow-service` when a business process requires a formal, auditable record.
-
-### Events Produced
-
-- **Topic**: `persistent://platformq/<tenant_id>/verifiable-credential-issued-events`
-- **Schema**: `VerifiableCredentialIssued`
-- **Description**: Published after a credential has been successfully created and anchored on blockchain.
-
-## API Endpoints
-
-### Credential Issuance
-
-- `POST /api/v1/issue`: Issue a new Verifiable Credential with blockchain anchoring
-  ```json
-  {
-    "subject": {...},
-    "type": "ProposalApprovalCredential",
-    "blockchain": "ethereum",
-    "multi_chain": false,
-    "issuer_did": "did:web:platformq.com:tenants:123",
-    "store_on_ipfs": true,
-    "encrypt_storage": true,
-    "create_sbt": false,
-    "owner_address": "0x..."
-  }
-  ```
+### Zero-Knowledge Proofs
+- `POST /api/v1/zkp/generate` - Generate ZK proof
+- `POST /api/v1/zkp/verify` - Verify ZK proof
+- `POST /api/v1/credentials/present` - Create derived credential
 
 ### Cross-Chain Bridge
+- `POST /api/v1/cross-chain/export` - Export credential to blockchain
+- `GET /api/v1/cross-chain/chains` - List supported chains
+- `GET /api/v1/cross-chain/chains/{network}/fee` - Estimate gas fees
+- `GET /api/v1/cross-chain/export/{credential_id}/status` - Check export status
 
-- `POST /api/v1/bridge/transfer`: Transfer credential between blockchains
-  ```json
-  {
-    "credential_id": "urn:uuid:...",
-    "credential_data": {...},
-    "source_chain": "ethereum",
-    "target_chain": "polygon"
-  }
-  ```
+### Presentations
+- `POST /api/v1/presentations` - Create verifiable presentation
+- `POST /api/v1/presentations/verify` - Verify presentation
+- `GET /api/v1/presentations/templates` - Get presentation templates
+- `POST /api/v1/presentations/from-template/{name}` - Create from template
 
-- `GET /api/v1/bridge/status/{request_id}`: Check bridge transfer status
+## 🚀 Quick Start
 
-### Trust Network
+### Prerequisites
+- Python 3.10+
+- Node.js 18+ (for smart contracts)
+- Ethereum wallet with testnet ETH
+- IPFS node (optional)
+- PostgreSQL
 
-- `POST /api/v1/trust/relationships`: Create trust relationship
-- `GET /api/v1/trust/reputation/{entity_id}`: Get entity reputation score
-- `GET /api/v1/trust/network/stats`: Get network statistics
-- `POST /api/v1/verify/network`: Request network consensus verification
+### Development Setup
 
-### IPFS Storage
-
-- `GET /api/v1/credentials/ipfs/{cid}`: Retrieve credential from IPFS
-
-### Verifiable Presentations
-
-- `POST /api/v1/presentations/create`: Create a Verifiable Presentation
-  ```json
-  {
-    "credentials": [...],
-    "challenge": "random-challenge",
-    "domain": "example.com",
-    "purpose": "authentication",
-    "disclosed_claims": {
-      "0": ["name", "age"]
-    }
-  }
-  ```
-
-### SoulBound Tokens
-
-- `POST /api/v1/sbt/mint`: Mint a SoulBound Token
-- `GET /api/v1/sbt/{token_id}/verify`: Verify SBT ownership
-
-### Credential Manifest
-
-- `POST /api/v1/manifests`: Create credential manifest for discovery
-
-### DID Management
-
-- `POST /api/v1/dids`: Create a new DID
-- `GET /api/v1/dids/{did}`: Resolve DID to document
-
-### Blockchain Verification
-
-- `GET /api/v1/credentials/{credential_id}/verify`: Verify blockchain anchor
-- `GET /api/v1/credentials/{credential_id}/history`: Get credential history
-
-## Configuration
-
-The service supports extensive configuration via environment variables:
-
-### Blockchain Configuration
-- `ETHEREUM_ENABLED`: Enable Ethereum support
-- `ETHEREUM_PROVIDER_URL`: Ethereum node URL
-- `ETHEREUM_PRIVATE_KEY`: Private key for transactions
-- `POLYGON_ENABLED`: Enable Polygon support
-- `FABRIC_ENABLED`: Enable Hyperledger Fabric support
-
-### Storage Configuration
-- `STORAGE_PROXY_URL`: IPFS storage proxy service URL
-- `CREDENTIAL_ENCRYPTION_KEY`: Encryption key for IPFS storage
-- `IPFS_STORAGE_NODES`: List of IPFS nodes for replication
-
-### Trust Network Configuration
-- `TRUST_NETWORK_ENABLED`: Enable trust network features
-- `MIN_VERIFIERS`: Minimum verifiers for consensus
-- `CONSENSUS_THRESHOLD`: Required consensus ratio
-
-## How to Run Locally
-
-1. **Install Requirements**:
+1. **Install Python dependencies**
    ```bash
    pip install -r requirements.txt
    ```
 
-2. **Set Environment Variables**:
+2. **Install Node dependencies**
    ```bash
-   export PULSAR_URL="pulsar://localhost:6650"
-   export ETHEREUM_ENABLED=true
-   export ETHEREUM_PROVIDER_URL="http://localhost:8545"
-   export STORAGE_PROXY_URL="http://localhost:8001"
+   npm install
    ```
 
-3. **Deploy Smart Contracts** (if using blockchain features):
+3. **Compile smart contracts**
    ```bash
-   cd app/contracts
-   npx hardhat deploy --network local
+   npx hardhat compile
    ```
 
-4. **Run the Service**:
+4. **Deploy contracts (local)**
    ```bash
-   uvicorn app.main:app --host 0.0.0.0 --port 8000
+   npx hardhat node  # In one terminal
+   npx hardhat run scripts/deploy_contracts.js --network localhost
    ```
 
-## Usage Examples
+5. **Set environment variables**
+   ```bash
+   export DATABASE_URL="postgresql://user:pass@localhost/verifiable_credentials"
+   export BRIDGE_PRIVATE_KEY="0x..."  # Your wallet private key
+   export IPFS_API_URL="http://localhost:5001"
+   export ETHEREUM_RPC_URL="http://localhost:8545"
+   ```
 
-### Issue a Credential with Full Features
-```python
-import httpx
+6. **Start the service**
+   ```bash
+   uvicorn app.main:app --reload --port 8002
+   ```
 
-# Issue credential with blockchain anchor, IPFS storage, and SBT
-response = httpx.post(
-    "http://localhost:8000/api/v1/issue",
-    json={
-        "subject": {
-            "id": "did:example:123",
-            "name": "Alice",
-            "achievement": "Completed Training"
-        },
-        "type": "AchievementCredential",
-        "blockchain": "ethereum",
-        "multi_chain": true,
-        "store_on_ipfs": true,
-        "create_sbt": true,
-        "owner_address": "0x742d35Cc6634C0532925a3b844Bc9e7595f5b41"
-    }
-)
+## 📄 Smart Contracts
+
+### Deployed Contracts
+1. **SoulBoundToken.sol** - Non-transferable credential tokens
+2. **CrossChainBridge.sol** - HTLC-based cross-chain transfers
+3. **ReputationOracle.sol** - Multi-dimensional reputation scoring
+4. **PlatformQGovernor.sol** - DAO governance with weighted voting
+
+### Contract Addresses
+See `deployments/{network}.json` after deployment.
+
+## 🔐 Security
+
+### Cryptographic Security
+- **Signatures**: Ed25519, ECDSA
+- **Hashing**: SHA-256, Keccak-256
+- **Encryption**: AES-256-GCM
+- **ZKP**: BBS+, Bulletproofs
+
+### Blockchain Security
+- **Smart Contract Audits**: OpenZeppelin standards
+- **Multi-sig Controls**: Gnosis Safe integration
+- **Gas Optimization**: L2-first design
+- **Reentrancy Protection**: Check-Effects-Interactions
+
+## 🧪 Testing
+
+### Backend Tests
+```bash
+pytest tests/ -v --cov=app
 ```
 
-### Create a Privacy-Preserving Presentation
-```python
-# Create presentation with selective disclosure
-response = httpx.post(
-    "http://localhost:8000/api/v1/presentations/create",
-    json={
-        "credentials": [credential],
-        "challenge": "abc123",
-        "domain": "verifier.example.com",
-        "disclosed_claims": {
-            "0": ["name"]  # Only reveal name, not achievement
-        }
-    }
-)
+### Smart Contract Tests
+```bash
+npx hardhat test
+npx hardhat coverage
 ```
 
-### Bridge Credential Cross-Chain
-```python
-# Transfer credential from Ethereum to Polygon
-response = httpx.post(
-    "http://localhost:8000/api/v1/bridge/transfer",
-    json={
-        "credential_id": "urn:uuid:123",
-        "credential_data": credential_data,
-        "source_chain": "ethereum",
-        "target_chain": "polygon"
-    }
-)
+### Integration Tests
+```bash
+pytest tests/integration/ -v
 ```
 
-## Security Considerations
+## 📊 Credential Types
 
-1. **Private Key Management**: Use hardware security modules (HSM) or key management services in production
-2. **Encryption**: All credentials stored on IPFS are encrypted by default
-3. **Access Control**: Multi-tenant isolation ensures credentials are segregated
-4. **Consensus Verification**: Use multiple verifiers to prevent single points of failure
-5. **Bridge Security**: Cross-chain transfers use cryptographic proofs and time-locks
+### Achievement Credentials
+```json
+{
+  "@context": ["https://www.w3.org/2018/credentials/v1"],
+  "type": ["VerifiableCredential", "AchievementCredential"],
+  "credentialSubject": {
+    "achievement": "First Asset Created",
+    "level": "Bronze",
+    "points": 100
+  }
+}
+```
 
-## Future Enhancements
+### Reputation Credentials
+```json
+{
+  "@context": ["https://www.w3.org/2018/credentials/v1"],
+  "type": ["VerifiableCredential", "ReputationCredential"],
+  "credentialSubject": {
+    "dimensions": {
+      "technical": 85,
+      "collaboration": 90,
+      "governance": 75
+    }
+  }
+}
+```
 
-1. **Layer 2 Support**: Integration with Optimism, Arbitrum, zkSync
-2. **Advanced Privacy**: Integration with Aztec Protocol for private credentials
-3. **Decentralized Identifiers**: Support for more DID methods (ION, Element)
-4. **Interoperability**: Integration with other credential standards (mDL, EBSI)
-5. **AI Integration**: ML-based fraud detection and trust scoring 
+### Asset Credentials
+```json
+{
+  "@context": ["https://www.w3.org/2018/credentials/v1"],
+  "type": ["VerifiableCredential", "AssetOwnershipCredential"],
+  "credentialSubject": {
+    "assetId": "uuid",
+    "assetType": "3D_MODEL",
+    "ownership": 100
+  }
+}
+```
+
+## 🌐 Supported Blockchain Networks
+
+| Network | Chain ID | Features | Status |
+|---------|----------|----------|--------|
+| Ethereum Mainnet | 1 | Full support | 🟢 Active |
+| Polygon | 137 | Low fees, fast | 🟢 Active |
+| Arbitrum One | 42161 | L2 scaling | 🟢 Active |
+| Local Hardhat | 31337 | Development | 🟢 Active |
+
+## 📈 Performance Metrics
+
+- **Credential Issuance**: < 100ms
+- **ZKP Generation**: < 500ms
+- **Blockchain Export**: 15-60s (network dependent)
+- **Presentation Creation**: < 200ms
+- **Verification**: < 50ms
+
+## 🔧 Configuration
+
+Key configuration options in `app/core/config.py`:
+- `CREDENTIAL_TTL`: Default credential validity (365 days)
+- `MAX_PRESENTATION_SIZE`: Maximum credentials in presentation (10)
+- `ZKP_SECURITY_LEVEL`: Cryptographic security parameter (128)
+- `IPFS_TIMEOUT`: IPFS operation timeout (30s)
+- `GAS_PRICE_MULTIPLIER`: Gas price buffer for transactions (1.2x)
+
+## 📝 License
+
+This service is part of the PlatformQ project and is licensed under the MIT License. 

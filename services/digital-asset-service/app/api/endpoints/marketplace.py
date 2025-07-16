@@ -110,6 +110,45 @@ def list_asset_for_sale(
 ):
     """
     List an asset for sale in the marketplace.
+    
+    This endpoint enables asset owners to list their digital assets for sale
+    on the decentralized marketplace. It performs several critical checks
+    and updates before making the asset available for purchase.
+    
+    Args:
+        asset_id: UUID of the asset to list
+        price: Sale price in the specified currency (must be positive)
+        currency: Currency for the sale price (ETH, MATIC, or USDC)
+        royalty_percentage: Optional royalty percentage for resales (0-5000 basis points)
+        db: Database session (injected)
+        context: User context with tenant and user info (injected)
+        publisher: Event publisher for blockchain events (injected)
+    
+    Security Checks:
+        1. Asset existence verification
+        2. Ownership validation (only owner can list)
+        3. Creation credential requirement (ensures provenance)
+        4. Blockchain address requirement (for on-chain transactions)
+    
+    Process Flow:
+        1. Retrieve and validate the asset
+        2. Verify user ownership
+        3. Ensure asset has creation credentials
+        4. Update asset with marketplace metadata
+        5. Configure royalty settings if provided
+        6. Publish marketplace event for indexing
+        7. Trigger blockchain transaction (in production)
+    
+    Returns:
+        Updated asset object with marketplace fields populated
+    
+    Raises:
+        HTTPException 404: Asset not found
+        HTTPException 403: User doesn't own the asset
+        HTTPException 400: Missing creation credential or blockchain address
+    
+    Example:
+        POST /digital-assets/123e4567-e89b-12d3-a456-426614174000/list-for-sale?price=0.5&currency=ETH&royalty_percentage=250
     """
     # Get the asset
     asset = crud_digital_asset.get_asset(db, asset_id)

@@ -7,6 +7,28 @@ import './Marketplace.css';
 const { Option } = Select;
 const { Meta } = Card;
 
+/**
+ * Marketplace Component
+ * 
+ * The main marketplace interface for PlatformQ's decentralized asset trading.
+ * This component provides a comprehensive UI for browsing, filtering, purchasing,
+ * and licensing digital assets with blockchain-based ownership and royalties.
+ * 
+ * Key Features:
+ * - Asset browsing with real-time filtering
+ * - Purchase and license workflows
+ * - Asset listing with customizable royalty settings
+ * - Price filtering and sorting
+ * - Responsive grid layout
+ * 
+ * State Management:
+ * - assets: Array of marketplace assets fetched from backend
+ * - filters: Object containing all filter criteria
+ * - selectedAsset: Currently selected asset for purchase/license
+ * - Modal visibility states for different workflows
+ * 
+ * @component
+ */
 const Marketplace = () => {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
@@ -31,9 +53,34 @@ const Marketplace = () => {
     fetchMarketplaceAssets();
   }, [filters]);
 
+  /**
+   * Fetches marketplace assets from the backend with applied filters
+   * 
+   * This function is the core data fetching mechanism for the marketplace.
+   * It constructs a query string from the current filter state and retrieves
+   * matching assets from the digital-asset-service.
+   * 
+   * Filter Parameters:
+   * - forSale: Boolean to show only assets for sale
+   * - licensable: Boolean to show only licensable assets
+   * - assetType: Specific asset type filter (3D_MODEL, SIMULATION, etc.)
+   * - minPrice/maxPrice: Price range filters
+   * - sortBy: Field to sort by (created_at, sale_price, asset_name)
+   * - sortOrder: Sort direction (asc/desc)
+   * 
+   * Error Handling:
+   * - Network errors display user-friendly message
+   * - Console logging for debugging
+   * - Loading state management for UI feedback
+   * 
+   * @async
+   * @returns {Promise<void>} Updates component state with fetched assets
+   */
   const fetchMarketplaceAssets = async () => {
     try {
       setLoading(true);
+      
+      // Build query parameters from filter state
       const params = new URLSearchParams();
       Object.entries(filters).forEach(([key, value]) => {
         if (value !== null) {
@@ -41,7 +88,10 @@ const Marketplace = () => {
         }
       });
       
+      // Fetch assets from backend
       const response = await api.get(`/digital-asset-service/api/v1/marketplace/assets?${params}`);
+      
+      // Update state with fetched assets
       setAssets(response.data.assets || []);
     } catch (error) {
       console.error('Failed to fetch marketplace assets:', error);

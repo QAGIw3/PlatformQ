@@ -1,6 +1,23 @@
 """
 Cross-Chain Bridge integration for exporting VCs to public blockchains.
 Supports Ethereum, Polygon, Arbitrum, and other EVM chains.
+
+This module provides the core functionality for:
+1. Exporting verifiable credentials as SoulBound Tokens (SBTs) on various blockchains
+2. Managing cross-chain transfers using HTLC (Hashed Time-Lock Contracts)
+3. Gas fee estimation and optimization for different networks
+4. Multi-chain identity management
+
+Architecture Overview:
+- ChainNetwork enum: Defines supported blockchain networks
+- ChainConfig dataclass: Configuration for each network including RPC URLs and contract addresses
+- CrossChainBridge class: Main interface for cross-chain operations
+
+Security Considerations:
+- Private keys are never logged or exposed
+- All transactions are signed locally before sending
+- Gas prices include safety multipliers to prevent failed transactions
+- Confirmation blocks ensure finality before returning results
 """
 
 import json
