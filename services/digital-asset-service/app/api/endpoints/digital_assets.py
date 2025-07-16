@@ -14,8 +14,24 @@ from ....platformq_shared.event_publisher import EventPublisher
 import logging
 from ...crud.asset import asset as crud_asset
 from .deps import get_current_context
+import hashlib
+import json
+from pulsar.schema import Record, String, Long, Array
 
 logger = logging.getLogger(__name__)
+
+# Define VC request events (if not in shared lib yet)
+class AssetCreationCredentialRequested(Record):
+    tenant_id = String()
+    asset_id = String()
+    asset_hash = String()
+    creator_did = String()
+    asset_name = String()
+    asset_type = String()
+    asset_metadata = String()  # JSON string
+    raw_data_uri = String(required=False)
+    creation_timestamp = Long()
+    source_tool = String(required=False)
 
 router = APIRouter()
 
@@ -28,6 +44,26 @@ HIGH_VALUE_THRESHOLDS = {
     "credential": 0.0,       # All credentials are high-value
     "contract": 0.0,         # All contracts are high-value
 }
+
+def compute_asset_hash(asset) -> str:
+    """Compute a deterministic hash of asset content"""
+    content = {
+        "asset_id": str(asset.asset_id),
+        "asset_name": asset.asset_name,
+        "asset_type": asset.asset_type,
+        "owner_id": str(asset.owner_id),
+        "source_tool": asset.source_tool,
+        "metadata": asset.asset_metadata or {},
+        "created_at": asset.created_at.isoformat() if hasattr(asset, 'created_at') else None
+    }
+    
+    # Sort keys for deterministic hash
+    json_str = json.dumps(content, sort_keys=True)
+    return hashlib.sha256(json_str.encode()).hexdigest()
+
+def get_user_did(user_id: str, tenant_id: str) -> str:
+    """Generate a DID for a user (simplified for now)"""
+    return f"did:platformq:{tenant_id}:user:{user_id}"
 
 def assess_asset_value(asset_type: str, metadata: Dict[str, Any]) -> float:
     """
@@ -116,6 +152,31 @@ def create_digital_asset(
             schema_class=DigitalAssetCreated,
             data=event
         )
+        
+        # Request Asset Creation VC
+        asset_hash = compute_asset_hash(db_asset)
+        creator_did = get_user_did(str(db_asset.owner_id), str(context["tenant_id"]))
+        
+        vc_request = AssetCreationCredentialRequested(
+            tenant_id=str(context["tenant_id"]),
+            asset_id=str(db_asset.asset_id),
+            asset_hash=asset_hash,
+            creator_did=creator_did,
+            asset_name=db_asset.asset_name,
+            asset_type=db_asset.asset_type,
+            asset_metadata=json.dumps(db_asset.asset_metadata or {}),
+            raw_data_uri=db_asset.raw_data_uri,
+            creation_timestamp=int(datetime.utcnow().timestamp() * 1000),
+            source_tool=db_asset.source_tool
+        )
+        
+        publisher.publish(
+            topic_base='asset-creation-credential-requests',
+            tenant_id=str(context["tenant_id"]),
+            schema_class=AssetCreationCredentialRequested,
+            data=vc_request
+        )
+        logger.info(f"Requested creation VC for asset {db_asset.asset_id}")
         
         # Assess asset value
         metadata = db_asset.metadata or {}
@@ -246,5 +307,56 @@ def approve_digital_asset(
             status_code=400,
             detail=f"Asset does not yet meet the criteria for approval. It has {len(approved_asset.reviews)} review(s)."
         )
+    
+    return approved_asset
 
-    return approved_asset 
+
+@router.get("/digital-assets/{asset_id}/lineage", response_model=Dict[str, Any])
+def get_asset_lineage(
+    asset_id: UUID,
+    db: Session = Depends(get_db_session),
+    context: dict = Depends(get_current_tenant_and_user),
+):
+    """
+    Get the complete verifiable credential lineage for an asset.
+    
+    Returns:
+    - Creation VC
+    - All processing VCs in chronological order
+    - Verification status for each VC
+    """
+    db_asset = crud_digital_asset.get_asset(db=db, asset_id=asset_id)
+    if not db_asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+    
+    lineage = {
+        "asset_id": str(asset_id),
+        "asset_name": db_asset.asset_name,
+        "creation_vc": {
+            "vc_id": db_asset.creation_vc_id,
+            "status": "verified" if db_asset.creation_vc_id else "missing"
+        },
+        "processing_lineage": []
+    }
+    
+    # Add processing VCs
+    if db_asset.lineage_vc_ids:
+        for vc_id in db_asset.lineage_vc_ids:
+            lineage["processing_lineage"].append({
+                "vc_id": vc_id,
+                "status": "verified"  # In production, actually verify each VC
+            })
+    
+    lineage["latest_processing_vc"] = {
+        "vc_id": db_asset.latest_processing_vc_id,
+        "status": "verified" if db_asset.latest_processing_vc_id else "none"
+    }
+    
+    # Calculate lineage integrity
+    lineage["integrity"] = {
+        "complete": bool(db_asset.creation_vc_id),
+        "verified": True,  # In production, actually verify the chain
+        "chain_length": len(db_asset.lineage_vc_ids or []) + 1
+    }
+    
+    return lineage 

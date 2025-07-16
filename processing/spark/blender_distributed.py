@@ -10,10 +10,19 @@ import json
 import subprocess
 import tempfile
 import shutil
+import logging
 from typing import Dict, Any, List, Tuple, Optional
 from datetime import datetime
 
 from processor_base import ProcessorBase
+try:
+    from platformq_shared.event_publisher import EventPublisher
+    from platformq_shared.processing_vc import request_processing_vc_for_spark_job
+    VC_SUPPORT = True
+except ImportError:
+    VC_SUPPORT = False
+
+logger = logging.getLogger(__name__)
 
 
 class BlenderDistributedProcessor(ProcessorBase):
@@ -226,6 +235,55 @@ class BlenderDistributedProcessor(ProcessorBase):
             metadata["scene_statistics"] = scene_stats
         
         return metadata
+    
+    def run(self, asset_id: str, asset_uri: str, processing_config: Dict[str, Any]) -> Dict[str, Any]:
+        """Enhanced run method with VC support"""
+        # Call parent run method
+        result = super().run(asset_id, asset_uri, processing_config)
+        
+        # Request VC if supported and processing was successful
+        if VC_SUPPORT and result.get("status") != "error":
+            try:
+                # Initialize event publisher
+                from platformq_shared.config import ConfigLoader
+                config_loader = ConfigLoader()
+                settings = config_loader.load_settings()
+                pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
+                
+                publisher = EventPublisher(pulsar_url=pulsar_url)
+                publisher.connect()
+                
+                # Prepare output data hash (using result metadata)
+                output_data = json.dumps(result.get("metadata", {}), sort_keys=True).encode()
+                
+                # Request processing VC
+                vc_requested = request_processing_vc_for_spark_job(
+                    publisher=publisher,
+                    tenant_id=self.tenant_id,
+                    job_id=result.get("job_id", asset_id + "_render"),
+                    input_asset_id=asset_id,
+                    output_asset_id=result.get("output_asset_id", asset_id + "_rendered"),
+                    output_data=output_data,
+                    algorithm="blender_distributed_render",
+                    spark_config={
+                        "render_config": processing_config,
+                        "chunks_processed": result.get("chunks_processed", 0),
+                        "total_processing_time": result.get("total_processing_time", 0)
+                    }
+                )
+                
+                if vc_requested:
+                    result["vc_requested"] = True
+                    logger.info(f"Processing VC requested for asset {asset_id}")
+                    
+                publisher.close()
+                
+            except Exception as e:
+                logger.warning(f"Failed to request processing VC: {e}")
+                result["vc_requested"] = False
+                result["vc_error"] = str(e)
+        
+        return result
     
     def process(self, asset_uri: str, processing_config: Dict[str, Any]) -> Dict[str, Any]:
         """Main processing method - delegates to run()"""

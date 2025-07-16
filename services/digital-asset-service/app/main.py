@@ -1,7 +1,8 @@
 from platformq_shared.base_service import create_base_app
-from .api.endpoints import digital_assets, processing_rules
+from .api.endpoints import digital_assets, processing_rules, marketplace
 from .postgres_db import get_db_session
 from . import crud
+from . import postgres_db
 from platformq_shared.event_publisher import EventPublisher
 from platformq_shared.config import ConfigLoader
 import threading
@@ -10,6 +11,7 @@ from pulsar.schema import AvroSchema
 from platformq_shared.events import FunctionExecutionCompleted
 import uuid
 import logging
+from .messaging.vc_consumer import asset_vc_consumer
 
 logger = logging.getLogger(__name__)
 
@@ -99,14 +101,21 @@ def startup_event():
     # Start the background consumer
     thread = threading.Thread(target=result_consumer_loop, args=(app,), daemon=True)
     thread.start()
+    
+    # Start the VC consumer
+    asset_vc_consumer.start()
 
 @app.on_event("shutdown")
 def shutdown_event():
     if app.state.event_publisher:
         app.state.event_publisher.close()
+    
+    # Stop the VC consumer
+    asset_vc_consumer.stop()
 
 app.include_router(digital_assets.router, prefix="/api/v1", tags=["digital-assets"])
 app.include_router(processing_rules.router, prefix="/api/v1", tags=["processing-rules"])
+app.include_router(marketplace.router, prefix="/api/v1", tags=["marketplace"])
 
 # Import and include the CAD collaboration router
 try:

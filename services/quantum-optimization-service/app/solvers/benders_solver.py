@@ -8,54 +8,46 @@ import numpy as np
 from platformq_shared.logging_config import get_logger
 from services.quantum_optimization_service.app.solvers.classical_solvers import ClassicalSolvers
 from services.quantum_optimization_service.app.engines.quantum_optimizer import QuantumOptimizer
+from .base import Solver
+from .quantum_solver import QuantumSolver
 
 logger = get_logger(__name__)
 
-class BendersSolver:
+class BendersSolver(Solver):
     """
     Implements an iterative Benders decomposition loop for the
     Uncapacitated Facility Location Problem (UFLP).
     """
 
-    def __init__(self, max_iterations: int = 15, tolerance: float = 1e-4):
-        self.max_iterations = max_iterations
+    def __init__(self, max_iter=20, tolerance=1e-4):
+        self.max_iter = max_iter
         self.tolerance = tolerance
-        self.classical_solver = ClassicalSolvers()
+        self.classical_solvers = ClassicalSolvers()
         self.quantum_optimizer = None
-        self.benders_cuts = []
-        logger.info(f"Initialized BendersSolver with max_iterations={max_iterations}, tolerance={tolerance}")
+        logger.info("Initialized BendersSolver.")
 
     def solve(self,
             problem_data: Dict[str, Any],
-            quantum_engine: str = "qiskit",
-            quantum_backend: str = "aer_simulator") -> Dict[str, Any]:
+            **kwargs) -> Dict[str, Any]:
         """
-        Executes the Benders decomposition workflow for UFLP.
-        
+        Executes the Benders Decomposition algorithm.
+
         Args:
-            problem_data: Dict with 'opening_costs' and 'transportation_costs'.
-            quantum_engine: Quantum engine to use.
-            quantum_backend: Quantum backend to use.
-        
+            problem_data: The facility location problem data.
+            **kwargs: May contain 'quantum_engine' and 'quantum_backend'.
+
         Returns:
-            A dictionary containing the final solution and convergence details.
+            A dictionary containing the optimal facility locations and total cost.
         """
-        logger.info("Starting Benders decomposition for Facility Location.")
-        start_time = time.time()
-        
-        self.quantum_optimizer = QuantumOptimizer(engine=quantum_engine, backend_name=quantum_backend)
-        self.benders_cuts = []
-        
-        opening_costs = np.array(problem_data['opening_costs'])
-        transportation_costs = np.array(problem_data['transportation_costs'])
-        num_facilities, num_customers = transportation_costs.shape
+        self.quantum_optimizer = QuantumSolver(
+            engine=kwargs.get("quantum_engine", "qiskit"),
+            backend_name=kwargs.get("quantum_backend", "aer_simulator")
+        )
 
-        lower_bound = -np.inf
-        upper_bound = np.inf
-        best_solution_so_far = None
-
-        for i in range(self.max_iterations):
-            logger.info(f"--- Benders Iteration {i+1}/{self.max_iterations} ---")
+        master_problem_result = self._solve_master_problem_classical(problem_data)
+        
+        for i in range(self.max_iter):
+            logger.info(f"--- Benders Iteration {i+1}/{self.max_iter} ---")
             
             # 1. Solve the Master Problem
             master_solution = self._solve_master_problem(opening_costs, num_customers, self.benders_cuts)

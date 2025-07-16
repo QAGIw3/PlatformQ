@@ -142,6 +142,28 @@ class SpikingNeuralNetwork:
             self.state_monitor
         )
         
+    def configure_for_optimization(self, weights: np.ndarray, currents: np.ndarray):
+        """
+        Configures the reservoir for an optimization task (e.g., Hopfield-like dynamics).
+        
+        Args:
+            weights: The connection weights between neurons (from QUBO).
+            currents: The external current applied to each neuron (from QUBO linear terms).
+        """
+        if weights.shape != (self.config.reservoir_size, self.config.reservoir_size):
+            raise ValueError("Weights matrix shape must match reservoir size.")
+        if currents.shape != (self.config.reservoir_size,):
+            raise ValueError("Currents vector shape must match reservoir size.")
+
+        # Set the recurrent connections to match the problem's structure
+        # This overrides the randomly initialized weights.
+        self.syn_reservoir_reservoir.w = weights.flatten() * mV
+
+        # Apply the external currents to each neuron
+        self.reservoir.I_syn = currents * volt
+        
+        logger.info("SNN configured for optimization task.")
+        
     def _create_synapses(self):
         """Create synaptic connections with proper weights"""
         
@@ -207,24 +229,34 @@ class SpikingNeuralNetwork:
             W[j, i] = weights[idx]
         return W
         
-    def process(self, spike_train: np.ndarray) -> np.ndarray:
+    def process(self, spike_train: Optional[np.ndarray], duration: Optional[b2.Quantity] = None) -> np.ndarray:
         """
-        Process input spike train through the network
+        Process input spike train through the network or run for a specific duration.
         
         Args:
-            spike_train: Input spike train array
+            spike_train: Input spike train array. Can be None if running for a fixed duration.
+            duration: The amount of time to run the simulation (e.g., 500*ms).
+                      If provided, the network runs without new input.
             
         Returns:
             Output spike pattern
         """
         self.events_processed += 1
         
-        # Convert input to firing rates
-        rates = spike_train * 100 * Hz  # Scale to reasonable firing rates
-        self.input_neurons.rates = rates
+        # If a duration is provided, run the network freely.
+        # Otherwise, run based on the input spike train.
+        run_duration = duration if duration is not None else 100 * ms
+
+        if spike_train is not None:
+            # Convert input to firing rates
+            rates = spike_train * 100 * Hz  # Scale to reasonable firing rates
+            self.input_neurons.rates = rates
+        else:
+            # No new input, let the network evolve on its own
+            self.input_neurons.rates = 0 * Hz
         
         # Run simulation
-        self.network.run(100 * ms)
+        self.network.run(run_duration)
         
         # Extract output spikes
         output_spikes = self._extract_output_spikes()
@@ -297,39 +329,23 @@ class SpikingNeuralNetwork:
                 
         return filtered_spikes
         
-    def get_firing_rates(self) -> Dict[str, List[float]]:
-        """Get current firing rates for all neurons"""
-        rates = {
-            'reservoir': [],
-            'output': []
-        }
+    def get_firing_rates(self) -> np.ndarray:
+        """
+        Get current firing rates for the reservoir neurons.
+        Used for decoding the solution of an optimization problem.
+        """
+        # We only care about the reservoir for decoding optimization results
+        rates = np.zeros(self.config.reservoir_size)
         
-        # Calculate reservoir firing rates
+        # Calculate firing rates over the entire simulation duration
+        total_time_s = self.network.t / second
+        if total_time_s == 0:
+            return rates
+
         for i in range(self.config.reservoir_size):
             if i in self.spike_monitor_res.spike_trains():
-                spikes = self.spike_monitor_res.spike_trains()[i]
-                if len(spikes) > 0:
-                    # Rate over last 50ms
-                    recent_spikes = spikes[spikes > (self.network.t/ms - 50)]
-                    rate = len(recent_spikes) * 20  # Convert to Hz
-                    rates['reservoir'].append(rate)
-                else:
-                    rates['reservoir'].append(0)
-            else:
-                rates['reservoir'].append(0)
-                
-        # Calculate output firing rates
-        for i in range(self.config.output_size):
-            if i in self.spike_monitor_out.spike_trains():
-                spikes = self.spike_monitor_out.spike_trains()[i]
-                if len(spikes) > 0:
-                    recent_spikes = spikes[spikes > (self.network.t/ms - 50)]
-                    rate = len(recent_spikes) * 20
-                    rates['output'].append(rate)
-                else:
-                    rates['output'].append(0)
-            else:
-                rates['output'].append(0)
+                num_spikes = len(self.spike_monitor_res.spike_trains()[i])
+                rates[i] = num_spikes / total_time_s
                 
         return rates
         

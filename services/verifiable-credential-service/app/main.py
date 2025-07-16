@@ -18,6 +18,7 @@ from platformq_shared.event_publisher import EventPublisher
 from platformq_shared.config import ConfigLoader
 from platformq_shared.events import IssueVerifiableCredential, VerifiableCredentialIssued
 from .schemas.dao_schemas import DAOMembershipCredentialSubject, VotingPowerCredentialSubject, ReputationScoreCredentialSubject, ProposalApprovalCredentialSubject
+from web3 import Web3
 
 # Import blockchain components
 from .blockchain import BlockchainClient, ChainType, EthereumClient, PolygonClient, FabricClient
@@ -334,6 +335,315 @@ async def handle_trust_event(event_type: str, event_data: dict, publisher: Event
         logger.error(f"Failed to update on-chain reputation for {user_address}: {e}")
 
 
+# --- Pulsar Consumer for Asset Creation VC Requests ---
+def asset_creation_vc_consumer_loop(app):
+    logger.info("Starting asset creation VC consumer thread...")
+    publisher = app.state.event_publisher
+    client = pulsar.Client(PULSAR_URL)
+    
+    # Define the schema inline if not in shared lib
+    from pulsar.schema import Record, String, Long
+    class AssetCreationCredentialRequested(Record):
+        tenant_id = String()
+        asset_id = String()
+        asset_hash = String()
+        creator_did = String()
+        asset_name = String()
+        asset_type = String()
+        asset_metadata = String()
+        raw_data_uri = String(required=False)
+        creation_timestamp = Long()
+        source_tool = String(required=False)
+    
+    consumer = client.subscribe(
+        topic_pattern="persistent://platformq/.*/asset-creation-credential-requests",
+        subscription_name="vc-service-asset-creation-sub",
+        consumer_type=pulsar.ConsumerType.Shared,
+        schema=AvroSchema(AssetCreationCredentialRequested)
+    )
+
+    while not app.state.stop_event.is_set():
+        try:
+            msg = consumer.receive(timeout_millis=1000)
+            if msg is None: continue
+            
+            tenant_id = get_tenant_from_topic(msg.topic_name())
+            if not tenant_id:
+                consumer.acknowledge(msg)
+                continue
+
+            event_data = msg.value()
+            logger.info(f"Received asset creation VC request for asset {event_data.asset_id}")
+            
+            # Construct the subject for the Asset Creation VC
+            credential_subject = {
+                "id": f"urn:platformq:asset:{event_data.asset_id}",
+                "assetHash": event_data.asset_hash,
+                "creator": event_data.creator_did,
+                "assetName": event_data.asset_name,
+                "assetType": event_data.asset_type,
+                "metadata": json.loads(event_data.asset_metadata) if event_data.asset_metadata else {},
+                "createdAt": datetime.fromtimestamp(event_data.creation_timestamp / 1000).isoformat() + "Z",
+                "sourceTool": event_data.source_tool,
+                "rawDataUri": event_data.raw_data_uri
+            }
+
+            # Run async function in sync context
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            vc_result = loop.run_until_complete(
+                issue_and_record_credential(
+                    tenant_id=tenant_id,
+                    subject=credential_subject,
+                    credential_type="AssetCreationCredential",
+                    publisher=publisher,
+                    options={
+                        "store_on_ipfs": True,
+                        "create_sbt": False  # Don't create SBT for every asset
+                    }
+                )
+            )
+            
+            # Update the asset with the VC ID (publish event for digital-asset-service to consume)
+            if vc_result and "id" in vc_result:
+                from pulsar.schema import Record, String
+                class AssetVCCreated(Record):
+                    tenant_id = String()
+                    asset_id = String()
+                    vc_id = String()
+                    vc_type = String()
+                
+                update_event = AssetVCCreated(
+                    tenant_id=tenant_id,
+                    asset_id=event_data.asset_id,
+                    vc_id=vc_result["id"],
+                    vc_type="creation"
+                )
+                
+                publisher.publish(
+                    topic_base='asset-vc-created-events',
+                    tenant_id=tenant_id,
+                    schema_class=AssetVCCreated,
+                    data=update_event
+                )
+            
+            consumer.acknowledge(msg)
+        except Exception as e:
+            logger.error(f"Error in asset creation VC consumer: {e}")
+            consumer.negative_acknowledge(msg)
+
+    consumer.close()
+    client.close()
+
+
+# --- Pulsar Consumer for Trust Score VC Requests ---
+def trust_score_vc_consumer_loop(app):
+    logger.info("Starting trust score VC consumer thread...")
+    publisher = app.state.event_publisher
+    client = pulsar.Client(PULSAR_URL)
+    
+    # Define the schema
+    from pulsar.schema import Record, String, Double, Long, Array
+    class TrustScoreCredentialRequested(Record):
+        tenant_id = String()
+        user_did = String()
+        trust_score = Double()
+        evidence_vc_ids = Array(String())
+        calculation_timestamp = Long()
+        valid_until = Long()
+        blockchain_address = String(required=False)
+    
+    consumer = client.subscribe(
+        topic_pattern="persistent://platformq/.*/trust-score-credential-requests",
+        subscription_name="vc-service-trust-score-sub",
+        consumer_type=pulsar.ConsumerType.Shared,
+        schema=AvroSchema(TrustScoreCredentialRequested)
+    )
+
+    while not app.state.stop_event.is_set():
+        try:
+            msg = consumer.receive(timeout_millis=1000)
+            if msg is None: continue
+            
+            tenant_id = get_tenant_from_topic(msg.topic_name())
+            if not tenant_id:
+                consumer.acknowledge(msg)
+                continue
+
+            event_data = msg.value()
+            logger.info(f"Received trust score VC request for user {event_data.user_did}")
+            
+            # Construct the subject for the Trust Score VC
+            credential_subject = {
+                "id": event_data.user_did,
+                "trustScore": event_data.trust_score,
+                "calculationEvidence": event_data.evidence_vc_ids,
+                "calculatedAt": datetime.fromtimestamp(event_data.calculation_timestamp / 1000).isoformat() + "Z",
+                "validUntil": datetime.fromtimestamp(event_data.valid_until / 1000).isoformat() + "Z",
+                "scoreCategory": get_trust_level(event_data.trust_score)
+            }
+
+            # Run async function in sync context
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            vc_result = loop.run_until_complete(
+                issue_and_record_credential(
+                    tenant_id=tenant_id,
+                    subject=credential_subject,
+                    credential_type="TrustScoreCredential",
+                    publisher=publisher,
+                    options={
+                        "store_on_ipfs": True,
+                        "create_sbt": event_data.trust_score >= 80,  # Create SBT for high trust scores
+                        "blockchain_address": event_data.blockchain_address
+                    }
+                )
+            )
+            
+            # Update ReputationOracle if blockchain address provided
+            if event_data.blockchain_address and vc_result:
+                try:
+                    loop.run_until_complete(
+                        reputation_oracle_service.update_reputation(
+                            entity_address=event_data.blockchain_address,
+                            new_score=int(event_data.trust_score),
+                            vc_hash=Web3.keccak(text=json.dumps(vc_result)),
+                            expiry=int(event_data.valid_until / 1000)
+                        )
+                    )
+                    logger.info(f"Updated on-chain reputation for {event_data.blockchain_address}")
+                except Exception as e:
+                    logger.error(f"Failed to update on-chain reputation: {e}")
+            
+            consumer.acknowledge(msg)
+        except Exception as e:
+            logger.error(f"Error in trust score VC consumer: {e}")
+            consumer.negative_acknowledge(msg)
+
+    consumer.close()
+    client.close()
+
+
+def get_trust_level(score: float) -> str:
+    """Categorize trust score into levels"""
+    if score >= 90:
+        return "exceptional"
+    elif score >= 75:
+        return "high"
+    elif score >= 50:
+        return "moderate"
+    elif score >= 25:
+        return "developing"
+    else:
+        return "initial"
+
+
+# --- Pulsar Consumer for Processing VC Requests ---
+def processing_vc_consumer_loop(app):
+    logger.info("Starting processing VC consumer thread...")
+    publisher = app.state.event_publisher
+    client = pulsar.Client(PULSAR_URL)
+    
+    # Define the schema
+    from pulsar.schema import Record, String, Long
+    class AssetProcessingCredentialRequested(Record):
+        tenant_id = String()
+        parent_asset_id = String()
+        parent_asset_vc_id = String(required=False)
+        output_asset_id = String()
+        output_asset_hash = String()
+        processing_job_id = String()
+        processor_did = String()
+        algorithm = String()
+        parameters = String()
+        processing_timestamp = Long()
+        processing_duration_ms = Long(required=False)
+    
+    consumer = client.subscribe(
+        topic_pattern="persistent://platformq/.*/asset-processing-credential-requests",
+        subscription_name="vc-service-processing-sub",
+        consumer_type=pulsar.ConsumerType.Shared,
+        schema=AvroSchema(AssetProcessingCredentialRequested)
+    )
+
+    while not app.state.stop_event.is_set():
+        try:
+            msg = consumer.receive(timeout_millis=1000)
+            if msg is None: continue
+            
+            tenant_id = get_tenant_from_topic(msg.topic_name())
+            if not tenant_id:
+                consumer.acknowledge(msg)
+                continue
+
+            event_data = msg.value()
+            logger.info(f"Received processing VC request for job {event_data.processing_job_id}")
+            
+            # Construct the subject for the Processing VC
+            credential_subject = {
+                "id": f"urn:platformq:processing:{event_data.processing_job_id}",
+                "parentAsset": f"urn:platformq:asset:{event_data.parent_asset_id}",
+                "parentAssetVC": event_data.parent_asset_vc_id,
+                "outputAsset": f"urn:platformq:asset:{event_data.output_asset_id}",
+                "outputAssetHash": event_data.output_asset_hash,
+                "processor": event_data.processor_did,
+                "algorithm": event_data.algorithm,
+                "parameters": json.loads(event_data.parameters) if event_data.parameters else {},
+                "processedAt": datetime.fromtimestamp(event_data.processing_timestamp / 1000).isoformat() + "Z",
+                "processingDuration": event_data.processing_duration_ms
+            }
+
+            # Run async function in sync context
+            import asyncio
+            loop = asyncio.new_event_loop()
+            asyncio.set_event_loop(loop)
+            vc_result = loop.run_until_complete(
+                issue_and_record_credential(
+                    tenant_id=tenant_id,
+                    subject=credential_subject,
+                    credential_type="AssetProcessingCredential",
+                    publisher=publisher,
+                    options={
+                        "store_on_ipfs": True,
+                        "create_sbt": False
+                    }
+                )
+            )
+            
+            # Update the output asset with the processing VC
+            if vc_result and "id" in vc_result:
+                from pulsar.schema import Record, String
+                class AssetVCCreated(Record):
+                    tenant_id = String()
+                    asset_id = String()
+                    vc_id = String()
+                    vc_type = String()
+                
+                update_event = AssetVCCreated(
+                    tenant_id=tenant_id,
+                    asset_id=event_data.output_asset_id,
+                    vc_id=vc_result["id"],
+                    vc_type="processing"
+                )
+                
+                publisher.publish(
+                    topic_base='asset-vc-created-events',
+                    tenant_id=tenant_id,
+                    schema_class=AssetVCCreated,
+                    data=update_event
+                )
+            
+            consumer.acknowledge(msg)
+        except Exception as e:
+            logger.error(f"Error in processing VC consumer: {e}")
+            consumer.negative_acknowledge(msg)
+
+    consumer.close()
+    client.close()
+
+
 # --- Pulsar Consumer for Issuance Requests ---
 def credential_issuer_loop(app):
     logger.info("Starting credential issuer consumer thread...")
@@ -538,6 +848,21 @@ async def startup_event():
     sbt_thread = threading.Thread(target=sbt_issuer_loop, args=(app,), daemon=True)
     sbt_thread.start()
     app.state.sbt_consumer_thread = sbt_thread
+    
+    # Asset creation VC issuer
+    asset_vc_thread = threading.Thread(target=asset_creation_vc_consumer_loop, args=(app,), daemon=True)
+    asset_vc_thread.start()
+    app.state.asset_vc_consumer_thread = asset_vc_thread
+    
+    # Trust score VC issuer
+    trust_vc_thread = threading.Thread(target=trust_score_vc_consumer_loop, args=(app,), daemon=True)
+    trust_vc_thread.start()
+    app.state.trust_vc_consumer_thread = trust_vc_thread
+    
+    # Processing VC issuer
+    processing_vc_thread = threading.Thread(target=processing_vc_consumer_loop, args=(app,), daemon=True)
+    processing_vc_thread.start()
+    app.state.processing_vc_consumer_thread = processing_vc_thread
 
 @app.on_event("shutdown")
 async def shutdown_event():
@@ -546,6 +871,12 @@ async def shutdown_event():
     app.state.consumer_thread.join()
     if hasattr(app.state, 'sbt_consumer_thread'):
         app.state.sbt_consumer_thread.join()
+    if hasattr(app.state, 'asset_vc_consumer_thread'):
+        app.state.asset_vc_consumer_thread.join()
+    if hasattr(app.state, 'trust_vc_consumer_thread'):
+        app.state.trust_vc_consumer_thread.join()
+    if hasattr(app.state, 'processing_vc_consumer_thread'):
+        app.state.processing_vc_consumer_thread.join()
     if app.state.trust_consumer:
         app.state.trust_consumer.stop()
     if app.state.event_publisher:

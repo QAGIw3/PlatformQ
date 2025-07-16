@@ -64,6 +64,20 @@ class DigitalAsset(Base):
     asset_metadata = Column("metadata", JsonBCompat)
     payload_schema_version = Column(String, nullable=True) # New field
     payload = Column(LargeBinary, nullable=True) # New field for Avro-serialized data
+    
+    # Verifiable Credential fields
+    creation_vc_id = Column(String, nullable=True)
+    lineage_vc_ids = Column(JsonBCompat, default=list)
+    latest_processing_vc_id = Column(String, nullable=True)
+    
+    # Marketplace fields
+    is_for_sale = Column(Boolean, default=False)
+    sale_price = Column(Numeric(20, 6), nullable=True)  # Price in ETH/MATIC
+    is_licensable = Column(Boolean, default=False)
+    license_terms = Column(JsonBCompat, nullable=True)  # {duration, price, type, etc.}
+    royalty_percentage = Column(Integer, default=250)  # Basis points (250 = 2.5%)
+    blockchain_address = Column(String, nullable=True)  # Owner's blockchain address
+    smart_contract_addresses = Column(JsonBCompat, default=dict)  # {royalty: "0x...", license: "0x..."}
 
     # Relationships
     processing_rule = relationship("AssetProcessingRule", back_populates="assets")

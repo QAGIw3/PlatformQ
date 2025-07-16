@@ -12,7 +12,7 @@ from datetime import datetime, timedelta
 import numpy as np
 import uuid
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks
+from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import pulsar
@@ -23,16 +23,19 @@ from platformq_shared.pulsar_client import PulsarClient
 from platformq_shared.ignite_utils import IgniteCache
 from platformq_shared.logging_config import get_logger
 from platformq_shared.monitoring import track_processing_time
+from platformq_shared.vc_auth import require_vc, VCRequirement, researcher_required, compute_allowance_required
 
 # Local modules
-from .engines.quantum_optimizer import QuantumOptimizer
 from .engines.problem_encoder import ProblemEncoder, ProblemType
 from .engines.solution_decoder import SolutionDecoder
 from .algorithms import QAOA, VQE, QuantumAnnealing, AmplitudeEstimation
 from .config import QuantumConfig
-from services.quantum_optimization_service.app.solvers.hybrid_solver import HybridSolver
-from services.quantum_optimization_service.app.solvers.benders_solver import BendersSolver
-from services.quantum_optimization_service.app.config import (
+from .solvers.base import Solver
+from .solvers.quantum_solver import QuantumSolver
+from .solvers.hybrid_solver import HybridSolver
+from .solvers.benders_solver import BendersSolver
+from .solvers.neuromorphic_solver import NeuromorphicSolver
+from .config import (
     PUBSUB_TIMEOUT, PULSAR_SERVICE_URL, JOB_STATUS_TOPIC, RESULT_TOPIC
 )
 
@@ -47,7 +50,6 @@ class QuantumOptimizationService(BaseService):
     def __init__(self):
         super().__init__("quantum-optimization-service", "Quantum Optimization Engine")
         self.config = QuantumConfig()
-        self.optimizer = None
         self.encoder = None
         self.decoder = None
         self.job_cache = None
@@ -58,13 +60,7 @@ class QuantumOptimizationService(BaseService):
         """Initialize service components"""
         await super().startup()
         
-        # Initialize quantum components
-        self.optimizer = QuantumOptimizer(
-            backend=self.config.backend,
-            num_shots=self.config.num_shots,
-            gpu_enabled=self.config.gpu_acceleration
-        )
-        
+        # Initialize components
         self.encoder = ProblemEncoder()
         self.decoder = SolutionDecoder()
         
@@ -75,7 +71,7 @@ class QuantumOptimizationService(BaseService):
         # Start consuming optimization requests
         await self._start_request_consumer()
         
-        logger.info(f"Quantum Optimization Service initialized with backend: {self.config.backend}")
+        logger.info("Quantum Optimization Service initialized.")
         
     async def _start_request_consumer(self):
         """Start consuming optimization requests from Pulsar"""
@@ -234,15 +230,69 @@ DEFAULT_KNAPSACK_HYBRID_WORKFLOW = [
     }
 ]
 
+# A simple factory function to get the right solver
+def solver_factory(request_data: Dict[str, Any]) -> Solver:
+    """
+    Factory function to instantiate and return the correct solver
+    based on the request data.
+    """
+    solver_type = request_data.get("solver_type", "quantum")
+    engine = request_data.get("engine", "qiskit")
+    backend = request_data.get("backend", "aer_simulator")
+
+    if solver_type == "quantum":
+        return QuantumSolver(engine=engine, backend_name=backend)
+    
+    elif solver_type == "hybrid":
+        workflow = request_data.get("workflow")
+        if not workflow:
+            # Use a default workflow if none is provided
+            problem_type = request_data["problem_type"]
+            if problem_type == "tsp":
+                workflow = DEFAULT_TSP_HYBRID_WORKFLOW
+            elif problem_type == "maxcut":
+                workflow = DEFAULT_MAXCUT_HYBRID_WORKFLOW
+            elif problem_type == "knapsack":
+                workflow = DEFAULT_KNAPSACK_HYBRID_WORKFLOW
+            else:
+                raise ValueError("Hybrid solver requires a workflow, and no default is available for this problem type.")
+        return HybridSolver(workflow)
+
+    elif solver_type == "benders":
+        if request_data["problem_type"] != "facility_location":
+            raise ValueError("Benders solver is currently only implemented for 'facility_location' problem type.")
+        return BendersSolver()
+    
+    elif solver_type == "neuromorphic":
+        return NeuromorphicSolver()
+
+    else:
+        raise ValueError(f"Invalid solver_type: '{solver_type}'. Must be 'quantum', 'hybrid', 'benders', or 'neuromorphic'.")
+
 
 # REST API Endpoints
 @app.post("/api/v1/optimize", response_model=OptimizationResponse)
+@require_vc(
+    researcher_required(level=2),  # Require level 2 researcher credential
+    compute_allowance_required(hours=1)  # Require compute allowance
+)
 async def submit_optimization(
     request: OptimizationRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    req: Request
 ):
-    """Submit an optimization problem"""
+    """Submit an optimization problem
+    
+    Requires:
+    - ResearcherCredential with level >= 2
+    - ComputeAllowanceCredential with hours > 1
+    """
     job_id = str(uuid.uuid4())
+    
+    # Extract user info from verified credentials
+    user_did = None
+    if hasattr(req.state, 'verified_credentials') and req.state.verified_credentials:
+        user_did = req.state.verified_credentials[0].subject.get('id', 'unknown')
     
     # Store job information
     job_info = {
@@ -251,7 +301,8 @@ async def submit_optimization(
         'problem_type': request.problem_type,
         'algorithm': request.algorithm,
         'created_at': datetime.utcnow().isoformat(),
-        'request': request.dict()
+        'request': request.dict(),
+        'submitted_by': user_did
     }
     
     await service.job_cache.put(f"job:{job_id}", job_info)
@@ -298,54 +349,18 @@ async def run_solver_task(request_data: dict):
     try:
         await update_job_status(job_id, "RUNNING")
         
-        solver_type = request_data.get("solver_type", "quantum")
+        # Use the factory to get the appropriate solver
+        solver = solver_factory(request_data)
 
-        if solver_type == "hybrid":
-            workflow = request_data.get("workflow")
-            if not workflow:
-                # Use a default workflow if none is provided
-                problem_type = request_data["problem_type"]
-                if problem_type == "tsp":
-                    workflow = DEFAULT_TSP_HYBRID_WORKFLOW
-                elif problem_type == "maxcut":
-                    workflow = DEFAULT_MAXCUT_HYBRID_WORKFLOW
-                elif problem_type == "knapsack":
-                    workflow = DEFAULT_KNAPSACK_HYBRID_WORKFLOW
-                else:
-                    raise ValueError("Hybrid solver requires a workflow, and no default is available for this problem type.")
-            
-            hybrid_solver = HybridSolver(workflow)
-            result = hybrid_solver.solve(
-                problem_data=request_data['problem_data'],
-                quantum_engine=request_data['engine'],
-                quantum_backend=request_data['backend']
-            )
-        
-        elif solver_type == "benders":
-            if request_data["problem_type"] != "facility_location":
-                raise ValueError("Benders solver is currently only implemented for 'facility_location' problem type.")
-            
-            benders_solver = BendersSolver()
-            result = benders_solver.solve(
-                problem_data=request_data['problem_data'],
-                quantum_engine=request_data['engine'],
-                quantum_backend=request_data['backend']
-            )
-        
-        elif solver_type == "quantum":
-            optimizer = QuantumOptimizer(
-                engine=request_data['engine'],
-                backend_name=request_data['backend']
-            )
-            result = optimizer.solve(
-                problem_type=request_data['problem_type'],
-                problem_data=request_data['problem_data'],
-                algorithm_name=request_data['algorithm_name'],
-                algorithm_params=request_data.get('algorithm_params', {})
-            )
-        
-        else:
-            raise ValueError(f"Invalid solver_type: '{solver_type}'. Must be 'quantum', 'hybrid', or 'benders'.")
+        # The 'solve' method signature is now standardized
+        result = solver.solve(
+            problem_data=request_data['problem_data'],
+            # Pass other relevant params from the request as kwargs
+            algorithm_name=request_data.get('algorithm_name'),
+            algorithm_params=request_data.get('algorithm_params', {}),
+            quantum_engine=request_data.get('engine'),
+            quantum_backend=request_data.get('backend')
+        )
 
         logger.info(f"Solver task for job_id: {job_id} completed successfully.")
         await update_job_status(job_id, "COMPLETED", result)
@@ -772,6 +787,43 @@ service._estimate_completion_time = _estimate_completion_time.__get__(service)
 service._calculate_avg_execution_time = _calculate_avg_execution_time.__get__(service)
 service._generate_test_problem = _generate_test_problem.__get__(service)
 service._run_classical_optimizer = _run_classical_optimizer.__get__(service)
+
+
+# Permission discovery endpoint
+@app.get("/api/v1/permissions/required")
+async def get_required_permissions(endpoint: str = "/api/v1/optimize"):
+    """Get required credentials for an endpoint"""
+    
+    permissions_map = {
+        "/api/v1/optimize": {
+            "endpoint": "/api/v1/optimize",
+            "required_credentials": [
+                {
+                    "type": "ResearcherCredential",
+                    "claims": {"level": {"$gte": 2}},
+                    "description": "Research credential with level 2 or higher"
+                },
+                {
+                    "type": "ComputeAllowanceCredential",
+                    "claims": {"compute_hours": {"$gt": 1}},
+                    "description": "Compute allowance with more than 1 hour"
+                }
+            ],
+            "optional_credentials": [
+                {
+                    "type": "TrustScoreCredential",
+                    "claims": {"trustScore": {"$gte": 0.7}},
+                    "description": "Higher trust score may provide priority processing"
+                }
+            ],
+            "credential_manifest_url": "https://platformq.com/credentials/manifests/quantum-optimization.json"
+        }
+    }
+    
+    if endpoint not in permissions_map:
+        raise HTTPException(status_code=404, detail=f"No permission info for endpoint: {endpoint}")
+    
+    return permissions_map[endpoint]
 
 
 if __name__ == "__main__":

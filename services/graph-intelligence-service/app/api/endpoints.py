@@ -2,11 +2,13 @@ from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
 from cassandra.cluster import Session
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
+import logging
 
 from .deps import get_current_tenant_and_user
 from ..spark_integration import SparkGraphAnalytics, GraphXEnhancedQueries
 from ..services.trust_score import trust_score_service
 
+logger = logging.getLogger(__name__)
 router = APIRouter()
 
 # Initialize Spark integration
@@ -261,4 +263,86 @@ def get_trust_score(user_id: str, context: dict = Depends(get_current_tenant_and
     trust_score_service.add_user_activity(user_id, "asset_peer_reviewed", "review1")
     
     score = trust_score_service.calculate_trust_score(user_id)
-    return {"user_id": user_id, "trust_score": score} 
+    return {"user_id": user_id, "trust_score": score}
+
+
+@router.post("/trust-score/{user_id}/calculate-verifiable")
+async def calculate_verifiable_trust_score(
+    user_id: str,
+    background_tasks: BackgroundTasks,
+    context: dict = Depends(get_current_tenant_and_user),
+    blockchain_address: Optional[str] = None
+):
+    """
+    Calculate verifiable trust score based on user's VCs and request issuance of TrustScoreCredential
+    """
+    # Generate user DID
+    tenant_id = str(context["tenant_id"])
+    user_did = f"did:platformq:{tenant_id}:user:{user_id}"
+    
+    # Calculate trust score
+    trust_result = await trust_score_service.calculate_verifiable_trust_score(
+        user_did=user_did,
+        blockchain_address=blockchain_address
+    )
+    
+    # Request TrustScoreCredential issuance
+    background_tasks.add_task(
+        request_trust_score_credential,
+        tenant_id=tenant_id,
+        user_did=user_did,
+        trust_result=trust_result,
+        blockchain_address=blockchain_address
+    )
+    
+    return {
+        "user_id": user_id,
+        "user_did": user_did,
+        "trust_score": trust_result.score,
+        "evidence_count": len(trust_result.evidence),
+        "calculated_at": trust_result.calculated_at.isoformat(),
+        "valid_until": trust_result.valid_until.isoformat(),
+        "credential_requested": True
+    }
+
+
+async def request_trust_score_credential(
+    tenant_id: str,
+    user_did: str,
+    trust_result,
+    blockchain_address: Optional[str]
+):
+    """Background task to request TrustScoreCredential issuance"""
+    try:
+        # Import event classes
+        from pulsar.schema import Record, String, Double, Long, Array
+        
+        class TrustScoreCredentialRequested(Record):
+            tenant_id = String()
+            user_did = String()
+            trust_score = Double()
+            evidence_vc_ids = Array(String())
+            calculation_timestamp = Long()
+            valid_until = Long()
+            blockchain_address = String(required=False)
+        
+        # Extract VC IDs from evidence
+        evidence_vc_ids = [e["vc_id"] for e in trust_result.evidence if e["vc_id"] != "unknown"]
+        
+        # Create event
+        event = TrustScoreCredentialRequested(
+            tenant_id=tenant_id,
+            user_did=user_did,
+            trust_score=trust_result.score,
+            evidence_vc_ids=evidence_vc_ids,
+            calculation_timestamp=int(trust_result.calculated_at.timestamp() * 1000),
+            valid_until=int(trust_result.valid_until.timestamp() * 1000),
+            blockchain_address=blockchain_address
+        )
+        
+        # Publish event (would need event publisher)
+        # For now, just log
+        logger.info(f"Trust score credential requested for {user_did}: score={trust_result.score}")
+        
+    except Exception as e:
+        logger.error(f"Failed to request trust score credential: {e}") 

@@ -3,6 +3,7 @@
 # Service-specific dependencies
 ipfshttpclient
 python-jose[cryptography]
+httpx
  
 # Development and Testing
 pytest

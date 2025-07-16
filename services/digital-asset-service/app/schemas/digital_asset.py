@@ -44,6 +44,14 @@ class DigitalAssetBase(BaseModel):
     raw_data_uri: Optional[str] = None
     payload_schema_version: Optional[str] = None # New field for schema version of the payload
     payload: Optional[bytes] = None # New field for structured, serialized payload data
+    
+    # Marketplace fields
+    is_for_sale: bool = False
+    sale_price: Optional[float] = None
+    is_licensable: bool = False
+    license_terms: Optional[Dict[str, Any]] = None
+    royalty_percentage: int = 250  # Default 2.5%
+    blockchain_address: Optional[str] = None
 
 class DigitalAssetCreate(DigitalAssetBase):
     links: List[AssetLinkCreate] = []
@@ -56,6 +64,14 @@ class DigitalAssetUpdate(BaseModel):
     metadata: Optional[Dict[str, str]] = Field(default=None, alias="asset_metadata")
     payload_schema_version: Optional[str] = None # Allow updating payload schema version
     payload: Optional[bytes] = None # Allow updating payload data
+    
+    # Marketplace updates
+    is_for_sale: Optional[bool] = None
+    sale_price: Optional[float] = None
+    is_licensable: Optional[bool] = None
+    license_terms: Optional[Dict[str, Any]] = None
+    royalty_percentage: Optional[int] = None
+    blockchain_address: Optional[str] = None
 
 class DigitalAsset(DigitalAssetBase):
     asset_id: uuid.UUID

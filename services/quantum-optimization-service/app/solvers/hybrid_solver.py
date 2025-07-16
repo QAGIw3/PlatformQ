@@ -7,10 +7,13 @@ import time
 from platformq_shared.logging_config import get_logger
 from services.quantum_optimization_service.app.solvers.classical_solvers import ClassicalSolvers
 from services.quantum_optimization_service.app.engines.quantum_optimizer import QuantumOptimizer
+from .base import Solver
+from .quantum_solver import QuantumSolver
+
 
 logger = get_logger(__name__)
 
-class HybridSolver:
+class HybridSolver(Solver):
     """
     Orchestrates a sequence of classical and quantum solvers to solve
     a complex optimization problem.
@@ -49,15 +52,13 @@ class HybridSolver:
 
     def solve(self,
             problem_data: Dict[str, Any],
-            quantum_engine: str = "qiskit",
-            quantum_backend: str = "aer_simulator") -> Dict[str, Any]:
+            **kwargs) -> Dict[str, Any]:
         """
         Executes the entire hybrid workflow.
         
         Args:
             problem_data: The initial problem data.
-            quantum_engine: The quantum computing engine to use ('qiskit', 'cirq', 'pennylane').
-            quantum_backend: The specific backend for the quantum engine.
+            **kwargs: May contain 'quantum_engine' and 'quantum_backend'.
         
         Returns:
             A dictionary containing the final result and context from all steps.
@@ -65,10 +66,13 @@ class HybridSolver:
         logger.info("Starting hybrid workflow execution.")
         self.context['initial_problem'] = problem_data
         
-        # Initialize quantum optimizer only when needed
+        # Initialize quantum solver only when needed
         if any(step['solver_type'] == 'quantum' for step in self.workflow):
-            self.quantum_optimizer = QuantumOptimizer(engine=quantum_engine, backend_name=quantum_backend)
-        
+            self.quantum_optimizer = QuantumSolver(
+                engine=kwargs.get("quantum_engine", "qiskit"),
+                backend_name=kwargs.get("quantum_backend", "aer_simulator")
+            )
+
         start_time = time.time()
 
         for i, step in enumerate(self.workflow):
@@ -149,15 +153,11 @@ class HybridSolver:
         if not self.quantum_optimizer:
             raise RuntimeError("Quantum optimizer was not initialized.")
         
-        # The quantum optimizer's `solve` method expects problem_type, problem_data, and algorithm_params
-        problem_type = inputs.pop('problem_type') # e.g., 'tsp', 'maxcut'
-        algorithm_params = inputs # The rest of the inputs are algorithm parameters
-        
+        # The quantum solver's `solve` method expects problem_data and kwargs
         return self.quantum_optimizer.solve(
-            problem_type=problem_type,
-            problem_data=self.context['initial_problem'], # Pass the original problem data
+            problem_data={**self.context['initial_problem'], **inputs},
             algorithm_name=algorithm,
-            algorithm_params=algorithm_params
+            algorithm_params=inputs
         )
 
     def _map_outputs_to_context(self, step: Dict[str, Any], result: Dict[str, Any]):

@@ -6,7 +6,7 @@ Ultra-low latency anomaly detection using spiking neural networks.
 
 import asyncio
 import json
-from typing import Dict, List, Optional, Tuple
+from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
 import numpy as np
 
@@ -33,6 +33,41 @@ from .models.anomaly_detector import AnomalyDetector
 from .config import NeuromorphicConfig
 
 logger = get_logger(__name__)
+
+# --- New Additions for Optimization ---
+class OptimizationRequest(BaseModel):
+    problem_type: str
+    problem_data: Dict[str, Any]
+    solver_params: Optional[Dict[str, Any]] = None
+
+class OptimizationResponse(BaseModel):
+    status: str
+    solution: Optional[Dict[str, Any]] = None
+    objective_value: Optional[float] = None
+    error: Optional[str] = None
+
+def qubo_to_snn_params(qubo_matrix: np.ndarray):
+    """
+    Converts a QUBO matrix into parameters suitable for an SNN.
+    This is a conceptual mapping. A more rigorous approach would be needed for
+    a production system.
+
+    We map the QUBO to a Hopfield-like network using spiking neurons.
+    - Diagonal elements (linear terms) map to neuron excitability (current injection).
+    - Off-diagonal elements (quadratic terms) map to synaptic weights.
+    """
+    num_vars = qubo_matrix.shape[0]
+    
+    # Negative weights for inhibitory connections, positive for excitatory
+    synaptic_weights = -qubo_matrix 
+    
+    # Linear terms influence the baseline firing rate
+    neuron_currents = -np.diag(qubo_matrix)
+    
+    return num_vars, synaptic_weights, neuron_currents
+
+# --- End of New Additions ---
+
 
 class NeuromorphicService(BaseService):
     """
@@ -79,6 +114,48 @@ class NeuromorphicService(BaseService):
         await self._start_event_consumers()
         
         logger.info("Neuromorphic service initialized successfully")
+        
+    async def solve_optimization_problem(self, request: OptimizationRequest) -> Dict:
+        """
+        Solves an optimization problem using a configured SNN.
+        """
+        if request.problem_type.lower() != 'qubo':
+            raise NotImplementedError("Currently, only QUBO problems are supported.")
+
+        qubo_matrix = np.array(request.problem_data.get("qubo_matrix"))
+        if qubo_matrix is None:
+            raise ValueError("QUBO matrix not found in problem_data.")
+
+        num_vars, weights, currents = qubo_to_snn_params(qubo_matrix)
+
+        # Configure a dedicated SNN for this optimization task
+        # This could be cached or managed in a pool in a real system
+        solver_snn = SpikingNeuralNetwork(
+            input_size=num_vars,
+            reservoir_size=num_vars, # For Hopfield-like nets, reservoir can be same as input
+            output_size=num_vars,
+            connectivity=0.9, # High connectivity for optimization
+            spectral_radius=1.1 # Push network to be more dynamic
+        )
+        solver_snn.configure_for_optimization(weights, currents)
+        
+        # Run the network until it settles into a stable state (a solution)
+        runtime = request.solver_params.get("runtime_ms", 500)
+        solution_spikes = solver_snn.process(None, duration=runtime * b2.ms)
+
+        # Decode the final state of the network to a binary solution vector
+        # A simple decoding: if a neuron is firing above a threshold, it's a '1'.
+        firing_rates = solver_snn.get_firing_rates()
+        solution_vector = (firing_rates > np.mean(firing_rates)).astype(int)
+
+        # Calculate the objective value of this solution
+        objective_value = solution_vector @ qubo_matrix @ solution_vector
+
+        return {
+            "status": "SUCCESS",
+            "solution": {f"x_{i}": int(v) for i, v in enumerate(solution_vector)},
+            "objective_value": objective_value
+        }
         
     async def _start_event_consumers(self):
         """Start consuming events from Pulsar"""
@@ -172,6 +249,19 @@ class AnomalyResponse(BaseModel):
     severity: float
     contributing_events: List[str]
     recommended_actions: List[str]
+
+# --- New Endpoint ---
+@app.post("/api/v1/solve", response_model=OptimizationResponse)
+async def solve_problem(request: OptimizationRequest):
+    """
+    Endpoint to solve optimization problems using a neuromorphic approach.
+    """
+    try:
+        result = await service.solve_optimization_problem(request)
+        return OptimizationResponse(**result)
+    except Exception as e:
+        logger.error(f"Error during neuromorphic optimization: {e}", exc_info=True)
+        return OptimizationResponse(status="FAILED", error=str(e))
 
 # REST API Endpoints
 @app.post("/api/v1/models", response_model=Dict)
