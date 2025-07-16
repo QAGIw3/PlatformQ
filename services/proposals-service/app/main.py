@@ -7,6 +7,7 @@ from sqlalchemy.orm import Session
 
 from .api.deps import get_current_tenant_and_user, get_db_session
 from .crud import crud_proposal
+from .messaging.pulsar_consumer import start_consumer, stop_consumer
 
 app = create_base_app(
     service_name="proposals-service",
@@ -15,6 +16,14 @@ app = create_base_app(
     user_crud_dependency=get_user_crud_placeholder,
     password_verifier_dependency=get_password_verifier_placeholder,
 )
+
+@app.on_event("startup")
+async def startup_event():
+    start_consumer()
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    stop_consumer()
 
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["proposals-service"])

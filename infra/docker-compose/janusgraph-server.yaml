@@ -18,12 +18,16 @@ graph:
       keyspace: janusgraph
 
   # The indexing backend configuration.
-  # Using Elasticsearch or Solr is recommended for production for better query performance.
-  # For local development, we will start without a separate indexing backend.
-  # index:
-  #   search:
-  #     backend: elasticsearch
-  #     hostname: elasticsearch-host
+  # Using Elasticsearch for better query performance and full-text search
+  index:
+    search:
+      backend: elasticsearch
+      hostname: elasticsearch
+      index-name: janusgraph
+      elasticsearch:
+        client-only: true
+        cluster-name: platformq-cluster
+        local-mode: false
 
 # Schema and type definitions for Gremlin Server.
 # This allows Gremlin Server to manage graph-specific schemas.

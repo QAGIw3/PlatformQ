@@ -6,11 +6,14 @@ from uuid import UUID
 from datetime import datetime
 from ....platformq_shared.db_models import User
 from ....platformq_shared.api.deps import get_db_session, get_current_tenant_and_user
-from ...crud import crud_digital_asset
+from ...crud import crud_digital_asset, crud_processing_rule
 from ...schemas import digital_asset as schemas
+from ...schemas.asset import PeerReviewCreate, DigitalAsset
 from ....platformq_shared.events import DigitalAssetCreated
 from ....platformq_shared.event_publisher import EventPublisher
 import logging
+from ...crud.asset import asset as crud_asset
+from .deps import get_current_context
 
 logger = logging.getLogger(__name__)
 
@@ -198,4 +201,50 @@ def read_digital_assets(
     Retrieve a list of all digital assets.
     """
     assets = crud_digital_asset.get_assets(db, skip=skip, limit=limit)
-    return assets 
+    return assets
+
+@router.post("/{asset_id}/reviews", response_model=schemas.PeerReview)
+def create_peer_review(
+    asset_id: UUID,
+    review: schemas.PeerReviewCreate,
+    db: Session = Depends(get_db_session),
+    context: dict = Depends(get_current_context),
+):
+    """
+    Create a new peer review for a digital asset.
+    After adding the review, this endpoint will automatically attempt to
+    approve the asset based on the new total number of reviews.
+    """
+    reviewer_id = str(context["user"].id)
+    db_review = crud_digital_asset.add_review(
+        db=db, asset_id=asset_id, reviewer_id=reviewer_id, review_content=review.review_content
+    )
+    if db_review is None:
+        raise HTTPException(status_code=404, detail="Asset not found")
+
+    # After adding a review, immediately try to approve the asset
+    crud_digital_asset.approve_asset(db=db, asset_id=asset_id)
+    
+    return db_review
+
+@router.post("/{asset_id}/approve", response_model=schemas.DigitalAsset)
+def approve_digital_asset(
+    asset_id: UUID,
+    db: Session = Depends(get_db_session),
+    context: dict = Depends(get_current_context)
+):
+    """
+    Manually attempts to approve a digital asset. Approval is granted if the
+    asset has sufficient peer reviews based on the author's reputation score.
+    """
+    approved_asset = crud_digital_asset.approve_asset(db=db, asset_id=asset_id)
+    if not approved_asset:
+        raise HTTPException(status_code=404, detail="Asset not found or already approved.")
+    
+    if approved_asset.status != "approved":
+        raise HTTPException(
+            status_code=400,
+            detail=f"Asset does not yet meet the criteria for approval. It has {len(approved_asset.reviews)} review(s)."
+        )
+
+    return approved_asset 

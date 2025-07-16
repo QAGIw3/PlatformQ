@@ -1,0 +1,12 @@
+{
+    "type": "record",
+    "name": "AssetPeerReviewed",
+    "namespace": "com.platformq.events",
+    "fields": [
+        { "name": "event_id", "type": "string" },
+        { "name": "asset_id", "type": "string" },
+        { "name": "reviewer_id", "type": "string" },
+        { "name": "review_id", "type": "string" },
+        { "name": "timestamp", "type": "long", "logicalType": "timestamp-millis" }
+    ]
+} 

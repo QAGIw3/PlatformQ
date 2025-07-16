@@ -5,6 +5,7 @@ from pydantic import BaseModel, Field
 
 from .deps import get_current_tenant_and_user
 from ..spark_integration import SparkGraphAnalytics, GraphXEnhancedQueries
+from ..services.trust_score import trust_score_service
 
 router = APIRouter()
 
@@ -247,3 +248,17 @@ async def analyze_new_connections(
     background_tasks.add_task(run_batch_analysis)
     
     return {"message": "Batch analysis triggered", "status": "accepted"} 
+
+
+@router.get("/trust-score/{user_id}")
+def get_trust_score(user_id: str, context: dict = Depends(get_current_tenant_and_user)):
+    """
+    Get the trust score for a user.
+    """
+    # In a real implementation, you might want to pre-populate the graph
+    # with historical data. For now, we'll add some dummy data.
+    trust_score_service.add_user_activity(user_id, "project_milestone_completed", "milestone1")
+    trust_score_service.add_user_activity(user_id, "asset_peer_reviewed", "review1")
+    
+    score = trust_score_service.calculate_trust_score(user_id)
+    return {"user_id": user_id, "trust_score": score} 

@@ -1,0 +1,7 @@
+# Base dependencies
+-r ../../requirements/base.in
+
+# Additional dependencies for Real-time Analytics service
+pyignite==0.6.1
+numpy==1.26.2
+websockets==12.0 

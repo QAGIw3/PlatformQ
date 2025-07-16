@@ -1,3 +1,4 @@
+import requests
 from fastapi import Depends, HTTPException, status, Security, Request, Header
 from cassandra.cluster import Session
 import datetime
@@ -83,3 +84,30 @@ def require_role(required_role: str):
             )
         return context
     return role_checker
+
+GRAPH_INTELLIGENCE_SERVICE_URL = "http://graph-intelligence-service:8000" # Placeholder
+
+def require_trust_score(required_score: float):
+    """
+    A dependency factory that creates a trust score-checking dependency.
+    """
+    def trust_checker(
+        context: dict = Depends(get_current_tenant_and_user),
+    ):
+        user_id = str(context["user"].id)
+        try:
+            response = requests.get(f"{GRAPH_INTELLIGENCE_SERVICE_URL}/trust-score/{user_id}")
+            response.raise_for_status()
+            score_data = response.json()
+            if score_data["trust_score"] < required_score:
+                raise HTTPException(
+                    status_code=status.HTTP_403_FORBIDDEN,
+                    detail=f"User's trust score of {score_data['trust_score']} is below the required score of {required_score}",
+                )
+        except requests.exceptions.RequestException as e:
+            raise HTTPException(
+                status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+                detail=f"Could not connect to the Graph Intelligence Service: {e}",
+            )
+        return context
+    return trust_checker

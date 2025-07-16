@@ -1,0 +1,6 @@
+# Base dependencies
+-r ../../requirements/base.in
+
+# Additional dependencies for Search service
+elasticsearch==8.11.0
+elasticsearch-async==6.2.0 

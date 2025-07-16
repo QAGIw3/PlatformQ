@@ -1,0 +1,12 @@
+{
+    "type": "record",
+    "namespace": "com.platformq.events",
+    "name": "DAOProposalApproved",
+    "fields": [
+        { "name": "event_id", "type": "string" },
+        { "name": "proposal_id", "type": "string" },
+        { "name": "proposer_id", "type": "string", "doc": "The user ID (DID or internal ID) of the person who created the proposal." },
+        { "name": "voter_ids", "type": { "type": "array", "items": "string" }, "doc": "A list of user IDs who voted in favor." },
+        { "name": "timestamp", "type": "long", "logicalType": "timestamp-millis" }
+    ]
+} 

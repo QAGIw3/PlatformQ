@@ -1,75 +1,82 @@
 import React, { useState, useEffect } from 'react';
-import { getAssets } from './api';
-import { useAssetStore } from './assetStore';
+import { getDigitalAssets, createPeerReview } from '../../api/client';
 
-// Custom hook for debouncing
-function useDebounce(value, delay) {
-    const [debouncedValue, setDebouncedValue] = useState(value);
-    useEffect(() => {
-        const handler = setTimeout(() => {
-            setDebouncedValue(value);
-        }, delay);
-        return () => {
-            clearTimeout(handler);
-        };
-    }, [value, delay]);
-    return debouncedValue;
-}
-
-const AssetList = ({ accessToken }) => {
+function AssetList({ refreshKey }) {
     const [assets, setAssets] = useState([]);
+    const [loading, setLoading] = useState(true);
     const [error, setError] = useState(null);
-    const [isLoading, setIsLoading] = useState(true);
-    const { selectAsset, selectedAssetId, searchTerm, filterType } = useAssetStore();
-    const debouncedSearchTerm = useDebounce(searchTerm, 500); // 500ms delay
 
     useEffect(() => {
-        if (!accessToken) return;
-
-        setIsLoading(true);
-        getAssets(accessToken, { searchTerm: debouncedSearchTerm, filterType })
-            .then(data => {
-                setAssets(data);
-                setIsLoading(false);
+        setLoading(true);
+        getDigitalAssets()
+            .then(response => {
+                setAssets(response.data);
+                setLoading(false);
             })
-            .catch(err => {
-                setError(err.message);
-                setIsLoading(false);
+            .catch(error => {
+                setError(error);
+                setLoading(false);
             });
-    }, [accessToken, debouncedSearchTerm, filterType]);
+    }, [refreshKey]);
 
-    if (isLoading) {
-        return <div>Loading assets...</div>;
-    }
+    const handleAddReview = (assetId, reviewContent) => {
+        createPeerReview(assetId, { review_content: reviewContent })
+            .then(() => {
+                window.location.reload();
+            })
+            .catch(error => {
+                console.error("Failed to add review:", error);
+            });
+    };
 
-    if (error) {
-        return <div style={{ color: 'red' }}>Error: {error}</div>;
-    }
+    if (loading) return <p>Loading assets...</p>;
+    if (error) return <p>Error loading assets: {error.message}</p>;
 
     return (
         <div>
-            <h3>Available Assets</h3>
-            <ul style={{ listStyle: 'none', padding: 0 }}>
-                {assets.length > 0 ? (
-                    assets.map(asset => (
-                        <li 
-                            key={asset.asset_id} 
-                            onClick={() => selectAsset(asset.asset_id)}
-                            style={{ 
-                                padding: '0.5rem', 
-                                cursor: 'pointer', 
-                                backgroundColor: selectedAssetId === asset.asset_id ? '#e0e0e0' : 'transparent' 
-                            }}
-                        >
-                            {asset.asset_name} ({asset.asset_type})
-                        </li>
-                    ))
-                ) : (
-                    <li>No assets found.</li>
-                )}
+            <h2>Digital Assets</h2>
+            <ul>
+                {assets.map((asset) => (
+                    <li key={asset.id}>
+                        <h3>{asset.name}</h3>
+                        <p>{asset.description}</p>
+                        <p><a href={asset.s3_url} target="_blank" rel="noopener noreferrer">Asset Link</a></p>
+                        <h4>Peer Reviews</h4>
+                        <ul>
+                            {asset.reviews.map((review) => (
+                                <li key={review.id}>
+                                    <p><strong>{review.reviewer_id}:</strong> {review.review_content}</p>
+                                </li>
+                            ))}
+                        </ul>
+                        <AddReviewForm assetId={asset.id} onAddReview={handleAddReview} />
+                    </li>
+                ))}
             </ul>
         </div>
     );
-};
+}
+
+function AddReviewForm({ assetId, onAddReview }) {
+    const [reviewContent, setReviewContent] = useState('');
+
+    const handleSubmit = (event) => {
+        event.preventDefault();
+        onAddReview(assetId, reviewContent);
+        setReviewContent('');
+    };
+
+    return (
+        <form onSubmit={handleSubmit}>
+            <textarea
+                value={reviewContent}
+                onChange={(e) => setReviewContent(e.target.value)}
+                placeholder="Write a review..."
+                required
+            />
+            <button type="submit">Add Review</button>
+        </form>
+    );
+}
 
 export default AssetList;

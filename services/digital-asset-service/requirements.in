@@ -1,10 +1,8 @@
 -r ../../requirements/base.in
-
-# This service uses PostgreSQL and Alembic for migrations
-sqlalchemy
 alembic
 psycopg2-binary
-python-jose[cryptography]
+SQLAlchemy
+requests
 
 # Development and Testing
 pytest

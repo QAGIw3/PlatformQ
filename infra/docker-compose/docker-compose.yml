@@ -14,6 +14,8 @@ volumes:
   platformq-janusgraph-data:
   platformq-janusgraph-config:
   platformq-assets-pgdata:
+  hive_metastore_db:
+  elasticsearch_data:
 
 services:
   #################################
@@ -113,36 +115,96 @@ services:
     networks:
       - platformq_net
     ports:
-      - "8081:8081"
+      - "8082:8080" # Trino UI
+    environment:
+      - TRINO_MEMORY=2GB
+      - TRINO_DISCOVERY_URI=http://trino:8080
     volumes:
-      - ./../trino:/etc/trino
+      - ./trino:/etc/trino
     depends_on:
-      - hive-metastore-db
+      hive-metastore:
+        condition: service_healthy
 
+  #################################
+  # Hive Metastore
+  #################################
   hive-metastore-db:
-    image: postgres:13
+    image: postgres:15-alpine
     container_name: hive-metastore-db
     networks:
       - platformq_net
     environment:
-      POSTGRES_DB: metastore
       POSTGRES_USER: hive
-      POSTGRES_PASSWORD: hivepassword
+      POSTGRES_PASSWORD: hive
+      POSTGRES_DB: metastore
+    volumes:
+      - hive_metastore_db:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U hive"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
 
   hive-metastore:
-    image: bitnami/hive:3.1.2
+    image: apache/hive:3.1.3
     container_name: hive-metastore
     networks:
       - platformq_net
+    ports:
+      - "9083:9083"
     environment:
-      - HIVE_METASTORE_DATABASE_HOST=hive-metastore-db
-      - HIVE_METASTORE_DATABASE_PORT=5432
-      - HIVE_METASTORE_DATABASE_NAME=metastore
-      - HIVE_METASTORE_DATABASE_USER=hive
-      - HIVE_METASTORE_DATABASE_PASSWORD=hivepassword
-      - HIVE_METASTORE_DATABASE_TYPE=postgres
+      SERVICE_NAME: metastore
+      DB_DRIVER: postgres
+      HIVE_METASTORE_DB_TYPE: postgres
+      HIVE_METASTORE_DB_HOSTNAME: hive-metastore-db
+      HIVE_METASTORE_DB_PORT: 5432
+      HIVE_METASTORE_DB_NAME: metastore
+      HIVE_METASTORE_DB_USERNAME: hive
+      HIVE_METASTORE_DB_PASSWORD: hive
+      S3_ENDPOINT: http://minio:9000
+      S3_ACCESS_KEY: minioadmin
+      S3_SECRET_KEY: minioadmin
+      S3_PATH_STYLE_ACCESS: "true"
+      HIVE_METASTORE_WAREHOUSE_DIR: s3a://platformq-datalake/warehouse/
     depends_on:
-      - hive-metastore-db
+      hive-metastore-db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    healthcheck:
+      test: ["CMD", "nc", "-z", "localhost", "9083"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    command: >
+      /bin/bash -c "
+        /opt/hive/bin/schematool -dbType postgres -initSchema || true &&
+        /opt/hive/bin/hive --service metastore
+      "
+
+  #################################
+  # Elasticsearch
+  #################################
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    container_name: elasticsearch
+    networks:
+      - platformq_net
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - cluster.name=platformq-cluster
+    volumes:
+      - elasticsearch_data:/usr/share/elasticsearch/data
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
 
   #################################
   # Observability

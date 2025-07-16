@@ -89,7 +89,7 @@ contract SoulBoundCredentialToken is Ownable {
         _;
     }
     
-    constructor() Ownable(msg.sender) {
+    constructor() {
         // Owner is automatically an authorized issuer
         authorizedIssuers[msg.sender] = true;
     }

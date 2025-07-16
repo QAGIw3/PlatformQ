@@ -34,8 +34,14 @@ from .standards.advanced_standards import (
     PresentationPurpose
 )
 from .api import endpoints
+from fastapi import FastAPI
+from .messaging.pulsar_consumer import start_consumer, stop_consumer, PulsarConsumer
+from .blockchain.reputation_oracle import reputation_oracle_service
 
 # from hyperledger.fabric import gateway # Conceptual client
+import requests
+from functools import lru_cache, wraps
+from datetime import datetime, timedelta
 
 logger = logging.getLogger(__name__)
 
@@ -43,6 +49,7 @@ logger = logging.getLogger(__name__)
 config_loader = ConfigLoader()
 settings = config_loader.load_settings()
 PULSAR_URL = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
+SEARCH_SERVICE_URL = settings.get("SEARCH_SERVICE_URL", "http://search-service:80")
 
 # Initialize blockchain clients
 blockchain_clients = {}
@@ -254,6 +261,78 @@ async def issue_and_record_credential(tenant_id: str, subject: Dict[str, Any], c
     logger.info(f"Published VerifiableCredentialIssued event for proposal {event.proposal_id}")
     return vc.data
 
+async def handle_trust_event(event_type: str, event_data: dict, publisher: EventPublisher):
+    """
+    Handles events from the trust-engine-events topic, issues a corresponding
+    Verifiable Credential, and updates the user's on-chain reputation.
+    """
+    # Mapping from our event types to credential details
+    EVENT_TO_VC_MAP = {
+        "DAOProposalApproved": {
+            "credential_type": "DAOProposalApprovalCredential",
+            "user_id_field": "proposer_id",
+            "activity_id_field": "proposal_id",
+            "reputation_score": 20
+        },
+        "ProjectMilestoneCompleted": {
+            "credential_type": "ProjectMilestoneCredential",
+            "user_id_field": "user_id",
+            "activity_id_field": "milestone_id",
+            "reputation_score": 10
+        },
+        "AssetPeerReviewed": {
+            "credential_type": "PeerReviewCredential",
+            "user_id_field": "reviewer_id",
+            "activity_id_field": "asset_id",
+            "reputation_score": 5
+        }
+    }
+
+    config = EVENT_TO_VC_MAP.get(event_type)
+    if not config:
+        logger.warning(f"Unknown trust event type: {event_type}")
+        return
+
+    user_id = event_data.get(config["user_id_field"])
+    activity_id = event_data.get(config["activity_id_field"])
+    tenant_id = event_data.get("tenant_id", "default") # Assume a default tenant for now
+
+    if not user_id or not activity_id:
+        logger.error(f"Missing user_id or activity_id in event: {event_data}")
+        return
+
+    # Construct the credential subject based on the event
+    subject = {
+        "id": f"urn:platformq:user:{user_id}",
+        "activity": f"urn:platformq:{config['activity_id_field']}:{activity_id}",
+        "awardedFor": event_type,
+        "eventTimestamp": datetime.fromtimestamp(event_data["timestamp"] / 1000).isoformat() + "Z"
+    }
+
+    # Issue the verifiable credential
+    await issue_and_record_credential(
+        tenant_id=tenant_id,
+        subject=subject,
+        credential_type=config["credential_type"],
+        publisher=publisher
+    )
+
+    # Update on-chain reputation
+    user_address = get_user_address_from_id(user_id)
+    if not user_address:
+        logger.warning(f"Skipping reputation update for user {user_id} because they have no linked blockchain address.")
+        return
+
+    score_to_add = config["reputation_score"]
+
+    try:
+        current_score = reputation_oracle_service.contract.functions.getReputation(user_address).call()
+        new_score = current_score + score_to_add
+        reputation_oracle_service.set_reputation(user_address, new_score)
+        logger.info(f"Updated reputation for {user_address} by {score_to_add}. New score: {new_score}")
+    except Exception as e:
+        logger.error(f"Failed to update on-chain reputation for {user_address}: {e}")
+
 
 # --- Pulsar Consumer for Issuance Requests ---
 def credential_issuer_loop(app):
@@ -418,11 +497,26 @@ app = create_base_app(
 )
 
 @app.on_event("startup")
+async def on_startup():
+    app.state.pulsar_consumer = PulsarConsumer(app)
+    app.state.pulsar_consumer.start()
+
+@app.on_event("shutdown")
+async def on_shutdown():
+    if hasattr(app.state, "pulsar_consumer"):
+        app.state.pulsar_consumer.stop()
+
+
+@app.on_event("startup")
 async def startup_event():
     pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
     app.state.event_publisher = EventPublisher(pulsar_url=pulsar_url)
     app.state.event_publisher.connect()
     app.state.stop_event = threading.Event()
+    
+    # Start the new trust event consumer
+    app.state.trust_consumer = PulsarConsumer(app)
+    app.state.trust_consumer.start()
     
     # Initialize blockchain clients
     initialize_blockchain_clients()
@@ -452,15 +546,117 @@ async def shutdown_event():
     app.state.consumer_thread.join()
     if hasattr(app.state, 'sbt_consumer_thread'):
         app.state.sbt_consumer_thread.join()
+    if app.state.trust_consumer:
+        app.state.trust_consumer.stop()
     if app.state.event_publisher:
         app.state.event_publisher.close()
     if ipfs_storage:
         await ipfs_storage.close()
     logger.info("Consumer threads stopped.")
 
+def get_user_address_from_id(user_id: str) -> Optional[str]:
+    """
+    Placeholder function to simulate looking up a user's blockchain address.
+    In a real system, this would involve an API call to the auth-service or
+    querying a shared user database.
+    """
+    # This mock mapping simulates a lookup table.
+    MOCK_USER_ADDRESS_MAP = {
+        "user_id_1": "0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266", # Default hardhat account 0
+        "user_id_2": "0x70997970C51812dc3A010C7d01b50e0d17dc79C8", # Default hardhat account 1
+        "user_id_3": "0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC", # Default hardhat account 2
+        "test-user": "0x90F79bf6EB2c4f870365E785982E1f101E93b906" # Default hardhat account 3
+    }
+    address = MOCK_USER_ADDRESS_MAP.get(user_id)
+    if not address:
+        logger.warning(f"Could not find blockchain address for user_id: {user_id}")
+    return address
+
+def timed_lru_cache(seconds: int, maxsize: int = 128):
+    def wrapper_cache(func):
+        func = lru_cache(maxsize=maxsize)(func)
+        func.lifetime = timedelta(seconds=seconds)
+        func.expiration = datetime.utcnow() + func.lifetime
+
+        @wraps(func)
+        def wrapped_func(*args, **kwargs):
+            if datetime.utcnow() >= func.expiration:
+                func.cache_clear()
+                func.expiration = datetime.utcnow() + func.lifetime
+            return func(*args, **kwargs)
+
+        return wrapped_func
+    return wrapper_cache
+
+@timed_lru_cache(seconds=60)
+def get_reputation_from_chain(user_address: str) -> int:
+    """Cached function to get reputation from the blockchain."""
+    logger.info(f"Cache miss. Fetching reputation for {user_address} from blockchain.")
+    try:
+        score = reputation_oracle_service.contract.functions.getReputation(user_address).call()
+        return score
+    except Exception as e:
+        logger.error(f"Failed to fetch reputation from chain for {user_address}: {e}")
+        # Return a default/stale value or raise? For now, return 0
+        return 0
 
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["verifiable-credential-service"])
+
+@app.get("/api/v1/dids/{did}/credentials", response_model=List[Dict[str, Any]])
+def get_user_credentials(
+    did: str,
+    request: Request
+):
+    """
+    Retrieve all verifiable credentials issued to a specific DID by querying the search service.
+    """
+    # This is a placeholder for getting tenant from a real auth token
+    auth_header = request.headers.get("Authorization", "")
+    tenant_id = "default" # fallback
+    if "mock-service-token-for-tenant-" in auth_header:
+        tenant_id = auth_header.replace("Bearer mock-service-token-for-tenant-", "")
+
+    search_query = {
+        "query": "",
+        "search_type": "verifiable_credential",
+        "filters": {
+            "credential_subject.id": did # Assuming the subject ID is the DID
+        },
+        "size": 100
+    }
+    
+    try:
+        headers = {"Authorization": auth_header}
+        response = requests.post(
+            f"{SEARCH_SERVICE_URL}/api/v1/search",
+            json=search_query,
+            headers=headers,
+            timeout=5 # Add a timeout
+        )
+        response.raise_for_status()
+        
+        search_results = response.json()
+        credentials = [hit["source"] for hit in search_results.get("hits", [])]
+        return credentials
+        
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Failed to query search service for credentials: {e}")
+        raise HTTPException(status_code=503, detail="The search service is currently unavailable.")
+
+@app.get("/api/v1/reputation/{user_id}")
+def get_user_reputation(user_id: str):
+    """
+    Retrieves a user's reputation score. This endpoint uses a cache
+    to avoid excessive calls to the blockchain.
+    """
+    user_address = get_user_address_from_id(user_id)
+    if not user_address:
+        raise HTTPException(status_code=404, detail=f"User '{user_id}' not found or has no linked blockchain address.")
+    
+    score = get_reputation_from_chain(user_address)
+    
+    return {"user_id": user_id, "user_address": user_address, "reputation_score": score}
 
 # Service-specific root endpoint
 @app.get("/")

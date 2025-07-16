@@ -184,8 +184,24 @@ async def create_project(
 
 Created on: {date.today().isoformat()}
 """
-        # Note: Would need to implement a method to upload content directly
-        # For now, we'll skip the README creation
+        
+        # Upload README to Nextcloud
+        readme_path = f"{main_folder}/README.md"
+        nextcloud.upload_file_contents(readme_path, readme_content.encode('utf-8'))
+        
+        # Share folder with project members if specified
+        if project_in.members:
+            for member_email in project_in.members:
+                try:
+                    share_result = nextcloud.create_share(
+                        path=main_folder,
+                        share_type=0,  # User share
+                        share_with=member_email,
+                        permissions=31  # All permissions
+                    )
+                    logger.info(f"Shared folder with {member_email}")
+                except Exception as e:
+                    logger.warning(f"Could not share with {member_email}: {e}")
         
         # 2. Create OpenProject project
         logger.info(f"Creating OpenProject project: {project_in.name}")
@@ -200,136 +216,203 @@ Created on: {date.today().isoformat()}
         )
         created_resources["openproject_id"] = op_project["id"]
         
+        # Create initial work packages
+        if project_in.initial_tasks:
+            for task in project_in.initial_tasks:
+                work_package = openproject.create_work_package(
+                    project_id=op_project["id"],
+                    subject=task.get("subject", "New Task"),
+                    description=task.get("description", ""),
+                    type_id=task.get("type_id", 1),  # Default to Task
+                    priority_id=task.get("priority_id", 4),  # Normal priority
+                    assignee_id=task.get("assignee_id")
+                )
+                logger.info(f"Created work package: {work_package['subject']}")
+        
+        # Add project members to OpenProject
+        if project_in.members:
+            for member_email in project_in.members:
+                try:
+                    # First find user by email
+                    users = openproject.list_users(filters=[{
+                        "email": {
+                            "operator": "=",
+                            "values": [member_email]
+                        }
+                    }])
+                    
+                    if users and users["_embedded"]["elements"]:
+                        user = users["_embedded"]["elements"][0]
+                        # Add user to project
+                        membership = openproject.create_membership(
+                            project_id=op_project["id"],
+                            user_id=user["id"],
+                            role_ids=[3]  # Default Member role
+                        )
+                        logger.info(f"Added {member_email} to OpenProject")
+                except Exception as e:
+                    logger.warning(f"Could not add {member_email} to OpenProject: {e}")
+        
         # 3. Create Zulip stream
         logger.info(f"Creating Zulip stream: {project_in.name}")
-        zulip_result = zulip.create_stream(
-            name=project_in.name,
+        
+        # Create the stream
+        stream_response = zulip.add_stream(
+            stream_name=project_in.name,
             description=project_in.description or f"Discussion for {project_in.name} project",
-            invite_only=not project_in.public,
-            history_public_to_subscribers=True,
-            stream_post_policy=1  # Anyone can post
+            is_private=not project_in.public,
+            is_announcement_only=False,
+            stream_post_policy=1,  # Any user can post
+            message_retention_days=None,  # Use realm default
+            can_remove_subscribers_group="stream_administrators"
         )
-        created_resources["zulip_stream"] = project_in.name
         
-        # 4. Add members if specified
-        if project_in.members:
-            background_tasks.add_task(
-                add_project_members,
-                project_in.name,
-                project_in.members,
-                op_project["id"],
-                main_folder,
-                tenant_id,
-                project_in.dao_did, # Pass dao_did to add_project_members
-            )
-        
-        # 5. Send welcome message to Zulip
-        welcome_message = f"""Welcome to the **{project_in.name}** project! 🎉
+        if stream_response["result"] == "success":
+            created_resources["zulip_stream"] = project_in.name
+            
+            # Post initial message
+            welcome_message = f"""Welcome to the **{project_in.name}** project stream! :tada:
 
-This stream is for all discussions related to this project.
+{project_in.description or 'This is where we coordinate and discuss project activities.'}
 
-**Quick Links:**
-- 📁 [Nextcloud Folder]({main_folder})
-- 📋 [OpenProject]({op_project.get('_links', {}).get('self', {}).get('href', '')})
+**Useful Links:**
+- [Nextcloud Folder](https://nextcloud.platformq.io/index.php/apps/files/?dir={main_folder})
+- [OpenProject](https://openproject.platformq.io/projects/{openproject_identifier})
 
-**Getting Started:**
-1. Check out the project documents in Nextcloud
-2. Review work packages in OpenProject
-3. Introduce yourself here!
-
-Let's build something great together! 💪"""
-        
-        try:
-            zulip.send_message(
-                content=welcome_message,
-                message_type="stream",
-                to=project_in.name,
-                topic="Welcome"
-            )
-        except Exception as e:
-            logger.warning(f"Failed to send welcome message: {e}")
-        
-        # 6. Store in database (placeholder)
-        project_data = {
-            "id": str(uuid.uuid4()), # Placeholder for actual DB ID generation
-            "name": project_in.name,
-            "description": project_in.description,
-            "openproject_id": op_project["id"],
-            "nextcloud_folder_path": main_folder,
-            "zulip_stream_name": project_in.name,
-            "created_at": datetime.utcnow().isoformat() + "Z",
-            "status": "active",
-            "dao_contract_address": project_in.dao_contract_address,
-            "dao_did": project_in.dao_did,
-        }
-
-        # For now, we simulate storing and returning the project data
-        # In a real implementation, you would call your CRUD layer here:
-        # project = crud_project.create_project(db, tenant_id=tenant_id, project_data=project_data)
-
-        # After project data is conceptualized/stored, issue a DAO creation VC if DAO details are provided
-        if project_in.dao_did and app.state.config_loader.load_settings().get("VC_SERVICE_URL"):
-            vc_service_url = app.state.config_loader.load_settings()["VC_SERVICE_URL"]
-            dao_creation_subject = {
-                "id": user.did, # Assuming user has a DID; otherwise, user.id
-                "daoId": project_in.dao_did,
-                "role": "creator",
-                "createdAt": datetime.utcnow().isoformat() + "Z"
-            }
-            issue_vc_request = {
-                "type": "DAOCreationCredential", # A new VC type for DAO creation
-                "subject": dao_creation_subject,
-                "store_on_ipfs": True
-            }
-            try:
-                response = requests.post(f"{vc_service_url}/api/v1/issue", json=issue_vc_request)
-                response.raise_for_status()
-                logger.info(f"Issued DAOCreationCredential for DAO {project_in.dao_did}: {response.json().get('id')}")
-            except Exception as e:
-                logger.error(f"Failed to issue DAOCreationCredential for DAO {project_in.dao_did}: {e}")
-
-
-        # 7. Publish event
-        if hasattr(app.state, 'event_publisher'):
-            try:
-                app.state.event_publisher.publish(
-                    topic_base="project-events",
-                    tenant_id=tenant_id,
-                    schema_class=ProjectCreatedEvent,
-                    data=ProjectCreatedEvent(
-                        tenant_id=tenant_id,
-                        project_id=project_data["id"],
-                        name=project_data["name"],
-                        openproject_id=project_data["openproject_id"],
-                        nextcloud_folder_path=project_data["nextcloud_folder_path"],
-                        zulip_stream_name=project_data["zulip_stream_name"],
-                        public=project_in.public,
-                        dao_contract_address=project_in.dao_contract_address,
-                        dao_did=project_in.dao_did,
-                    )
+**Stream Guidelines:**
+- Use topic threads to organize discussions
+- Share updates and progress regularly
+- @-mention team members for urgent items
+"""
+            
+            zulip.send_message({
+                "type": "stream",
+                "to": project_in.name,
+                "topic": "Welcome",
+                "content": welcome_message
+            })
+            
+            # Subscribe project members to stream
+            if project_in.members:
+                zulip.add_subscriptions(
+                    streams=[{"name": project_in.name}],
+                    principals=project_in.members
                 )
-                logger.info(f"Published ProjectCreatedEvent for project {project_data['id']}")
-            except Exception as e:
-                logger.error(f"Failed to publish ProjectCreatedEvent for project {project_in.name}: {e}")
-
-        return ProjectResponse(**project_data)
+                logger.info(f"Subscribed {len(project_in.members)} members to Zulip stream")
+                
+            # Configure stream notifications
+            zulip.update_stream(
+                stream_id=stream_response.get("stream_id"),
+                is_web_public=False,
+                history_public_to_subscribers=True
+            )
+        else:
+            logger.error(f"Failed to create Zulip stream: {stream_response}")
+            raise Exception(f"Zulip stream creation failed: {stream_response.get('msg', 'Unknown error')}")
         
-    except (CircuitBreakerError, RateLimitExceeded) as e:
-        logger.error(f"Service temporarily unavailable: {e}")
-        raise HTTPException(
-            status_code=503,
-            detail="One or more services are temporarily unavailable. Please try again later."
+        # 4. Create project record in database
+        project = Project(
+            id=str(uuid.uuid4()),
+            tenant_id=tenant_id,
+            name=project_in.name,
+            description=project_in.description,
+            status="active",
+            created_by=user_id,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            metadata={
+                "nextcloud_folder": main_folder,
+                "openproject_id": op_project["id"],
+                "openproject_identifier": openproject_identifier,
+                "zulip_stream": project_in.name,
+                "members": project_in.members or [],
+                "public": project_in.public
+            }
         )
+        
+        db.add(project)
+        db.commit()
+        db.refresh(project)
+        
+        # 5. Create integration webhooks
+        # OpenProject webhook for work package updates
+        op_webhook = openproject.create_webhook(
+            name=f"platformq-{project.id}",
+            url=f"{PLATFORM_URL}/api/v1/webhooks/openproject/{project.id}",
+            events=["work_package:created", "work_package:updated"],
+            projects=[op_project["id"]]
+        )
+        
+        # Store webhook ID for cleanup
+        project.metadata["openproject_webhook_id"] = op_webhook["id"]
+        db.commit()
+        
+        # 6. Publish project created event
+        event_data = {
+            "project_id": project.id,
+            "project_name": project.name,
+            "tenant_id": tenant_id,
+            "created_by": user_id,
+            "status": "active",
+            "integrations": {
+                "nextcloud_folder": main_folder,
+                "openproject_url": f"https://openproject.platformq.io/projects/{openproject_identifier}",
+                "zulip_stream": project_in.name
+            }
+        }
+        
+        background_tasks.add_task(
+            publish_event,
+            app.state.event_publisher,
+            "project-created-events",
+            tenant_id,
+            event_data
+        )
+        
+        logger.info(f"Successfully created project: {project.name}")
+        
+        return ProjectResponse(
+            id=project.id,
+            name=project.name,
+            description=project.description,
+            status=project.status,
+            created_at=project.created_at,
+            integrations={
+                "nextcloud_folder": main_folder,
+                "openproject_url": f"https://openproject.platformq.io/projects/{openproject_identifier}",
+                "zulip_stream": project_in.name
+            }
+        )
+        
     except Exception as e:
-        logger.error(f"Failed to create project: {e}")
+        logger.error(f"Failed to create project: {str(e)}")
         
-        # Attempt rollback
-        await rollback_project_creation(created_resources)
+        # Cleanup any partially created resources
+        cleanup_errors = []
         
-        raise HTTPException(
-            status_code=500,
-            detail=f"Failed to create project: {str(e)}"
-        )
+        if "nextcloud_folder" in created_resources:
+            try:
+                nextcloud.delete(created_resources["nextcloud_folder"])
+            except Exception as cleanup_e:
+                cleanup_errors.append(f"Nextcloud: {cleanup_e}")
+                
+        if "openproject_id" in created_resources:
+            try:
+                openproject.delete_project(created_resources["openproject_id"])
+            except Exception as cleanup_e:
+                cleanup_errors.append(f"OpenProject: {cleanup_e}")
+                
+        if "zulip_stream" in created_resources:
+            try:
+                zulip.delete_stream(stream_name=created_resources["zulip_stream"])
+            except Exception as cleanup_e:
+                cleanup_errors.append(f"Zulip: {cleanup_e}")
+        
+        error_message = f"Project creation failed: {str(e)}"
+        if cleanup_errors:
+            error_message += f". Cleanup errors: {'; '.join(cleanup_errors)}"
+            
+        raise HTTPException(status_code=500, detail=error_message)
 
 
 async def rollback_project_creation(created_resources: dict):

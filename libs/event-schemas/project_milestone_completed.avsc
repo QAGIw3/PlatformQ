@@ -1,0 +1,12 @@
+{
+    "type": "record",
+    "name": "ProjectMilestoneCompleted",
+    "namespace": "com.platformq.events",
+    "fields": [
+        { "name": "event_id", "type": "string" },
+        { "name": "project_id", "type": "string" },
+        { "name": "milestone_id", "type": "string" },
+        { "name": "user_id", "type": "string" },
+        { "name": "timestamp", "type": "long", "logicalType": "timestamp-millis" }
+    ]
+} 

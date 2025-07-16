@@ -2,6 +2,9 @@
 
 # Service-specific dependencies
 python-jose[cryptography]
+janusgraph-python
+cassandra-driver
+networkx
 
 # Development and Testing
 pytest

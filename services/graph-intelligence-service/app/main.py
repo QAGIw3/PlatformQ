@@ -21,6 +21,10 @@ import time
 
 # Assuming the generate_grpc.sh script has been run
 from .grpc_generated import graph_intelligence_pb2, graph_intelligence_pb2_grpc
+from fastapi import FastAPI
+from .messaging.pulsar_consumer import start_consumer, stop_consumer
+
+app = FastAPI()
 
 # In a real app, this would come from config/vault
 JANUSGRAPH_URL = 'ws://platformq-janusgraph:8182/gremlin'
@@ -175,12 +179,14 @@ async def startup_event():
     sync_thread = threading.Thread(target=trust_sync.run_sync_loop, daemon=True)
     sync_thread.start()
     app.state.trust_sync = trust_sync
+    start_consumer()
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logging.info("Shutting down graph-intelligence-service...")
     if hasattr(app.state, 'trust_sync'):
         app.state.trust_sync.stop()
+    stop_consumer()
 
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["graph-intelligence-service"])

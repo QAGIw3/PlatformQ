@@ -6,6 +6,8 @@ from authlib.oidc.core.grants import OpenIDCode
 from cassandra.cluster import Session
 import logging
 from uuid import UUID
+import requests
+import os
 
 from ..crud import crud_oidc, crud_user, crud_role
 from ..core.security import create_access_token
@@ -16,6 +18,32 @@ logger = logging.getLogger(__name__)
 # This section defines the custom logic for how our OIDC provider handles
 # the standard "Authorization Code" grant flow. We are telling Authlib
 # how to save, query, and authenticate based on our Cassandra database.
+
+VC_SERVICE_URL = os.getenv("VC_SERVICE_URL", "http://verifiable-credential-service:80")
+
+def get_reputation_score(user_id: str) -> int:
+    """
+    Fetches the reputation score for a user from the verifiable-credential-service.
+    Returns 0 if the service is unavailable or the user has no score.
+    """
+    try:
+        # In a real system, service-to-service auth would be more robust (e.g., mTLS from Istio).
+        # We pass a mock tenant header for now, which the VC service can use.
+        headers = {"Authorization": "Bearer mock-service-token-for-tenant-default"}
+        response = requests.get(
+            f"{VC_SERVICE_URL}/api/v1/reputation/{user_id}",
+            headers=headers,
+            timeout=2 # Short timeout to avoid blocking the login flow
+        )
+        if response.status_code == 200:
+            return response.json().get("reputation_score", 0)
+        else:
+            logger.warning(f"VC service returned status {response.status_code} for user {user_id}")
+            return 0
+    except requests.exceptions.RequestException as e:
+        logger.error(f"Could not connect to VC service to get reputation score: {e}")
+        return 0
+
 
 class AuthorizationCodeGrant(grants.AuthorizationCodeGrant):
     def save_authorization_code(self, code, request):
@@ -95,9 +123,16 @@ def create_authorization_server(db: Session, tenant_id: UUID):
         which includes our critical `tid` and `roles` claims.
         """
         roles = crud_role.get_roles_for_user(db, tenant_id=tenant_id, user_id=user.id)
+        reputation = get_reputation_score(str(user.id))
         
         return create_access_token(
-            data={"sub": str(user.id), "scope": scope, "tid": str(tenant_id), "roles": roles}
+            data={
+                "sub": str(user.id), 
+                "scope": scope, 
+                "tid": str(tenant_id), 
+                "roles": roles,
+                "https://platformq.com/reputation": reputation
+            }
         )
 
     server.generate_token = generate_bearer_token

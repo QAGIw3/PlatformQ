@@ -73,7 +73,9 @@ contract CrossChainCredentialBridge is Ownable, ReentrancyGuard {
         address operator
     );
 
-    constructor() Ownable(msg.sender) {}
+    constructor() {
+        // The deployer is the initial owner.
+    }
 
     /**
      * @dev Set bridge operator for a specific chain
