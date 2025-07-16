@@ -15,38 +15,12 @@ from platformq_shared.logging_config import get_logger
 logger = get_logger(__name__)
 
 
-class ProblemType(Enum):
-    """Supported problem types"""
-    RESOURCE_ALLOCATION = "resource_allocation"
-    ROUTE_OPTIMIZATION = "route_optimization"
-    PORTFOLIO_OPTIMIZATION = "portfolio"
-    DESIGN_PARAMETERS = "design_parameters"
-    GENERIC = "generic"
-    MAX_CUT = "max_cut"
-    KNAPSACK = "knapsack"
-    VERTEX_COVER = "vertex_cover"
-    SCHEDULING = "scheduling"
-
-
 class ProblemEncoder:
     """
     Encodes optimization problems into quantum-compatible formats
     """
     
-    def __init__(self):
-        self.encoders = {
-            ProblemType.RESOURCE_ALLOCATION: self._encode_resource_allocation,
-            ProblemType.ROUTE_OPTIMIZATION: self._encode_route_optimization,
-            ProblemType.PORTFOLIO_OPTIMIZATION: self._encode_portfolio,
-            ProblemType.DESIGN_PARAMETERS: self._encode_design_parameters,
-            ProblemType.MAX_CUT: self._encode_max_cut,
-            ProblemType.KNAPSACK: self._encode_knapsack,
-            ProblemType.VERTEX_COVER: self._encode_vertex_cover,
-            ProblemType.SCHEDULING: self._encode_scheduling,
-            ProblemType.GENERIC: self._encode_generic
-        }
-        
-    def encode(self, problem_type: ProblemType, problem_data: Dict) -> Dict:
+    def encode(self, problem_type: str, problem_data: Dict) -> Dict:
         """
         Encode problem into quantum format
         
@@ -57,12 +31,32 @@ class ProblemEncoder:
         Returns:
             Encoded problem dictionary
         """
-        if problem_type not in self.encoders:
-            raise ValueError(f"Unsupported problem type: {problem_type}")
-            
-        logger.info(f"Encoding {problem_type.value} problem")
+        logger.info(f"Encoding '{problem_type}' problem")
         
-        return self.encoders[problem_type](problem_data)
+        if problem_type == "resource_allocation":
+            return self._encode_resource_allocation(problem_data)
+        elif problem_type == "route_optimization":
+            return self._encode_route_optimization(problem_data)
+        elif problem_type == "portfolio":
+            return self._encode_portfolio(problem_data)
+        elif problem_type == "design_parameters":
+            return self._encode_design_parameters(problem_data)
+        elif problem_type == "max_cut":
+            return self._encode_max_cut(problem_data)
+        elif problem_type == "knapsack":
+            return self._encode_knapsack(problem_data)
+        elif problem_type == "vertex_cover":
+            return self._encode_vertex_cover(problem_data)
+        elif problem_type == "scheduling":
+            return self._encode_scheduling(problem_data)
+        elif problem_type == "generic":
+            return self._encode_generic(problem_data)
+        elif problem_type == "qubo":
+            return problem_data # Pass through for algorithms that handle QUBOs directly
+        elif problem_type == "facility_location_subproblem":
+            return self._encode_facility_location_subproblem(problem_data)
+        else:
+            raise ValueError(f"Unsupported problem type: {problem_type}")
         
     def _encode_resource_allocation(self, problem_data: Dict) -> Dict:
         """
@@ -576,3 +570,52 @@ class ProblemEncoder:
                 })
                 
         return encoded_constraints 
+
+    def _encode_facility_location_subproblem(self, problem_data: Dict) -> Dict:
+        """
+        Encodes the UFLP customer assignment sub-problem as a QUBO matrix.
+
+        Args:
+            problem_data: Dict containing 'open_facilities_indices' and 'transportation_costs'.
+
+        Returns:
+            A dictionary containing the QUBO matrix.
+        """
+        open_facilities_indices = problem_data['open_facilities_indices']
+        transportation_costs = np.array(problem_data['transportation_costs'])
+        
+        num_open_facilities = len(open_facilities_indices)
+        num_customers = transportation_costs.shape[1]
+        
+        # QUBO variables x_jk, where j is customer index, k is open facility index
+        num_vars = num_customers * num_open_facilities
+        qubo_matrix = np.zeros((num_vars, num_vars))
+
+        # Penalty for violating the 'one facility per customer' constraint
+        # Should be larger than the max possible transportation cost
+        penalty = np.max(transportation_costs) * num_customers + 1
+
+        for j in range(num_customers):
+            # Constraint: sum_k(x_jk) = 1  =>  (1 - sum_k(x_jk))^2
+            # This expands to: 1 - 2*sum_k(x_jk) + (sum_k(x_jk))^2
+            # (sum_k(x_jk))^2 = sum_k(x_jk^2) + 2*sum_{k<l}(x_jk*x_jl)
+            # Since x_jk is binary, x_jk^2 = x_jk
+            
+            for k in range(num_open_facilities):
+                facility_idx = open_facilities_indices[k]
+                var_idx_k = j * num_open_facilities + k
+                
+                # Diagonal terms from objective function and penalty
+                cost = transportation_costs[facility_idx, j]
+                qubo_matrix[var_idx_k, var_idx_k] += cost - penalty
+                
+                # Off-diagonal terms from penalty
+                for l in range(k + 1, num_open_facilities):
+                    var_idx_l = j * num_open_facilities + l
+                    qubo_matrix[var_idx_k, var_idx_l] += 2 * penalty
+        
+        return {"qubo_matrix": qubo_matrix}
+
+    def _qubo_to_ising(self, qubo_matrix: np.ndarray) -> Tuple[PauliSumOp, float]:
+        """Converts a QUBO matrix to an Ising Hamiltonian operator."""
+        pass # Placeholder for actual conversion logic 

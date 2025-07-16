@@ -14,7 +14,7 @@ import uuid
 
 from fastapi import FastAPI, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 import pulsar
 
 # Platform shared libraries
@@ -30,6 +30,11 @@ from .engines.problem_encoder import ProblemEncoder, ProblemType
 from .engines.solution_decoder import SolutionDecoder
 from .algorithms import QAOA, VQE, QuantumAnnealing, AmplitudeEstimation
 from .config import QuantumConfig
+from services.quantum_optimization_service.app.solvers.hybrid_solver import HybridSolver
+from services.quantum_optimization_service.app.solvers.benders_solver import BendersSolver
+from services.quantum_optimization_service.app.config import (
+    PUBSUB_TIMEOUT, PULSAR_SERVICE_URL, JOB_STATUS_TOPIC, RESULT_TOPIC
+)
 
 logger = get_logger(__name__)
 
@@ -152,6 +157,84 @@ class BenchmarkRequest(BaseModel):
     algorithms: List[str] = ["qaoa", "vqe", "classical"]
 
 
+class SolveRequest(BaseModel):
+    problem_type: str
+    problem_data: Dict[str, Any]
+    solver_type: str = "quantum"  # 'quantum', 'hybrid', or 'benders'
+    algorithm_name: Optional[str] = None
+    algorithm_params: Optional[Dict[str, Any]] = None
+    workflow: Optional[List[Dict[str, Any]]] = None
+    engine: str = "qiskit"
+    backend: str = "aer_simulator"
+    job_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
+    user_id: Optional[str] = None
+    synchronous: bool = False
+
+# Pre-defined hybrid workflows
+DEFAULT_TSP_HYBRID_WORKFLOW = [
+    {
+        "solver_type": "classical",
+        "algorithm": "greedy_tsp",
+        "params": {},
+        "output_mapping": {
+            "solution_vector": "initial_tour"
+        }
+    },
+    {
+        "solver_type": "quantum",
+        "algorithm": "quantum_annealing",
+        "params": {
+            "problem_type": "tsp",
+            "use_quantum_fluctuations": True,
+            "schedule": {"schedule_type": "adaptive"},
+            "use_reverse_annealing": True,
+            "initial_state_from": "@initial_tour"
+        }
+    }
+]
+
+DEFAULT_MAXCUT_HYBRID_WORKFLOW = [
+    {
+        "solver_type": "classical",
+        "algorithm": "greedy_maxcut",
+        "params": {},
+        "output_mapping": {
+            "solution_vector": "initial_partition",
+            "optimal_value": "initial_cut_size"
+        }
+    },
+    {
+        "solver_type": "quantum",
+        "algorithm": "qaoa",
+        "params": {
+            "problem_type": "maxcut",
+            "reps": 4, # A reasonable depth for refinement
+            "optimizer": "COBYLA"
+        }
+    }
+]
+
+DEFAULT_KNAPSACK_HYBRID_WORKFLOW = [
+    {
+        "solver_type": "classical",
+        "algorithm": "greedy_knapsack",
+        "params": {},
+        "output_mapping": {
+            "solution_vector": "initial_selection"
+        }
+    },
+    {
+        "solver_type": "quantum",
+        "algorithm": "qaoa", # QAOA can be adapted for Knapsack
+        "params": {
+            "problem_type": "knapsack",
+            "reps": 4,
+            "optimizer": "SPSA" # SPSA is often good for noisy landscapes
+        }
+    }
+]
+
+
 # REST API Endpoints
 @app.post("/api/v1/optimize", response_model=OptimizationResponse)
 async def submit_optimization(
@@ -192,6 +275,114 @@ async def submit_optimization(
             timedelta(seconds=estimated_time)
         ).isoformat()
     )
+
+
+@app.post("/api/v1/solve", status_code=202)
+async def solve_problem(request: SolveRequest, background_tasks: BackgroundTasks):
+    """Submit a problem for solving (quantum or hybrid)"""
+    logger.info(f"Received solve request for job_id: {request.job_id}")
+
+    if request.synchronous:
+        result = await run_solver_task(request.dict())
+        return {"status": "completed", "job_id": request.job_id, "result": result}
+    else:
+        background_tasks.add_task(run_solver_task, request.dict())
+        return {"status": "processing", "job_id": request.job_id}
+
+async def run_solver_task(request_data: dict):
+    """
+    The main task for running a solver, whether quantum, classical, or hybrid.
+    Can be run in the background or awaited synchronously.
+    """
+    job_id = request_data['job_id']
+    try:
+        await update_job_status(job_id, "RUNNING")
+        
+        solver_type = request_data.get("solver_type", "quantum")
+
+        if solver_type == "hybrid":
+            workflow = request_data.get("workflow")
+            if not workflow:
+                # Use a default workflow if none is provided
+                problem_type = request_data["problem_type"]
+                if problem_type == "tsp":
+                    workflow = DEFAULT_TSP_HYBRID_WORKFLOW
+                elif problem_type == "maxcut":
+                    workflow = DEFAULT_MAXCUT_HYBRID_WORKFLOW
+                elif problem_type == "knapsack":
+                    workflow = DEFAULT_KNAPSACK_HYBRID_WORKFLOW
+                else:
+                    raise ValueError("Hybrid solver requires a workflow, and no default is available for this problem type.")
+            
+            hybrid_solver = HybridSolver(workflow)
+            result = hybrid_solver.solve(
+                problem_data=request_data['problem_data'],
+                quantum_engine=request_data['engine'],
+                quantum_backend=request_data['backend']
+            )
+        
+        elif solver_type == "benders":
+            if request_data["problem_type"] != "facility_location":
+                raise ValueError("Benders solver is currently only implemented for 'facility_location' problem type.")
+            
+            benders_solver = BendersSolver()
+            result = benders_solver.solve(
+                problem_data=request_data['problem_data'],
+                quantum_engine=request_data['engine'],
+                quantum_backend=request_data['backend']
+            )
+        
+        elif solver_type == "quantum":
+            optimizer = QuantumOptimizer(
+                engine=request_data['engine'],
+                backend_name=request_data['backend']
+            )
+            result = optimizer.solve(
+                problem_type=request_data['problem_type'],
+                problem_data=request_data['problem_data'],
+                algorithm_name=request_data['algorithm_name'],
+                algorithm_params=request_data.get('algorithm_params', {})
+            )
+        
+        else:
+            raise ValueError(f"Invalid solver_type: '{solver_type}'. Must be 'quantum', 'hybrid', or 'benders'.")
+
+        logger.info(f"Solver task for job_id: {job_id} completed successfully.")
+        await update_job_status(job_id, "COMPLETED", result)
+
+    except Exception as e:
+        logger.error(f"Error processing job {job_id}: {e}", exc_info=True)
+        await update_job_status(job_id, "FAILED", {"error": str(e)})
+
+async def update_job_status(job_id: str, status: str, result: Optional[Dict] = None):
+    """Update job status in cache and publish to Pulsar"""
+    try:
+        job_info = await service.job_cache.get(f"job:{job_id}")
+        if not job_info:
+            raise HTTPException(status_code=404, detail="Job not found")
+
+        job_info['status'] = status
+        job_info['updated_at'] = datetime.utcnow().isoformat()
+        if result:
+            job_info['result'] = result
+            job_info['completed_at'] = datetime.utcnow().isoformat()
+
+        await service.job_cache.put(f"job:{job_id}", job_info)
+
+        # Publish status update
+        await service.pulsar_producer.send_async(
+            JOB_STATUS_TOPIC,
+            json.dumps({"job_id": job_id, "status": status}).encode('utf-8')
+        )
+
+        if result:
+            await service.pulsar_producer.send_async(
+                RESULT_TOPIC,
+                json.dumps({"job_id": job_id, "result": result}).encode('utf-8')
+            )
+
+    except Exception as e:
+        logger.error(f"Error updating job status for {job_id}: {e}")
 
 
 @app.get("/api/v1/jobs/{job_id}", response_model=Dict)
