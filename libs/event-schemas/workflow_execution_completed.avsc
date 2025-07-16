@@ -1,0 +1,94 @@
+{
+  "type": "record",
+  "name": "WorkflowExecutionCompleted",
+  "namespace": "com.platformq.events.workflow",
+  "fields": [
+    {
+      "name": "execution_id",
+      "type": "string",
+      "doc": "Unique identifier for this workflow execution"
+    },
+    {
+      "name": "workflow_id",
+      "type": "string",
+      "doc": "ID of the workflow/DAG that was executed"
+    },
+    {
+      "name": "workflow_name",
+      "type": "string",
+      "doc": "Human-readable name of the workflow"
+    },
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "Tenant identifier"
+    },
+    {
+      "name": "status",
+      "type": "string",
+      "doc": "Final status of the workflow (success, failed, timeout)"
+    },
+    {
+      "name": "started_at",
+      "type": "long",
+      "doc": "Timestamp when workflow execution started"
+    },
+    {
+      "name": "completed_at",
+      "type": "long",
+      "doc": "Timestamp when workflow execution completed"
+    },
+    {
+      "name": "duration_ms",
+      "type": "long",
+      "doc": "Total execution duration in milliseconds"
+    },
+    {
+      "name": "task_metrics",
+      "type": {
+        "type": "record",
+        "name": "TaskMetrics",
+        "fields": [
+          {"name": "total_tasks", "type": "int"},
+          {"name": "succeeded_tasks", "type": "int"},
+          {"name": "failed_tasks", "type": "int"},
+          {"name": "skipped_tasks", "type": "int"},
+          {"name": "retry_count", "type": "int"}
+        ]
+      },
+      "doc": "Metrics about task execution"
+    },
+    {
+      "name": "resource_usage",
+      "type": ["null", {
+        "type": "record",
+        "name": "ResourceUsage",
+        "fields": [
+          {"name": "cpu_seconds", "type": ["null", "double"], "default": null},
+          {"name": "memory_mb_seconds", "type": ["null", "double"], "default": null},
+          {"name": "network_bytes", "type": ["null", "long"], "default": null}
+        ]
+      }],
+      "default": null,
+      "doc": "Resource usage metrics"
+    },
+    {
+      "name": "error_message",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Error message if workflow failed"
+    },
+    {
+      "name": "outputs",
+      "type": ["null", {"type": "map", "values": "string"}],
+      "default": null,
+      "doc": "Workflow outputs"
+    },
+    {
+      "name": "metadata",
+      "type": ["null", {"type": "map", "values": "string"}],
+      "default": null,
+      "doc": "Additional metadata"
+    }
+  ]
+} 

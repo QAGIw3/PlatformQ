@@ -1,0 +1,61 @@
+{
+  "type": "record",
+  "name": "WorkflowExecutionStarted",
+  "namespace": "com.platformq.events.workflow",
+  "fields": [
+    {
+      "name": "execution_id",
+      "type": "string",
+      "doc": "Unique identifier for this workflow execution"
+    },
+    {
+      "name": "workflow_id",
+      "type": "string",
+      "doc": "ID of the workflow/DAG being executed"
+    },
+    {
+      "name": "workflow_name",
+      "type": "string",
+      "doc": "Human-readable name of the workflow"
+    },
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "Tenant identifier"
+    },
+    {
+      "name": "trigger_type",
+      "type": "string",
+      "doc": "How the workflow was triggered (manual, scheduled, event)"
+    },
+    {
+      "name": "triggered_by",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "User or system that triggered the workflow"
+    },
+    {
+      "name": "configuration",
+      "type": ["null", {"type": "map", "values": "string"}],
+      "default": null,
+      "doc": "Configuration parameters passed to the workflow"
+    },
+    {
+      "name": "expected_duration_ms",
+      "type": ["null", "long"],
+      "default": null,
+      "doc": "Expected duration based on historical data"
+    },
+    {
+      "name": "started_at",
+      "type": "long",
+      "doc": "Timestamp when workflow execution started (milliseconds since epoch)"
+    },
+    {
+      "name": "metadata",
+      "type": ["null", {"type": "map", "values": "string"}],
+      "default": null,
+      "doc": "Additional metadata about the workflow execution"
+    }
+  ]
+} 

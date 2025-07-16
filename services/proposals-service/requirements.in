@@ -1,12 +1,5 @@
--r ../../requirements/base.in
-
-# Service-specific dependencies
-python-jose[cryptography]
-
-# No service-specific Python dependencies are needed for this service.
-
-# Development and Testing
-pytest
-black
-ruff
-redoc 
+fastapi
+uvicorn
+cassandra-driver
+pydantic
+httpx 

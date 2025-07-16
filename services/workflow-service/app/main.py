@@ -533,10 +533,13 @@ def startup_event():
     # Initialize Airflow bridge if enabled
     airflow_enabled = settings.get("AIRFLOW_ENABLED", "false").lower() == "true"
     if airflow_enabled:
-        app.state.airflow_bridge = AirflowBridge()
+        pulsar_client = pulsar.Client(pulsar_url)
+        app.state.airflow_bridge = AirflowBridge(
+            airflow_url=settings.get("AIRFLOW_API_URL", "http://airflow_webserver:8080"),
+            pulsar_client=pulsar_client
+        )
         
         # Start event to DAG processor
-        pulsar_client = pulsar.Client(pulsar_url)
         app.state.event_processor = EventToDAGProcessor(
             app.state.airflow_bridge, 
             pulsar_client

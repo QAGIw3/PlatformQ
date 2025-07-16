@@ -1,5 +1,16 @@
-web3
-pulsar-client
-fastapi
-uvicorn
-python-dotenv
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+web3==6.11.0
+py-solana==0.30.2
+anchorpy==0.18.0
+websockets==12.0
+pyignite==0.6.1
+pulsar-client==3.3.0
+prometheus-client==0.19.0
+httpx==0.25.1
+pydantic==2.5.0
+eth-account==0.10.0
+cosmpy==0.9.0
+near-api-py==0.1.0
+networkx==3.2
+platformq-shared @ file:///app/libs/shared

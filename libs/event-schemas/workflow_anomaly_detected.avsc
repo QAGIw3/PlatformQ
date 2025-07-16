@@ -1,0 +1,122 @@
+{
+  "type": "record",
+  "name": "WorkflowAnomalyDetected",
+  "namespace": "com.platformq.events.workflow",
+  "fields": [
+    {
+      "name": "anomaly_id",
+      "type": "string",
+      "doc": "Unique identifier for this anomaly"
+    },
+    {
+      "name": "execution_id",
+      "type": "string",
+      "doc": "ID of the workflow execution where anomaly was detected"
+    },
+    {
+      "name": "workflow_id",
+      "type": "string",
+      "doc": "ID of the workflow/DAG"
+    },
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "Tenant identifier"
+    },
+    {
+      "name": "anomaly_type",
+      "type": "string",
+      "doc": "Type of anomaly detected (performance_degradation, failure_pattern, resource_spike, etc.)"
+    },
+    {
+      "name": "severity",
+      "type": "float",
+      "doc": "Severity score between 0.0 and 1.0"
+    },
+    {
+      "name": "confidence",
+      "type": "float",
+      "doc": "Confidence score of the detection between 0.0 and 1.0"
+    },
+    {
+      "name": "detected_at",
+      "type": "long",
+      "doc": "Timestamp when anomaly was detected"
+    },
+    {
+      "name": "spike_pattern",
+      "type": {
+        "type": "array",
+        "items": "float"
+      },
+      "doc": "Neuromorphic spike pattern that triggered the detection"
+    },
+    {
+      "name": "anomaly_details",
+      "type": {
+        "type": "record",
+        "name": "AnomalyDetails",
+        "fields": [
+          {
+            "name": "metric_deviations",
+            "type": {"type": "map", "values": "float"},
+            "doc": "Metrics that deviated from normal patterns"
+          },
+          {
+            "name": "temporal_pattern",
+            "type": ["null", "string"],
+            "default": null,
+            "doc": "Description of temporal pattern detected"
+          },
+          {
+            "name": "affected_tasks",
+            "type": ["null", {"type": "array", "items": "string"}],
+            "default": null,
+            "doc": "List of affected task IDs"
+          },
+          {
+            "name": "historical_comparison",
+            "type": ["null", {"type": "map", "values": "string"}],
+            "default": null,
+            "doc": "Comparison with historical executions"
+          }
+        ]
+      },
+      "doc": "Detailed information about the anomaly"
+    },
+    {
+      "name": "contributing_factors",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "doc": "Factors that contributed to the anomaly"
+    },
+    {
+      "name": "recommended_actions",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "doc": "Recommended actions to address the anomaly"
+    },
+    {
+      "name": "auto_optimization_triggered",
+      "type": "boolean",
+      "default": false,
+      "doc": "Whether automatic optimization was triggered"
+    },
+    {
+      "name": "optimization_request_id",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "ID of the optimization request if triggered"
+    },
+    {
+      "name": "metadata",
+      "type": ["null", {"type": "map", "values": "string"}],
+      "default": null,
+      "doc": "Additional metadata"
+    }
+  ]
+} 

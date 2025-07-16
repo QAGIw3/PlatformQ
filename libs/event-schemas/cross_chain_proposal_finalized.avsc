@@ -1,0 +1,108 @@
+{
+  "namespace": "com.platformq.events.dao",
+  "type": "record",
+  "name": "CrossChainProposalFinalized",
+  "doc": "Event when a cross-chain proposal voting is finalized",
+  "fields": [
+    {
+      "name": "proposal_id",
+      "type": "string"
+    },
+    {
+      "name": "final_status",
+      "type": {
+        "type": "enum",
+        "name": "ProposalStatus",
+        "symbols": ["APPROVED", "REJECTED", "FAILED_QUORUM"]
+      }
+    },
+    {
+      "name": "chain_results",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "ChainVotingResult",
+          "fields": [
+            {
+              "name": "chain_type",
+              "type": "string"
+            },
+            {
+              "name": "chain_id",
+              "type": "string"
+            },
+            {
+              "name": "for_votes",
+              "type": "string"
+            },
+            {
+              "name": "against_votes",
+              "type": "string"
+            },
+            {
+              "name": "abstain_votes",
+              "type": "string"
+            },
+            {
+              "name": "total_voters",
+              "type": "int"
+            },
+            {
+              "name": "quorum_reached",
+              "type": "boolean"
+            },
+            {
+              "name": "execution_status",
+              "type": ["null", "string"],
+              "default": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "aggregated_results",
+      "type": {
+        "type": "record",
+        "name": "AggregatedResults",
+        "fields": [
+          {
+            "name": "total_for_votes",
+            "type": "string"
+          },
+          {
+            "name": "total_against_votes",
+            "type": "string"
+          },
+          {
+            "name": "total_abstain_votes",
+            "type": "string"
+          },
+          {
+            "name": "total_voters",
+            "type": "int"
+          },
+          {
+            "name": "approval_percentage",
+            "type": "double"
+          },
+          {
+            "name": "participation_percentage",
+            "type": "double"
+          }
+        ]
+      }
+    },
+    {
+      "name": "execution_required",
+      "type": "boolean",
+      "doc": "Whether on-chain execution is needed"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis"
+    }
+  ]
+} 

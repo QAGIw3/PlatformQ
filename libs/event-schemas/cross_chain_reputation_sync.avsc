@@ -1,0 +1,68 @@
+{
+  "namespace": "com.platformq.events.dao",
+  "type": "record",
+  "name": "CrossChainReputationSync",
+  "doc": "Event for synchronizing reputation scores across chains",
+  "fields": [
+    {
+      "name": "user_id",
+      "type": "string",
+      "doc": "User DID or ID"
+    },
+    {
+      "name": "reputation_updates",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "ChainReputationUpdate",
+          "fields": [
+            {
+              "name": "chain_type",
+              "type": "string"
+            },
+            {
+              "name": "chain_id",
+              "type": "string"
+            },
+            {
+              "name": "address",
+              "type": "string",
+              "doc": "User's address on this chain"
+            },
+            {
+              "name": "reputation_score",
+              "type": "int"
+            },
+            {
+              "name": "voting_power",
+              "type": "string",
+              "doc": "Calculated voting power"
+            },
+            {
+              "name": "last_activity",
+              "type": ["null", "long"],
+              "default": null
+            }
+          ]
+        }
+      }
+    },
+    {
+      "name": "aggregated_reputation",
+      "type": "int",
+      "doc": "Total reputation across all chains"
+    },
+    {
+      "name": "verifiable_credential_id",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "VC certifying the reputation"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis"
+    }
+  ]
+} 

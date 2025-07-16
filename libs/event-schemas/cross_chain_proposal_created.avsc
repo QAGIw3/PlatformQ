@@ -1,0 +1,123 @@
+{
+  "namespace": "com.platformq.events.dao",
+  "type": "record",
+  "name": "CrossChainProposalCreated",
+  "doc": "Event when a DAO proposal is created that requires cross-chain voting",
+  "fields": [
+    {
+      "name": "proposal_id",
+      "type": "string",
+      "doc": "Unique identifier for the proposal across all chains"
+    },
+    {
+      "name": "tenant_id",
+      "type": "string"
+    },
+    {
+      "name": "proposer_id",
+      "type": "string",
+      "doc": "DID or user ID of the proposer"
+    },
+    {
+      "name": "title",
+      "type": "string"
+    },
+    {
+      "name": "description",
+      "type": "string"
+    },
+    {
+      "name": "chain_proposals",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "ChainProposal",
+          "fields": [
+            {
+              "name": "chain_type",
+              "type": {
+                "type": "enum",
+                "name": "ChainType",
+                "symbols": ["ETHEREUM", "POLYGON", "ARBITRUM", "SOLANA", "HYPERLEDGER"]
+              }
+            },
+            {
+              "name": "chain_id",
+              "type": "string",
+              "doc": "Chain-specific ID (e.g., 1 for Ethereum mainnet)"
+            },
+            {
+              "name": "proposal_address",
+              "type": "string",
+              "doc": "On-chain proposal ID or address"
+            },
+            {
+              "name": "targets",
+              "type": {"type": "array", "items": "string"}
+            },
+            {
+              "name": "values",
+              "type": {"type": "array", "items": "string"},
+              "doc": "Values as strings to handle big numbers"
+            },
+            {
+              "name": "calldatas",
+              "type": {"type": "array", "items": "string"}
+            },
+            {
+              "name": "voting_start",
+              "type": "long",
+              "doc": "Voting start timestamp"
+            },
+            {
+              "name": "voting_end",
+              "type": "long",
+              "doc": "Voting end timestamp"
+            }
+          ]
+        }
+      },
+      "doc": "Proposals on each blockchain"
+    },
+    {
+      "name": "voting_parameters",
+      "type": {
+        "type": "record",
+        "name": "VotingParameters",
+        "fields": [
+          {
+            "name": "quorum_percentage",
+            "type": "int",
+            "doc": "Required quorum as percentage (0-100)"
+          },
+          {
+            "name": "approval_threshold",
+            "type": "int",
+            "doc": "Required approval percentage (0-100)"
+          },
+          {
+            "name": "min_reputation_score",
+            "type": ["null", "int"],
+            "default": null,
+            "doc": "Minimum reputation score to vote"
+          },
+          {
+            "name": "aggregation_strategy",
+            "type": {
+              "type": "enum",
+              "name": "AggregationStrategy",
+              "symbols": ["WEIGHTED_AVG", "MAJORITY_ALL", "MAJORITY_ANY", "CUSTOM"]
+            },
+            "doc": "How to aggregate votes across chains"
+          }
+        ]
+      }
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis"
+    }
+  ]
+} 

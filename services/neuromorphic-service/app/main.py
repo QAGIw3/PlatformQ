@@ -30,6 +30,7 @@ from platformq_shared.monitoring import track_processing_time
 from .models.snn_core import SpikingNeuralNetwork
 from .models.event_encoder import EventEncoder
 from .models.anomaly_detector import AnomalyDetector
+from .models.workflow_anomaly_detector import WorkflowAnomalyDetector
 from .config import NeuromorphicConfig
 
 logger = get_logger(__name__)
@@ -80,8 +81,11 @@ class NeuromorphicService(BaseService):
         self.snn = None
         self.encoder = None
         self.detector = None
+        self.workflow_detector = None  # New workflow-specific detector
         self.event_cache = None
         self.pattern_memory = None
+        self.workflow_patterns = None # New workflow pattern memory
+        self.workflow_optimization_client = None  # Client for quantum optimization
         
     async def startup(self):
         """Initialize service components"""
@@ -106,9 +110,23 @@ class NeuromorphicService(BaseService):
             window_size=self.config.detection_window
         )
         
+        # Initialize workflow anomaly detector
+        self.workflow_detector = WorkflowAnomalyDetector(
+            threshold=self.config.workflow_anomaly_threshold,
+            window_size=self.config.detection_window,
+            learning_rate=self.config.learning_rate,
+            historical_buffer_size=self.config.workflow_history_buffer_size
+        )
+        
         # Initialize caches
         self.event_cache = IgniteCache("neuromorphic_events")
         self.pattern_memory = IgniteCache("anomaly_patterns")
+        self.workflow_patterns = IgniteCache("workflow_patterns")
+        
+        # Initialize quantum optimization client
+        self.workflow_optimization_client = WorkflowOptimizationClient(
+            service_url=self.config.quantum_optimization_url
+        )
         
         # Start Pulsar consumers
         await self._start_event_consumers()
@@ -166,8 +184,18 @@ class NeuromorphicService(BaseService):
             "persistent://public/default/sensor-data"
         ]
         
+        # Add workflow-specific topics
+        workflow_topics = [
+            "persistent://public/default/workflow-execution-started",
+            "persistent://public/default/workflow-execution-completed",
+            "persistent://public/default/airflow-dag-events"
+        ]
+        
         for topic in topics:
             asyncio.create_task(self._consume_events(topic))
+            
+        for topic in workflow_topics:
+            asyncio.create_task(self._consume_workflow_events(topic))
             
     async def _consume_events(self, topic: str):
         """Consume and process events from a specific topic"""
@@ -194,6 +222,31 @@ class NeuromorphicService(BaseService):
                 if "timeout" not in str(e).lower():
                     logger.error(f"Error processing event: {e}")
                     
+    async def _consume_workflow_events(self, topic: str):
+        """Consume and process workflow events"""
+        consumer = self.pulsar_client.subscribe(
+            topic,
+            subscription_name=f"neuromorphic-workflow-{topic.split('/')[-1]}",
+            consumer_type=pulsar.ConsumerType.Shared
+        )
+        
+        while True:
+            try:
+                msg = consumer.receive(timeout_millis=100)
+                event_data = json.loads(msg.data())
+                
+                # Process through workflow-specific detector
+                anomaly = await self._process_workflow_event(event_data)
+                
+                if anomaly:
+                    await self._handle_workflow_anomaly(anomaly)
+                    
+                consumer.acknowledge(msg)
+                
+            except Exception as e:
+                if "timeout" not in str(e).lower():
+                    logger.error(f"Error processing workflow event: {e}")
+                    
     @track_processing_time("neuromorphic_processing")
     async def _process_event(self, event: Dict) -> Optional[Dict]:
         """Process event through the spiking neural network"""
@@ -218,6 +271,28 @@ class NeuromorphicService(BaseService):
             
         return anomaly
         
+    @track_processing_time("neuromorphic_workflow_processing")
+    async def _process_workflow_event(self, event: Dict) -> Optional[Dict]:
+        """Process workflow event through specialized SNN"""
+        
+        # Detect anomalies using workflow-specific detector
+        anomaly = self.workflow_detector.detect_workflow_anomaly(event)
+        
+        if anomaly:
+            # Enrich anomaly with additional context
+            anomaly['tenant_id'] = event.get('tenant_id')
+            anomaly['workflow_name'] = event.get('workflow_name')
+            
+            # Cache the anomaly pattern
+            pattern_key = f"workflow_pattern:{anomaly['anomaly_type']}:{anomaly['workflow_id']}:{datetime.utcnow().isoformat()}"
+            await self.workflow_patterns.put(pattern_key, {
+                "anomaly": anomaly,
+                "event": event,
+                "timestamp": datetime.utcnow().isoformat()
+            })
+            
+        return anomaly
+        
     async def _publish_anomaly(self, anomaly: Dict):
         """Publish detected anomaly to Pulsar"""
         await self.pulsar_producer.send_async(
@@ -231,6 +306,279 @@ class NeuromorphicService(BaseService):
             anomaly,
             ttl=3600  # 1 hour TTL
         )
+
+    async def _handle_workflow_anomaly(self, anomaly: Dict):
+        """Handle detected workflow anomaly"""
+        logger.info(f"Workflow anomaly detected: {anomaly['anomaly_type']} for workflow {anomaly['workflow_id']}")
+        
+        # Publish anomaly event
+        await self._publish_workflow_anomaly(anomaly)
+        
+        # Determine if optimization should be triggered
+        if self._should_trigger_optimization(anomaly):
+            await self._trigger_workflow_optimization(anomaly)
+            
+    async def _publish_workflow_anomaly(self, anomaly: Dict):
+        """Publish workflow anomaly to Pulsar"""
+        await self.pulsar_producer.send_async(
+            "persistent://public/default/workflow-anomaly-events",
+            json.dumps(anomaly).encode('utf-8')
+        )
+        
+        # Also cache for fast retrieval
+        await self.event_cache.put(
+            f"workflow_anomaly:{anomaly['anomaly_id']}", 
+            anomaly,
+            ttl=3600  # 1 hour TTL
+        )
+        
+    def _should_trigger_optimization(self, anomaly: Dict) -> bool:
+        """Determine if anomaly warrants automatic optimization"""
+        # High severity anomalies
+        if anomaly['severity'] > 0.8:
+            return True
+            
+        # Specific anomaly types that benefit from optimization
+        optimization_worthy_types = [
+            'performance_degradation',
+            'resource_contention',
+            'excessive_retries',
+            'scheduling_inefficiency'
+        ]
+        
+        if anomaly['anomaly_type'] in optimization_worthy_types:
+            return True
+            
+        # Multiple failures
+        if anomaly.get('metrics', {}).get('failed_tasks', 0) > 5:
+            return True
+            
+        return False
+        
+    async def _trigger_workflow_optimization(self, anomaly: Dict):
+        """Trigger optimization via quantum-optimization-service"""
+        logger.info(f"Triggering workflow optimization for anomaly {anomaly['anomaly_id']}")
+        
+        # Prepare optimization request
+        optimization_request = {
+            "request_id": f"opt_{anomaly['anomaly_id']}",
+            "workflow_id": anomaly['workflow_id'],
+            "tenant_id": anomaly['tenant_id'],
+            "anomaly_id": anomaly['anomaly_id'],
+            "optimization_type": self._determine_optimization_type(anomaly),
+            "optimization_goals": self._determine_optimization_goals(anomaly),
+            "constraints": self._extract_constraints(anomaly),
+            "historical_data": await self._get_historical_data(anomaly['workflow_id']),
+            "requested_at": int(datetime.utcnow().timestamp() * 1000),
+            "requested_by": "neuromorphic-anomaly-detector",
+            "priority": self._determine_priority(anomaly)
+        }
+        
+        # Publish optimization request
+        await self.pulsar_producer.send_async(
+            "persistent://public/default/workflow-optimization-requests",
+            json.dumps(optimization_request).encode('utf-8')
+        )
+        
+        # Also send directly to quantum optimization service
+        try:
+            result = await self.workflow_optimization_client.optimize_workflow(
+                anomaly=anomaly,
+                optimization_request=optimization_request
+            )
+            logger.info(f"Optimization request submitted: {result}")
+        except Exception as e:
+            logger.error(f"Failed to submit optimization request: {e}")
+            
+        # Update anomaly record
+        anomaly['auto_optimization_triggered'] = True
+        anomaly['optimization_request_id'] = optimization_request['request_id']
+        
+    def _determine_optimization_type(self, anomaly: Dict) -> str:
+        """Determine the type of optimization needed"""
+        anomaly_type = anomaly['anomaly_type']
+        
+        mapping = {
+            'performance_degradation': 'task_scheduling',
+            'resource_contention': 'resource_allocation',
+            'excessive_retries': 'retry_strategy',
+            'failure_pattern': 'error_handling',
+            'scheduling_inefficiency': 'parallelism'
+        }
+        
+        return mapping.get(anomaly_type, 'general_optimization')
+        
+    def _determine_optimization_goals(self, anomaly: Dict) -> List[str]:
+        """Determine optimization goals based on anomaly"""
+        goals = []
+        
+        if anomaly['anomaly_type'] == 'performance_degradation':
+            goals.extend(['minimize_duration', 'optimize_parallelism'])
+        elif anomaly['anomaly_type'] == 'failure_pattern':
+            goals.extend(['reduce_failures', 'improve_reliability'])
+        elif anomaly['anomaly_type'] == 'resource_contention':
+            goals.extend(['optimize_resources', 'reduce_wait_time'])
+            
+        # Add general goals
+        if anomaly['severity'] > 0.8:
+            goals.append('critical_performance_improvement')
+            
+        return goals
+        
+    def _extract_constraints(self, anomaly: Dict) -> Dict[str, str]:
+        """Extract optimization constraints from anomaly context"""
+        constraints = {}
+        
+        # Resource constraints
+        metrics = anomaly.get('metrics', {})
+        if metrics.get('cpu_usage'):
+            constraints['max_cpu_cores'] = "16"  # Example constraint
+        if metrics.get('memory_usage'):
+            constraints['max_memory_gb'] = "32"  # Example constraint
+            
+        # Time constraints
+        constraints['max_duration_minutes'] = "60"
+        
+        # Reliability constraints
+        constraints['max_failure_rate'] = "0.05"
+        
+        return constraints
+        
+    async def _get_historical_data(self, workflow_id: str) -> Dict[str, Any]:
+        """Get historical performance data for workflow"""
+        # Retrieve from workflow history
+        history = self.workflow_detector.workflow_history.get(workflow_id, [])
+        
+        if not history:
+            return {
+                "avg_duration_ms": 0,
+                "failure_rate": 0,
+                "resource_usage_patterns": {}
+            }
+            
+        # Calculate statistics
+        durations = [h.execution_duration_ms for h in history]
+        failures = [h.failed_tasks / max(h.task_count, 1) for h in history]
+        
+        return {
+            "avg_duration_ms": np.mean(durations),
+            "failure_rate": np.mean(failures),
+            "resource_usage_patterns": {
+                "avg_cpu": np.mean([h.cpu_usage for h in history if h.cpu_usage]),
+                "avg_memory": np.mean([h.memory_usage for h in history if h.memory_usage]),
+                "avg_parallelism": np.mean([h.parallelism_degree for h in history])
+            }
+        }
+        
+    def _determine_priority(self, anomaly: Dict) -> str:
+        """Determine optimization priority"""
+        severity = anomaly['severity']
+        
+        if severity > 0.9:
+            return "critical"
+        elif severity > 0.7:
+            return "high"
+        elif severity > 0.5:
+            return "normal"
+        else:
+            return "low"
+
+
+class WorkflowOptimizationClient:
+    """Client for interacting with quantum-optimization-service"""
+    
+    def __init__(self, service_url: str):
+        self.service_url = service_url
+        
+    async def optimize_workflow(self, anomaly: Dict, optimization_request: Dict) -> Dict:
+        """Submit workflow optimization request to quantum service"""
+        import httpx
+        
+        # Prepare quantum optimization problem
+        problem_data = self._prepare_optimization_problem(anomaly, optimization_request)
+        
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{self.service_url}/api/v1/optimize",
+                json={
+                    "problem_type": "workflow_optimization",
+                    "problem_data": problem_data,
+                    "algorithm": "hybrid",  # Use hybrid quantum-classical
+                    "max_time": 300,
+                    "quality_target": 0.95
+                }
+            )
+            
+            if response.status_code == 200:
+                return response.json()
+            else:
+                raise Exception(f"Optimization request failed: {response.text}")
+                
+    def _prepare_optimization_problem(self, anomaly: Dict, request: Dict) -> Dict:
+        """Prepare optimization problem for quantum solver"""
+        # Convert workflow optimization to QUBO or other quantum-compatible format
+        
+        optimization_type = request['optimization_type']
+        
+        if optimization_type == 'task_scheduling':
+            return self._prepare_scheduling_problem(anomaly, request)
+        elif optimization_type == 'resource_allocation':
+            return self._prepare_resource_problem(anomaly, request)
+        elif optimization_type == 'parallelism':
+            return self._prepare_parallelism_problem(anomaly, request)
+        else:
+            return self._prepare_general_problem(anomaly, request)
+            
+    def _prepare_scheduling_problem(self, anomaly: Dict, request: Dict) -> Dict:
+        """Prepare task scheduling optimization problem"""
+        metrics = anomaly.get('metrics', {})
+        
+        return {
+            "problem_type": "task_scheduling",
+            "num_tasks": metrics.get('task_count', 10),
+            "dependencies": [],  # Would need actual dependency graph
+            "resource_constraints": request.get('constraints', {}),
+            "objective": "minimize_makespan",
+            "current_duration": metrics.get('duration_ms', 0)
+        }
+        
+    def _prepare_resource_problem(self, anomaly: Dict, request: Dict) -> Dict:
+        """Prepare resource allocation problem"""
+        return {
+            "problem_type": "resource_allocation",
+            "resources": {
+                "cpu": 16,
+                "memory": 32,
+                "network": 1000
+            },
+            "tasks": [],  # Would need actual task requirements
+            "objective": "minimize_cost",
+            "constraints": request.get('constraints', {})
+        }
+        
+    def _prepare_parallelism_problem(self, anomaly: Dict, request: Dict) -> Dict:
+        """Prepare parallelism optimization problem"""
+        metrics = anomaly.get('metrics', {})
+        
+        return {
+            "problem_type": "graph_partitioning",
+            "num_nodes": metrics.get('task_count', 10),
+            "edges": [],  # Would need actual dependency edges
+            "num_partitions": 4,  # Target parallelism
+            "objective": "minimize_communication",
+            "balance_constraint": 0.1  # Max 10% imbalance
+        }
+        
+    def _prepare_general_problem(self, anomaly: Dict, request: Dict) -> Dict:
+        """Prepare general optimization problem"""
+        return {
+            "problem_type": "general_optimization",
+            "variables": 10,
+            "objective_function": "quadratic",
+            "constraints": request.get('constraints', {}),
+            "anomaly_context": anomaly
+        }
+
 
 # Initialize FastAPI app
 service = NeuromorphicService()

@@ -1,0 +1,94 @@
+{
+  "type": "record",
+  "name": "WorkflowOptimizationRequested",
+  "namespace": "com.platformq.events.workflow",
+  "fields": [
+    {
+      "name": "request_id",
+      "type": "string",
+      "doc": "Unique identifier for this optimization request"
+    },
+    {
+      "name": "workflow_id",
+      "type": "string",
+      "doc": "ID of the workflow to optimize"
+    },
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "Tenant identifier"
+    },
+    {
+      "name": "anomaly_id",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "ID of the anomaly that triggered this optimization"
+    },
+    {
+      "name": "optimization_type",
+      "type": "string",
+      "doc": "Type of optimization (resource_allocation, task_scheduling, parallelism, retry_strategy)"
+    },
+    {
+      "name": "optimization_goals",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "doc": "Goals for optimization (minimize_duration, reduce_failures, optimize_resources)"
+    },
+    {
+      "name": "constraints",
+      "type": ["null", {"type": "map", "values": "string"}],
+      "default": null,
+      "doc": "Constraints for the optimization"
+    },
+    {
+      "name": "historical_data",
+      "type": {
+        "type": "record",
+        "name": "HistoricalData",
+        "fields": [
+          {
+            "name": "avg_duration_ms",
+            "type": "double",
+            "doc": "Average duration from past executions"
+          },
+          {
+            "name": "failure_rate",
+            "type": "double",
+            "doc": "Historical failure rate"
+          },
+          {
+            "name": "resource_usage_patterns",
+            "type": {"type": "map", "values": "string"},
+            "doc": "Historical resource usage patterns"
+          }
+        ]
+      },
+      "doc": "Historical performance data"
+    },
+    {
+      "name": "requested_at",
+      "type": "long",
+      "doc": "Timestamp when optimization was requested"
+    },
+    {
+      "name": "requested_by",
+      "type": "string",
+      "doc": "System or user that requested optimization"
+    },
+    {
+      "name": "priority",
+      "type": "string",
+      "default": "normal",
+      "doc": "Priority level (low, normal, high, critical)"
+    },
+    {
+      "name": "metadata",
+      "type": ["null", {"type": "map", "values": "string"}],
+      "default": null,
+      "doc": "Additional metadata"
+    }
+  ]
+} 

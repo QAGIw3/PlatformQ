@@ -1,5 +1,5 @@
 from uuid import uuid4, UUID
-from typing import List, Optional
+from typing import List, Optional, Dict, Any
 
 from cassandra.cluster import Session
 from ..db.cassandra import get_cassandra_session
@@ -14,8 +14,11 @@ class CRUDProposal:
         proposal_id = uuid4()
         session.execute(
             """
-            INSERT INTO proposals (id, title, description, proposer, targets, values, calldatas, is_onchain, status)
-            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s)
+            INSERT INTO proposals (
+                id, title, description, proposer, targets, values, 
+                calldatas, is_onchain, status, is_cross_chain
+            )
+            VALUES (%s, %s, %s, %s, %s, %s, %s, %s, %s, %s)
             """,
             (
                 proposal_id,
@@ -26,7 +29,8 @@ class CRUDProposal:
                 obj_in.values,
                 obj_in.calldatas,
                 False,
-                "pending"
+                "pending",
+                obj_in.is_cross_chain
             ),
         )
         return self.get(proposal_id)
@@ -55,6 +59,18 @@ class CRUDProposal:
         )
         return self.get(id)
 
+    def update_cross_chain_status(self, id: UUID, cross_chain_details: Dict[str, Any]) -> Optional[Proposal]:
+        session = self.get_session()
+        session.execute(
+            """
+            UPDATE proposals
+            SET cross_chain_details = %s, status = 'cross-chain-active'
+            WHERE id = %s
+            """,
+            (cross_chain_details, id),
+        )
+        return self.get(id)
+
     def update_status_from_event(self, onchain_proposal_id: str, new_status: str) -> Optional[Proposal]:
         session = self.get_session()
         # This requires a secondary index on onchain_proposal_id
@@ -80,5 +96,10 @@ class CRUDProposal:
         print(f"Fetching voters for proposal {id}. (Mock implementation)")
         return ["user_id_1", "user_id_2", "user_id_3"]
 
+    def remove(self, id: UUID) -> bool:
+        """Remove a proposal"""
+        session = self.get_session()
+        session.execute("DELETE FROM proposals WHERE id = %s", (id,))
+        return True
 
 proposal = CRUDProposal() 

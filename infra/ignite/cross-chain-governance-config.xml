@@ -1,0 +1,249 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="
+       http://www.springframework.org/schema/beans
+       http://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean id="ignite.cfg" class="org.apache.ignite.configuration.IgniteConfiguration">
+        <!-- Consistent ID for cross-chain governance cluster -->
+        <property name="consistentId" value="cross-chain-governance-node"/>
+        
+        <!-- Cluster name -->
+        <property name="igniteInstanceName" value="CrossChainGovernance"/>
+        
+        <!-- Enable peer class loading -->
+        <property name="peerClassLoadingEnabled" value="true"/>
+        
+        <!-- Data storage configuration for persistence -->
+        <property name="dataStorageConfiguration">
+            <bean class="org.apache.ignite.configuration.DataStorageConfiguration">
+                <!-- Default data region for cross-chain state -->
+                <property name="defaultDataRegionConfiguration">
+                    <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                        <property name="name" value="Default_Region"/>
+                        <property name="initialSize" value="#{512L * 1024 * 1024}"/>
+                        <property name="maxSize" value="#{4L * 1024 * 1024 * 1024}"/>
+                        <property name="persistenceEnabled" value="true"/>
+                        <property name="metricsEnabled" value="true"/>
+                    </bean>
+                </property>
+                
+                <!-- Custom data regions for specific use cases -->
+                <property name="dataRegionConfigurations">
+                    <list>
+                        <!-- Region for cross-chain proposals -->
+                        <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                            <property name="name" value="CrossChainProposals"/>
+                            <property name="initialSize" value="#{1L * 1024 * 1024 * 1024}"/>
+                            <property name="maxSize" value="#{8L * 1024 * 1024 * 1024}"/>
+                            <property name="persistenceEnabled" value="true"/>
+                            <property name="metricsEnabled" value="true"/>
+                            <property name="evictionMode" value="RANDOM_2_LRU"/>
+                        </bean>
+                        
+                        <!-- Region for reputation sync -->
+                        <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                            <property name="name" value="ReputationSync"/>
+                            <property name="initialSize" value="#{512L * 1024 * 1024}"/>
+                            <property name="maxSize" value="#{2L * 1024 * 1024 * 1024}"/>
+                            <property name="persistenceEnabled" value="true"/>
+                            <property name="metricsEnabled" value="true"/>
+                        </bean>
+                        
+                        <!-- Region for vote aggregation -->
+                        <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                            <property name="name" value="VoteAggregation"/>
+                            <property name="initialSize" value="#{512L * 1024 * 1024}"/>
+                            <property name="maxSize" value="#{4L * 1024 * 1024 * 1024}"/>
+                            <property name="persistenceEnabled" value="false"/>
+                            <property name="metricsEnabled" value="true"/>
+                        </bean>
+                    </list>
+                </property>
+                
+                <!-- WAL configuration -->
+                <property name="walMode" value="LOG_ONLY"/>
+                <property name="walSegmentSize" value="#{256 * 1024 * 1024}"/>
+                <property name="writeThrottlingEnabled" value="true"/>
+            </bean>
+        </property>
+        
+        <!-- Cache configurations -->
+        <property name="cacheConfiguration">
+            <list>
+                <!-- Cross-chain proposals cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="crossChainProposals"/>
+                    <property name="dataRegionName" value="CrossChainProposals"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="2"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="writeSynchronizationMode" value="FULL_SYNC"/>
+                    <property name="queryEntities">
+                        <list>
+                            <bean class="org.apache.ignite.cache.QueryEntity">
+                                <property name="keyType" value="java.lang.String"/>
+                                <property name="valueType" value="com.platformq.CrossChainProposal"/>
+                                <property name="fields">
+                                    <map>
+                                        <entry key="proposalId" value="java.lang.String"/>
+                                        <entry key="title" value="java.lang.String"/>
+                                        <entry key="description" value="java.lang.String"/>
+                                        <entry key="proposerId" value="java.lang.String"/>
+                                        <entry key="status" value="java.lang.String"/>
+                                        <entry key="createdAt" value="java.lang.Long"/>
+                                        <entry key="votingEndTime" value="java.lang.Long"/>
+                                        <entry key="chainProposals" value="java.util.List"/>
+                                    </map>
+                                </property>
+                                <property name="indexes">
+                                    <list>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="status"/>
+                                        </bean>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="proposerId"/>
+                                        </bean>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="votingEndTime"/>
+                                        </bean>
+                                    </list>
+                                </property>
+                            </bean>
+                        </list>
+                    </property>
+                </bean>
+                
+                <!-- Chain-specific voting state cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="chainVotingStates"/>
+                    <property name="dataRegionName" value="VoteAggregation"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="writeSynchronizationMode" value="PRIMARY_SYNC"/>
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.ModifiedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="HOURS"/>
+                                    <constructor-arg value="24"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+                
+                <!-- User reputation cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="userReputationSync"/>
+                    <property name="dataRegionName" value="ReputationSync"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="writeSynchronizationMode" value="PRIMARY_SYNC"/>
+                    <property name="queryEntities">
+                        <list>
+                            <bean class="org.apache.ignite.cache.QueryEntity">
+                                <property name="keyType" value="java.lang.String"/>
+                                <property name="valueType" value="com.platformq.UserReputationState"/>
+                                <property name="fields">
+                                    <map>
+                                        <entry key="userId" value="java.lang.String"/>
+                                        <entry key="aggregatedReputation" value="java.lang.Integer"/>
+                                        <entry key="chainAddresses" value="java.util.Map"/>
+                                        <entry key="lastSyncTime" value="java.lang.Long"/>
+                                        <entry key="vcId" value="java.lang.String"/>
+                                    </map>
+                                </property>
+                                <property name="indexes">
+                                    <list>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="aggregatedReputation"/>
+                                        </bean>
+                                    </list>
+                                </property>
+                            </bean>
+                        </list>
+                    </property>
+                </bean>
+                
+                <!-- Vote aggregation cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="voteAggregations"/>
+                    <property name="dataRegionName" value="VoteAggregation"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="writeSynchronizationMode" value="FULL_SYNC"/>
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.ModifiedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="DAYS"/>
+                                    <constructor-arg value="7"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+                
+                <!-- Chain registry cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="chainRegistry"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="writeSynchronizationMode" value="FULL_SYNC"/>
+                </bean>
+            </list>
+        </property>
+        
+        <!-- Discovery configuration -->
+        <property name="discoverySpi">
+            <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+                <property name="localPort" value="47600"/>
+                <property name="ipFinder">
+                    <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.kubernetes.TcpDiscoveryKubernetesIpFinder">
+                        <property name="namespace" value="platformq"/>
+                        <property name="serviceName" value="ignite-cross-chain-governance"/>
+                    </bean>
+                </property>
+            </bean>
+        </property>
+        
+        <!-- Communication SPI -->
+        <property name="communicationSpi">
+            <bean class="org.apache.ignite.spi.communication.tcp.TcpCommunicationSpi">
+                <property name="localPort" value="47200"/>
+                <property name="messageQueueLimit" value="2048"/>
+                <property name="slowClientQueueLimit" value="1000"/>
+            </bean>
+        </property>
+        
+        <!-- Metrics configuration -->
+        <property name="metricsLogFrequency" value="60000"/>
+        <property name="metricsUpdateFrequency" value="5000"/>
+        
+        <!-- SQL configuration -->
+        <property name="sqlConfiguration">
+            <bean class="org.apache.ignite.configuration.SqlConfiguration">
+                <property name="queryEnginesConfiguration">
+                    <list>
+                        <bean class="org.apache.ignite.indexing.IndexingQueryEngineConfiguration">
+                            <property name="default" value="true"/>
+                        </bean>
+                    </list>
+                </property>
+            </bean>
+        </property>
+        
+        <!-- Enable events for monitoring -->
+        <property name="includeEventTypes">
+            <list>
+                <util:constant static-field="org.apache.ignite.events.EventType.EVT_CACHE_OBJECT_PUT"/>
+                <util:constant static-field="org.apache.ignite.events.EventType.EVT_CACHE_OBJECT_READ"/>
+                <util:constant static-field="org.apache.ignite.events.EventType.EVT_CACHE_OBJECT_REMOVED"/>
+            </list>
+        </property>
+    </bean>
+</beans> 

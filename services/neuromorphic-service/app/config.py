@@ -41,6 +41,20 @@ class NeuromorphicConfig(BaseSettings):
     detection_window: int = Field(default=100, env="DETECTION_WINDOW")
     detection_sensitivity: float = Field(default=2.0, env="DETECTION_SENSITIVITY")
     
+    # Workflow-specific anomaly detection
+    workflow_anomaly_threshold: float = Field(default=0.6, env="WORKFLOW_ANOMALY_THRESHOLD")
+    workflow_history_buffer_size: int = Field(default=1000, env="WORKFLOW_HISTORY_BUFFER_SIZE")
+    workflow_min_history_size: int = Field(default=5, env="WORKFLOW_MIN_HISTORY_SIZE")
+    workflow_optimization_auto_trigger: bool = Field(default=True, env="WORKFLOW_OPTIMIZATION_AUTO_TRIGGER")
+    workflow_anomaly_severity_threshold: float = Field(default=0.8, env="WORKFLOW_ANOMALY_SEVERITY_THRESHOLD")
+    
+    # Quantum optimization integration
+    quantum_optimization_url: str = Field(
+        default="http://quantum-optimization-service:8001", 
+        env="QUANTUM_OPTIMIZATION_URL"
+    )
+    quantum_optimization_timeout: int = Field(default=30, env="QUANTUM_OPTIMIZATION_TIMEOUT")
+    
     # Performance tuning
     batch_size: int = Field(default=1000, env="BATCH_SIZE")
     gpu_enabled: bool = Field(default=True, env="GPU_ENABLED")
@@ -59,9 +73,26 @@ class NeuromorphicConfig(BaseSettings):
         ],
         env="PULSAR_TOPICS"
     )
+    workflow_topics: List[str] = Field(
+        default=[
+            "persistent://public/default/workflow-execution-started",
+            "persistent://public/default/workflow-execution-completed",
+            "persistent://public/default/airflow-dag-events",
+            "persistent://public/default/dag-run-metrics"
+        ],
+        env="WORKFLOW_TOPICS"
+    )
     anomaly_topic: str = Field(
         default="persistent://public/default/anomaly-events",
         env="ANOMALY_TOPIC"
+    )
+    workflow_anomaly_topic: str = Field(
+        default="persistent://public/default/workflow-anomaly-events",
+        env="WORKFLOW_ANOMALY_TOPIC"
+    )
+    workflow_optimization_topic: str = Field(
+        default="persistent://public/default/workflow-optimization-requests",
+        env="WORKFLOW_OPTIMIZATION_TOPIC"
     )
     
     # Ignite configuration
@@ -69,6 +100,7 @@ class NeuromorphicConfig(BaseSettings):
     ignite_port: int = Field(default=10800, env="IGNITE_PORT")
     ignite_cache_events: str = Field(default="neuromorphic_events", env="IGNITE_CACHE_EVENTS")
     ignite_cache_patterns: str = Field(default="anomaly_patterns", env="IGNITE_CACHE_PATTERNS")
+    ignite_cache_workflow_patterns: str = Field(default="workflow_patterns", env="IGNITE_CACHE_WORKFLOW_PATTERNS")
     
     # Monitoring
     metrics_enabled: bool = Field(default=True, env="METRICS_ENABLED")
@@ -108,6 +140,14 @@ class NeuromorphicConfig(BaseSettings):
     save_spike_trains: bool = Field(default=False, env="SAVE_SPIKE_TRAINS")
     profile_enabled: bool = Field(default=False, env="PROFILE_ENABLED")
     
+    # Workflow optimization specific
+    workflow_optimization_algorithms: List[str] = Field(
+        default=["qaoa", "vqe", "hybrid", "neuromorphic"],
+        env="WORKFLOW_OPTIMIZATION_ALGORITHMS"
+    )
+    workflow_optimization_max_iterations: int = Field(default=100, env="WORKFLOW_OPTIMIZATION_MAX_ITERATIONS")
+    workflow_optimization_convergence_threshold: float = Field(default=0.001, env="WORKFLOW_OPTIMIZATION_CONVERGENCE_THRESHOLD")
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"
@@ -121,6 +161,12 @@ class NeuromorphicConfig(BaseSettings):
         if isinstance(self.pulsar_topics, str):
             return [t.strip() for t in self.pulsar_topics.split(",")]
         return self.pulsar_topics
+        
+    def get_workflow_topics_list(self) -> List[str]:
+        """Get workflow topics as list"""
+        if isinstance(self.workflow_topics, str):
+            return [t.strip() for t in self.workflow_topics.split(",")]
+        return self.workflow_topics
         
     def validate_gpu_config(self):
         """Validate GPU configuration"""

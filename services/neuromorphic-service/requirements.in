@@ -21,6 +21,9 @@ aiofiles==23.2.1
 # Apache Pulsar
 pulsar-client==3.3.0
 
+# HTTP client for quantum optimization integration
+httpx==0.25.2
+
 # Caching and state management
 pyignite==0.6.1  # Apache Ignite client
 

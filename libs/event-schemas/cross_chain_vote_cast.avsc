@@ -1,0 +1,74 @@
+{
+  "namespace": "com.platformq.events.dao",
+  "type": "record",
+  "name": "CrossChainVoteCast",
+  "doc": "Event when a vote is cast on any chain for a cross-chain proposal",
+  "fields": [
+    {
+      "name": "proposal_id",
+      "type": "string",
+      "doc": "Global proposal ID"
+    },
+    {
+      "name": "voter_id",
+      "type": "string",
+      "doc": "DID or address of the voter"
+    },
+    {
+      "name": "chain_type",
+      "type": "string",
+      "doc": "Chain where vote was cast: ETHEREUM, SOLANA, HYPERLEDGER"
+    },
+    {
+      "name": "chain_id",
+      "type": "string"
+    },
+    {
+      "name": "vote_details",
+      "type": {
+        "type": "record",
+        "name": "VoteDetails",
+        "fields": [
+          {
+            "name": "support",
+            "type": {
+              "type": "enum",
+              "name": "VoteSupport",
+              "symbols": ["FOR", "AGAINST", "ABSTAIN"]
+            }
+          },
+          {
+            "name": "weight",
+            "type": "string",
+            "doc": "Voting weight as string to handle big numbers"
+          },
+          {
+            "name": "reason",
+            "type": ["null", "string"],
+            "default": null
+          },
+          {
+            "name": "reputation_score",
+            "type": ["null", "int"],
+            "default": null,
+            "doc": "Voter's reputation at time of voting"
+          }
+        ]
+      }
+    },
+    {
+      "name": "transaction_hash",
+      "type": "string",
+      "doc": "On-chain transaction hash"
+    },
+    {
+      "name": "block_number",
+      "type": "string"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis"
+    }
+  ]
+} 
