@@ -14,6 +14,8 @@ from typing import Dict, List, Optional
 from fastapi import Request, Response, status, HTTPException
 from pydantic import BaseModel, Field
 import grpc
+import zulip
+import os
 
 # Assuming the generate_grpc.sh script has been run
 from .grpc_generated import graph_intelligence_pb2, graph_intelligence_pb2_grpc
@@ -250,7 +252,11 @@ def notification_consumer_loop(app):
     config_loader = app.state.config_loader
     settings = config_loader.load_settings()
     
-    client = pulsar.Client(settings["PULSAR_URL"])
+    client = zulip.Client(
+        api_key=settings.get("ZULIP_API_KEY"),
+        email=settings.get("ZULIP_EMAIL"),
+        site=settings.get("ZULIP_SITE")
+    )
     
     # Subscribe to multiple topics
     consumers = {

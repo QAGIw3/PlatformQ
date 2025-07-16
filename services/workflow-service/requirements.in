@@ -19,3 +19,4 @@ httpx
 # Apache Airflow integration
 apache-airflow-client==2.8.0
 requests 
+hvac 

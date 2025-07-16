@@ -49,7 +49,8 @@ logger = logging.getLogger(__name__)
 
 # --- Configuration & Globals ---
 config_loader = ConfigLoader()
-settings = config_loader.load_settings()
+platform_settings = config_loader.load_settings()
+settings = config_loader.load_settings() # Keep for now for non-secret config
 PULSAR_URL = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
 SEARCH_SERVICE_URL = settings.get("SEARCH_SERVICE_URL", "http://search-service:80")
 
@@ -76,7 +77,7 @@ def initialize_blockchain_clients():
     if settings.get("ETHEREUM_ENABLED", False):
         eth_config = {
             "provider_url": settings.get("ETHEREUM_PROVIDER_URL"),
-            "private_key": settings.get("ETHEREUM_PRIVATE_KEY"),
+            "private_key": platform_settings.get("ETHEREUM_PRIVATE_KEY"),
             "contract_address": settings.get("ETHEREUM_CONTRACT_ADDRESS")
         }
         blockchain_clients["ethereum"] = EthereumClient(eth_config)
@@ -85,7 +86,7 @@ def initialize_blockchain_clients():
     if settings.get("POLYGON_ENABLED", False):
         polygon_config = {
             "provider_url": settings.get("POLYGON_PROVIDER_URL"),
-            "private_key": settings.get("POLYGON_PRIVATE_KEY"),
+            "private_key": platform_settings.get("POLYGON_PRIVATE_KEY"),
             "contract_address": settings.get("POLYGON_CONTRACT_ADDRESS")
         }
         blockchain_clients["polygon"] = PolygonClient(polygon_config)
@@ -116,7 +117,7 @@ def initialize_storage():
     global ipfs_storage, distributed_storage
     
     storage_proxy_url = settings.get("STORAGE_PROXY_URL", "http://storage-proxy-service:8000")
-    encryption_key = settings.get("CREDENTIAL_ENCRYPTION_KEY")
+    encryption_key = platform_settings.get("CREDENTIAL_ENCRYPTION_KEY")
     
     ipfs_storage = IPFSCredentialStorage(storage_proxy_url, encryption_key)
     
@@ -863,7 +864,7 @@ async def startup_event():
     # Initialize cross-chain bridge
     try:
         from .blockchain.cross_chain_bridge import CrossChainBridge
-        bridge_private_key = settings.get("BRIDGE_PRIVATE_KEY")
+        bridge_private_key = platform_settings.get("BRIDGE_PRIVATE_KEY")
         if bridge_private_key:
             app.state.cross_chain_bridge = CrossChainBridge(
                 private_key=bridge_private_key,

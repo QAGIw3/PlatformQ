@@ -25,6 +25,14 @@ ELASTICSEARCH_USERNAME = os.getenv("ELASTICSEARCH_USERNAME", None)
 ELASTICSEARCH_PASSWORD = os.getenv("ELASTICSEARCH_PASSWORD", None)
 PULSAR_URL = os.getenv("PULSAR_URL", "pulsar://localhost:6650")
 
+config_loader = ConfigLoader()
+settings = config_loader.load_settings()
+
+ELASTICSEARCH_HOST = os.getenv("ELASTICSEARCH_HOST", "elasticsearch")
+ELASTICSEARCH_PORT = int(os.getenv("ELASTICSEARCH_PORT", 9200))
+ELASTICSEARCH_USERNAME = os.getenv("ELASTICSEARCH_USERNAME", "elastic")
+ELASTICSEARCH_PASSWORD = settings.get("ELASTICSEARCH_PASSWORD")
+
 # Search result types
 class SearchType(str, Enum):
     ALL = "all"

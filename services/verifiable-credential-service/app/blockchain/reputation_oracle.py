@@ -4,6 +4,7 @@ import os
 import logging
 from typing import Dict, Any, Optional
 from eth_account.messages import encode_defunct
+from ...platformq_shared.config import ConfigLoader
 
 logger = logging.getLogger(__name__)
 
@@ -15,12 +16,19 @@ ABI_PATH = os.path.join(os.path.dirname(__file__), 'ReputationOracle.json')
 OPERATOR_PRIVATE_KEY = os.environ.get("REPUTATION_OPERATOR_PRIVATE_KEY")
 
 class ReputationOracleService:
-    def __init__(self):
-        self.w3 = Web3(Web3.HTTPProvider(NODE_URL))
-        with open(ABI_PATH) as f:
-            abi = json.load(f)["abi"]
-        self.contract = self.w3.eth.contract(address=REPUTATION_ORACLE_ADDRESS, abi=abi)
-        self.operator_account = self.w3.eth.account.from_key(OPERATOR_PRIVATE_KEY) if OPERATOR_PRIVATE_KEY else self.w3.eth.accounts[0]
+    def __init__(self, provider_url: str, contract_address: str):
+        self.w3 = Web3(Web3.HTTPProvider(provider_url))
+        self.contract_address = contract_address
+        # Assuming ABI is stored in a file
+        with open("reputation_oracle_abi.json") as f:
+            abi = json.load(f)
+        self.contract = self.w3.eth.contract(address=contract_address, abi=abi)
+
+        config_loader = ConfigLoader()
+        settings = config_loader.load_settings()
+        operator_private_key = settings.get("REPUTATION_OPERATOR_PRIVATE_KEY")
+        
+        self.operator_account = self.w3.eth.account.from_key(operator_private_key) if operator_private_key else self.w3.eth.accounts[0]
         self.operator_address = self.operator_account.address
         self.private_key = self.operator_account.key if hasattr(self.operator_account, 'key') else self.operator_account.privateKey
 

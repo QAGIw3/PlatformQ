@@ -6,16 +6,11 @@ from typing import AsyncGenerator
 
 from .base import BaseStorage
 
-# In a real app, this would come from config/vault
-MINIO_API_HOST = "minio:9000"
-MINIO_ACCESS_KEY = "minioadmin"
-MINIO_SECRET_KEY = "minioadmin"
-
 class MinIOStorage(BaseStorage):
     """
     MinIO storage backend.
     """
-    def __init__(self, host=MINIO_API_HOST, access_key=MINIO_ACCESS_KEY, secret_key=MINIO_SECRET_KEY):
+    def __init__(self, host, access_key, secret_key):
         self._client = Minio(
             host,
             access_key=access_key,

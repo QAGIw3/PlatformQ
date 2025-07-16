@@ -1,7 +1,8 @@
 -r ../../requirements/base.in
+zulip
+hvac
 
 # Service-specific dependencies
-zulip
 schedule
 
 # Development and Testing

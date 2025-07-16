@@ -15,6 +15,7 @@ import requests
 from requests.auth import HTTPBasicAuth
 import pulsar
 from pulsar.schema import AvroSchema
+from platformq_shared.config import ConfigLoader
 
 logger = logging.getLogger(__name__)
 
@@ -22,10 +23,7 @@ logger = logging.getLogger(__name__)
 class AirflowBridge:
     """Bridge between PlatformQ events and Airflow DAGs"""
     
-    def __init__(self, 
-                 airflow_url: str = None,
-                 airflow_username: str = None,
-                 airflow_password: str = None):
+    def __init__(self, airflow_url: str):
         """
         Initialize Airflow bridge
         
@@ -33,10 +31,13 @@ class AirflowBridge:
         :param airflow_username: Username for Airflow authentication
         :param airflow_password: Password for Airflow authentication
         """
-        self.airflow_url = airflow_url or os.getenv('AIRFLOW_API_URL', 'http://airflow_webserver:8080')
-        self.airflow_username = airflow_username or os.getenv('AIRFLOW_USERNAME', 'airflow')
-        self.airflow_password = airflow_password or os.getenv('AIRFLOW_PASSWORD', 'airflow')
-        self.auth = HTTPBasicAuth(self.airflow_username, self.airflow_password)
+        self.airflow_url = airflow_url.rstrip('/')
+        self.session = requests.Session()
+        config_loader = ConfigLoader()
+        settings = config_loader.load_settings()
+        self.airflow_user = settings.get("AIRFLOW_USER", "airflow")
+        self.airflow_password = settings.get("AIRFLOW_PASSWORD")
+        self.session.auth = (self.airflow_user, self.airflow_password)
         
         # Event to DAG mapping
         self.event_dag_mapping = {
@@ -71,7 +72,7 @@ class AirflowBridge:
             response = requests.post(
                 url,
                 json=payload,
-                auth=self.auth,
+                auth=self.session.auth,
                 headers={'Content-Type': 'application/json'}
             )
             
@@ -95,7 +96,7 @@ class AirflowBridge:
         url = f"{self.airflow_url}/api/v1/dags/{dag_id}/dagRuns/{run_id}"
         
         try:
-            response = requests.get(url, auth=self.auth)
+            response = requests.get(url, auth=self.session.auth)
             response.raise_for_status()
             return response.json()
             
@@ -112,7 +113,7 @@ class AirflowBridge:
         url = f"{self.airflow_url}/api/v1/dags"
         
         try:
-            response = requests.get(url, auth=self.auth)
+            response = requests.get(url, auth=self.session.auth)
             response.raise_for_status()
             return response.json().get('dags', [])
             
@@ -136,7 +137,7 @@ class AirflowBridge:
             response = requests.patch(
                 url,
                 json=payload,
-                auth=self.auth,
+                auth=self.session.auth,
                 headers={'Content-Type': 'application/json'}
             )
             

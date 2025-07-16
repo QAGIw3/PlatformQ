@@ -1,6 +1,8 @@
 import requests
 from fastapi import Depends, HTTPException, status, Security, Request, Header
-from cassandra.cluster import Session
+from cassandra.cluster import Session, AuthProvider as CassandraAuthProvider
+import hvac
+import os
 import datetime
 from uuid import UUID
 
@@ -13,12 +15,38 @@ from platformq_shared import security as shared_security
 # dependencies and this specific service's concrete implementation of its
 # CRUD modules. They are wired into the shared library in main.py.
 
+VAULT_ADDR = os.getenv("VAULT_ADDR")
+VAULT_ROLE_ID = os.getenv("VAULT_ROLE_ID")
+VAULT_SECRET_ID = os.getenv("VAULT_SECRET_ID")
+
+class VaultCassandraAuthProvider(CassandraAuthProvider):
+    def __init__(self, vault_client, db_name):
+        self.vault_client = vault_client
+        self.db_name = db_name
+
+    def new_credentials(self, host=None):
+        creds = self.vault_client.secrets.database.generate_credentials(name=self.db_name)
+        return {'username': creds['data']['username'], 'password': creds['data']['password']}
 
 def get_db_session(request: Request) -> Session:
     """
     FastAPI dependency that provides a Cassandra session from the app state.
     It also ensures the keyspace exists.
     """
+    if not hasattr(request.app.state, 'db_manager'):
+        client = hvac.Client(url=VAULT_ADDR)
+        client.auth.approle.login(role_id=VAULT_ROLE_ID, secret_id=VAULT_SECRET_ID)
+        
+        auth_provider = VaultCassandraAuthProvider(client, "auth-service")
+        
+        # This should be replaced with a proper singleton pattern
+        from ....platformq_shared.db.cassandra import CassandraManager
+        request.app.state.db_manager = CassandraManager(
+            hosts=request.app.state.settings.get('CASSANDRA_HOSTS'),
+            port=request.app.state.settings.get('CASSANDRA_PORT'),
+            auth_provider=auth_provider
+        )
+
     session = request.app.state.db_manager.get_session()
     # This is not ideal, as the keyspace is hardcoded.
     # A better solution would fetch this from config as well.

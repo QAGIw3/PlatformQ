@@ -57,15 +57,27 @@ class ConfigLoader:
     def load_settings(self):
         """Loads a standard set of platform settings."""
         settings = {
-            "CASSANDRA_HOSTS": self.get_config("platformq/cassandra/hosts").split(','),
-            "CASSANDRA_PORT": int(self.get_config("platformq/cassandra/port")),
             "PULSAR_URL": self.get_config("platformq/pulsar/url"),
             "OTEL_EXPORTER_OTLP_ENDPOINT": self.get_config("platformq/opentelemetry/endpoint", default="otel-collector:4317"),
         }
         
         if self.vault_client:
+            cassandra_config = self.get_secret("platformq/cassandra", "config")
+            settings["CASSANDRA_HOSTS"] = cassandra_config.get("hosts").split(',')
+            settings["CASSANDRA_PORT"] = int(cassandra_config.get("port"))
             settings["CASSANDRA_USER"] = self.get_secret("platformq/cassandra", "user")
             settings["CASSANDRA_PASSWORD"] = self.get_secret("platformq/cassandra", "password")
             settings["ARWEAVE_WALLET"] = self.get_secret("platformq/arweave", "wallet")
+            settings["MINIO_ACCESS_KEY"] = self.get_secret("platformq/minio", "access_key")
+            settings["MINIO_SECRET_KEY"] = self.get_secret("platformq/minio", "secret_key")
+            settings["POSTGRES_PASSWORD"] = self.get_secret("platformq/postgres", "password")
+            settings["S2S_JWT_SECRET"] = self.get_secret("platformq/jwt", "s2s_secret_key")
+            settings["ETHEREUM_PRIVATE_KEY"] = self.get_secret("platformq/ethereum", "private_key")
+            settings["POLYGON_PRIVATE_KEY"] = self.get_secret("platformq/polygon", "private_key")
+            settings["CREDENTIAL_ENCRYPTION_KEY"] = self.get_secret("platformq/credentials", "encryption_key")
+            settings["BRIDGE_PRIVATE_KEY"] = self.get_secret("platformq/bridge", "private_key")
+            settings["REPUTATION_OPERATOR_PRIVATE_KEY"] = self.get_secret("platformq/reputation", "operator_private_key")
+            settings["ZULIP_API_KEY"] = self.get_secret("platformq/zulip", "api_key")
+            settings["OPENPROJECT_API_KEY"] = self.get_secret("platformq/openproject", "api_key")
         
         return settings 
