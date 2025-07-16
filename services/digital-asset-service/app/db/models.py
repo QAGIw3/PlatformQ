@@ -1,8 +1,9 @@
 import uuid
-from sqlalchemy import Column, String, DateTime, ForeignKey, Table, TypeDecorator, JSON, LargeBinary
+from sqlalchemy import Column, String, DateTime, ForeignKey, Table, TypeDecorator, JSON, LargeBinary, Integer, BigInteger
 from sqlalchemy.orm import relationship, Mapped
 from sqlalchemy.dialects.postgresql import UUID, JSONB
 from sqlalchemy.sql import func
+from sqlalchemy import UniqueConstraint
 from ..postgres_db import Base
 
 # --- Compatibility Type for Testing ---
@@ -83,4 +84,84 @@ class DigitalAsset(Base):
         primaryjoin=asset_id == asset_links.c.target_asset_id,
         secondaryjoin=asset_id == asset_links.c.source_asset_id,
         back_populates="links"
+    )
+    
+    # CAD collaboration relationships
+    cad_sessions = relationship("CADSession", back_populates="asset")
+    geometry_versions = relationship("GeometryVersion", back_populates="asset")
+
+
+class CADSession(Base):
+    __tablename__ = 'cad_sessions'
+    
+    session_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    asset_id = Column(UUID(as_uuid=True), ForeignKey('digital_assets.asset_id'), nullable=False)
+    tenant_id = Column(UUID(as_uuid=True), nullable=False, index=True)
+    created_by = Column(UUID(as_uuid=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    closed_at = Column(DateTime(timezone=True), nullable=True)
+    
+    # Session state
+    active_users = Column(JsonBCompat, default=list)
+    crdt_state = Column(LargeBinary, nullable=True)  # Compressed CRDT state
+    vector_clock = Column(JsonBCompat, default=dict)
+    operation_count = Column(Integer, default=0)
+    last_checkpoint_id = Column(UUID(as_uuid=True), nullable=True)
+    
+    # Session metadata
+    session_metadata = Column(JsonBCompat, default=dict)
+    
+    # Relationships
+    asset = relationship("DigitalAsset", back_populates="cad_sessions")
+    checkpoints = relationship("CADCheckpoint", back_populates="session")
+
+
+class CADCheckpoint(Base):
+    __tablename__ = 'cad_checkpoints'
+    
+    checkpoint_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    session_id = Column(UUID(as_uuid=True), ForeignKey('cad_sessions.session_id'), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Checkpoint data
+    snapshot_uri = Column(String, nullable=False)  # MinIO URI
+    operation_range_start = Column(String, nullable=False)
+    operation_range_end = Column(String, nullable=False)
+    operation_count = Column(Integer, nullable=False)
+    crdt_state_size = Column(BigInteger, nullable=False)
+    
+    # Relationships
+    session = relationship("CADSession", back_populates="checkpoints")
+
+
+class GeometryVersion(Base):
+    __tablename__ = 'geometry_versions'
+    
+    version_id = Column(UUID(as_uuid=True), primary_key=True, default=uuid.uuid4)
+    asset_id = Column(UUID(as_uuid=True), ForeignKey('digital_assets.asset_id'), nullable=False)
+    version_number = Column(Integer, nullable=False)
+    created_by = Column(UUID(as_uuid=True), nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now())
+    
+    # Version data
+    geometry_snapshot_uri = Column(String, nullable=True)  # Full snapshot in MinIO
+    geometry_diff = Column(LargeBinary, nullable=True)  # Compressed diff from previous
+    parent_version_id = Column(UUID(as_uuid=True), nullable=True)
+    
+    # Statistics
+    vertex_count = Column(Integer, nullable=True)
+    edge_count = Column(Integer, nullable=True)
+    face_count = Column(Integer, nullable=True)
+    file_size_bytes = Column(BigInteger, nullable=True)
+    
+    # Metadata
+    version_metadata = Column(JsonBCompat, default=dict)
+    commit_message = Column(String, nullable=True)
+    
+    # Relationships
+    asset = relationship("DigitalAsset", back_populates="geometry_versions")
+    
+    # Add unique constraint to ensure version numbers are unique per asset
+    __table_args__ = (
+        UniqueConstraint('asset_id', 'version_number', name='_asset_version_uc'),
     ) 

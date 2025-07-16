@@ -1,0 +1,19 @@
+apiVersion: v2
+name: cad-collaboration-service
+description: Real-time collaborative CAD/3D editing service with CRDT support
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - cad
+  - collaboration
+  - 3d
+  - crdt
+  - realtime
+maintainers:
+  - name: PlatformQ Team
+    email: team@platformq.io
+dependencies:
+  - name: common
+    version: 1.x.x
+    repository: "https://charts.bitnami.com/bitnami" 

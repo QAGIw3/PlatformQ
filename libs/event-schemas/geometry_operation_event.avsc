@@ -1,0 +1,96 @@
+{
+  "namespace": "com.platformq.events.cad",
+  "type": "record",
+  "name": "GeometryOperationEvent",
+  "doc": "Event representing a geometry operation in collaborative CAD/3D modeling",
+  "fields": [
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "The tenant ID where this operation occurred"
+    },
+    {
+      "name": "asset_id",
+      "type": "string",
+      "doc": "The digital asset ID of the 3D model being edited"
+    },
+    {
+      "name": "session_id",
+      "type": "string",
+      "doc": "The collaborative editing session ID"
+    },
+    {
+      "name": "user_id",
+      "type": "string",
+      "doc": "The user ID who performed this operation"
+    },
+    {
+      "name": "operation_id",
+      "type": "string",
+      "doc": "Unique identifier for this operation"
+    },
+    {
+      "name": "operation_type",
+      "type": {
+        "type": "enum",
+        "name": "GeometryOperationType",
+        "symbols": ["CREATE", "MODIFY", "DELETE", "TRANSFORM", "MERGE", "SPLIT"]
+      },
+      "doc": "Type of geometry operation performed"
+    },
+    {
+      "name": "target_object_ids",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "doc": "IDs of geometry objects affected by this operation"
+    },
+    {
+      "name": "operation_data",
+      "type": "bytes",
+      "doc": "CRDT operation data serialized in a compact binary format"
+    },
+    {
+      "name": "vector_clock",
+      "type": {
+        "type": "map",
+        "values": "long"
+      },
+      "doc": "Vector clock for CRDT synchronization"
+    },
+    {
+      "name": "parent_operations",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "default": [],
+      "doc": "Parent operation IDs for causal ordering"
+    },
+    {
+      "name": "transform_matrix",
+      "type": ["null", {
+        "type": "array",
+        "items": "float"
+      }],
+      "default": null,
+      "doc": "4x4 transformation matrix as flat array (for TRANSFORM operations)"
+    },
+    {
+      "name": "operation_metadata",
+      "type": ["null", {
+        "type": "map",
+        "values": "string"
+      }],
+      "default": null,
+      "doc": "Additional metadata for the operation"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis",
+      "doc": "When this operation was performed"
+    }
+  ]
+} 

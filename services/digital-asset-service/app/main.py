@@ -108,6 +108,13 @@ def shutdown_event():
 app.include_router(digital_assets.router, prefix="/api/v1", tags=["digital-assets"])
 app.include_router(processing_rules.router, prefix="/api/v1", tags=["processing-rules"])
 
+# Import and include the CAD collaboration router
+try:
+    from .api.endpoints import cad_collaboration
+    app.include_router(cad_collaboration.router, prefix="/api/v1", tags=["cad-collaboration"])
+except ImportError:
+    logger.warning("CAD collaboration endpoints not available")
+
 @app.get("/")
 def read_root():
     return {"message": "digital-asset-service is running"}

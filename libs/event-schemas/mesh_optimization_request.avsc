@@ -1,0 +1,127 @@
+{
+  "namespace": "com.platformq.events.cad",
+  "type": "record",
+  "name": "MeshOptimizationRequest",
+  "doc": "Request to optimize a 3D mesh using Flink processing",
+  "fields": [
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "The tenant ID requesting optimization"
+    },
+    {
+      "name": "request_id",
+      "type": "string",
+      "doc": "Unique identifier for this optimization request"
+    },
+    {
+      "name": "asset_id",
+      "type": "string",
+      "doc": "The digital asset ID of the 3D model"
+    },
+    {
+      "name": "mesh_data_uri",
+      "type": "string",
+      "doc": "URI to the mesh data in MinIO (e.g., s3://platformq-meshes/tenant/asset/mesh.obj)"
+    },
+    {
+      "name": "optimization_type",
+      "type": {
+        "type": "enum",
+        "name": "OptimizationType",
+        "symbols": ["DECIMATE", "REMESH", "SIMPLIFY", "SMOOTH", "REPAIR"]
+      },
+      "doc": "Type of optimization to perform"
+    },
+    {
+      "name": "optimization_level",
+      "type": {
+        "type": "enum",
+        "name": "OptimizationLevel",
+        "symbols": ["LOW", "MEDIUM", "HIGH", "CUSTOM"]
+      },
+      "doc": "Optimization aggressiveness level"
+    },
+    {
+      "name": "target_poly_count",
+      "type": ["null", "long"],
+      "default": null,
+      "doc": "Target polygon count for decimation (if optimization_level is CUSTOM)"
+    },
+    {
+      "name": "target_file_size",
+      "type": ["null", "long"],
+      "default": null,
+      "doc": "Target file size in bytes"
+    },
+    {
+      "name": "preserve_features",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "enum",
+          "name": "PreserveFeature",
+          "symbols": ["UV_SEAMS", "HARD_EDGES", "VERTEX_COLORS", "MATERIALS", "TEXTURES"]
+        }
+      },
+      "default": [],
+      "doc": "Features to preserve during optimization"
+    },
+    {
+      "name": "generate_lods",
+      "type": "boolean",
+      "default": true,
+      "doc": "Whether to generate Level of Detail (LOD) versions"
+    },
+    {
+      "name": "lod_levels",
+      "type": ["null", {
+        "type": "array",
+        "items": "float"
+      }],
+      "default": null,
+      "doc": "Custom LOD levels as percentage of original (e.g., [0.5, 0.25, 0.1])"
+    },
+    {
+      "name": "output_format",
+      "type": {
+        "type": "enum",
+        "name": "MeshFormat",
+        "symbols": ["OBJ", "FBX", "GLTF", "GLB", "STL", "PLY"]
+      },
+      "default": "GLB",
+      "doc": "Desired output format for optimized mesh"
+    },
+    {
+      "name": "priority",
+      "type": {
+        "type": "enum",
+        "name": "ProcessingPriority",
+        "symbols": ["LOW", "NORMAL", "HIGH", "CRITICAL"]
+      },
+      "default": "NORMAL",
+      "doc": "Processing priority for the optimization job"
+    },
+    {
+      "name": "callback_url",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Optional webhook URL for completion notification"
+    },
+    {
+      "name": "metadata",
+      "type": ["null", {
+        "type": "map",
+        "values": "string"
+      }],
+      "default": null,
+      "doc": "Additional metadata for the optimization request"
+    },
+    {
+      "name": "requested_at",
+      "type": "long",
+      "logicalType": "timestamp-millis",
+      "doc": "When this optimization was requested"
+    }
+  ]
+} 

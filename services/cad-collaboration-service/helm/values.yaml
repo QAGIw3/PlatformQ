@@ -1,0 +1,183 @@
+# Default values for cad-collaboration-service
+replicaCount: 2
+
+image:
+  repository: platformq/cad-collaboration-service
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  fsGroup: 2000
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 80
+  websocketPort: 8080
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: cad-collab.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - cad-collaboration-service
+        topologyKey: kubernetes.io/hostname
+
+# Application configuration
+config:
+  logLevel: INFO
+  
+  # Ignite configuration
+  ignite:
+    hosts:
+      - ignite-0.ignite.default.svc.cluster.local:10800
+      - ignite-1.ignite.default.svc.cluster.local:10800
+    
+  # Pulsar configuration
+  pulsar:
+    serviceUrl: pulsar://pulsar-broker.default.svc.cluster.local:6650
+    adminUrl: http://pulsar-broker.default.svc.cluster.local:8080
+    
+  # Cassandra configuration
+  cassandra:
+    hosts:
+      - cassandra-0.cassandra.default.svc.cluster.local
+      - cassandra-1.cassandra.default.svc.cluster.local
+    port: 9042
+    keyspace: platformq_cad
+    
+  # MinIO configuration
+  minio:
+    endpoint: minio.default.svc.cluster.local:9000
+    accessKey: minioadmin
+    secretKey: minioadmin
+    secure: false
+    
+  # WebSocket configuration
+  websocket:
+    maxConnections: 1000
+    pingInterval: 30
+    pongTimeout: 10
+    
+  # CRDT configuration
+  crdt:
+    syncInterval: 1
+    checkpointInterval: 100
+    maxOperationLogSize: 10000
+    
+  # Mesh optimization
+  meshOptimization:
+    flinkJobManagerUrl: http://flink-jobmanager.default.svc.cluster.local:8081
+    requestTimeout: 300
+    maxConcurrentRequests: 50
+
+# Environment variables
+env:
+  - name: PYTHONUNBUFFERED
+    value: "1"
+  - name: SERVICE_NAME
+    value: "cad-collaboration-service"
+
+# Probes
+livenessProbe:
+  httpGet:
+    path: /health
+    port: http
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /ready
+    port: http
+  initialDelaySeconds: 10
+  periodSeconds: 5
+
+# Persistence
+persistence:
+  enabled: false
+  storageClass: ""
+  accessMode: ReadWriteOnce
+  size: 10Gi
+  mountPath: /data
+
+# Metrics
+metrics:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    path: /metrics
+
+# Network policies
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: default
+      - podSelector:
+          matchLabels:
+            app: frontend
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: default
+      - podSelector:
+          matchLabels:
+            app: digital-asset-service 

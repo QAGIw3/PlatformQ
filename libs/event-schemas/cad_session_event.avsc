@@ -1,0 +1,161 @@
+{
+  "namespace": "com.platformq.events.cad",
+  "type": "record",
+  "name": "CADSessionEvent",
+  "doc": "Event for CAD collaborative session lifecycle",
+  "fields": [
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "The tenant ID where this session exists"
+    },
+    {
+      "name": "session_id",
+      "type": "string",
+      "doc": "Unique identifier for the CAD session"
+    },
+    {
+      "name": "asset_id",
+      "type": "string",
+      "doc": "The digital asset ID being edited in this session"
+    },
+    {
+      "name": "event_type",
+      "type": {
+        "type": "enum",
+        "name": "SessionEventType",
+        "symbols": ["CREATED", "USER_JOINED", "USER_LEFT", "CHECKPOINT_CREATED", "CONFLICT_RESOLVED", "CLOSED"]
+      },
+      "doc": "Type of session event"
+    },
+    {
+      "name": "user_id",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "User ID associated with this event (for join/leave events)"
+    },
+    {
+      "name": "active_users",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "doc": "Current list of active users in the session"
+    },
+    {
+      "name": "session_state",
+      "type": ["null", {
+        "type": "record",
+        "name": "SessionState",
+        "fields": [
+          {
+            "name": "operation_count",
+            "type": "long",
+            "doc": "Total number of operations in this session"
+          },
+          {
+            "name": "crdt_state_size",
+            "type": "long",
+            "doc": "Size of CRDT state in bytes"
+          },
+          {
+            "name": "last_checkpoint_id",
+            "type": ["null", "string"],
+            "default": null,
+            "doc": "ID of the last checkpoint"
+          },
+          {
+            "name": "conflict_count",
+            "type": "long",
+            "default": 0,
+            "doc": "Number of conflicts resolved in this session"
+          }
+        ]
+      }],
+      "default": null,
+      "doc": "Current session state information"
+    },
+    {
+      "name": "checkpoint_data",
+      "type": ["null", {
+        "type": "record",
+        "name": "CheckpointData",
+        "fields": [
+          {
+            "name": "checkpoint_id",
+            "type": "string",
+            "doc": "Unique identifier for this checkpoint"
+          },
+          {
+            "name": "snapshot_uri",
+            "type": "string",
+            "doc": "URI to the geometry snapshot in MinIO"
+          },
+          {
+            "name": "operation_range",
+            "type": {
+              "type": "record",
+              "name": "OperationRange",
+              "fields": [
+                {"name": "start_operation_id", "type": "string"},
+                {"name": "end_operation_id", "type": "string"},
+                {"name": "operation_count", "type": "long"}
+              ]
+            },
+            "doc": "Range of operations included in this checkpoint"
+          }
+        ]
+      }],
+      "default": null,
+      "doc": "Checkpoint data (for CHECKPOINT_CREATED events)"
+    },
+    {
+      "name": "conflict_resolution",
+      "type": ["null", {
+        "type": "record",
+        "name": "ConflictResolution",
+        "fields": [
+          {
+            "name": "conflicting_operations",
+            "type": {
+              "type": "array",
+              "items": "string"
+            },
+            "doc": "IDs of operations that conflicted"
+          },
+          {
+            "name": "resolution_strategy",
+            "type": {
+              "type": "enum",
+              "name": "ResolutionStrategy",
+              "symbols": ["LAST_WRITE_WINS", "OPERATIONAL_TRANSFORM", "USER_PRIORITY", "MERGE"]
+            },
+            "doc": "Strategy used to resolve the conflict"
+          },
+          {
+            "name": "resulting_operation_id",
+            "type": "string",
+            "doc": "ID of the operation resulting from conflict resolution"
+          }
+        ]
+      }],
+      "default": null,
+      "doc": "Conflict resolution data (for CONFLICT_RESOLVED events)"
+    },
+    {
+      "name": "metadata",
+      "type": ["null", {
+        "type": "map",
+        "values": "string"
+      }],
+      "default": null,
+      "doc": "Additional event metadata"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis",
+      "doc": "When this event occurred"
+    }
+  ]
+} 

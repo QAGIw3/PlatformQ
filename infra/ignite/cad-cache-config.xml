@@ -1,0 +1,176 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="
+       http://www.springframework.org/schema/beans
+       http://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean id="ignite.cfg" class="org.apache.ignite.configuration.IgniteConfiguration">
+        <!-- Cluster name -->
+        <property name="igniteInstanceName" value="platformq-cad-cluster"/>
+        
+        <!-- Enable peer class loading -->
+        <property name="peerClassLoadingEnabled" value="true"/>
+        
+        <!-- Memory configuration -->
+        <property name="dataStorageConfiguration">
+            <bean class="org.apache.ignite.configuration.DataStorageConfiguration">
+                <!-- Default memory region for CAD data -->
+                <property name="defaultDataRegionConfiguration">
+                    <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                        <property name="name" value="CAD_Region"/>
+                        <property name="initialSize" value="#{512 * 1024 * 1024}"/> <!-- 512 MB -->
+                        <property name="maxSize" value="#{4L * 1024 * 1024 * 1024}"/> <!-- 4 GB -->
+                        <property name="persistenceEnabled" value="false"/>
+                        <property name="metricsEnabled" value="true"/>
+                        
+                        <!-- Memory eviction -->
+                        <property name="pageEvictionMode" value="RANDOM_2_LRU"/>
+                        <property name="evictionThreshold" value="0.9"/>
+                    </bean>
+                </property>
+                
+                <!-- Enable memory metrics -->
+                <property name="metricsEnabled" value="true"/>
+            </bean>
+        </property>
+        
+        <!-- Cache configurations -->
+        <property name="cacheConfiguration">
+            <list>
+                <!-- Active geometry cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="active-geometry"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="backups" value="2"/>
+                    <property name="writeSynchronizationMode" value="PRIMARY_SYNC"/>
+                    
+                    <!-- Eviction policy -->
+                    <property name="onheapCacheEnabled" value="true"/>
+                    <property name="evictionPolicyFactory">
+                        <bean class="org.apache.ignite.cache.eviction.lru.LruEvictionPolicyFactory">
+                            <property name="maxSize" value="1000"/>
+                        </bean>
+                    </property>
+                    
+                    <!-- Near cache for faster local access -->
+                    <property name="nearConfiguration">
+                        <bean class="org.apache.ignite.configuration.NearCacheConfiguration">
+                            <property name="nearEvictionPolicyFactory">
+                                <bean class="org.apache.ignite.cache.eviction.lru.LruEvictionPolicyFactory">
+                                    <property name="maxSize" value="100"/>
+                                </bean>
+                            </property>
+                        </bean>
+                    </property>
+                </bean>
+                
+                <!-- CAD sessions cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="cad-sessions"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="backups" value="2"/>
+                    <property name="writeSynchronizationMode" value="PRIMARY_SYNC"/>
+                    
+                    <!-- Expiry policy: 24 hours -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="HOURS"/>
+                                    <constructor-arg value="24"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+                
+                <!-- Operation log cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="operation-log"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="backups" value="1"/>
+                    
+                    <!-- TTL: 24 hours -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="HOURS"/>
+                                    <constructor-arg value="24"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+                
+                <!-- User presence cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="user-presence"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    
+                    <!-- Very short TTL: 30 seconds -->
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="SECONDS"/>
+                                    <constructor-arg value="30"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+                
+                <!-- Geometry snapshots cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="geometry-snapshots"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="backups" value="2"/>
+                    
+                    <!-- Eviction for large objects -->
+                    <property name="evictionPolicyFactory">
+                        <bean class="org.apache.ignite.cache.eviction.fifo.FifoEvictionPolicyFactory">
+                            <property name="maxSize" value="10000"/>
+                        </bean>
+                    </property>
+                </bean>
+            </list>
+        </property>
+        
+        <!-- Discovery configuration -->
+        <property name="discoverySpi">
+            <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+                <property name="ipFinder">
+                    <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.kubernetes.TcpDiscoveryKubernetesIpFinder">
+                        <property name="namespace" value="platformq"/>
+                        <property name="serviceName" value="ignite-service"/>
+                    </bean>
+                </property>
+            </bean>
+        </property>
+        
+        <!-- Communication SPI -->
+        <property name="communicationSpi">
+            <bean class="org.apache.ignite.spi.communication.tcp.TcpCommunicationSpi">
+                <property name="messageQueueLimit" value="1024"/>
+                <property name="slowClientQueueLimit" value="1000"/>
+            </bean>
+        </property>
+        
+        <!-- Metrics -->
+        <property name="metricsLogFrequency" value="60000"/> <!-- Log metrics every minute -->
+        
+        <!-- SQL Query Engine Configuration -->
+        <property name="sqlConfiguration">
+            <bean class="org.apache.ignite.configuration.SqlConfiguration">
+                <property name="queryThreadPoolSize" value="16"/>
+            </bean>
+        </property>
+    </bean>
+</beans> 

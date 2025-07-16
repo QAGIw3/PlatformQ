@@ -1,0 +1,135 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "cad-collaboration-service.fullname" . }}
+  labels:
+    {{- include "cad-collaboration-service.labels" . | nindent 4 }}
+spec:
+  {{- if not .Values.autoscaling.enabled }}
+  replicas: {{ .Values.replicaCount }}
+  {{- end }}
+  selector:
+    matchLabels:
+      {{- include "cad-collaboration-service.selectorLabels" . | nindent 6 }}
+  template:
+    metadata:
+      annotations:
+        checksum/config: {{ include (print $.Template.BasePath "/configmap.yaml") . | sha256sum }}
+        {{- with .Values.podAnnotations }}
+        {{- toYaml . | nindent 8 }}
+        {{- end }}
+      labels:
+        {{- include "cad-collaboration-service.selectorLabels" . | nindent 8 }}
+    spec:
+      {{- with .Values.imagePullSecrets }}
+      imagePullSecrets:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      serviceAccountName: {{ include "cad-collaboration-service.serviceAccountName" . }}
+      securityContext:
+        {{- toYaml .Values.podSecurityContext | nindent 8 }}
+      initContainers:
+        - name: wait-for-ignite
+          image: busybox:1.35
+          command: ['sh', '-c']
+          args:
+            - |
+              echo "Waiting for Ignite to be ready..."
+              until nc -z {{ (index .Values.config.ignite.hosts 0) | replace ":10800" "" }} 10800; do
+                echo "Ignite is unavailable - sleeping"
+                sleep 2
+              done
+              echo "Ignite is ready!"
+        - name: wait-for-cassandra
+          image: busybox:1.35
+          command: ['sh', '-c']
+          args:
+            - |
+              echo "Waiting for Cassandra to be ready..."
+              until nc -z {{ index .Values.config.cassandra.hosts 0 }} {{ .Values.config.cassandra.port }}; do
+                echo "Cassandra is unavailable - sleeping"
+                sleep 2
+              done
+              echo "Cassandra is ready!"
+      containers:
+        - name: {{ .Chart.Name }}
+          securityContext:
+            {{- toYaml .Values.securityContext | nindent 12 }}
+          image: "{{ .Values.image.repository }}:{{ .Values.image.tag | default .Chart.AppVersion }}"
+          imagePullPolicy: {{ .Values.image.pullPolicy }}
+          ports:
+            - name: http
+              containerPort: {{ .Values.service.targetPort }}
+              protocol: TCP
+            - name: websocket
+              containerPort: {{ .Values.service.websocketPort }}
+              protocol: TCP
+          livenessProbe:
+            {{- toYaml .Values.livenessProbe | nindent 12 }}
+          readinessProbe:
+            {{- toYaml .Values.readinessProbe | nindent 12 }}
+          resources:
+            {{- toYaml .Values.resources | nindent 12 }}
+          env:
+            {{- toYaml .Values.env | nindent 12 }}
+            - name: LOG_LEVEL
+              value: {{ .Values.config.logLevel }}
+            - name: IGNITE_HOSTS
+              value: {{ join "," .Values.config.ignite.hosts }}
+            - name: PULSAR_SERVICE_URL
+              value: {{ .Values.config.pulsar.serviceUrl }}
+            - name: PULSAR_ADMIN_URL
+              value: {{ .Values.config.pulsar.adminUrl }}
+            - name: CASSANDRA_HOSTS
+              value: {{ join "," .Values.config.cassandra.hosts }}
+            - name: CASSANDRA_PORT
+              value: {{ .Values.config.cassandra.port | quote }}
+            - name: CASSANDRA_KEYSPACE
+              value: {{ .Values.config.cassandra.keyspace }}
+            - name: MINIO_ENDPOINT
+              value: {{ .Values.config.minio.endpoint }}
+            - name: MINIO_ACCESS_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cad-collaboration-service.fullname" . }}-minio
+                  key: access-key
+            - name: MINIO_SECRET_KEY
+              valueFrom:
+                secretKeyRef:
+                  name: {{ include "cad-collaboration-service.fullname" . }}-minio
+                  key: secret-key
+            - name: WEBSOCKET_MAX_CONNECTIONS
+              value: {{ .Values.config.websocket.maxConnections | quote }}
+            - name: CRDT_SYNC_INTERVAL
+              value: {{ .Values.config.crdt.syncInterval | quote }}
+            - name: CRDT_CHECKPOINT_INTERVAL
+              value: {{ .Values.config.crdt.checkpointInterval | quote }}
+          volumeMounts:
+            - name: config
+              mountPath: /app/config
+              readOnly: true
+            {{- if .Values.persistence.enabled }}
+            - name: data
+              mountPath: {{ .Values.persistence.mountPath }}
+            {{- end }}
+      volumes:
+        - name: config
+          configMap:
+            name: {{ include "cad-collaboration-service.fullname" . }}
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          persistentVolumeClaim:
+            claimName: {{ include "cad-collaboration-service.fullname" . }}
+        {{- end }}
+      {{- with .Values.nodeSelector }}
+      nodeSelector:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.affinity }}
+      affinity:
+        {{- toYaml . | nindent 8 }}
+      {{- end }}
+      {{- with .Values.tolerations }}
+      tolerations:
+        {{- toYaml . | nindent 8 }}
+      {{- end }} 

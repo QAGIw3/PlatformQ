@@ -1,0 +1,212 @@
+{
+  "namespace": "com.platformq.events.cad",
+  "type": "record",
+  "name": "MeshOptimizationResult",
+  "doc": "Result of a mesh optimization job from Flink processing",
+  "fields": [
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "The tenant ID that requested optimization"
+    },
+    {
+      "name": "request_id",
+      "type": "string",
+      "doc": "Original optimization request ID"
+    },
+    {
+      "name": "asset_id",
+      "type": "string",
+      "doc": "The digital asset ID of the optimized 3D model"
+    },
+    {
+      "name": "status",
+      "type": {
+        "type": "enum",
+        "name": "OptimizationStatus",
+        "symbols": ["SUCCESS", "PARTIAL_SUCCESS", "FAILED", "TIMEOUT"]
+      },
+      "doc": "Status of the optimization job"
+    },
+    {
+      "name": "optimized_mesh_uri",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "URI to the optimized mesh in MinIO (null if failed)"
+    },
+    {
+      "name": "lod_hierarchy",
+      "type": ["null", {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "LODLevel",
+          "fields": [
+            {
+              "name": "level",
+              "type": "int",
+              "doc": "LOD level (0 = highest detail)"
+            },
+            {
+              "name": "reduction_percentage",
+              "type": "float",
+              "doc": "Percentage of original mesh (e.g., 0.5 = 50%)"
+            },
+            {
+              "name": "poly_count",
+              "type": "long",
+              "doc": "Number of polygons at this LOD"
+            },
+            {
+              "name": "vertex_count",
+              "type": "long",
+              "doc": "Number of vertices at this LOD"
+            },
+            {
+              "name": "file_size",
+              "type": "long",
+              "doc": "File size in bytes"
+            },
+            {
+              "name": "mesh_uri",
+              "type": "string",
+              "doc": "URI to this LOD mesh in MinIO"
+            },
+            {
+              "name": "quality_metrics",
+              "type": {
+                "type": "record",
+                "name": "QualityMetrics",
+                "fields": [
+                  {
+                    "name": "hausdorff_distance",
+                    "type": "float",
+                    "doc": "Maximum distance between original and optimized mesh"
+                  },
+                  {
+                    "name": "mean_error",
+                    "type": "float",
+                    "doc": "Mean geometric error"
+                  },
+                  {
+                    "name": "visual_quality_score",
+                    "type": "float",
+                    "doc": "Visual quality score (0.0 - 1.0)"
+                  }
+                ]
+              },
+              "doc": "Quality metrics for this LOD"
+            }
+          ]
+        }
+      }],
+      "default": null,
+      "doc": "Generated LOD hierarchy (null if not requested or failed)"
+    },
+    {
+      "name": "optimization_metrics",
+      "type": {
+        "type": "record",
+        "name": "OptimizationMetrics",
+        "fields": [
+          {
+            "name": "original_poly_count",
+            "type": "long",
+            "doc": "Original polygon count"
+          },
+          {
+            "name": "optimized_poly_count",
+            "type": "long",
+            "doc": "Optimized polygon count"
+          },
+          {
+            "name": "original_file_size",
+            "type": "long",
+            "doc": "Original file size in bytes"
+          },
+          {
+            "name": "optimized_file_size",
+            "type": "long",
+            "doc": "Optimized file size in bytes"
+          },
+          {
+            "name": "reduction_percentage",
+            "type": "float",
+            "doc": "Overall reduction percentage"
+          },
+          {
+            "name": "processing_time_ms",
+            "type": "long",
+            "doc": "Total processing time in milliseconds"
+          },
+          {
+            "name": "features_preserved",
+            "type": {
+              "type": "array",
+              "items": "string"
+            },
+            "doc": "List of features that were preserved"
+          }
+        ]
+      },
+      "doc": "Metrics about the optimization process"
+    },
+    {
+      "name": "error_details",
+      "type": ["null", {
+        "type": "record",
+        "name": "ErrorDetails",
+        "fields": [
+          {
+            "name": "error_code",
+            "type": "string",
+            "doc": "Error code for debugging"
+          },
+          {
+            "name": "error_message",
+            "type": "string",
+            "doc": "Human-readable error message"
+          },
+          {
+            "name": "stack_trace",
+            "type": ["null", "string"],
+            "default": null,
+            "doc": "Stack trace if available"
+          },
+          {
+            "name": "failed_at_stage",
+            "type": ["null", "string"],
+            "default": null,
+            "doc": "Processing stage where failure occurred"
+          }
+        ]
+      }],
+      "default": null,
+      "doc": "Error details if optimization failed"
+    },
+    {
+      "name": "warnings",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "default": [],
+      "doc": "Any warnings generated during optimization"
+    },
+    {
+      "name": "metadata",
+      "type": ["null", {
+        "type": "map",
+        "values": "string"
+      }],
+      "default": null,
+      "doc": "Additional result metadata"
+    },
+    {
+      "name": "completed_at",
+      "type": "long",
+      "logicalType": "timestamp-millis",
+      "doc": "When the optimization completed"
+    }
+  ]
+} 
