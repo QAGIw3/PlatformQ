@@ -1,0 +1,8 @@
+_format_version: "2.1"
+_comment: "Declarative Kong configuration for platformQ"
+
+_includes:
+  - _services.yaml
+  - _routes.yaml
+  - _plugins.yaml
+  - _consumers.yaml 

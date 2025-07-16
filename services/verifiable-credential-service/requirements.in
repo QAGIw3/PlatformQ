@@ -48,3 +48,12 @@ jsonschema>=4.17.0
 pytest
 black
 ruff 
+
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+fastapi
+uvicorn
+pydid
+pyld
+json-schema
+pyopenssl 

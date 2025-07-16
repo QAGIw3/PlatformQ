@@ -1,14 +1,20 @@
-from pydantic_settings import BaseSettings
+from platformq.shared.config import Settings
+from typing import List
 
-class Settings(BaseSettings):
-    STORAGE_BACKEND: str = "minio"
-    AUTH_SERVICE_URL: str = "http://auth-service:8000"
-    
-    # Arweave Settings
-    ARWEAVE_WALLET_FILE: str = "arweave-wallet.json"
+class AppSettings(Settings):
+    cassandra_hosts: List[str]
+    cassandra_port: int
+    cassandra_user: str
+    cassandra_password: str
+    pulsar_url: str
+    otel_exporter_otlp_endpoint: str
+    storage_backend: str = "minio"
+    auth_service_url: str
+    minio_endpoint: str
+    minio_access_key: str
+    minio_secret_key: str
 
     class Config:
-        env_file = ".env"
-        env_file_encoding = 'utf-8'
+        env_prefix = "STORAGE_PROXY_"
 
-settings = Settings() 
+settings = AppSettings() 

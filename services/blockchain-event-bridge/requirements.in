@@ -14,3 +14,10 @@ cosmpy==0.9.0
 near-api-py==0.1.0
 networkx==3.2
 platformq-shared @ file:///app/libs/shared
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+fastapi
+uvicorn
+web3
+pulsar-client
+avro

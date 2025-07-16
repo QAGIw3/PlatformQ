@@ -1,0 +1,23 @@
+# iac/kubernetes/kong/_services.yaml
+services:
+  - name: auth-service
+    url: http://auth-service.platformq.svc:8000
+    tags: [ "auth", "identity" ]
+  - name: digital-asset-service
+    url: http://digital-asset-service.platformq.svc:8000
+    tags: [ "digital-assets", "storage" ]
+  - name: storage-proxy-service
+    url: http://storage-proxy-service.platformq.svc:8000
+    tags: [ "storage", "proxy" ]
+  - name: verifiable-credential-service
+    url: http://verifiable-credential-service.platformq.svc:8000
+    tags: [ "vc", "identity" ]
+  - name: projects-service
+    url: http://projects-service.platformq.svc:8000
+    tags: [ "projects", "collaboration" ]
+  - name: graph-intelligence-service
+    url: http://graph-intelligence-service.platformq.svc:8000
+    tags: [ "graph", "analytics" ]
+  - name: search-service
+    url: http://search-service.platformq.svc:8000
+    tags: [ "search", "analytics" ] 

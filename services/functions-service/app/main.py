@@ -1,4 +1,4 @@
-from shared_lib.base_service import create_base_app
+from platformq.shared.base_service import create_base_app
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel, Field
 import yaml
@@ -12,7 +12,7 @@ from .db import create_db_and_tables, get_db
 from .api.endpoints import wasm_modules
 from .crud import wasm_module_crud
 from platformq_shared.event_publisher import EventPublisher
-from platformq_shared.config import ConfigLoader
+from .core.config import settings
 from platformq_shared.events import FunctionExecutionCompleted
 from pulsar.schema import AvroSchema
 from sqlalchemy.orm import Session
@@ -26,9 +26,6 @@ from .grpc_generated import connector_pb2, connector_pb2_grpc
 import grpc
 import os
 
-# --- Configuration ---
-# In a real app, these would come from environment variables or a config service
-CONNECTOR_SERVICE_GRPC_TARGET = os.environ.get("CONNECTOR_SERVICE_GRPC_TARGET", "connector-service:50051")
 # ---
 
 # Setup basic logging
@@ -37,10 +34,10 @@ logger = logging.getLogger(__name__)
 
 app = create_base_app(
     service_name="functions-service",
-    db_session_dependency=get_db_session,
-    api_key_crud_dependency=get_api_key_crud_placeholder,
-    user_crud_dependency=get_user_crud_placeholder,
-    password_verifier_dependency=get_password_verifier_placeholder,
+    db_session_dependency=get_db,
+    api_key_crud_dependency=lambda: None,
+    user_crud_dependency=lambda: None,
+    password_verifier_dependency=lambda: None,
 )
 
 # Include service-specific routers
@@ -55,9 +52,7 @@ async def startup_event():
     create_db_and_tables()
 
     # Setup the event publisher
-    config_loader = ConfigLoader()
-    settings = config_loader.load_settings()
-    pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
+    pulsar_url = settings.pulsar_url
     publisher = EventPublisher(pulsar_url=pulsar_url)
     publisher.connect()
     app.state.event_publisher = publisher

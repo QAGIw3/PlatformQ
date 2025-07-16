@@ -2,7 +2,10 @@
 
 # Service-specific dependencies
 kubernetes
+fastapi
+uvicorn
 wasmtime
+pydantic
 grpcio-tools
 python-multipart
  

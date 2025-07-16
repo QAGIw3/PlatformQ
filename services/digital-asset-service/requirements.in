@@ -1,10 +1,12 @@
--r ../../requirements/base.in
-
-# Service-specific dependencies
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+fastapi
+uvicorn
+pydantic
+sqlalchemy
 psycopg2-binary
 alembic
-httpx
-hvac
+minio
 
 # Development and Testing
 # No specific test dependencies for now

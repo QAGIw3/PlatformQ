@@ -51,3 +51,5 @@ pyomo==6.7.0  # Optimization modeling
 
 # Platform shared (local package)
 -e ../../libs/shared 
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events 

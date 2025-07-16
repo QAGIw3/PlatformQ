@@ -20,18 +20,18 @@ import brian2 as b2
 from brian2 import *
 
 # Platform shared libraries
-from platformq_shared.base_service import BaseService
-from platformq_shared.pulsar_client import PulsarClient
-from platformq_shared.ignite_utils import IgniteCache
-from platformq_shared.logging_config import get_logger
-from platformq_shared.monitoring import track_processing_time
+from platformq.shared.base_service import BaseService
+from platformq.shared.pulsar_client import PulsarClient
+from platformq.shared.ignite_utils import IgniteCache
+from platformq.shared.logging_config import get_logger
+from platformq.shared.monitoring import track_processing_time
 
 # Local modules
 from .models.snn_core import SpikingNeuralNetwork
 from .models.event_encoder import EventEncoder
 from .models.anomaly_detector import AnomalyDetector
 from .models.workflow_anomaly_detector import WorkflowAnomalyDetector
-from .config import NeuromorphicConfig
+from .core.config import settings
 
 logger = get_logger(__name__)
 
@@ -77,7 +77,7 @@ class NeuromorphicService(BaseService):
     
     def __init__(self):
         super().__init__("neuromorphic-service", "Neuromorphic Event Processing")
-        self.config = NeuromorphicConfig()
+        self.config = settings
         self.snn = None
         self.encoder = None
         self.detector = None
@@ -177,19 +177,10 @@ class NeuromorphicService(BaseService):
         
     async def _start_event_consumers(self):
         """Start consuming events from Pulsar"""
-        topics = [
-            "persistent://public/default/platform-events",
-            "persistent://public/default/security-events",
-            "persistent://public/default/performance-metrics",
-            "persistent://public/default/sensor-data"
-        ]
+        topics = self.config.get_pulsar_topics_list()
         
         # Add workflow-specific topics
-        workflow_topics = [
-            "persistent://public/default/workflow-execution-started",
-            "persistent://public/default/workflow-execution-completed",
-            "persistent://public/default/airflow-dag-events"
-        ]
+        workflow_topics = self.config.get_workflow_topics_list()
         
         for topic in topics:
             asyncio.create_task(self._consume_events(topic))
@@ -296,7 +287,7 @@ class NeuromorphicService(BaseService):
     async def _publish_anomaly(self, anomaly: Dict):
         """Publish detected anomaly to Pulsar"""
         await self.pulsar_producer.send_async(
-            "persistent://public/default/anomaly-events",
+            self.config.anomaly_topic,
             json.dumps(anomaly).encode('utf-8')
         )
         
@@ -321,7 +312,7 @@ class NeuromorphicService(BaseService):
     async def _publish_workflow_anomaly(self, anomaly: Dict):
         """Publish workflow anomaly to Pulsar"""
         await self.pulsar_producer.send_async(
-            "persistent://public/default/workflow-anomaly-events",
+            self.config.workflow_anomaly_topic,
             json.dumps(anomaly).encode('utf-8')
         )
         
@@ -335,7 +326,7 @@ class NeuromorphicService(BaseService):
     def _should_trigger_optimization(self, anomaly: Dict) -> bool:
         """Determine if anomaly warrants automatic optimization"""
         # High severity anomalies
-        if anomaly['severity'] > 0.8:
+        if anomaly['severity'] > self.config.workflow_anomaly_severity_threshold:
             return True
             
         # Specific anomaly types that benefit from optimization
@@ -376,7 +367,7 @@ class NeuromorphicService(BaseService):
         
         # Publish optimization request
         await self.pulsar_producer.send_async(
-            "persistent://public/default/workflow-optimization-requests",
+            self.config.workflow_optimization_topic,
             json.dumps(optimization_request).encode('utf-8')
         )
         

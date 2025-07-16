@@ -1,12 +1,12 @@
-from platformq_shared.base_service import create_base_app
-from fastapi import Depends, HTTPException, BackgroundTasks
+from platformq.shared.base_service import create_base_app
+from fastapi import Depends, HTTPException, BackgroundTasks, Request
 from pydantic import BaseModel, Field
 from typing import List, Optional, Dict, Any
 from sqlalchemy.orm import Session
-from platformq_shared.nextcloud_client import NextcloudClient, NextcloudError
-from platformq_shared.openproject_client import OpenProjectClient, OpenProjectError
-from platformq_shared.zulip_client import ZulipClient, ZulipError
-from platformq_shared.config import ConfigLoader
+from platformq.shared.nextcloud_client import NextcloudClient, NextcloudError
+from platformq.shared.openproject_client import OpenProjectClient, OpenProjectError
+from platformq.shared.zulip_client import ZulipClient, ZulipError
+from .core.config import settings
 from platformq_shared.resilience import CircuitBreakerError, RateLimitExceeded
 import logging
 from datetime import date
@@ -33,6 +33,38 @@ app = create_base_app(
     password_verifier_dependency=get_password_verifier_placeholder,
 )
 
+@app.on_event("startup")
+async def startup_event():
+    app.state.nextcloud_client = NextcloudClient(
+        nextcloud_url=settings.nextcloud_url,
+        admin_user=settings.nextcloud_user,
+        admin_pass=settings.nextcloud_password,
+        use_connection_pool=True,
+        rate_limit=15.0
+    )
+    app.state.openproject_client = OpenProjectClient(
+        openproject_url=settings.openproject_url,
+        api_key=settings.openproject_api_key,
+        use_connection_pool=True,
+        rate_limit=10.0
+    )
+    app.state.zulip_client = ZulipClient(
+        zulip_site=settings.zulip_site,
+        zulip_email=settings.zulip_email,
+        zulip_api_key=settings.zulip_api_key,
+        use_connection_pool=True,
+        rate_limit=20.0
+    )
+
+def get_nextcloud_client(request: Request) -> NextcloudClient:
+    return request.app.state.nextcloud_client
+
+def get_openproject_client(request: Request) -> OpenProjectClient:
+    return request.app.state.openproject_client
+
+def get_zulip_client(request: Request) -> ZulipClient:
+    return request.app.state.zulip_client
+
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["projects-service"])
 
@@ -40,60 +72,6 @@ app.include_router(endpoints.router, prefix="/api/v1", tags=["projects-service"]
 @app.get("/")
 def read_root():
     return {"message": "projects-service is running"}
-
-
-# Client instances (singleton pattern)
-_nextcloud_client = None
-_openproject_client = None
-_zulip_client = None
-
-
-def get_nextcloud_client() -> NextcloudClient:
-    """Get or create Nextcloud client instance"""
-    global _nextcloud_client
-    if _nextcloud_client is None:
-        config_loader = app.state.config_loader
-        settings = config_loader.load_settings()
-        _nextcloud_client = NextcloudClient(
-            nextcloud_url=settings["NEXTCLOUD_URL"],
-            admin_user=config_loader.get_secret("platformq/nextcloud", "admin_user"),
-            admin_pass=config_loader.get_secret("platformq/nextcloud", "admin_pass"),
-            use_connection_pool=True,
-            rate_limit=15.0
-        )
-    return _nextcloud_client
-
-
-def get_openproject_client() -> OpenProjectClient:
-    """Get or create OpenProject client instance"""
-    global _openproject_client
-    if _openproject_client is None:
-        config_loader = app.state.config_loader
-        settings = config_loader.load_settings()
-        _openproject_client = OpenProjectClient(
-            openproject_url=settings["OPENPROJECT_URL"],
-            api_key=config_loader.get_secret("platformq/openproject", "api_key"),
-            use_connection_pool=True,
-            rate_limit=10.0
-        )
-    return _openproject_client
-
-
-def get_zulip_client() -> ZulipClient:
-    """Get or create Zulip client instance"""
-    global _zulip_client
-    if _zulip_client is None:
-        config_loader = app.state.config_loader
-        settings = config_loader.load_settings()
-        _zulip_client = ZulipClient(
-            zulip_site=settings["ZULIP_SITE"],
-            zulip_email=config_loader.get_secret("platformq/zulip", "email"),
-            zulip_api_key=config_loader.get_secret("platformq/zulip", "api_key"),
-            use_connection_pool=True,
-            rate_limit=20.0
-        )
-    return _zulip_client
-
 
 class ProjectCreateRequest(BaseModel):
     name: str = Field(..., min_length=3, max_length=100)
@@ -134,6 +112,9 @@ async def create_project(
     background_tasks: BackgroundTasks,
     context: dict = Depends(get_current_tenant_and_user),
     db: Session = Depends(get_db_session),
+    nextcloud: NextcloudClient = Depends(get_nextcloud_client),
+    openproject: OpenProjectClient = Depends(get_openproject_client),
+    zulip: ZulipClient = Depends(get_zulip_client),
 ):
     """
     Create a new collaborative project across all integrated platforms.
@@ -146,11 +127,6 @@ async def create_project(
     """
     tenant_id = context["tenant_id"]
     user = context["user"]
-    
-    # Get client instances
-    nextcloud = get_nextcloud_client()
-    openproject = get_openproject_client()
-    zulip = get_zulip_client()
     
     # Track what was created for rollback
     created_resources = {}
@@ -338,7 +314,7 @@ Created on: {date.today().isoformat()}
         # OpenProject webhook for work package updates
         op_webhook = openproject.create_webhook(
             name=f"platformq-{project.id}",
-            url=f"{PLATFORM_URL}/api/v1/webhooks/openproject/{project.id}",
+            url=f"{settings.platform_url}/api/v1/webhooks/openproject/{project.id}",
             events=["work_package:created", "work_package:updated"],
             projects=[op_project["id"]]
         )
@@ -415,14 +391,13 @@ Created on: {date.today().isoformat()}
         raise HTTPException(status_code=500, detail=error_message)
 
 
-async def rollback_project_creation(created_resources: dict):
+async def rollback_project_creation(created_resources: dict, nextcloud: NextcloudClient, openproject: OpenProjectClient, zulip: ZulipClient):
     """Rollback created resources on failure"""
     logger.info("Rolling back project creation...")
     
     # Delete in reverse order
     if "zulip_stream" in created_resources:
         try:
-            zulip = get_zulip_client()
             stream_id = zulip.get_stream_id(created_resources["zulip_stream"])
             zulip.delete_stream(stream_id)
         except Exception as e:
@@ -430,14 +405,12 @@ async def rollback_project_creation(created_resources: dict):
     
     if "openproject_id" in created_resources:
         try:
-            openproject = get_openproject_client()
             openproject.delete_project(created_resources["openproject_id"])
         except Exception as e:
             logger.error(f"Failed to rollback OpenProject: {e}")
     
     if "nextcloud_folder" in created_resources:
         try:
-            nextcloud = get_nextcloud_client()
             nextcloud.delete_file(created_resources["nextcloud_folder"])
         except Exception as e:
             logger.error(f"Failed to rollback Nextcloud folder: {e}")
@@ -482,8 +455,8 @@ async def add_project_members(
             # zulip.add_users_to_stream(project_name, [member["email"]])
 
             # 4. Issue DAOMembershipCredential
-            if dao_did and app.state.config_loader.load_settings().get("VC_SERVICE_URL"):
-                vc_service_url = app.state.config_loader.load_settings()["VC_SERVICE_URL"]
+            if dao_did and settings.vc_service_url:
+                vc_service_url = settings.vc_service_url
                 membership_subject = {
                     "id": member["did"],
                     "daoId": dao_did, # Use the passed dao_did
@@ -522,11 +495,10 @@ async def update_project(
     project_update: ProjectUpdateRequest,
     context: dict = Depends(get_current_tenant_and_user),
     db: Session = Depends(get_db_session),
+    openproject: OpenProjectClient = Depends(get_openproject_client),
+    zulip: ZulipClient = Depends(get_zulip_client),
 ):
     """Update project properties across all platforms"""
-    openproject = get_openproject_client()
-    zulip = get_zulip_client()
-    
     try:
         # Update OpenProject
         if any([project_update.name, project_update.description, 

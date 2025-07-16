@@ -14,3 +14,10 @@ pytest
 black
 ruff
 redoc 
+
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+fastapi
+uvicorn
+minio
+pydantic 

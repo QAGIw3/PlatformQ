@@ -4,7 +4,8 @@ uvicorn[standard]
 pydantic
 
 # PlatformQ shared library
--e ../../libs/shared
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
 
 # Pulsar for event streaming
 pulsar-client==3.4.0
@@ -20,3 +21,5 @@ httpx
 apache-airflow-client==2.8.0
 requests 
 hvac 
+apache-airflow
+apache-airflow-providers-cncf-kubernetes 

@@ -1,15 +1,8 @@
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
 fastapi
-uvicorn[standard]
+uvicorn
 pydantic
-httpx
-pulsar-client
-apache-pulsar
-pyignite
-cryptography
+tensorflow
 numpy
-scikit-learn
-diffprivlib
-pyspark
-mlflow
-pytest
-pytest-asyncio 
+pandas 

@@ -2,12 +2,13 @@
 Configuration for Neuromorphic Event Processing Service
 """
 
-from typing import Optional, List
-from pydantic import BaseSettings, Field
+from platformq.shared.config import Settings
+from typing import List, Optional, Dict, Any
+from pydantic import Field
 import os
+import numpy as np
 
-
-class NeuromorphicConfig(BaseSettings):
+class NeuromorphicConfig(Settings):
     """Configuration for Neuromorphic Service"""
     
     # Service configuration
@@ -49,10 +50,7 @@ class NeuromorphicConfig(BaseSettings):
     workflow_anomaly_severity_threshold: float = Field(default=0.8, env="WORKFLOW_ANOMALY_SEVERITY_THRESHOLD")
     
     # Quantum optimization integration
-    quantum_optimization_url: str = Field(
-        default="http://quantum-optimization-service:8001", 
-        env="QUANTUM_OPTIMIZATION_URL"
-    )
+    quantum_optimization_url: str
     quantum_optimization_timeout: int = Field(default=30, env="QUANTUM_OPTIMIZATION_TIMEOUT")
     
     # Performance tuning
@@ -63,7 +61,6 @@ class NeuromorphicConfig(BaseSettings):
     parallel_simulations: int = Field(default=4, env="PARALLEL_SIMULATIONS")
     
     # Pulsar configuration
-    pulsar_url: str = Field(default="pulsar://localhost:6650", env="PULSAR_URL")
     pulsar_topics: List[str] = Field(
         default=[
             "persistent://public/default/platform-events",
@@ -96,8 +93,8 @@ class NeuromorphicConfig(BaseSettings):
     )
     
     # Ignite configuration
-    ignite_host: str = Field(default="localhost", env="IGNITE_HOST")
-    ignite_port: int = Field(default=10800, env="IGNITE_PORT")
+    ignite_host: str
+    ignite_port: int
     ignite_cache_events: str = Field(default="neuromorphic_events", env="IGNITE_CACHE_EVENTS")
     ignite_cache_patterns: str = Field(default="anomaly_patterns", env="IGNITE_CACHE_PATTERNS")
     ignite_cache_workflow_patterns: str = Field(default="workflow_patterns", env="IGNITE_CACHE_WORKFLOW_PATTERNS")
@@ -106,7 +103,6 @@ class NeuromorphicConfig(BaseSettings):
     metrics_enabled: bool = Field(default=True, env="METRICS_ENABLED")
     metrics_port: int = Field(default=9090, env="METRICS_PORT")
     trace_enabled: bool = Field(default=True, env="TRACE_ENABLED")
-    trace_endpoint: str = Field(default="http://jaeger:14268/api/traces", env="TRACE_ENDPOINT")
     
     # Model persistence
     model_save_interval: int = Field(default=3600, env="MODEL_SAVE_INTERVAL")  # seconds
@@ -147,11 +143,17 @@ class NeuromorphicConfig(BaseSettings):
     )
     workflow_optimization_max_iterations: int = Field(default=100, env="WORKFLOW_OPTIMIZATION_MAX_ITERATIONS")
     workflow_optimization_convergence_threshold: float = Field(default=0.001, env="WORKFLOW_OPTIMIZATION_CONVERGENCE_THRESHOLD")
+
+    cassandra_hosts: List[str]
+    cassandra_port: int
+    cassandra_user: str
+    cassandra_password: str
+    pulsar_url: str
+    otel_exporter_otlp_endpoint: str
     
     class Config:
-        env_file = ".env"
-        env_file_encoding = "utf-8"
-        
+        env_prefix = "NEUROMORPHIC_"
+
     def get_ignite_hosts(self) -> List[str]:
         """Get list of Ignite hosts"""
         return [f"{self.ignite_host}:{self.ignite_port}"]
@@ -200,5 +202,5 @@ class NeuromorphicConfig(BaseSettings):
 
 
 # Global config instance
-config = NeuromorphicConfig()
-config.validate_gpu_config() 
+settings = NeuromorphicConfig()
+settings.validate_gpu_config() 

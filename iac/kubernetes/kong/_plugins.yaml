@@ -1,0 +1,28 @@
+# iac/kubernetes/kong/_plugins.yaml
+plugins:
+  - name: correlation-id
+    enabled: true
+    config:
+      header_name: "X-Correlation-ID"
+      generator: "uuid#v4"
+      echo_downstream: true
+  - name: jwt
+    enabled: true
+    config:
+      claims_to_verify:
+        - exp
+  - name: prometheus
+    enabled: true
+    config:
+      status_code_metrics: true
+      latency_metrics: true
+      bandwidth_metrics: true
+      upstream_health_metrics: true
+  - name: rate-limiting
+    enabled: true
+    config:
+      minute: 500
+      policy: cluster
+      limit_by: consumer
+      redis_host: "redis.platformq.svc"
+      redis_port: 6379 

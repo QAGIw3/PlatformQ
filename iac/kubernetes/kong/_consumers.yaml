@@ -1,0 +1,8 @@
+# iac/kubernetes/kong/_consumers.yaml
+consumers:
+  - username: end-users
+    custom_id: end-users
+    tags: [ "external" ]
+  - username: internal-services
+    custom_id: internal-services
+    tags: [ "internal" ] 

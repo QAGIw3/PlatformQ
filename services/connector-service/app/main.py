@@ -9,7 +9,8 @@ import logging
 # Assuming the generate_grpc.sh script has been run
 from .grpc_generated import connector_pb2, connector_pb2_grpc
 from . import plugins
-from shared_lib.base_service import create_base_app
+from platformq.shared.base_service import create_base_app
+from .core.config import settings
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
@@ -82,7 +83,8 @@ def discover_and_schedule_plugins():
                     # Instantiate the connector (with dummy config for now)
                     # and add it to our registry.
                     # In a production system, a config object would be passed here.
-                    connector_instance = attribute(config={})
+                    config = settings.connector_plugins.get(name, {})
+                    connector_instance = attribute(config=config)
                     connector_plugins[connector_instance.connector_type] = connector_instance
                     
                     # If a schedule is provided (e.g., '0 * * * *'), parse the cron

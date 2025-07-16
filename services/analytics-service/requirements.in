@@ -6,3 +6,12 @@
 pytest
 black
 ruff
+
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+fastapi
+uvicorn
+pandas
+scikit-learn
+sqlalchemy
+psycopg2-binary

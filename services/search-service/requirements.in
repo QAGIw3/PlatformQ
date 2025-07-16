@@ -2,6 +2,9 @@
 -r ../../requirements/base.in
 
 # Additional dependencies for Search service
-elasticsearch==8.11.0
-elasticsearch-async==6.2.0 
-hvac 
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+fastapi
+uvicorn
+elasticsearch
+pydantic 

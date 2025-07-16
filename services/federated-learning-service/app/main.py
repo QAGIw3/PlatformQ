@@ -20,25 +20,15 @@ from pulsar.schema import AvroSchema
 from pyignite import Client as IgniteClient
 import httpx
 
-from platformq_shared.base_service import create_base_app
-from platformq_shared.event_publisher import EventPublisher
-from platformq_shared.config import ConfigLoader
+from platformq.shared.base_service import create_base_app
+from platformq.shared.event_publisher import EventPublisher
+from .core.config import settings
 from platformq_shared.jwt import get_current_tenant_and_user
 
 logger = logging.getLogger(__name__)
 
 # Initialize base app
 app = create_base_app(service_name="federated-learning-service")
-
-# Configuration
-config_loader = ConfigLoader()
-settings = config_loader.load_settings()
-
-PULSAR_URL = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
-VC_SERVICE_URL = settings.get("VC_SERVICE_URL", "http://verifiable-credential-service:80")
-AUTH_SERVICE_URL = settings.get("AUTH_SERVICE_URL", "http://auth-service:80")
-SPARK_MASTER_URL = settings.get("SPARK_MASTER_URL", "spark://spark-master:7077")
-IGNITE_NODES = settings.get("IGNITE_NODES", "ignite-0.ignite:10800,ignite-1.ignite:10800").split(",")
 
 # Pydantic models
 class FederatedLearningSessionRequest(BaseModel):
@@ -99,13 +89,13 @@ class FederatedLearningCoordinator:
     async def initialize(self):
         """Initialize connections"""
         # Initialize Pulsar
-        self.event_publisher = EventPublisher(pulsar_url=PULSAR_URL)
+        self.event_publisher = EventPublisher(pulsar_url=settings.pulsar_url)
         self.event_publisher.connect()
         
         # Initialize Ignite
         self.ignite_client = IgniteClient()
         self.ignite_client.connect([(node.split(":")[0], int(node.split(":")[1])) 
-                                   for node in IGNITE_NODES])
+                                   for node in settings.ignite_nodes])
         
         logger.info("Federated Learning Coordinator initialized")
     
@@ -128,7 +118,7 @@ class FederatedLearningCoordinator:
             try:
                 # Query VC service for credentials
                 response = await self.http_client.get(
-                    f"{VC_SERVICE_URL}/api/v1/dids/{participant_id}/credentials",
+                    f"{settings.vc_service_url}/api/v1/dids/{participant_id}/credentials",
                     params={"credential_type": req_cred["credential_type"]},
                     headers={"X-Tenant-ID": tenant_id}
                 )
@@ -139,7 +129,7 @@ class FederatedLearningCoordinator:
                     # Verify each credential
                     for cred in creds:
                         verify_response = await self.http_client.post(
-                            f"{VC_SERVICE_URL}/api/v1/verify",
+                            f"{settings.vc_service_url}/api/v1/verify",
                             json={"credential": cred},
                             headers={"X-Tenant-ID": tenant_id}
                         )
@@ -174,7 +164,7 @@ class FederatedLearningCoordinator:
         """Get user's reputation score from auth service"""
         try:
             response = await self.http_client.get(
-                f"{AUTH_SERVICE_URL}/api/v1/users/{user_id}/reputation",
+                f"{settings.auth_service_url}/api/v1/users/{user_id}/reputation",
                 headers={"X-Tenant-ID": tenant_id}
             )
             
@@ -207,7 +197,7 @@ class FederatedLearningCoordinator:
         """Submit Spark job for federated learning or aggregation"""
         spark_submit_cmd = [
             "spark-submit",
-            "--master", SPARK_MASTER_URL,
+            "--master", settings.spark_master_url,
             "--deploy-mode", "cluster",
             "--conf", "spark.executor.memory=4g",
             "--conf", "spark.executor.cores=4",
@@ -811,7 +801,7 @@ async def request_aggregated_model_vc(session_id: str, round_number: int, model_
         
         # Call VC service
         response = await coordinator.http_client.post(
-            f"{VC_SERVICE_URL}/api/v1/issue",
+            f"{settings.vc_service_url}/api/v1/issue",
             json=vc_request,
             headers={"X-Tenant-ID": session_data["tenant_id"]}
         )

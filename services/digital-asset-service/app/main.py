@@ -4,7 +4,7 @@ from .postgres_db import get_db_session
 from . import crud
 from . import postgres_db
 from platformq_shared.event_publisher import EventPublisher
-from platformq_shared.config import ConfigLoader
+from .core.config import settings
 import threading
 import pulsar
 from pulsar.schema import AvroSchema
@@ -28,16 +28,14 @@ def get_api_key_crud_placeholder():
 
 def get_user_crud_placeholder():
     return None
-    
+
 def get_password_verifier_placeholder():
     return None
 
 def result_consumer_loop(app):
     logger.info("Starting consumer for function execution results...")
     
-    config_loader = ConfigLoader()
-    settings = config_loader.load_settings()
-    pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
+    pulsar_url = settings.pulsar_url
 
     client = pulsar.Client(pulsar_url)
     consumer = client.subscribe(
@@ -91,9 +89,7 @@ app = create_base_app(
 
 @app.on_event("startup")
 def startup_event():
-    config_loader = ConfigLoader()
-    settings = config_loader.load_settings()
-    pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
+    pulsar_url = settings.pulsar_url
     publisher = EventPublisher(pulsar_url=pulsar_url)
     publisher.connect()
     app.state.event_publisher = publisher

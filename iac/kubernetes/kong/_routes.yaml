@@ -1,0 +1,92 @@
+# iac/kubernetes/kong/_routes.yaml
+routes:
+  # Auth Service Routes
+  - name: auth-api
+    paths:
+      - /auth/api/v1
+    service: auth-service
+    strip_path: true
+  - name: auth-docs
+    paths:
+      - /auth/docs
+      - /auth/redoc
+    service: auth-service
+    strip_path: false
+
+  # Digital Asset Service Routes
+  - name: digital-asset-api
+    paths:
+      - /assets/api/v1
+    service: digital-asset-service
+    strip_path: true
+  - name: digital-asset-docs
+    paths:
+      - /assets/docs
+      - /assets/redoc
+    service: digital-asset-service
+    strip_path: false
+
+  # Storage Proxy Service Routes
+  - name: storage-proxy-api
+    paths:
+      - /storage/api/v1
+    service: storage-proxy-service
+    strip_path: true
+  - name: storage-proxy-docs
+    paths:
+      - /storage/docs
+      - /storage/redoc
+    service: storage-proxy-service
+    strip_path: false
+
+  # Verifiable Credential Service Routes
+  - name: vc-api
+    paths:
+      - /vc/api/v1
+    service: verifiable-credential-service
+    strip_path: true
+  - name: vc-docs
+    paths:
+      - /vc/docs
+      - /vc/redoc
+    service: verifiable-credential-service
+    strip_path: false
+
+  # Projects Service Routes
+  - name: projects-api
+    paths:
+      - /projects/api/v1
+    service: projects-service
+    strip_path: true
+  - name: projects-docs
+    paths:
+      - /projects/docs
+      - /projects/redoc
+    service: projects-service
+    strip_path: false
+
+  # Graph Intelligence Service Routes
+  - name: graph-api
+    paths:
+      - /graph/api/v1
+    service: graph-intelligence-service
+    strip_path: true
+  - name: graph-docs
+    paths:
+      - /graph/docs
+      - /graph/redoc
+    service: graph-intelligence-service
+    strip_path: false
+
+  # Search Service Routes
+  - name: search-api
+    paths:
+      - /search/api/v1
+    service: search-service
+    strip_path: true
+  - name: search-docs
+    paths:
+      - /search/docs
+      - /search/redoc
+    service: search-service
+    strip_path: false 

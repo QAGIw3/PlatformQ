@@ -86,4 +86,85 @@ resource "vault_kv_secret_v2" "openproject" {
   data_json = jsonencode({
     api_key = "an-openproject-api-key"
   })
+}
+
+resource "vault_kv_secret_v2" "auth_service" {
+  mount = "secret"
+  name = "platformq/auth-service"
+  data_json = jsonencode({
+    jwt_secret_key = "a-super-secret-jwt-key"
+  })
+}
+
+resource "vault_kv_secret_v2" "digital_asset_service" {
+  mount = "secret"
+  name = "platformq/digital-asset-service"
+  data_json = jsonencode({
+    database_url = "postgresql://user:password@postgres:5432/das"
+    minio_access_key = "minioadmin"
+    minio_secret_key = "minioadmin"
+  })
+}
+
+resource "vault_kv_secret_v2" "proposals_service" {
+  mount = "secret"
+  name = "platformq/proposals-service"
+  data_json = jsonencode({
+    nextcloud_url = "http://platformq-nextcloud"
+    nextcloud_user = "nc-admin"
+    nextcloud_password = "strongpassword"
+  })
+}
+
+resource "vault_kv_secret_v2" "storage_proxy_service" {
+  mount = "secret"
+  name = "platformq/storage-proxy-service"
+  data_json = jsonencode({
+    auth_service_url = "http://auth-service:8000"
+    minio_endpoint = "minio:9000"
+    minio_access_key = "minioadmin"
+    minio_secret_key = "minioadmin"
+  })
+}
+
+resource "vault_kv_secret_v2" "functions_service" {
+  mount = "secret"
+  name = "platformq/functions-service"
+  data_json = jsonencode({
+    connector_service_grpc_target = "connector-service:50051"
+  })
+}
+
+resource "vault_kv_secret_v2" "projects_service" {
+  mount = "secret"
+  name = "platformq/projects-service"
+  data_json = jsonencode({
+    nextcloud_url = "http://platformq-nextcloud"
+    nextcloud_user = "nc-admin"
+    nextcloud_password = "strongpassword"
+    openproject_url = "http://platformq-openproject"
+    openproject_api_key = "an-openproject-api-key"
+    zulip_site = "http://platformq-zulip"
+    zulip_email = "bot@platformq.io"
+    zulip_api_key = "a-zulip-api-key"
+    platform_url = "http://localhost:8000"
+  })
+}
+
+resource "vault_kv_secret_v2" "neuromorphic_service" {
+  mount = "secret"
+  name = "platformq/neuromorphic-service"
+  data_json = jsonencode({
+    quantum_optimization_url = "http://quantum-optimization-service:8001"
+    ignite_host = "ignite"
+    ignite_port = 10800
+  })
+}
+
+resource "vault_kv_secret_v2" "graph_intelligence_service" {
+  mount = "secret"
+  name = "platformq/graph-intelligence-service"
+  data_json = jsonencode({
+    gremlin_server_url = "ws://janusgraph:8182/gremlin"
+  })
 } 

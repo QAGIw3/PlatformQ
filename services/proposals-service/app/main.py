@@ -1,29 +1,39 @@
-from shared_lib.base_service import create_base_app
-from shared_lib.nextcloud_client import NextcloudClient
-from fastapi import Depends, HTTPException
+from platformq.shared.base_service import create_base_app
+from platformq.shared.nextcloud_client import NextcloudClient
+from fastapi import Depends, HTTPException, Request
 from pydantic import BaseModel
 import tempfile
 from sqlalchemy.orm import Session
 
 from .api.deps import get_current_tenant_and_user, get_db_session
+from .api import endpoints
 from .crud import crud_proposal
 from .messaging.pulsar_consumer import start_consumer, stop_consumer
+from .core.config import settings
 
 app = create_base_app(
     service_name="proposals-service",
     db_session_dependency=get_db_session,
-    api_key_crud_dependency=get_api_key_crud_placeholder,
-    user_crud_dependency=get_user_crud_placeholder,
-    password_verifier_dependency=get_password_verifier_placeholder,
+    api_key_crud_dependency=lambda: None,
+    user_crud_dependency=lambda: None,
+    password_verifier_dependency=lambda: None,
 )
 
 @app.on_event("startup")
 async def startup_event():
     start_consumer()
+    app.state.nextcloud_client = NextcloudClient(
+        nextcloud_url=settings.nextcloud_url,
+        admin_user=settings.nextcloud_user,
+        admin_pass=settings.nextcloud_password
+    )
 
 @app.on_event("shutdown")
 async def shutdown_event():
     stop_consumer()
+
+def get_nextcloud_client(request: Request) -> NextcloudClient:
+    return request.app.state.nextcloud_client
 
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["proposals-service"])
@@ -41,6 +51,7 @@ def create_proposal_endpoint(
     proposal_in: ProposalCreateRequest,
     context: dict = Depends(get_current_tenant_and_user),
     db: Session = Depends(get_db_session),
+    nextcloud_client: NextcloudClient = Depends(get_nextcloud_client),
 ):
     """
     Creates a new proposal, which involves creating a backing document
@@ -48,14 +59,6 @@ def create_proposal_endpoint(
     """
     tenant_id = context["tenant_id"]
     user = context["user"]
-    
-    # Initialize the Nextcloud client from config
-    # A real service would get this from its app.state, configured on startup
-    nextcloud_client = NextcloudClient(
-        nextcloud_url="http://platformq-nextcloud",
-        admin_user="nc-admin",
-        admin_pass="strongpassword"
-    )
 
     # 1. Create the file in Nextcloud
     document_path = f"Proposals/{proposal_in.customer_name}_{user.id}.docx"

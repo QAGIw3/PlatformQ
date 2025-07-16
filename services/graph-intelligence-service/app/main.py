@@ -1,5 +1,5 @@
-from platformq_shared.base_service import create_base_app
-from fastapi import Depends, HTTPException, BackgroundTasks
+from platformq.shared.base_service import create_base_app
+from fastapi import Depends, HTTPException, BackgroundTasks, Request
 from gremlin_python.structure.graph import Graph
 from gremlin_python.driver.driver_remote_connection import DriverRemoteConnection
 from .api import endpoints
@@ -24,19 +24,16 @@ from .grpc_generated import graph_intelligence_pb2, graph_intelligence_pb2_grpc
 from fastapi import FastAPI
 from .messaging.pulsar_consumer import start_consumer, stop_consumer
 from .simulation_lineage import SimulationLineageTracker
+from .core.config import settings
 
 app = FastAPI()
-
-# In a real app, this would come from config/vault
-JANUSGRAPH_URL = 'ws://platformq-janusgraph:8182/gremlin'
-VC_SERVICE_URL = os.environ.get("VC_SERVICE_URL", "http://verifiable-credential-service:8000")
 
 logger = logging.getLogger(__name__)
 
 class GraphIntelligenceServiceServicer(graph_intelligence_pb2_grpc.GraphIntelligenceServiceServicer):
     async def GetCommunityInsights(self, request, context):
         logging.info(f"gRPC: Received GetCommunityInsights request for tenant: {request.tenant_id}")
-        g = Graph().traversal().withRemote(DriverRemoteConnection(JANUSGRAPH_URL, 'g'))
+        g = Graph().traversal().withRemote(DriverRemoteConnection(settings.gremlin_server_url, 'g'))
         
         # Enhanced with trust data
         community_data = g.V().has('tenant_id', request.tenant_id) \
@@ -68,7 +65,9 @@ app = create_base_app(
 class TrustNetworkSync:
     """Synchronizes trust network data from VC service to JanusGraph"""
     
-    def __init__(self):
+    def __init__(self, gremlin_url: str, vc_service_url: str):
+        self.gremlin_url = gremlin_url
+        self.vc_service_url = vc_service_url
         self.g = None
         self.running = False
         self.sync_interval = 300  # 5 minutes
@@ -76,7 +75,7 @@ class TrustNetworkSync:
     def connect(self):
         """Connect to JanusGraph"""
         self.g = Graph().traversal().withRemote(
-            DriverRemoteConnection(JANUSGRAPH_URL, 'g')
+            DriverRemoteConnection(self.gremlin_url, 'g')
         )
         
     def sync_trust_data(self):
@@ -84,7 +83,7 @@ class TrustNetworkSync:
         try:
             # Fetch trust network stats
             with httpx.Client() as client:
-                response = client.get(f"{VC_SERVICE_URL}/api/v1/trust/network/stats")
+                response = client.get(f"{self.vc_service_url}/api/v1/trust/network/stats")
                 if response.status_code == 200:
                     stats = response.json()
                     logger.info(f"Trust network stats: {stats}")
@@ -167,8 +166,8 @@ class TrustNetworkSync:
         """Stop the sync loop"""
         self.running = False
 
-# Global sync instance
-trust_sync = TrustNetworkSync()
+def get_trust_sync(request: Request) -> TrustNetworkSync:
+    return request.app.state.trust_sync
 
 # Initialize simulation lineage tracker
 @app.on_event("startup")
@@ -184,6 +183,10 @@ async def startup_event():
     logging.info("Starting up graph-intelligence-service...")
     
     # Start trust network sync
+    trust_sync = TrustNetworkSync(
+        gremlin_url=settings.gremlin_server_url,
+        vc_service_url=settings.vc_service_url,
+    )
     trust_sync.connect()
     sync_thread = threading.Thread(target=trust_sync.run_sync_loop, daemon=True)
     sync_thread.start()
@@ -211,7 +214,7 @@ def get_graph_insight(
     context: dict = Depends(get_current_tenant_and_user),
 ):
     tenant_id = str(context["tenant_id"])
-    g = Graph().traversal().withRemote(DriverRemoteConnection(JANUSGRAPH_URL, 'g'))
+    g = Graph().traversal().withRemote(DriverRemoteConnection(settings.gremlin_server_url, 'g'))
     
     if insight_type == "community-detection":
         # This logic is now handled by the gRPC endpoint.
@@ -236,7 +239,7 @@ async def get_trust_clusters(
     context: dict = Depends(get_current_tenant_and_user),
 ):
     """Identify clusters of high-trust entities"""
-    g = Graph().traversal().withRemote(DriverRemoteConnection(JANUSGRAPH_URL, 'g'))
+    g = Graph().traversal().withRemote(DriverRemoteConnection(settings.gremlin_server_url, 'g'))
     
     # Find clusters of entities with high mutual trust
     clusters = g.V().has('trust_score', __.gte(0.7)) \
@@ -270,7 +273,7 @@ async def find_trust_paths(
     context: dict = Depends(get_current_tenant_and_user),
 ):
     """Find trust paths between two entities"""
-    g = Graph().traversal().withRemote(DriverRemoteConnection(JANUSGRAPH_URL, 'g'))
+    g = Graph().traversal().withRemote(DriverRemoteConnection(settings.gremlin_server_url, 'g'))
     
     # Find paths with trust scores
     paths = g.V().has('entity_id', from_entity) \
@@ -321,7 +324,7 @@ async def ingest_trust_event(
     """Ingest a trust-affecting event into the graph"""
     
     def update_graph():
-        g = Graph().traversal().withRemote(DriverRemoteConnection(JANUSGRAPH_URL, 'g'))
+        g = Graph().traversal().withRemote(DriverRemoteConnection(settings.gremlin_server_url, 'g'))
         
         # Create event node
         g.addV('TrustEvent') \

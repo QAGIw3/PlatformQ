@@ -9,3 +9,9 @@ schedule
 pytest
 black
 ruff 
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+fastapi
+uvicorn
+Jinja2
+aiosmtplib 
