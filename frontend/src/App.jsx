@@ -30,7 +30,8 @@ import DAODashboard from './components/dao/DAODashboard';
 import DAOPage from './features/dao/DAOPage';
 import ProjectsPage from './features/projects/ProjectsPage';
 import AssetsPage from './features/assets/AssetsPage';
-import TrustPage from './features/TrustPage';
+import TrustWallet from './features/TrustWallet/TrustWallet';
+import Marketplace from './features/Marketplace/Marketplace';
 
 function Layout() {
   return (
@@ -44,7 +45,8 @@ function Layout() {
           <li><Link to="/daos">DAO Dashboard</Link></li>
           <li><Link to="/dao">DAO</Link></li>
           <li><Link to="/projects">Projects</Link></li>
-          <li><Link to="/trust">Trust Wallet</Link></li>
+          <li><Link to="/marketplace">Marketplace</Link></li>
+          <li><Link to="/trust-wallet">Trust Wallet</Link></li>
           <li><button onClick={() => userManager.signoutRedirect()}>Logout</button></li>
         </ul>
       </nav>
@@ -110,7 +112,8 @@ function App() {
             <Route path="daos" element={<DAODashboard />} />
             <Route path="dao" element={<DAOPage />} />
             <Route path="projects" element={<ProjectsPage />} />
-            <Route path="trust" element={<TrustPage userId={selectedUserId} />} />
+            <Route path="marketplace" element={<Marketplace />} />
+            <Route path="trust-wallet" element={<TrustWallet />} />
           </Route>
         </Routes>
       </Router>

@@ -834,6 +834,27 @@ async def startup_event():
     # Initialize storage
     initialize_storage()
     
+    # Initialize cross-chain bridge
+    try:
+        from .blockchain.cross_chain_bridge import CrossChainBridge
+        bridge_private_key = settings.get("BRIDGE_PRIVATE_KEY")
+        if bridge_private_key:
+            app.state.cross_chain_bridge = CrossChainBridge(
+                private_key=bridge_private_key,
+                event_publisher=app.state.event_publisher
+            )
+            logger.info("Cross-chain bridge initialized")
+        else:
+            logger.warning("BRIDGE_PRIVATE_KEY not set, cross-chain bridge disabled")
+            app.state.cross_chain_bridge = None
+    except Exception as e:
+        logger.error(f"Failed to initialize cross-chain bridge: {e}")
+        app.state.cross_chain_bridge = None
+    
+    # Initialize VP builder
+    app.state.vp_builder = VerifiablePresentationBuilder()
+    app.state.did_manager = did_manager
+    
     # Initialize bridge contracts if enabled
     if cross_chain_bridge:
         await cross_chain_bridge.initialize_bridge_contracts()
@@ -933,6 +954,14 @@ def get_reputation_from_chain(user_address: str) -> int:
 
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["verifiable-credential-service"])
+
+# Import and include new routers
+try:
+    from .api import cross_chain, presentations
+    app.include_router(cross_chain.router, prefix="/api/v1/cross-chain", tags=["cross-chain"])
+    app.include_router(presentations.router, prefix="/api/v1", tags=["presentations"])
+except ImportError as e:
+    logger.warning(f"Could not import additional routers: {e}")
 
 @app.get("/api/v1/dids/{did}/credentials", response_model=List[Dict[str, Any]])
 def get_user_credentials(

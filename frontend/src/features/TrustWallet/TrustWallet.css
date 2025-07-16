@@ -1,0 +1,348 @@
+.trust-wallet {
+  padding: 24px;
+  background: #f0f2f5;
+  min-height: 100vh;
+}
+
+.wallet-header {
+  margin-bottom: 24px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  color: white;
+}
+
+.wallet-header .ant-card-body {
+  padding: 32px;
+}
+
+.wallet-header .ant-typography {
+  color: white;
+  margin-bottom: 8px;
+}
+
+.wallet-header h2 {
+  font-size: 32px;
+  margin-bottom: 16px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+
+.credentials-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(350px, 1fr));
+  gap: 16px;
+  margin-top: 16px;
+}
+
+.credential-card {
+  transition: all 0.3s ease;
+  border-radius: 8px;
+  overflow: hidden;
+}
+
+.credential-card:hover {
+  transform: translateY(-4px);
+  box-shadow: 0 8px 24px rgba(0, 0, 0, 0.1);
+}
+
+.credential-card .ant-card-meta-avatar {
+  font-size: 24px;
+  color: #1890ff;
+}
+
+.credential-card .ant-card-actions {
+  background: #fafafa;
+}
+
+.credential-claims {
+  margin-top: 12px;
+  padding: 12px;
+  background: #f5f5f5;
+  border-radius: 4px;
+}
+
+.reputation-dashboard {
+  max-width: 900px;
+  margin: 0 auto;
+}
+
+.reputation-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 16px;
+  margin-bottom: 24px;
+}
+
+.dimension-card {
+  text-align: center;
+  transition: all 0.3s ease;
+}
+
+.dimension-card:hover {
+  transform: scale(1.05);
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+.dimension-card .ant-statistic-title {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 14px;
+  color: rgba(0, 0, 0, 0.65);
+}
+
+.dimension-card .ant-statistic-content {
+  margin-top: 8px;
+}
+
+.dimension-card .ant-progress {
+  margin-top: 8px;
+}
+
+.total-score {
+  text-align: center;
+  padding: 24px;
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border-radius: 8px;
+  color: white;
+}
+
+.total-score .ant-statistic-title,
+.total-score .ant-statistic-content {
+  color: white !important;
+}
+
+.total-score .ant-statistic-content-value {
+  font-size: 48px !important;
+}
+
+/* Tabs styling */
+.trust-wallet .ant-tabs-tab {
+  font-size: 16px;
+  padding: 12px 16px;
+}
+
+.trust-wallet .ant-tabs-tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+}
+
+/* Modal styling */
+.ant-modal-header {
+  background: #f0f2f5;
+  border-bottom: 1px solid #d9d9d9;
+}
+
+.ant-modal-title {
+  font-size: 18px;
+  font-weight: 500;
+}
+
+/* List styling */
+.ant-list-item-meta-title {
+  font-size: 16px;
+  font-weight: 500;
+}
+
+.ant-list-item-meta-description {
+  margin-top: 4px;
+}
+
+/* Responsive design */
+@media (max-width: 768px) {
+  .credentials-grid {
+    grid-template-columns: 1fr;
+  }
+  
+  .reputation-grid {
+    grid-template-columns: repeat(2, 1fr);
+  }
+  
+  .wallet-header h2 {
+    font-size: 24px;
+  }
+  
+  .total-score .ant-statistic-content-value {
+    font-size: 36px !important;
+  }
+}
+
+/* Loading states */
+.ant-card-loading .ant-card-body {
+  padding: 24px;
+}
+
+/* Empty states */
+.ant-alert {
+  margin: 24px 0;
+}
+
+/* Action buttons */
+.credential-card .ant-btn-text {
+  height: auto;
+  padding: 4px 12px;
+}
+
+.credential-card .ant-btn-text:hover {
+  background: rgba(24, 144, 255, 0.05);
+  color: #1890ff;
+}
+
+/* Form styling in modals */
+.ant-form-item {
+  margin-bottom: 16px;
+}
+
+.ant-form-item-label {
+  font-weight: 500;
+}
+
+/* Tag styling */
+.ant-tag {
+  font-size: 12px;
+  padding: 2px 8px;
+  border-radius: 4px;
+}
+
+.ant-tag-green {
+  background: #f6ffed;
+  border-color: #b7eb8f;
+  color: #52c41a;
+}
+
+.ant-tag-red {
+  background: #fff1f0;
+  border-color: #ffa39e;
+  color: #ff4d4f;
+}
+
+.ant-tag-blue {
+  background: #e6f7ff;
+  border-color: #91d5ff;
+  color: #1890ff;
+}
+
+/* Progress bar colors */
+.ant-progress-inner {
+  background: #f0f0f0;
+}
+
+/* Statistic styling */
+.ant-statistic-content {
+  font-family: 'Roboto', -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif;
+}
+
+/* Badge styling */
+.ant-badge-count {
+  background: #52c41a;
+  color: white;
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.15);
+}
+
+/* Tooltip styling */
+.ant-tooltip-inner {
+  background: rgba(0, 0, 0, 0.85);
+}
+
+/* Divider styling */
+.ant-divider {
+  margin: 16px 0;
+}
+
+/* Space component styling */
+.ant-space-item {
+  display: flex;
+  align-items: center;
+}
+
+/* Typography styling */
+.ant-typography strong {
+  font-weight: 600;
+}
+
+/* List item styling */
+.ant-list-item {
+  padding: 16px 24px;
+  background: white;
+  margin-bottom: 8px;
+  border-radius: 4px;
+  transition: all 0.3s ease;
+}
+
+.ant-list-item:hover {
+  box-shadow: 0 2px 8px rgba(0, 0, 0, 0.08);
+}
+
+/* Select dropdown styling */
+.ant-select-dropdown {
+  border-radius: 4px;
+  box-shadow: 0 4px 12px rgba(0, 0, 0, 0.08);
+}
+
+/* Input styling */
+.ant-input,
+.ant-input-number,
+.ant-select-selector {
+  border-radius: 4px;
+}
+
+.ant-input:focus,
+.ant-input-number:focus,
+.ant-select-focused .ant-select-selector {
+  border-color: #667eea;
+  box-shadow: 0 0 0 2px rgba(102, 126, 234, 0.2);
+}
+
+/* Button styling */
+.ant-btn-primary {
+  background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+  border: none;
+  height: 40px;
+  font-size: 16px;
+  font-weight: 500;
+  box-shadow: 0 2px 8px rgba(102, 126, 234, 0.3);
+  transition: all 0.3s ease;
+}
+
+.ant-btn-primary:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 4px 16px rgba(102, 126, 234, 0.4);
+}
+
+/* Animation for cards */
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.credential-card {
+  animation: fadeIn 0.3s ease-out;
+}
+
+/* Custom scrollbar */
+.trust-wallet ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+
+.trust-wallet ::-webkit-scrollbar-track {
+  background: #f0f0f0;
+  border-radius: 4px;
+}
+
+.trust-wallet ::-webkit-scrollbar-thumb {
+  background: #bfbfbf;
+  border-radius: 4px;
+}
+
+.trust-wallet ::-webkit-scrollbar-thumb:hover {
+  background: #8c8c8c;
+} 
