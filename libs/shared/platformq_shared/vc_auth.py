@@ -320,6 +320,56 @@ def check_claim_value(value: Any, requirement: Any) -> bool:
     return True
 
 
+async def verify_zkp_against_requirement(
+    proof: ZKProof,
+    requirement: VCRequirement,
+    challenge: Optional[str] = None
+) -> Tuple[bool, Optional[str]]:
+    """Verify a ZKP against VC requirements"""
+    
+    # Check if ZKP is allowed
+    if not requirement.allow_zkp:
+        return False, "Zero-Knowledge Proofs not accepted"
+    
+    # Check credential type
+    proof_type = proof.public_inputs.get("credential_type", "")
+    if proof_type not in requirement.credential_types:
+        return False, f"Invalid credential type: {proof_type}"
+    
+    # Generate challenge if not provided
+    if not challenge:
+        challenge = proof.public_inputs.get("challenge", "")
+    
+    # Check if all required claims are proven
+    if requirement.zkp_claims:
+        expected_claims = requirement.zkp_claims
+    elif requirement.claims:
+        # Convert regular claims to ZKP format
+        expected_claims = []
+        for claim_path, requirement_value in requirement.claims.items():
+            if isinstance(requirement_value, dict):
+                for op, value in requirement_value.items():
+                    if op == "$gte":
+                        expected_claims.append(f"{claim_path} >= {value}")
+                    elif op == "$eq":
+                        expected_claims.append(f"{claim_path} == {value}")
+                    elif op == "$in":
+                        expected_claims.append(f"{claim_path} in {value}")
+            else:
+                expected_claims.append(f"{claim_path} == {requirement_value}")
+    else:
+        expected_claims = []
+    
+    # Verify the proof
+    is_valid, error = zkp_verifier.verify_proof(
+        proof,
+        expected_claims,
+        challenge
+    )
+    
+    return is_valid, error
+
+
 async def verify_on_chain(vc_id: str) -> Dict[str, Any]:
     """Verify credential on blockchain"""
     
