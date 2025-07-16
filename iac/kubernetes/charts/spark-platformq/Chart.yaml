@@ -1,0 +1,28 @@
+apiVersion: v2
+name: spark-platformq
+description: Apache Spark for PlatformQ batch processing and ML workloads
+type: application
+version: 1.0.0
+appVersion: "3.5.0"
+home: https://spark.apache.org/
+icon: https://spark.apache.org/images/spark-logo-trademark.png
+keywords:
+  - spark
+  - batch-processing
+  - ml
+  - graphx
+  - big-data
+maintainers:
+  - name: PlatformQ Team
+    email: platform@example.com
+dependencies:
+  - name: spark
+    version: "7.0.0"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: spark.enabled
+  - name: mlflow
+    version: "0.7.19"
+    repository: "https://community-charts.github.io/helm-charts"
+    condition: mlflow.enabled
+annotations:
+  category: Analytics 

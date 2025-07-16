@@ -1,0 +1,45 @@
+{
+  "type": "record",
+  "name": "SBTIssuanceRequested",
+  "namespace": "platformq.events",
+  "fields": [
+    {
+      "name": "tenant_id",
+      "type": "string",
+      "doc": "The tenant ID"
+    },
+    {
+      "name": "asset_id",
+      "type": "string",
+      "doc": "The digital asset ID to create SBT for"
+    },
+    {
+      "name": "asset_type",
+      "type": "string",
+      "doc": "Type of the digital asset"
+    },
+    {
+      "name": "asset_value",
+      "type": ["null", "double"],
+      "default": null,
+      "doc": "Estimated value of the asset"
+    },
+    {
+      "name": "owner_address",
+      "type": "string",
+      "doc": "Blockchain address of the asset owner"
+    },
+    {
+      "name": "metadata",
+      "type": ["null", {"type": "map", "values": "string"}],
+      "default": null,
+      "doc": "Additional metadata for the SBT"
+    },
+    {
+      "name": "event_timestamp",
+      "type": "long",
+      "logicalType": "timestamp-millis",
+      "doc": "When this event was created"
+    }
+  ]
+} 

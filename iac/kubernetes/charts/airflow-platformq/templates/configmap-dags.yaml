@@ -1,0 +1,71 @@
+{{- if .Values.platformq.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platformq-airflow-dags
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: airflow
+    component: dags
+    release: {{ .Release.Name }}
+data:
+  digital_asset_processing.py: |
+{{ .Files.Get "dags/digital_asset_processing.py" | indent 4 }}
+  
+  create_collaborative_project.py: |
+{{ .Files.Get "dags/create_collaborative_project.py" | indent 4 }}
+  
+  {{- if .Values.platformq.dagTemplates.enabled }}
+  # Additional DAG templates can be added here
+  verifiable_credential_issuance.py: |
+    """
+    Verifiable Credential Issuance DAG
+    
+    This DAG handles the issuance of verifiable credentials when
+    proposals are approved or other trust events occur.
+    """
+    from datetime import datetime, timedelta
+    from airflow import DAG
+    from airflow.operators.python import PythonOperator
+    
+    import sys
+    sys.path.append('/opt/airflow/platformq_airflow')
+    from platformq_airflow.operators import (
+        PulsarSensorOperator,
+        PlatformQServiceOperator,
+        PulsarEventOperator
+    )
+    
+    default_args = {
+        'owner': 'platformq',
+        'depends_on_past': False,
+        'start_date': datetime(2024, 1, 1),
+        'email_on_failure': True,
+        'email_on_retry': False,
+        'retries': 1,
+        'retry_delay': timedelta(minutes=5),
+    }
+    
+    dag = DAG(
+        'verifiable_credential_issuance',
+        default_args=default_args,
+        description='Issue verifiable credentials for approved proposals',
+        schedule_interval=None,
+        catchup=False,
+        tags=['platformq', 'trust', 'credentials'],
+    )
+    
+    # Placeholder for credential issuance logic
+    issue_credential = PlatformQServiceOperator(
+        task_id='issue_verifiable_credential',
+        service_name='verifiable-credential-service',
+        endpoint='/api/v1/issue',
+        method='POST',
+        payload={
+            'subject': '{{ dag_run.conf }}',
+            'type': 'ProposalApprovalCredential'
+        },
+        dag=dag,
+    )
+  {{- end }}
+{{- end }} 

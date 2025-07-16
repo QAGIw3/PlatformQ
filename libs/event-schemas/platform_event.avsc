@@ -11,7 +11,9 @@
     {
       "name": "data",
       "type": [
-        "com.platformq.events.DigitalAsset"
+        "com.platformq.events.DigitalAsset",
+        "com.platformq.events.DocumentUpdatedEvent",
+        "com.platformq.events.ProjectCreatedEvent"
       ],
       "doc": "The event payload. Add other record types to this union as the platform grows."
     }

@@ -1,0 +1,317 @@
+# Default values for spark-platformq
+# This is a YAML-formatted file.
+
+# Global PlatformQ settings
+global:
+  platformq:
+    tenantIsolation: true
+    multiTenancy:
+      enabled: true
+      defaultTenant: "default"
+    monitoring:
+      enabled: true
+      prometheus:
+        enabled: true
+
+# Spark configuration
+spark:
+  enabled: true
+  
+  # Image configuration
+  image:
+    registry: docker.io
+    repository: bitnami/spark
+    tag: 3.5.0-debian-11-r0
+    pullPolicy: IfNotPresent
+    
+  # Spark Master configuration
+  master:
+    replicaCount: 1
+    resources:
+      limits:
+        cpu: 2
+        memory: 4Gi
+      requests:
+        cpu: 1
+        memory: 2Gi
+    
+    # Web UI configuration
+    webPort: 8080
+    port: 7077
+    
+    # Extra configuration
+    extraEnvVars:
+      - name: SPARK_MASTER_OPTS
+        value: "-Dspark.master.rest.enabled=true"
+    
+    # Service configuration
+    service:
+      type: ClusterIP
+      ports:
+        http: 8080
+        cluster: 7077
+        rest: 6066
+        
+  # Spark Worker configuration  
+  worker:
+    replicaCount: 3
+    
+    resources:
+      limits:
+        cpu: 4
+        memory: 8Gi
+      requests:
+        cpu: 2
+        memory: 4Gi
+    
+    # Worker specific settings
+    coreLimit: "4"
+    memoryLimit: "8g"
+    
+    # Autoscaling
+    autoscaling:
+      enabled: true
+      minReplicas: 2
+      maxReplicas: 10
+      targetCPU: 80
+      targetMemory: 80
+    
+    extraEnvVars:
+      - name: SPARK_WORKER_OPTS
+        value: "-Dspark.worker.cleanup.enabled=true"
+  
+  # Submit configuration for jobs
+  submit:
+    # Default Spark properties for all jobs
+    sparkProperties:
+      spark.serializer: "org.apache.spark.serializer.KryoSerializer"
+      spark.sql.adaptive.enabled: "true"
+      spark.sql.adaptive.coalescePartitions.enabled: "true"
+      spark.dynamicAllocation.enabled: "true"
+      spark.dynamicAllocation.shuffleTracking.enabled: "true"
+      spark.kubernetes.allocation.batch.size: "10"
+      
+  # History Server
+  historyServer:
+    enabled: true
+    
+    # Storage for event logs
+    eventLogDir: "s3a://spark-logs/"
+    
+    resources:
+      limits:
+        cpu: 1
+        memory: 2Gi
+      requests:
+        cpu: 0.5
+        memory: 1Gi
+
+# MLflow configuration
+mlflow:
+  enabled: true
+  
+  tracking:
+    image:
+      repository: ghcr.io/mlflow/mlflow
+      tag: v2.8.0
+      
+    service:
+      type: ClusterIP
+      port: 5000
+      
+    # Backend store (PostgreSQL)
+    postgres:
+      enabled: true
+      host: "postgresql"
+      port: 5432
+      database: "mlflow"
+      user: "mlflow"
+      
+    # Artifact store (S3/MinIO)
+    artifactRoot: "s3://mlflow-artifacts/"
+    
+  # Model registry
+  registry:
+    enabled: true
+    storeUri: "postgresql://mlflow:password@postgresql:5432/mlflow"
+
+# Spark Operator for Kubernetes
+sparkOperator:
+  enabled: true
+  
+  image:
+    repository: gcr.io/spark-operator/spark-operator
+    tag: v1beta2-1.3.8-3.1.1
+    
+  # Webhook for mutation/validation
+  webhook:
+    enable: true
+    port: 8080
+    
+  # Service account
+  serviceAccounts:
+    spark:
+      create: true
+      name: "spark"
+    sparkoperator:
+      create: true
+      name: "spark-operator"
+      
+  # Resource quotas per namespace/tenant
+  resourceQuotaEnforcement:
+    enable: true
+
+# PlatformQ specific configurations
+platformq:
+  # Integration with existing services
+  integration:
+    pulsar:
+      enabled: true
+      brokerUrl: "pulsar://pulsar-broker:6650"
+      
+    cassandra:
+      enabled: true
+      contactPoints: "cassandra"
+      port: 9042
+      
+    minio:
+      enabled: true
+      endpoint: "http://minio:9000"
+      accessKey: "minioadmin"
+      secretKey: "minioadmin"
+      
+    janusgraph:
+      enabled: true
+      endpoint: "http://janusgraph:8182"
+      
+  # Multi-tenant configuration
+  multiTenant:
+    # Resource limits per tenant
+    resourceQuotas:
+      small:
+        cpu: "10"
+        memory: "20Gi"
+        persistentVolumeClaims: "5"
+      medium:
+        cpu: "50"
+        memory: "100Gi"
+        persistentVolumeClaims: "20"
+      large:
+        cpu: "200"
+        memory: "500Gi"
+        persistentVolumeClaims: "100"
+        
+    # Namespace isolation
+    namespacePrefix: "spark-tenant-"
+    
+  # Job submission API
+  jobApi:
+    enabled: true
+    image:
+      repository: platformq/spark-job-api
+      tag: latest
+    service:
+      type: ClusterIP
+      port: 8090
+      
+  # Custom Spark images with PlatformQ libraries
+  customImages:
+    processor:
+      repository: platformq/spark-processor
+      tag: latest
+      buildArgs:
+        SPARK_VERSION: "3.5.0"
+        PLATFORMQ_VERSION: "1.0.0"
+        
+    ml:
+      repository: platformq/spark-ml
+      tag: latest
+      includes:
+        - mlflow
+        - tensorflow
+        - pytorch
+        - xgboost
+        
+    graphx:
+      repository: platformq/spark-graphx
+      tag: latest
+      includes:
+        - graphframes
+        - janusgraph-spark
+
+# Monitoring and observability
+monitoring:
+  prometheus:
+    enabled: true
+    serviceMonitor:
+      enabled: true
+      interval: 30s
+      
+  grafana:
+    enabled: true
+    dashboards:
+      - spark-cluster-dashboard
+      - spark-job-dashboard
+      - ml-training-dashboard
+      
+# Security
+security:
+  ssl:
+    enabled: false  # Enable in production
+    
+  authentication:
+    enabled: true
+    type: "oauth2"
+    
+  rbac:
+    create: true
+
+# Persistence
+persistence:
+  # For Spark shuffle data
+  worker:
+    enabled: true
+    storageClass: "fast-ssd"
+    size: 100Gi
+    
+  # For ML models and checkpoints
+  checkpoints:
+    enabled: true
+    storageClass: "standard"
+    size: 500Gi
+
+# Ingress configuration
+ingress:
+  enabled: true
+  className: "nginx"
+  
+  # Spark Master UI
+  master:
+    enabled: true
+    hostname: spark.platformq.local
+    path: /
+    tls: true
+    
+  # History Server UI
+  history:
+    enabled: true
+    hostname: spark-history.platformq.local
+    path: /
+    tls: true
+    
+  # MLflow UI
+  mlflow:
+    enabled: true
+    hostname: mlflow.platformq.local
+    path: /
+    tls: true
+
+# Node selection
+nodeSelector:
+  workload: spark
+  
+tolerations:
+  - key: "spark"
+    operator: "Equal"
+    value: "true"
+    effect: "NoSchedule" 

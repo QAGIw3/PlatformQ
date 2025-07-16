@@ -1,0 +1,221 @@
+# PlatformQ Airflow Configuration
+
+# Override Airflow chart values for PlatformQ integration
+airflow:
+  # Airflow image with PlatformQ dependencies
+  images:
+    airflow:
+      repository: apache/airflow
+      tag: 2.8.1-python3.11
+      pullPolicy: IfNotPresent
+    
+  # Executor configuration
+  executor: "CeleryKubernetesExecutor"
+  
+  # Environment variables for PlatformQ integration
+  env:
+    - name: PLATFORMQ_PULSAR_URL
+      value: "pulsar://platformq-pulsar:6650"
+    - name: PLATFORMQ_AUTH_SERVICE_URL  
+      value: "http://auth-service:8000"
+    - name: PLATFORMQ_CONSUL_URL
+      value: "http://consul:8500"
+    - name: PLATFORMQ_VAULT_URL
+      value: "http://vault:8200"
+    - name: AIRFLOW__CORE__LOAD_EXAMPLES
+      value: "false"
+    - name: AIRFLOW__WEBSERVER__EXPOSE_CONFIG
+      value: "true"
+    
+  # Extra pip packages for PlatformQ
+  extraPipPackages:
+    - "pulsar-client==3.4.0"
+    - "kubernetes==29.0.0"
+    - "requests==2.31.0"
+    - "consul-py==1.5.0"
+    
+  # Web server configuration
+  webserver:
+    replicas: 1
+    service:
+      type: ClusterIP
+      port: 8080
+    
+    # Resources
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1"
+    
+  # Scheduler configuration
+  scheduler:
+    replicas: 1
+    resources:
+      requests:
+        memory: "1Gi"
+        cpu: "500m"
+      limits:
+        memory: "2Gi"
+        cpu: "1"
+    
+  # Worker configuration
+  workers:
+    replicas: 3
+    resources:
+      requests:
+        memory: "2Gi"
+        cpu: "1"
+      limits:
+        memory: "4Gi"
+        cpu: "2"
+    
+    # Enable Kubernetes executor for processor jobs
+    keda:
+      enabled: true
+      minReplicaCount: 1
+      maxReplicaCount: 10
+    
+  # PostgreSQL configuration
+  postgresql:
+    enabled: true
+    auth:
+      postgresPassword: "postgres"
+      username: "airflow"
+      password: "airflow"
+      database: "airflow"
+    primary:
+      persistence:
+        enabled: true
+        size: 10Gi
+    
+  # Redis configuration
+  redis:
+    enabled: true
+    auth:
+      enabled: false
+    master:
+      persistence:
+        enabled: true
+        size: 5Gi
+    
+  # DAGs configuration
+  dags:
+    persistence:
+      enabled: true
+      size: 5Gi
+      storageClassName: standard
+    gitSync:
+      enabled: false
+    
+  # Logs configuration
+  logs:
+    persistence:
+      enabled: true
+      size: 10Gi
+    
+  # Ingress configuration
+  ingress:
+    enabled: true
+    web:
+      enabled: true
+      annotations:
+        kubernetes.io/ingress.class: nginx
+        cert-manager.io/cluster-issuer: letsencrypt-prod
+      hosts:
+        - name: airflow.platformq.local
+          tls:
+            enabled: true
+            secretName: airflow-tls
+      path: /
+    
+  # RBAC configuration for Kubernetes executor
+  rbac:
+    create: true
+    createSCCRoleBinding: false
+    
+  serviceAccount:
+    create: true
+    name: airflow
+    annotations:
+      eks.amazonaws.com/role-arn: ""
+    
+  # Security context
+  securityContext:
+    runAsUser: 50000
+    runAsGroup: 0
+    fsGroup: 0
+    
+  # Config for PlatformQ operators
+  config:
+    # Allow dynamic DAG discovery
+    AIRFLOW__SCHEDULER__MIN_FILE_PROCESS_INTERVAL: "30"
+    AIRFLOW__SCHEDULER__DAG_DIR_LIST_INTERVAL: "60"
+    
+    # API configuration
+    AIRFLOW__API__AUTH_BACKENDS: "airflow.api.auth.backend.basic_auth,airflow.api.auth.backend.session"
+    AIRFLOW__API__ENABLE_EXPERIMENTAL_API: "true"
+    
+    # Webserver configuration
+    AIRFLOW__WEBSERVER__AUTHENTICATE: "True"
+    AIRFLOW__WEBSERVER__AUTH_BACKEND: "airflow.contrib.auth.backends.password_auth"
+    
+    # Celery configuration
+    AIRFLOW__CELERY__WORKER_CONCURRENCY: "4"
+    AIRFLOW__CELERY__WORKER_PREFETCH_MULTIPLIER: "1"
+    
+  # Extra volumes for PlatformQ DAGs and operators
+  extraVolumes:
+    - name: platformq-dags
+      configMap:
+        name: platformq-airflow-dags
+    - name: platformq-operators
+      configMap:
+        name: platformq-airflow-operators
+        
+  extraVolumeMounts:
+    - name: platformq-dags
+      mountPath: /opt/airflow/dags/platformq
+      readOnly: true
+    - name: platformq-operators
+      mountPath: /opt/airflow/platformq_airflow
+      readOnly: true
+
+# PlatformQ specific configuration
+platformq:
+  # Enable/disable PlatformQ integration
+  enabled: true
+  
+  # Multi-tenancy configuration
+  multiTenancy:
+    enabled: true
+    defaultTenantId: "00000000-0000-0000-0000-000000000000"
+    
+  # Event bridge configuration
+  eventBridge:
+    enabled: true
+    subscriptions:
+      - "persistent://platformq/.*/digital-asset-created-events"
+      - "persistent://platformq/.*/project-creation-requests"
+      - "persistent://platformq/.*/proposal-approved-events"
+      - "persistent://platformq/.*/document-updated-events"
+    
+  # DAG templates
+  dagTemplates:
+    enabled: true
+    
+  # Monitoring
+  monitoring:
+    prometheus:
+      enabled: true
+      port: 9102
+    
+  # Security
+  security:
+    oidc:
+      enabled: false  # Set to true when OIDC is configured
+      issuer: "http://auth-service:8000"
+      clientId: "airflow"
+      clientSecret: ""  # Set via secret 

@@ -1,0 +1,12 @@
+{
+    "type": "record",
+    "namespace": "com.platformq.events",
+    "name": "DocumentUpdatedEvent",
+    "fields": [
+        { "name": "tenant_id", "type": "string" },
+        { "name": "document_id", "type": "string", "doc": "Unique ID of the document from the source system" },
+        { "name": "document_path", "type": "string", "doc": "Path or key of the document in the source system" },
+        { "name": "saved_by_user_id", "type": "string", "doc": "User ID who last saved the document" },
+        { "name": "event_timestamp", "type": "long", "logicalType": "timestamp-millis" }
+    ]
+} 

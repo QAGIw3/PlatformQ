@@ -1,0 +1,30 @@
+apiVersion: v2
+name: airflow-platformq
+description: Apache Airflow deployment integrated with PlatformQ
+type: application
+version: 1.0.0
+appVersion: "2.8.1"
+
+dependencies:
+  - name: airflow
+    version: 1.11.0
+    repository: https://airflow.apache.org/
+
+maintainers:
+  - name: PlatformQ Team
+    email: platform@example.com
+
+keywords:
+  - airflow
+  - workflow
+  - orchestration
+  - platformq
+
+home: https://platformq.io
+sources:
+  - https://github.com/platformq/platform
+
+annotations:
+  # Annotations for Helm chart repositories
+  category: Workflow
+  licenses: Apache-2.0 

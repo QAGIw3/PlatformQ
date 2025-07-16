@@ -7,14 +7,18 @@ import io
 import logging
 import threading
 import time
-from fastapi import Request, Response, status
+from datetime import datetime
+from fastapi import Request, Response, status, HTTPException
 from platformq_shared.event_publisher import EventPublisher
 from platformq_shared.config import ConfigLoader
 import json
 import re
 import httpx
-from platformq_shared.events import IssueVerifiableCredential, DigitalAssetCreated, ExecuteWasmFunction
+from platformq_shared.events import IssueVerifiableCredential, DigitalAssetCreated, ExecuteWasmFunction, DocumentUpdatedEvent, ProjectCreatedEvent
 from pulsar.schema import AvroSchema
+from .airflow_bridge import AirflowBridge, EventToDAGProcessor
+from fastapi import Query
+from typing import List, Optional
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -114,14 +118,52 @@ def startup_event():
     pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
     app.state.event_publisher = EventPublisher(pulsar_url=pulsar_url)
     app.state.event_publisher.connect()
-    # Start the Pulsar consumer in a background thread
-    thread = threading.Thread(target=workflow_consumer_loop, args=(app,), daemon=True)
-    thread.start()
+    
+    # Initialize Airflow bridge if enabled
+    airflow_enabled = settings.get("AIRFLOW_ENABLED", "false").lower() == "true"
+    if airflow_enabled:
+        app.state.airflow_bridge = AirflowBridge()
+        
+        # Start event to DAG processor
+        pulsar_client = pulsar.Client(pulsar_url)
+        app.state.event_processor = EventToDAGProcessor(
+            app.state.airflow_bridge, 
+            pulsar_client
+        )
+        
+        # Subscribe to events that should trigger DAGs
+        event_topics = [
+            "persistent://platformq/.*/digital-asset-created-events",
+            "persistent://platformq/.*/project-creation-requests",
+            "persistent://platformq/.*/proposal-approved-events",
+            "persistent://platformq/.*/document-updated-events"
+        ]
+        app.state.event_processor.subscribe_to_events(
+            event_topics, 
+            "workflow-airflow-bridge"
+        )
+        
+        # Start processing in background thread
+        thread = threading.Thread(
+            target=app.state.event_processor.process_events, 
+            daemon=True
+        )
+        thread.start()
+        logger.info("Airflow bridge initialized and event processing started")
+    else:
+        # Start the legacy Pulsar consumer in a background thread
+        thread = threading.Thread(target=workflow_consumer_loop, args=(app,), daemon=True)
+        thread.start()
+        logger.info("Running in legacy mode without Airflow integration")
 
 @app.on_event("shutdown")
 def shutdown_event():
     if app.state.event_publisher:
         app.state.event_publisher.close()
+    
+    # Stop Airflow event processor if running
+    if hasattr(app.state, 'event_processor'):
+        app.state.event_processor.stop()
 
 @app.post("/webhooks/openproject")
 async def handle_openproject_webhook(request: Request):
@@ -134,19 +176,21 @@ async def handle_openproject_webhook(request: Request):
     
     # In a real app, you would parse the OpenProject webhook payload here
     # to extract the relevant data (project_id, project_name, etc.)
-    
-    # Example placeholder data:
-    event_data = {
-        "project_id": "12345",
-        "project_name": "New Website Launch",
-        "creator_id": "some-user-id",
-        "event_timestamp": int(time.time() * 1000)
-    }
+    payload = await request.json()
+
+    # Instantiate the ProjectCreatedEvent using the parsed payload
+    project_created_event = ProjectCreatedEvent(
+        project_id=str(payload.get("project", {}).get("id", "")),
+        project_name=payload.get("project", {}).get("name", ""),
+        creator_id=str(payload.get("created_by", {}).get("id", "")), # Assuming webhook includes creator info
+        event_timestamp=int(time.time() * 1000)
+    )
     
     publisher.publish(
-        topic='project-events',
-        schema_path='schemas/project_created.avsc',
-        data=event_data
+        topic_base='project-events',
+        tenant_id="00000000-0000-0000-0000-000000000000", # Placeholder tenant ID
+        schema_class=ProjectCreatedEvent,
+        data=project_created_event
     )
     
     logger.info("Received and processed webhook from OpenProject, published to Pulsar.")
@@ -168,24 +212,155 @@ async def handle_onlyoffice_webhook(request: Request):
     # For now, we'll use a placeholder.
     tenant_id = "00000000-0000-0000-0000-000000000000" # Placeholder
 
-    # As with the openproject webhook, this needs a proper 'DocumentUpdatedEvent'
-    # Record class to be fully compliant. Leaving as-is for now.
-    
-    event_data = {
-        "tenant_id": tenant_id,
-        "document_id": str(payload.get("fileId", "")),
-        "document_path": payload.get("key", ""), # The 'key' is often the document path
-        "saved_by_user_id": str(payload.get("users", [""])[0]),
-        "event_timestamp": int(time.time() * 1000)
-    }
+    # Instantiate the DocumentUpdatedEvent using the parsed payload
+    document_updated_event = DocumentUpdatedEvent(
+        tenant_id=tenant_id,
+        document_id=str(payload.get("fileid", "")),
+        document_path=payload.get("path", ""), # OnlyOffice uses 'path' for the file path
+        saved_by_user_id=str(payload.get("userid", "")), # OnlyOffice uses 'userid'
+        event_timestamp=int(time.time() * 1000) # Current timestamp
+    )
     
     publisher.publish(
         topic_base='document-events',
         tenant_id=tenant_id,
-        schema_path='schemas/document_updated.avsc',
-        data=event_data
+        schema_class=DocumentUpdatedEvent,
+        data=document_updated_event
     )
     
     logger.info("Received OnlyOffice save callback, published to Pulsar.")
     # OnlyOffice expects a specific JSON response to confirm success
-    return {"error": 0} 
+    return {"error": 0}
+
+# --- Airflow Management API Endpoints ---
+
+@app.get("/api/v1/workflows")
+async def list_workflows(
+    request: Request,
+    only_active: bool = Query(False, description="Only show active workflows")
+):
+    """
+    List all available workflows (Airflow DAGs)
+    """
+    if not hasattr(request.app.state, 'airflow_bridge'):
+        return {"error": "Airflow integration not enabled"}
+    
+    try:
+        dags = request.app.state.airflow_bridge.list_dags()
+        
+        if only_active:
+            dags = [dag for dag in dags if not dag.get('is_paused', True)]
+        
+        return {
+            "workflows": dags,
+            "total": len(dags)
+        }
+    except Exception as e:
+        logger.error(f"Failed to list workflows: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/workflows/{workflow_id}/trigger")
+async def trigger_workflow(
+    request: Request,
+    workflow_id: str,
+    conf: Optional[Dict[str, Any]] = None
+):
+    """
+    Manually trigger a workflow (DAG run)
+    """
+    if not hasattr(request.app.state, 'airflow_bridge'):
+        return {"error": "Airflow integration not enabled"}
+    
+    try:
+        # Add tenant context from request
+        conf = conf or {}
+        conf['manual_trigger'] = True
+        conf['triggered_at'] = datetime.utcnow().isoformat()
+        
+        result = request.app.state.airflow_bridge.trigger_dag(workflow_id, conf)
+        
+        return {
+            "workflow_id": workflow_id,
+            "run_id": result.get('dag_run_id'),
+            "state": result.get('state'),
+            "execution_date": result.get('execution_date')
+        }
+    except Exception as e:
+        logger.error(f"Failed to trigger workflow {workflow_id}: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/workflows/{workflow_id}/runs/{run_id}")
+async def get_workflow_run_status(
+    request: Request,
+    workflow_id: str,
+    run_id: str
+):
+    """
+    Get the status of a workflow run
+    """
+    if not hasattr(request.app.state, 'airflow_bridge'):
+        return {"error": "Airflow integration not enabled"}
+    
+    try:
+        status = request.app.state.airflow_bridge.get_dag_run_status(workflow_id, run_id)
+        return status
+    except Exception as e:
+        logger.error(f"Failed to get workflow run status: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.patch("/api/v1/workflows/{workflow_id}")
+async def update_workflow_state(
+    request: Request,
+    workflow_id: str,
+    is_paused: bool = Query(..., description="Whether to pause or unpause the workflow")
+):
+    """
+    Pause or unpause a workflow
+    """
+    if not hasattr(request.app.state, 'airflow_bridge'):
+        return {"error": "Airflow integration not enabled"}
+    
+    try:
+        result = request.app.state.airflow_bridge.pause_dag(workflow_id, is_paused)
+        return {
+            "workflow_id": workflow_id,
+            "is_paused": result.get('is_paused'),
+            "message": f"Workflow {'paused' if is_paused else 'unpaused'} successfully"
+        }
+    except Exception as e:
+        logger.error(f"Failed to update workflow state: {str(e)}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/event-mappings")
+async def get_event_mappings(request: Request):
+    """
+    Get all event to workflow mappings
+    """
+    if not hasattr(request.app.state, 'airflow_bridge'):
+        return {"error": "Airflow integration not enabled"}
+    
+    mappings = request.app.state.airflow_bridge.get_event_mappings()
+    return {
+        "mappings": mappings,
+        "total": len(mappings)
+    }
+
+@app.post("/api/v1/event-mappings")
+async def register_event_mapping(
+    request: Request,
+    event_type: str = Query(..., description="Event type to map"),
+    workflow_id: str = Query(..., description="Workflow ID to trigger")
+):
+    """
+    Register a new event to workflow mapping
+    """
+    if not hasattr(request.app.state, 'airflow_bridge'):
+        return {"error": "Airflow integration not enabled"}
+    
+    request.app.state.airflow_bridge.register_event_mapping(event_type, workflow_id)
+    
+    return {
+        "event_type": event_type,
+        "workflow_id": workflow_id,
+        "message": "Mapping registered successfully"
+    } 

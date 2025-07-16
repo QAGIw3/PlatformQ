@@ -1,0 +1,170 @@
+version: '3.8'
+
+# Apache Spark services for PlatformQ batch processing
+# This file should be used with the main docker-compose.yml:
+# docker-compose -f docker-compose.yml -f docker-compose.spark.yml up
+
+networks:
+  platformq_net:
+    external: true
+
+volumes:
+  spark_data:
+  spark_logs:
+
+services:
+  # Spark Master
+  spark_master:
+    image: bitnami/spark:3.5.0
+    container_name: spark_master
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - SPARK_USER=spark
+      # PlatformQ Integration
+      - SPARK_MASTER_OPTS=-Dspark.master.rest.enabled=true
+    ports:
+      - "8081:8080"  # Spark Master UI
+      - "7077:7077"  # Spark Master Port
+      - "6066:6066"  # REST API Port
+    volumes:
+      - spark_data:/bitnami/spark/data
+      - spark_logs:/opt/spark/logs
+      - ./spark/conf:/opt/bitnami/spark/conf
+      - ./spark/jars:/opt/bitnami/spark/jars
+    networks:
+      - platformq_net
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  # Spark Worker 1
+  spark_worker_1:
+    image: bitnami/spark:3.5.0
+    container_name: spark_worker_1
+    depends_on:
+      - spark_master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark_master:7077
+      - SPARK_WORKER_MEMORY=4G
+      - SPARK_WORKER_CORES=2
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - SPARK_USER=spark
+    ports:
+      - "8082:8081"  # Worker UI
+    volumes:
+      - spark_data:/bitnami/spark/data
+      - spark_logs:/opt/spark/logs
+      - ./spark/conf:/opt/bitnami/spark/conf
+      - ./spark/jars:/opt/bitnami/spark/jars
+      # Mount for processor files
+      - ./processing:/opt/processing:ro
+    networks:
+      - platformq_net
+
+  # Spark Worker 2
+  spark_worker_2:
+    image: bitnami/spark:3.5.0
+    container_name: spark_worker_2
+    depends_on:
+      - spark_master
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark_master:7077
+      - SPARK_WORKER_MEMORY=4G
+      - SPARK_WORKER_CORES=2
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+      - SPARK_USER=spark
+    ports:
+      - "8083:8081"  # Worker UI
+    volumes:
+      - spark_data:/bitnami/spark/data
+      - spark_logs:/opt/spark/logs
+      - ./spark/conf:/opt/bitnami/spark/conf
+      - ./spark/jars:/opt/bitnami/spark/jars
+      # Mount for processor files
+      - ./processing:/opt/processing:ro
+    networks:
+      - platformq_net
+
+  # Spark History Server
+  spark_history:
+    image: bitnami/spark:3.5.0
+    container_name: spark_history
+    depends_on:
+      - spark_master
+    environment:
+      - SPARK_MODE=history-server
+      - SPARK_HISTORY_OPTS=-Dspark.history.fs.logDirectory=file:///opt/spark/logs
+      - SPARK_USER=spark
+    ports:
+      - "18080:18080"  # History Server UI
+    volumes:
+      - spark_logs:/opt/spark/logs
+      - ./spark/conf:/opt/bitnami/spark/conf
+    networks:
+      - platformq_net
+
+  # Spark Thrift Server (for SQL queries)
+  spark_thrift:
+    image: bitnami/spark:3.5.0
+    container_name: spark_thrift
+    depends_on:
+      - spark_master
+    environment:
+      - SPARK_MODE=master
+      - SPARK_MASTER_URL=spark://spark_master:7077
+      - SPARK_USER=spark
+    command: >
+      bash -c "
+        /opt/bitnami/spark/sbin/start-thriftserver.sh 
+        --master spark://spark_master:7077
+        --conf spark.sql.warehouse.dir=s3a://warehouse/
+        --conf spark.hadoop.fs.s3a.endpoint=http://minio:9000
+        --conf spark.hadoop.fs.s3a.access.key=minioadmin
+        --conf spark.hadoop.fs.s3a.secret.key=minioadmin
+        --conf spark.hadoop.fs.s3a.path.style.access=true
+        --conf spark.hadoop.fs.s3a.impl=org.apache.hadoop.fs.s3a.S3AFileSystem
+      "
+    ports:
+      - "10000:10000"  # Thrift JDBC port
+    volumes:
+      - ./spark/conf:/opt/bitnami/spark/conf
+      - ./spark/jars:/opt/bitnami/spark/jars
+    networks:
+      - platformq_net
+
+  # Jupyter notebook for interactive Spark development
+  spark_jupyter:
+    image: jupyter/pyspark-notebook:spark-3.5.0
+    container_name: spark_jupyter
+    depends_on:
+      - spark_master
+    environment:
+      - JUPYTER_ENABLE_LAB=yes
+      - SPARK_MASTER=spark://spark_master:7077
+      # MinIO/S3 Configuration
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - AWS_DEFAULT_REGION=us-east-1
+    ports:
+      - "8888:8888"
+    volumes:
+      - ./notebooks:/home/jovyan/work
+      - ./spark/conf:/usr/local/spark/conf
+      - ./spark/jars:/usr/local/spark/jars
+    networks:
+      - platformq_net
+    command: start-notebook.sh --NotebookApp.token='' --NotebookApp.password='' 

@@ -1,0 +1,32 @@
+{{- if .Values.platformq.enabled }}
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: platformq-airflow-operators
+  namespace: {{ .Release.Namespace }}
+  labels:
+    app: airflow
+    component: operators
+    release: {{ .Release.Name }}
+data:
+  __init__.py: |
+{{ .Files.Get "operators/__init__.py" | indent 4 }}
+  
+  operators/__init__.py: |
+    """Custom Airflow operators for PlatformQ integration."""
+  
+  operators/pulsar_event_operator.py: |
+{{ .Files.Get "operators/pulsar_event_operator.py" | indent 4 }}
+  
+  operators/pulsar_sensor_operator.py: |
+{{ .Files.Get "operators/pulsar_sensor_operator.py" | indent 4 }}
+  
+  operators/platformq_service_operator.py: |
+{{ .Files.Get "operators/platformq_service_operator.py" | indent 4 }}
+  
+  operators/processor_job_operator.py: |
+{{ .Files.Get "operators/processor_job_operator.py" | indent 4 }}
+  
+  operators/wasm_function_operator.py: |
+{{ .Files.Get "operators/wasm_function_operator.py" | indent 4 }}
+{{- end }} 

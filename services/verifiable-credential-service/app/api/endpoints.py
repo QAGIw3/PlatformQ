@@ -1,18 +1,6 @@
-from fastapi import APIRouter, Depends
-from cassandra.cluster import Session
-from .deps import get_current_tenant_and_user
+from fastapi import APIRouter
 
 router = APIRouter()
 
-@router.get("/example")
-def example_endpoint(context: dict = Depends(get_current_tenant_and_user)):
-    """
-    An example protected endpoint.
-    """
-    tenant_id = context["tenant_id"]
-    user = context["user"]
-    
-    return {
-        "message": f"Hello {user.full_name} from tenant {tenant_id}!",
-        "service": "verifiable-credential-service"
-    } 
+# Additional endpoints can be added here
+# The main endpoints are defined in main.py for now 

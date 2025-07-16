@@ -1,0 +1,11 @@
+{
+    "type": "record",
+    "namespace": "com.platformq.events",
+    "name": "ProjectCreatedEvent",
+    "fields": [
+        { "name": "project_id", "type": "string" },
+        { "name": "project_name", "type": "string" },
+        { "name": "creator_id", "type": "string" },
+        { "name": "event_timestamp", "type": "long", "logicalType": "timestamp-millis" }
+    ]
+} 

@@ -1,11 +1,21 @@
--r ../../requirements/base.in
+# Base dependencies
+fastapi
+uvicorn[standard]
+pydantic
 
-# Service-specific dependencies
-python-jose[cryptography]
+# PlatformQ shared library
+-e ../../libs/shared
 
-# No service-specific Python dependencies are needed for this service.
+# Pulsar for event streaming
+pulsar-client==3.4.0
+apache-pulsar
 
-# Development and Testing
-pytest
-black
-ruff 
+# Avro for event schemas
+avro-python3
+
+# HTTP client
+httpx
+
+# Apache Airflow integration
+apache-airflow-client==2.8.0
+requests 

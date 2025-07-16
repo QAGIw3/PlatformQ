@@ -2,10 +2,10 @@ from shared_lib.base_service import create_base_app
 from fastapi import Depends, HTTPException
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-# Assume these clients exist in our shared library now
-# from shared_lib.openproject_client import OpenProjectClient
-# from shared_lib.zulip_client import ZulipClient
-# from shared_lib.nextcloud_client import NextcloudClient
+from shared_lib.nextcloud_client import NextcloudClient
+from shared_lib.openproject_client import OpenProjectClient
+from shared_lib.zulip_client import ZulipClient
+from platformq_shared.config import ConfigLoader
 
 from .api.deps import (
     get_db_session, 
@@ -47,23 +47,47 @@ def create_project(
     tenant_id = context["tenant_id"]
     user = context["user"]
     
-    # In a real app, these clients would be initialized on startup
-    # and their configs/secrets would come from the ConfigLoader.
-    # openproject_client = OpenProjectClient(...)
-    # nextcloud_client = NextcloudClient(...)
-    # zulip_client = ZulipClient(...)
+    config_loader = app.state.config_loader
+    settings = config_loader.load_settings()
 
-    # 1. Create the OpenProject project (conceptual)
-    # openproject_id = openproject_client.create_project(name=project_in.name)
-    # if not openproject_id:
-    #     raise HTTPException(status_code=500, detail="Failed to create OpenProject project")
+    nextcloud_client = NextcloudClient(
+        nextcloud_url=settings["NEXTCLOUD_URL"],
+        admin_user=config_loader.get_secret("platformq/nextcloud", "admin_user"),
+        admin_pass=config_loader.get_secret("platformq/nextcloud", "admin_pass"),
+    )
 
-    # 2. Create the Nextcloud folder (conceptual)
-    # folder_path = f"Projects/{project_in.name}"
-    # nextcloud_client.create_folder(folder_path)
+    # 1. Create the Nextcloud folder
+    folder_path = f"Projects/{project_in.name}"
+    success = nextcloud_client.create_folder(folder_path)
+    if not success:
+        raise HTTPException(status_code=500, detail="Failed to create Nextcloud folder")
 
-    # 3. Create the Zulip stream (conceptual)
-    # zulip_client.create_stream(name=project_in.name, description=f"Channel for {project_in.name}")
+    openproject_client = OpenProjectClient(
+        openproject_url=settings["OPENPROJECT_URL"],
+        api_key=config_loader.get_secret("platformq/openproject", "api_key"),
+    )
+
+    # 2. Create the OpenProject project
+    try:
+        # OpenProject requires a unique identifier, often a URL-friendly version of the name
+        openproject_identifier = project_in.name.lower().replace(" ", "-")
+        openproject_response = openproject_client.create_project(name=project_in.name, identifier=openproject_identifier)
+        openproject_id = openproject_response["id"]
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create OpenProject project: {e}")
+
+    zulip_client = ZulipClient(
+        zulip_site=settings["ZULIP_SITE"],
+        zulip_email=config_loader.get_secret("platformq/zulip", "email"),
+        zulip_api_key=config_loader.get_secret("platformq/zulip", "api_key"),
+    )
+
+    # 3. Create the Zulip stream
+    try:
+        zulip_client.create_stream(name=project_in.name, description=f"Channel for {project_in.name}")
+        zulip_stream_name = project_in.name
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=f"Failed to create Zulip stream: {e}")
 
     # 4. Store the links in our own database
     # crud_project.create_project(
@@ -71,7 +95,7 @@ def create_project(
     #     project_name=project_in.name,
     #     openproject_id=openproject_id,
     #     nextcloud_folder_path=folder_path,
-    #     zulip_stream_name=project_in.name
+    #     zulip_stream_name=zulip_stream_name
     # )
     
     # 5. Publish an event
