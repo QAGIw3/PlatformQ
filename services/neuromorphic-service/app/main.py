@@ -1,0 +1,288 @@
+"""
+Neuromorphic Event Processing Service
+
+Ultra-low latency anomaly detection using spiking neural networks.
+"""
+
+import asyncio
+import json
+from typing import Dict, List, Optional, Tuple
+from datetime import datetime
+import numpy as np
+
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+from fastapi.responses import JSONResponse
+import pulsar
+from pydantic import BaseModel
+
+# SNN Libraries (will use Brian2 as primary)
+import brian2 as b2
+from brian2 import *
+
+# Platform shared libraries
+from platformq_shared.base_service import BaseService
+from platformq_shared.pulsar_client import PulsarClient
+from platformq_shared.ignite_utils import IgniteCache
+from platformq_shared.logging_config import get_logger
+from platformq_shared.monitoring import track_processing_time
+
+# Local modules
+from .models.snn_core import SpikingNeuralNetwork
+from .models.event_encoder import EventEncoder
+from .models.anomaly_detector import AnomalyDetector
+from .config import NeuromorphicConfig
+
+logger = get_logger(__name__)
+
+class NeuromorphicService(BaseService):
+    """
+    Neuromorphic Event Processing Service using Spiking Neural Networks
+    """
+    
+    def __init__(self):
+        super().__init__("neuromorphic-service", "Neuromorphic Event Processing")
+        self.config = NeuromorphicConfig()
+        self.snn = None
+        self.encoder = None
+        self.detector = None
+        self.event_cache = None
+        self.pattern_memory = None
+        
+    async def startup(self):
+        """Initialize service components"""
+        await super().startup()
+        
+        # Initialize SNN components
+        self.encoder = EventEncoder(
+            encoding_type=self.config.encoding_type,
+            num_neurons=self.config.input_neurons
+        )
+        
+        self.snn = SpikingNeuralNetwork(
+            input_size=self.config.input_neurons,
+            reservoir_size=self.config.reservoir_neurons,
+            output_size=self.config.output_neurons,
+            connectivity=self.config.connectivity,
+            spectral_radius=self.config.spectral_radius
+        )
+        
+        self.detector = AnomalyDetector(
+            threshold=self.config.anomaly_threshold,
+            window_size=self.config.detection_window
+        )
+        
+        # Initialize caches
+        self.event_cache = IgniteCache("neuromorphic_events")
+        self.pattern_memory = IgniteCache("anomaly_patterns")
+        
+        # Start Pulsar consumers
+        await self._start_event_consumers()
+        
+        logger.info("Neuromorphic service initialized successfully")
+        
+    async def _start_event_consumers(self):
+        """Start consuming events from Pulsar"""
+        topics = [
+            "persistent://public/default/platform-events",
+            "persistent://public/default/security-events",
+            "persistent://public/default/performance-metrics",
+            "persistent://public/default/sensor-data"
+        ]
+        
+        for topic in topics:
+            asyncio.create_task(self._consume_events(topic))
+            
+    async def _consume_events(self, topic: str):
+        """Consume and process events from a specific topic"""
+        consumer = self.pulsar_client.subscribe(
+            topic,
+            subscription_name=f"neuromorphic-{topic.split('/')[-1]}",
+            consumer_type=pulsar.ConsumerType.Shared
+        )
+        
+        while True:
+            try:
+                msg = consumer.receive(timeout_millis=100)
+                event_data = json.loads(msg.data())
+                
+                # Process through SNN
+                anomaly = await self._process_event(event_data)
+                
+                if anomaly:
+                    await self._publish_anomaly(anomaly)
+                    
+                consumer.acknowledge(msg)
+                
+            except Exception as e:
+                if "timeout" not in str(e).lower():
+                    logger.error(f"Error processing event: {e}")
+                    
+    @track_processing_time("neuromorphic_processing")
+    async def _process_event(self, event: Dict) -> Optional[Dict]:
+        """Process event through the spiking neural network"""
+        
+        # Encode event into spike trains
+        spike_train = self.encoder.encode(event)
+        
+        # Process through SNN
+        output_spikes = self.snn.process(spike_train)
+        
+        # Detect anomalies
+        anomaly = self.detector.detect(output_spikes, event)
+        
+        # Cache recent patterns
+        if anomaly:
+            pattern_key = f"pattern:{anomaly['anomaly_type']}:{datetime.utcnow().isoformat()}"
+            await self.pattern_memory.put(pattern_key, {
+                "spike_pattern": output_spikes.tolist(),
+                "event": event,
+                "anomaly": anomaly
+            })
+            
+        return anomaly
+        
+    async def _publish_anomaly(self, anomaly: Dict):
+        """Publish detected anomaly to Pulsar"""
+        await self.pulsar_producer.send_async(
+            "persistent://public/default/anomaly-events",
+            json.dumps(anomaly).encode('utf-8')
+        )
+        
+        # Also cache for fast retrieval
+        await self.event_cache.put(
+            f"anomaly:{anomaly['anomaly_id']}", 
+            anomaly,
+            ttl=3600  # 1 hour TTL
+        )
+
+# Initialize FastAPI app
+service = NeuromorphicService()
+app = service.app
+
+# API Models
+class ModelCreateRequest(BaseModel):
+    name: str
+    architecture: Dict
+    training_config: Dict
+
+class AnomalyResponse(BaseModel):
+    anomaly_id: str
+    detected_at: str
+    anomaly_type: str
+    severity: float
+    contributing_events: List[str]
+    recommended_actions: List[str]
+
+# REST API Endpoints
+@app.post("/api/v1/models", response_model=Dict)
+async def create_model(request: ModelCreateRequest):
+    """Create a new SNN model configuration"""
+    model_id = f"model_{datetime.utcnow().timestamp()}"
+    
+    # Store model configuration
+    await service.pattern_memory.put(f"model:{model_id}", {
+        "id": model_id,
+        "name": request.name,
+        "architecture": request.architecture,
+        "training_config": request.training_config,
+        "created_at": datetime.utcnow().isoformat()
+    })
+    
+    return {"model_id": model_id, "status": "created"}
+
+@app.get("/api/v1/anomalies", response_model=List[AnomalyResponse])
+async def get_anomalies(
+    start_time: Optional[str] = None,
+    end_time: Optional[str] = None,
+    anomaly_type: Optional[str] = None,
+    limit: int = 100
+):
+    """Retrieve detected anomalies"""
+    # Query from cache/storage
+    anomalies = []
+    
+    # TODO: Implement proper querying from Ignite/Cassandra
+    # For now, return cached anomalies
+    
+    return anomalies
+
+@app.get("/api/v1/anomalies/{anomaly_id}", response_model=AnomalyResponse)
+async def get_anomaly_detail(anomaly_id: str):
+    """Get detailed information about a specific anomaly"""
+    anomaly = await service.event_cache.get(f"anomaly:{anomaly_id}")
+    
+    if not anomaly:
+        return JSONResponse(status_code=404, content={"error": "Anomaly not found"})
+        
+    return AnomalyResponse(**anomaly)
+
+@app.get("/api/v1/metrics")
+async def get_metrics():
+    """Get service performance metrics"""
+    return {
+        "events_processed": service.snn.events_processed if service.snn else 0,
+        "anomalies_detected": service.detector.total_anomalies if service.detector else 0,
+        "average_latency_ms": 0.5,  # Placeholder
+        "spike_rate_hz": service.snn.get_spike_rate() if service.snn else 0,
+        "memory_usage_mb": 256,  # Placeholder
+        "models_deployed": 1
+    }
+
+# WebSocket endpoints
+@app.websocket("/ws/anomalies/{stream_id}")
+async def anomaly_stream(websocket: WebSocket, stream_id: str):
+    """Real-time anomaly event stream"""
+    await websocket.accept()
+    
+    # Subscribe to anomaly events for this stream
+    consumer = service.pulsar_client.subscribe(
+        f"persistent://public/default/anomaly-events-{stream_id}",
+        subscription_name=f"ws-{stream_id}-{datetime.utcnow().timestamp()}"
+    )
+    
+    try:
+        while True:
+            msg = consumer.receive(timeout_millis=1000)
+            anomaly = json.loads(msg.data())
+            await websocket.send_json(anomaly)
+            consumer.acknowledge(msg)
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for stream {stream_id}")
+    finally:
+        consumer.close()
+
+@app.websocket("/ws/spikes/{model_id}")
+async def spike_visualization(websocket: WebSocket, model_id: str):
+    """Real-time spike train visualization"""
+    await websocket.accept()
+    
+    try:
+        while True:
+            # Send spike data for visualization
+            if service.snn:
+                spike_data = {
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "spike_trains": service.snn.get_recent_spikes(window_ms=100),
+                    "firing_rates": service.snn.get_firing_rates()
+                }
+                await websocket.send_json(spike_data)
+                
+            await asyncio.sleep(0.1)  # 100ms updates
+            
+    except WebSocketDisconnect:
+        logger.info(f"Spike visualization disconnected for model {model_id}")
+
+# Health check
+@app.get("/health")
+async def health_check():
+    """Service health check"""
+    return {
+        "status": "healthy",
+        "service": "neuromorphic-service",
+        "snn_initialized": service.snn is not None,
+        "timestamp": datetime.utcnow().isoformat()
+    }
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

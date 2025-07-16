@@ -1,0 +1,129 @@
+{
+  "type": "record",
+  "name": "NeuromorphicAnomalyEvent",
+  "namespace": "com.platformq.events.neuromorphic",
+  "doc": "Event emitted when neuromorphic processing detects an anomaly",
+  "fields": [
+    {
+      "name": "anomaly_id",
+      "type": "string",
+      "doc": "Unique identifier for the detected anomaly"
+    },
+    {
+      "name": "detected_at",
+      "type": "long",
+      "doc": "Timestamp when anomaly was detected (milliseconds since epoch)"
+    },
+    {
+      "name": "anomaly_type",
+      "type": {
+        "type": "enum",
+        "name": "AnomalyType",
+        "symbols": [
+          "SECURITY_THREAT",
+          "PERFORMANCE_DEGRADATION",
+          "BUSINESS_ANOMALY",
+          "SENSOR_PATTERN",
+          "UNKNOWN"
+        ]
+      },
+      "doc": "Category of detected anomaly"
+    },
+    {
+      "name": "severity",
+      "type": "float",
+      "doc": "Severity score between 0.0 and 1.0"
+    },
+    {
+      "name": "confidence",
+      "type": "float",
+      "doc": "Detection confidence between 0.0 and 1.0"
+    },
+    {
+      "name": "spike_pattern",
+      "type": {
+        "type": "array",
+        "items": "float"
+      },
+      "doc": "Normalized spike train pattern that triggered the anomaly"
+    },
+    {
+      "name": "affected_component",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Primary component or service affected by the anomaly"
+    },
+    {
+      "name": "contributing_events",
+      "type": {
+        "type": "array",
+        "items": "string"
+      },
+      "doc": "List of event IDs that contributed to this anomaly detection"
+    },
+    {
+      "name": "neural_metrics",
+      "type": {
+        "type": "record",
+        "name": "NeuralMetrics",
+        "fields": [
+          {
+            "name": "spike_rate_hz",
+            "type": "float",
+            "doc": "Average spike rate across the network"
+          },
+          {
+            "name": "active_neurons",
+            "type": "int",
+            "doc": "Number of neurons that fired during detection"
+          },
+          {
+            "name": "processing_latency_us",
+            "type": "long",
+            "doc": "Processing time in microseconds"
+          }
+        ]
+      },
+      "doc": "Metrics from the spiking neural network"
+    },
+    {
+      "name": "recommended_actions",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "RecommendedAction",
+          "fields": [
+            {
+              "name": "action_type",
+              "type": "string",
+              "doc": "Type of recommended action"
+            },
+            {
+              "name": "urgency",
+              "type": {
+                "type": "enum",
+                "name": "Urgency",
+                "symbols": ["IMMEDIATE", "HIGH", "MEDIUM", "LOW"]
+              }
+            },
+            {
+              "name": "description",
+              "type": "string"
+            }
+          ]
+        }
+      },
+      "doc": "Recommended actions based on the anomaly"
+    },
+    {
+      "name": "metadata",
+      "type": {
+        "type": "map",
+        "values": "string"
+      },
+      "default": {},
+      "doc": "Additional metadata about the anomaly"
+    }
+  ]
+} 

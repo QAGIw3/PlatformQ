@@ -1,0 +1,23 @@
+apiVersion: v2
+name: neuromorphic-service
+description: Neuromorphic Event Processing Service for ultra-low latency anomaly detection
+type: application
+version: 0.1.0
+appVersion: "1.0.0"
+keywords:
+  - neuromorphic
+  - spiking-neural-network
+  - anomaly-detection
+  - event-processing
+home: https://github.com/platformq/neuromorphic-service
+sources:
+  - https://github.com/platformq/neuromorphic-service
+maintainers:
+  - name: PlatformQ Team
+    email: team@platformq.io
+dependencies:
+  - name: common
+    version: 2.x.x
+    repository: https://charts.bitnami.com/bitnami
+    tags:
+      - bitnami-common 

@@ -1,0 +1,163 @@
+{
+  "type": "record",
+  "name": "TemporalCausalEvent",
+  "namespace": "com.platformq.events.temporal",
+  "doc": "Event representing causal relationships discovered by temporal knowledge graph",
+  "fields": [
+    {
+      "name": "event_id",
+      "type": "string",
+      "doc": "Unique identifier for this causal discovery event"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "doc": "When the causal relationship was discovered"
+    },
+    {
+      "name": "analysis_type",
+      "type": {
+        "type": "enum",
+        "name": "AnalysisType",
+        "symbols": [
+          "CASCADE_PREDICTION",
+          "ROOT_CAUSE_ANALYSIS",
+          "IMPACT_ASSESSMENT",
+          "WHAT_IF_SIMULATION"
+        ]
+      }
+    },
+    {
+      "name": "causal_chain",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "CausalNode",
+          "fields": [
+            {
+              "name": "entity_id",
+              "type": "string",
+              "doc": "ID of the entity in the causal chain"
+            },
+            {
+              "name": "entity_type",
+              "type": "string",
+              "doc": "Type of entity (service, component, resource)"
+            },
+            {
+              "name": "state_change",
+              "type": ["null", "string"],
+              "default": null,
+              "doc": "Description of state change"
+            },
+            {
+              "name": "impact_time",
+              "type": "long",
+              "doc": "When this node will be/was impacted"
+            },
+            {
+              "name": "causal_strength",
+              "type": "float",
+              "doc": "Strength of causal relationship (0.0-1.0)"
+            },
+            {
+              "name": "confidence",
+              "type": "float",
+              "doc": "Confidence in this causal link (0.0-1.0)"
+            }
+          ]
+        }
+      },
+      "doc": "Ordered sequence of causal relationships"
+    },
+    {
+      "name": "root_cause",
+      "type": ["null", {
+        "type": "record",
+        "name": "RootCause",
+        "fields": [
+          {
+            "name": "entity_id",
+            "type": "string"
+          },
+          {
+            "name": "cause_type",
+            "type": "string"
+          },
+          {
+            "name": "evidence",
+            "type": {
+              "type": "array",
+              "items": "string"
+            }
+          }
+        ]
+      }],
+      "default": null,
+      "doc": "Identified root cause if applicable"
+    },
+    {
+      "name": "predicted_impacts",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "PredictedImpact",
+          "fields": [
+            {
+              "name": "entity_id",
+              "type": "string"
+            },
+            {
+              "name": "impact_type",
+              "type": "string"
+            },
+            {
+              "name": "severity",
+              "type": "float"
+            },
+            {
+              "name": "probability",
+              "type": "float"
+            },
+            {
+              "name": "time_to_impact",
+              "type": "long",
+              "doc": "Milliseconds until impact"
+            }
+          ]
+        }
+      },
+      "doc": "Predicted future impacts based on causal analysis"
+    },
+    {
+      "name": "temporal_context",
+      "type": {
+        "type": "record",
+        "name": "TemporalContext",
+        "fields": [
+          {
+            "name": "analysis_window_start",
+            "type": "long"
+          },
+          {
+            "name": "analysis_window_end",
+            "type": "long"
+          },
+          {
+            "name": "time_granularity",
+            "type": "string",
+            "doc": "Time granularity used (milliseconds, seconds, minutes, etc.)"
+          }
+        ]
+      }
+    },
+    {
+      "name": "recommendation",
+      "type": ["null", "string"],
+      "default": null,
+      "doc": "Recommended action based on causal analysis"
+    }
+  ]
+} 

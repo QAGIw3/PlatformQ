@@ -1,0 +1,203 @@
+# Default values for neuromorphic-service
+replicaCount: 3
+
+image:
+  repository: platformq/neuromorphic-service
+  pullPolicy: IfNotPresent
+  tag: ""
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "9090"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  runAsGroup: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+    - ALL
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+  annotations: {}
+
+ingress:
+  enabled: false
+  className: "nginx"
+  annotations: {}
+  hosts:
+    - host: neuromorphic.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 4000m
+    memory: 8Gi
+    nvidia.com/gpu: 1  # Optional GPU support
+  requests:
+    cpu: 2000m
+    memory: 4Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 3
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations:
+  - key: "gpu"
+    operator: "Equal"
+    value: "true"
+    effect: "NoSchedule"
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - neuromorphic-service
+        topologyKey: kubernetes.io/hostname
+
+# Application configuration
+config:
+  # SNN parameters
+  snn:
+    encodingType: temporal
+    inputNeurons: 1000
+    reservoirNeurons: 10000
+    outputNeurons: 100
+    connectivity: 0.1
+    spectralRadius: 0.9
+    
+  # Neuron parameters
+  neuron:
+    tauMembrane: 20.0
+    tauSynapse: 5.0
+    vThreshold: 1.0
+    vReset: 0.0
+    refractory: 2.0
+    
+  # Learning configuration
+  learning:
+    learningRate: 0.01
+    stdpEnabled: true
+    tauPre: 20.0
+    tauPost: 20.0
+    
+  # Anomaly detection
+  anomaly:
+    threshold: 0.7
+    detectionWindow: 100
+    sensitivity: 2.0
+    
+  # Performance tuning
+  performance:
+    batchSize: 1000
+    gpuEnabled: true
+    maxNeuronsPerCore: 1000
+    parallelSimulations: 4
+    
+  # Integration
+  pulsar:
+    url: pulsar://pulsar-proxy:6650
+    topics:
+      - persistent://public/default/platform-events
+      - persistent://public/default/security-events
+      - persistent://public/default/performance-metrics
+      - persistent://public/default/sensor-data
+    anomalyTopic: persistent://public/default/anomaly-events
+    
+  ignite:
+    host: ignite-service
+    port: 10800
+    cacheEvents: neuromorphic_events
+    cachePatterns: anomaly_patterns
+
+# Persistence
+persistence:
+  enabled: true
+  storageClass: "fast-ssd"
+  accessMode: ReadWriteOnce
+  size: 20Gi
+  mountPath: /data
+
+# Monitoring
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    namespace: monitoring
+    labels:
+      prometheus: kube-prometheus
+  grafanaDashboard:
+    enabled: true
+    namespace: monitoring
+
+# Health checks
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 5
+  timeoutSeconds: 3
+  failureThreshold: 3
+
+# PodDisruptionBudget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 2
+
+# Network policies
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: platformq
+      ports:
+      - protocol: TCP
+        port: 8000
+      - protocol: TCP
+        port: 9090 

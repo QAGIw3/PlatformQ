@@ -1,0 +1,210 @@
+{
+  "type": "record",
+  "name": "QuantumOptimizationEvent",
+  "namespace": "com.platformq.events.quantum",
+  "doc": "Event containing results from quantum optimization engine",
+  "fields": [
+    {
+      "name": "optimization_id",
+      "type": "string",
+      "doc": "Unique identifier for this optimization job"
+    },
+    {
+      "name": "timestamp",
+      "type": "long",
+      "doc": "When the optimization completed"
+    },
+    {
+      "name": "problem_type",
+      "type": {
+        "type": "enum",
+        "name": "ProblemType",
+        "symbols": [
+          "RESOURCE_ALLOCATION",
+          "ROUTE_OPTIMIZATION",
+          "PORTFOLIO_OPTIMIZATION",
+          "DESIGN_PARAMETERS",
+          "CUSTOM"
+        ]
+      },
+      "doc": "Type of optimization problem solved"
+    },
+    {
+      "name": "algorithm_used",
+      "type": {
+        "type": "record",
+        "name": "AlgorithmInfo",
+        "fields": [
+          {
+            "name": "name",
+            "type": "string",
+            "doc": "Algorithm name (QAOA, VQE, etc.)"
+          },
+          {
+            "name": "backend",
+            "type": "string",
+            "doc": "Quantum simulator backend used"
+          },
+          {
+            "name": "num_qubits",
+            "type": "int",
+            "doc": "Number of qubits used"
+          },
+          {
+            "name": "circuit_depth",
+            "type": "int",
+            "doc": "Depth of quantum circuit"
+          },
+          {
+            "name": "num_shots",
+            "type": ["null", "int"],
+            "default": null,
+            "doc": "Number of measurement shots"
+          }
+        ]
+      }
+    },
+    {
+      "name": "solution",
+      "type": {
+        "type": "record",
+        "name": "OptimizationSolution",
+        "fields": [
+          {
+            "name": "objective_value",
+            "type": "double",
+            "doc": "Value of objective function at solution"
+          },
+          {
+            "name": "solution_vector",
+            "type": {
+              "type": "array",
+              "items": "double"
+            },
+            "doc": "Solution values for decision variables"
+          },
+          {
+            "name": "quality_score",
+            "type": "float",
+            "doc": "Quality of solution compared to theoretical optimum (0.0-1.0)"
+          },
+          {
+            "name": "feasible",
+            "type": "boolean",
+            "doc": "Whether solution satisfies all constraints"
+          }
+        ]
+      }
+    },
+    {
+      "name": "performance_metrics",
+      "type": {
+        "type": "record",
+        "name": "PerformanceMetrics",
+        "fields": [
+          {
+            "name": "execution_time_ms",
+            "type": "long",
+            "doc": "Total execution time in milliseconds"
+          },
+          {
+            "name": "quantum_time_ms",
+            "type": "long",
+            "doc": "Time spent in quantum simulation"
+          },
+          {
+            "name": "classical_time_ms",
+            "type": "long",
+            "doc": "Time spent in classical processing"
+          },
+          {
+            "name": "iterations",
+            "type": "int",
+            "doc": "Number of optimization iterations"
+          },
+          {
+            "name": "function_evaluations",
+            "type": "int",
+            "doc": "Number of objective function evaluations"
+          },
+          {
+            "name": "speedup_factor",
+            "type": ["null", "float"],
+            "default": null,
+            "doc": "Speedup compared to classical algorithm"
+          }
+        ]
+      }
+    },
+    {
+      "name": "problem_context",
+      "type": ["null", {
+        "type": "record",
+        "name": "ProblemContext",
+        "fields": [
+          {
+            "name": "num_variables",
+            "type": "int"
+          },
+          {
+            "name": "num_constraints",
+            "type": "int"
+          },
+          {
+            "name": "source_anomaly_id",
+            "type": ["null", "string"],
+            "default": null,
+            "doc": "ID of anomaly that triggered optimization"
+          },
+          {
+            "name": "causal_event_id",
+            "type": ["null", "string"],
+            "default": null,
+            "doc": "ID of causal analysis that informed optimization"
+          }
+        ]
+      }],
+      "default": null
+    },
+    {
+      "name": "actions",
+      "type": {
+        "type": "array",
+        "items": {
+          "type": "record",
+          "name": "OptimizationAction",
+          "fields": [
+            {
+              "name": "action_type",
+              "type": "string"
+            },
+            {
+              "name": "target_entity",
+              "type": "string"
+            },
+            {
+              "name": "parameters",
+              "type": {
+                "type": "map",
+                "values": "string"
+              }
+            },
+            {
+              "name": "expected_improvement",
+              "type": "float"
+            }
+          ]
+        }
+      },
+      "doc": "Recommended actions based on optimization results"
+    },
+    {
+      "name": "metadata",
+      "type": {
+        "type": "map",
+        "values": "string"
+      },
+      "default": {}
+    }
+  ]
+} 
