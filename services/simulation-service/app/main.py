@@ -15,12 +15,17 @@ from fastapi import WebSocket, WebSocketDisconnect, BackgroundTasks
 import asyncio
 from .collaboration import SimulationCollaborationManager
 from .ignite_manager import SimulationIgniteManager
+from .federated_ml_integration import SimulationMLOrchestrator
+from platformq_shared.config import ConfigLoader
 from .api import endpoints
 from .api.endpoints import multi_physics_ws
 
 import logging
 from datetime import datetime
 import uuid
+
+import pulsar
+from .multi_physics_consumer import MultiPhysicsConsumer
 
 logger = logging.getLogger(__name__)
 
@@ -45,33 +50,63 @@ app.include_router(
 # Initialize services on startup
 @app.on_event("startup")
 async def startup_event():
-    """Initialize Ignite and collaboration manager"""
+    """Initialize the simulation service"""
+    logger.info("Starting Simulation Service")
+    
     # Initialize Ignite connection
-    app.state.ignite_manager = SimulationIgniteManager()
+    app.state.ignite_manager = SimulationIgniteManager(
+        hosts=[("ignite", 10800)],
+        username=None,
+        password=None
+    )
     await app.state.ignite_manager.connect()
     
     # Initialize collaboration manager
     app.state.collaboration_manager = SimulationCollaborationManager(
-        ignite_manager=app.state.ignite_manager,
-        event_publisher=app.state.event_publisher
+        app.state.ignite_manager,
+        app.state.event_publisher
     )
-    await app.state.collaboration_manager.start()
     
-    # Initialize multi-physics WebSocket manager
-    multi_physics_ws.initialize_ws_manager(app.state.ignite_manager)
+    # Initialize ML orchestrator
+    config_loader = ConfigLoader()
+    ml_config = {
+        "federated_learning_url": config_loader.get_setting("FEDERATED_LEARNING_URL", "http://federated-learning-service:8000"),
+        "mlops_service_url": config_loader.get_setting("MLOPS_SERVICE_URL", "http://mlops-service:8000")
+    }
+    app.state.ml_orchestrator = SimulationMLOrchestrator(
+        app.state.ignite_manager.client,
+        app.state.event_publisher,
+        ml_config
+    )
+    await app.state.ml_orchestrator.start()
     
-    logger.info("Simulation service started with collaboration features and multi-physics support")
+    # Initialize Pulsar client for consumer
+    pulsar_client = pulsar.Client('pulsar://pulsar:6650')
+    
+    # Initialize and start multi-physics consumer
+    app.state.multi_physics_consumer = MultiPhysicsConsumer(
+        pulsar_client,
+        app.state.ignite_manager
+    )
+    await app.state.multi_physics_consumer.start()
+    
+    logger.info("Simulation Service started successfully")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Cleanup on shutdown"""
-    if hasattr(app.state, "collaboration_manager"):
-        await app.state.collaboration_manager.stop()
+    """Clean up resources"""
+    logger.info("Shutting down Simulation Service")
+    
+    if hasattr(app.state, "ml_orchestrator"):
+        await app.state.ml_orchestrator.stop()
+    
+    if hasattr(app.state, "multi_physics_consumer"):
+        await app.state.multi_physics_consumer.stop()
     
     if hasattr(app.state, "ignite_manager"):
         await app.state.ignite_manager.disconnect()
     
-    logger.info("Simulation service shutdown complete")
+    logger.info("Simulation Service stopped")
 
 # Service-specific root endpoint
 @app.get("/")

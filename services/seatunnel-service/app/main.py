@@ -31,6 +31,10 @@ from .pipeline_generator import PipelineGenerator, PipelineOptimizer, PipelinePa
 import re
 from .monitoring import PipelineMonitor, AlertSeverity, IgniteMetricsStore
 from seatunnel import SeaTunnelPipeline
+from .pipelines.anomaly_data_sync import register_anomaly_pipelines
+from .pipelines.lake_to_graph_sync import register_lake_to_graph_pipelines
+from .pipeline_executor import PipelineExecutor
+from .pipeline_registry import PipelineRegistry
 
 # Add resource data sync pipeline
 resource_pipeline = SeaTunnelPipeline(
@@ -1364,22 +1368,18 @@ def _get_pattern_sinks(pattern: PipelinePattern) -> List[str]:
 # Startup event
 @app.on_event("startup")
 async def startup_event():
-    """Initialize the service"""
-    # Start job monitor
-    monitor = JobMonitor(app.state)
-    monitor.start()
-    app.state.job_monitor = monitor
+    """Initialize SeaTunnel service"""
+    # Initialize pipeline registry
+    app.state.pipeline_registry = PipelineRegistry()
     
-    # Start asset event consumer for auto-pipeline generation
-    consumer_thread = threading.Thread(
-        target=asset_event_consumer,
-        args=(app.state,),
-        daemon=True
-    )
-    consumer_thread.start()
-    app.state.asset_consumer_thread = consumer_thread
+    # Register built-in pipelines
+    register_anomaly_pipelines(app.state.pipeline_registry)
+    register_lake_to_graph_pipelines(app.state.pipeline_registry)
     
-    logger.info("SeaTunnel service started")
+    # Initialize pipeline executor
+    app.state.pipeline_executor = PipelineExecutor()
+    
+    logger.info("SeaTunnel service started with lake-to-graph pipelines")
 
 # Asset event consumer for auto-pipeline generation
 def asset_event_consumer(app_state):

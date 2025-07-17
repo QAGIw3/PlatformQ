@@ -13,6 +13,7 @@ from datetime import date
 import uuid
 from datetime import datetime
 import requests # Added for making HTTP requests to VC service
+import asyncio # Added for asyncio.sleep
 
 from .api.deps import (
     get_db_session, 
@@ -22,6 +23,11 @@ from .api.deps import (
     get_current_tenant_and_user
 )
 from .api import endpoints
+from .db import Base, engine, get_db_session
+from .models import Project
+from .collaborative_ml import ProjectMLCoordinator, ProjectDataPreparator, CollaborativeMLConfig
+from platformq_shared.config import ConfigLoader
+from platformq_shared.event_publisher import EventPublisher
 
 logger = logging.getLogger(__name__)
 
@@ -35,26 +41,33 @@ app = create_base_app(
 
 @app.on_event("startup")
 async def startup_event():
-    app.state.nextcloud_client = NextcloudClient(
-        nextcloud_url=settings.nextcloud_url,
-        admin_user=settings.nextcloud_user,
-        admin_pass=settings.nextcloud_password,
-        use_connection_pool=True,
-        rate_limit=15.0
+    """Initialize services and connections"""
+    # Create database tables
+    Base.metadata.create_all(bind=engine)
+    
+    # Initialize ML coordinator
+    config_loader = ConfigLoader()
+    app.state.ml_coordinator = ProjectMLCoordinator(
+        event_publisher=app.state.event_publisher,
+        federated_learning_url=config_loader.get_setting("FEDERATED_LEARNING_URL", "http://federated-learning-service:8000"),
+        digital_asset_url=config_loader.get_setting("DIGITAL_ASSET_URL", "http://digital-asset-service:8000"),
+        workflow_url=config_loader.get_setting("WORKFLOW_URL", "http://workflow-service:8000")
     )
-    app.state.openproject_client = OpenProjectClient(
-        openproject_url=settings.openproject_url,
-        api_key=settings.openproject_api_key,
-        use_connection_pool=True,
-        rate_limit=10.0
+    
+    app.state.data_preparator = ProjectDataPreparator(
+        asset_service_url=config_loader.get_setting("DIGITAL_ASSET_URL", "http://digital-asset-service:8000"),
+        connector_service_url=config_loader.get_setting("CONNECTOR_URL", "http://connector-service:8000")
     )
-    app.state.zulip_client = ZulipClient(
-        zulip_site=settings.zulip_site,
-        zulip_email=settings.zulip_email,
-        zulip_api_key=settings.zulip_api_key,
-        use_connection_pool=True,
-        rate_limit=20.0
-    )
+    
+    logger.info("Projects service started with collaborative ML support")
+
+@app.on_event("shutdown")
+async def shutdown_event():
+    """Clean up resources"""
+    if hasattr(app.state, "ml_coordinator"):
+        await app.state.ml_coordinator.close()
+    if hasattr(app.state, "data_preparator"):
+        await app.state.data_preparator.close()
 
 def get_nextcloud_client(request: Request) -> NextcloudClient:
     return request.app.state.nextcloud_client
@@ -293,7 +306,7 @@ Created on: {date.today().isoformat()}
             name=project_in.name,
             description=project_in.description,
             status="active",
-            created_by=user_id,
+            created_by=user["id"],
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             metadata={
@@ -328,7 +341,7 @@ Created on: {date.today().isoformat()}
             "project_id": project.id,
             "project_name": project.name,
             "tenant_id": tenant_id,
-            "created_by": user_id,
+            "created_by": user["id"],
             "status": "active",
             "integrations": {
                 "nextcloud_folder": main_folder,
@@ -475,6 +488,126 @@ async def add_project_members(
 
         except Exception as e:
             logger.error(f"Failed to add {member['email']} to project {project_name}: {e}")
+
+
+@app.post("/api/v1/projects/{project_id}/ml-training", status_code=201)
+async def start_collaborative_ml_training(
+    project_id: str,
+    config: CollaborativeMLConfig,
+    participants: List[str],
+    background_tasks: BackgroundTasks,
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db_session),
+    ml_coordinator: ProjectMLCoordinator = Depends(lambda: app.state.ml_coordinator)
+):
+    """
+    Start collaborative ML training for project assets
+    """
+    tenant_id = context["tenant_id"]
+    user = context["user"]
+    
+    try:
+        # Verify project exists and user has access
+        project = db.query(Project).filter(
+            Project.id == project_id,
+            Project.tenant_id == tenant_id
+        ).first()
+        
+        if not project:
+            raise HTTPException(status_code=404, detail="Project not found")
+            
+        # Set project ID in config
+        config.project_id = project_id
+        
+        # Add current user to participants if not already included
+        if user["id"] not in participants:
+            participants.append(user["id"])
+            
+        # Initiate collaborative training
+        training_info = await ml_coordinator.initiate_collaborative_training(
+            project_id,
+            config,
+            participants,
+            db
+        )
+        
+        # Update project with training info
+        if not project.metadata:
+            project.metadata = {}
+        if "ml_trainings" not in project.metadata:
+            project.metadata["ml_trainings"] = []
+            
+        project.metadata["ml_trainings"].append({
+            "training_id": training_info["training_id"],
+            "model_name": config.model_name,
+            "started_at": training_info["created_at"]
+        })
+        
+        db.commit()
+        
+        # Schedule background monitoring
+        background_tasks.add_task(
+            monitor_training_progress,
+            training_info["training_id"],
+            project_id,
+            ml_coordinator
+        )
+        
+        return training_info
+        
+    except Exception as e:
+        logger.error(f"Error starting collaborative ML training: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/projects/{project_id}/ml-training/{training_id}")
+async def get_training_status(
+    project_id: str,
+    training_id: str,
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db_session),
+    ml_coordinator: ProjectMLCoordinator = Depends(lambda: app.state.ml_coordinator)
+):
+    """
+    Get status of collaborative ML training
+    """
+    tenant_id = context["tenant_id"]
+    
+    # Verify project access
+    project = db.query(Project).filter(
+        Project.id == project_id,
+        Project.tenant_id == tenant_id
+    ).first()
+    
+    if not project:
+        raise HTTPException(status_code=404, detail="Project not found")
+        
+    # Get training status
+    status = await ml_coordinator.get_training_status(training_id)
+    
+    return status
+
+
+async def monitor_training_progress(
+    training_id: str,
+    project_id: str,
+    ml_coordinator: ProjectMLCoordinator
+):
+    """
+    Background task to monitor ML training progress
+    """
+    try:
+        while True:
+            status = await ml_coordinator.get_training_status(training_id)
+            
+            if status.get("status") in ["completed", "failed"]:
+                logger.info(f"Training {training_id} finished with status: {status['status']}")
+                break
+                
+            await asyncio.sleep(30)  # Check every 30 seconds
+            
+    except Exception as e:
+        logger.error(f"Error monitoring training progress: {e}")
 
 
 @app.get("/api/v1/projects/{project_id}", response_model=ProjectResponse)

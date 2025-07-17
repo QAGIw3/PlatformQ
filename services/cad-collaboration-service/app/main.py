@@ -20,11 +20,13 @@ from .mesh_optimizer_client import MeshOptimizerClient
 from .mesh_decimator import MeshDecimator
 from .collaboration_engine import CollaborationEngine
 from .simulation_consumer import SimulationConsumer
+from .quantum_optimization import QuantumMeshOptimizer, QuantumCADIntegration
 from .api.deps import get_db_session, get_api_key_crud_placeholder, get_user_crud_placeholder, get_password_verifier_placeholder
 import asyncio
 import logging
 import json
 import pulsar
+from .mesh_optimizer_client import MeshOptimizationRequest
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +81,21 @@ async def startup_event():
         conflict_resolution="operational_transform",
         history_limit=1000
     )
+    
+    # Initialize quantum optimization
+    config_loader = ConfigLoader()
+    quantum_service_url = config_loader.get_setting("QUANTUM_SERVICE_URL", "http://quantum-optimization-service:8000")
+    app.state.quantum_optimizer = QuantumMeshOptimizer(
+        quantum_service_url,
+        app.state.ignite_manager.client,
+        app.state.event_publisher
+    )
+    
+    app.state.quantum_integration = QuantumCADIntegration(
+        app.state.quantum_optimizer,
+        app.state.ignite_manager.client,
+        app.state.event_publisher
+    )
 
     # Initialize Pulsar client for consumer
     pulsar_client = pulsar.Client('pulsar://pulsar:6650')
@@ -92,24 +109,55 @@ async def startup_event():
     
     # Start background tasks
     asyncio.create_task(app.state.crdt_sync.start_sync_loop())
+    asyncio.create_task(process_quantum_optimization_queue(app.state))
     
     logger.info("CAD Collaboration Service started successfully")
 
 @app.on_event("shutdown")
 async def shutdown_event():
-    """Clean up connections on shutdown"""
-    logger.info("Shutting down CAD Collaboration Service")
-
+    """Clean up resources"""
+    if hasattr(app.state, "quantum_optimizer"):
+        await app.state.quantum_optimizer.close()
+    
     if hasattr(app.state, "simulation_consumer"):
-        app.state.simulation_consumer.stop()
+        await app.state.simulation_consumer.stop()
     
     if hasattr(app.state, "ignite_manager"):
         await app.state.ignite_manager.disconnect()
-        
-    if hasattr(app.state, "mesh_optimizer"):
-        await app.state.mesh_optimizer.close()
-        
-    logger.info("CAD Collaboration Service stopped")
+    
+    logger.info("CAD Collaboration Service shutdown complete")
+
+
+async def process_quantum_optimization_queue(app_state):
+    """Background task to process queued quantum optimizations"""
+    while True:
+        try:
+            queue_cache = app_state.ignite_manager.client.get_or_create_cache("quantum_optimization_queue")
+            
+            # Process queued optimizations
+            query = queue_cache.scan()
+            for queue_id, item in query:
+                if item["priority"] > 0.5:  # Process medium-high priority items
+                    request = MeshOptimizationRequest(**item["request"])
+                    result = await app_state.quantum_optimizer.optimize_mesh(
+                        item["session_id"],
+                        request
+                    )
+                    
+                    # Remove from queue
+                    queue_cache.remove(queue_id)
+                    
+                    # Broadcast result
+                    await app_state.quantum_integration._broadcast_optimization_result(
+                        item["session_id"],
+                        result
+                    )
+                    
+            await asyncio.sleep(5)  # Check every 5 seconds
+            
+        except Exception as e:
+            logger.error(f"Error processing quantum optimization queue: {e}")
+            await asyncio.sleep(10)
 
 
 # WebSocket endpoint for real-time collaboration

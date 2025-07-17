@@ -16,6 +16,7 @@ import logging
 import json
 import numpy as np
 from contextlib import asynccontextmanager
+from elasticsearch import AsyncElasticsearch
 
 # Import enhanced modules
 from .analytics.druid_analytics import DruidAnalyticsEngine
@@ -26,6 +27,8 @@ from .monitoring.predictive_maintenance import PredictiveMaintenanceModel
 from .monitoring.timeseries_analysis import TimeSeriesAnalyzer, SimulationMetricsConsumer
 from .monitoring.metrics_aggregator import MetricsAggregator
 from .analytics.simulation_analytics import SimulationAnalyticsConsumer
+from .monitoring.anomaly_detection import SimulationAnomalyDetector, AnomalyDetectionConfig
+from .dashboards.cross_service_dashboard import CrossServiceDashboard, DashboardOrchestrator, DashboardConfig
 from platformq_shared.event_publisher import EventPublisher
 import pulsar
 
@@ -56,6 +59,9 @@ maintenance_model = None
 timeseries_analyzer = None
 metrics_aggregator = None
 simulation_analytics_consumer = None
+anomaly_detector = None
+cross_service_dashboard = None
+dashboard_orchestrator = None
 
 # Lifespan context manager
 @asynccontextmanager
@@ -63,6 +69,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global druid_engine, stream_processor, realtime_ml
     global dashboard_service, maintenance_model, timeseries_analyzer, metrics_aggregator
+    global anomaly_detector, cross_service_dashboard, dashboard_orchestrator
     
     # Startup
     logger.info("Initializing Real-time Analytics Service...")
@@ -80,6 +87,41 @@ async def lifespan(app: FastAPI):
     timeseries_analyzer = TimeSeriesAnalyzer(IGNITE_CONFIG, ES_CONFIG, event_publisher)
     metrics_aggregator = MetricsAggregator(IGNITE_CONFIG, DRUID_CONFIG)
     
+    # Initialize anomaly detector
+    ignite_client = dashboard_service.ignite_client  # Reuse existing client
+    anomaly_detector = SimulationAnomalyDetector(
+        ignite_client,
+        event_publisher,
+        mlops_service_url="http://mlops-service:8000",
+        seatunnel_service_url="http://seatunnel-service:8000"
+    )
+    
+    # Initialize cross-service dashboard
+    es_client = AsyncElasticsearch(
+        [ES_CONFIG["host"]],
+        basic_auth=(ES_CONFIG.get("user"), ES_CONFIG.get("password")) if ES_CONFIG.get("user") else None
+    )
+    
+    cross_service_dashboard = CrossServiceDashboard(
+        ignite_client,
+        es_client,
+        DRUID_CONFIG
+    )
+    
+    dashboard_orchestrator = DashboardOrchestrator(
+        cross_service_dashboard,
+        cache_ttl=60
+    )
+    
+    # Start default dashboard refresh
+    default_config = DashboardConfig(
+        refresh_interval=30,
+        time_range="1h",
+        services=["simulation", "digital_asset", "workflow", "federated_learning"],
+        metrics=["active_count", "success_rate", "resource_usage"]
+    )
+    await dashboard_orchestrator.start_auto_refresh(default_config)
+    
     # Initialize Pulsar client for consumer
     pulsar_client = pulsar.Client('pulsar://pulsar:6650')
     
@@ -90,8 +132,9 @@ async def lifespan(app: FastAPI):
     # Start background services
     await stream_processor.start()
     await realtime_ml.start()
+    asyncio.create_task(anomaly_detector.continuous_monitoring())
     
-    logger.info("Real-time Analytics Service initialized")
+    logger.info("Real-time Analytics Service initialized with cross-service dashboards")
     
     yield
     
@@ -103,6 +146,15 @@ async def lifespan(app: FastAPI):
         
     await stream_processor.stop()
     await realtime_ml.stop()
+    
+    if anomaly_detector:
+        await anomaly_detector.close()
+        
+    if cross_service_dashboard:
+        await cross_service_dashboard.close()
+        
+    if es_client:
+        await es_client.close()
     
     if dashboard_service:
         dashboard_service.close()
@@ -698,6 +750,229 @@ def _generate_recommendations(convergence: Dict, resources: Dict, timeseries: Di
         recommendations.append("Oscillating convergence detected - check for numerical instabilities")
     
     return recommendations
+
+@app.post("/api/v1/anomaly/detect")
+async def detect_anomalies(
+    simulation_id: str,
+    metrics: Dict[str, Any],
+    config: Optional[AnomalyDetectionConfig] = None
+):
+    """
+    Detect anomalies in simulation metrics
+    """
+    if not anomaly_detector:
+        raise HTTPException(status_code=503, detail="Anomaly detector not initialized")
+        
+    if not config:
+        config = AnomalyDetectionConfig()
+        
+    result = await anomaly_detector.detect_anomalies(simulation_id, metrics, config)
+    
+    return result
+
+
+@app.get("/api/v1/anomaly/history/{simulation_id}")
+async def get_anomaly_history(
+    simulation_id: str,
+    hours: int = Query(24, description="Hours of history to retrieve")
+):
+    """
+    Get anomaly history for a simulation
+    """
+    if not anomaly_detector:
+        raise HTTPException(status_code=503, detail="Anomaly detector not initialized")
+        
+    # Query anomaly cache
+    anomalies = []
+    cache = anomaly_detector.anomaly_cache
+    
+    query = cache.scan()
+    for anomaly_id, anomaly in query:
+        if anomaly.get("simulation_id") == simulation_id:
+            anomalies.append(anomaly)
+            
+    # Sort by timestamp
+    anomalies.sort(key=lambda x: x.get("timestamp", ""), reverse=True)
+    
+    return {
+        "simulation_id": simulation_id,
+        "anomalies": anomalies[:100],  # Limit to 100 most recent
+        "total_count": len(anomalies)
+    }
+
+@app.get("/api/v1/dashboard/platform-overview")
+async def get_platform_overview_dashboard(
+    time_range: str = Query("1h", description="Time range for metrics"),
+    refresh: bool = Query(False, description="Force refresh cache")
+):
+    """
+    Get platform-wide overview dashboard
+    """
+    if not cross_service_dashboard:
+        raise HTTPException(status_code=503, detail="Dashboard service not initialized")
+        
+    try:
+        # Check cache if not forcing refresh
+        cache_key = f"platform_overview:{time_range}"
+        
+        if not refresh and cache_key in dashboard_orchestrator.cache:
+            cached_data = dashboard_orchestrator.cache[cache_key]
+            if (datetime.utcnow() - cached_data["timestamp"]).seconds < 60:
+                return cached_data["data"]
+                
+        # Get fresh data
+        overview = await cross_service_dashboard.get_platform_overview(time_range)
+        
+        # Update cache
+        dashboard_orchestrator.cache[cache_key] = {
+            "data": overview,
+            "timestamp": datetime.utcnow()
+        }
+        
+        return overview
+        
+    except Exception as e:
+        logger.error(f"Error getting platform overview: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/dashboard/service-comparison")
+async def get_service_comparison_dashboard(
+    services: List[str] = Query(..., description="Services to compare"),
+    metric: str = Query(..., description="Metric to compare"),
+    time_range: str = Query("1h", description="Time range for comparison")
+):
+    """
+    Compare metrics across multiple services
+    """
+    if not cross_service_dashboard:
+        raise HTTPException(status_code=503, detail="Dashboard service not initialized")
+        
+    try:
+        comparison = await cross_service_dashboard.get_service_comparison(
+            services,
+            metric,
+            time_range
+        )
+        
+        return comparison
+        
+    except Exception as e:
+        logger.error(f"Error comparing services: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/dashboard/user-activity")
+async def get_user_activity_dashboard(
+    user_id: Optional[str] = Query(None, description="User ID (null for all users)"),
+    time_range: str = Query("24h", description="Time range for activity")
+):
+    """
+    Get user activity dashboard across all services
+    """
+    if not cross_service_dashboard:
+        raise HTTPException(status_code=503, detail="Dashboard service not initialized")
+        
+    try:
+        activity = await cross_service_dashboard.get_user_activity_dashboard(
+            user_id,
+            time_range
+        )
+        
+        return activity
+        
+    except Exception as e:
+        logger.error(f"Error getting user activity: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/dashboard/resource-utilization")
+async def get_resource_utilization_dashboard(
+    time_range: str = Query("1h", description="Time range for utilization")
+):
+    """
+    Get resource utilization dashboard
+    """
+    if not cross_service_dashboard:
+        raise HTTPException(status_code=503, detail="Dashboard service not initialized")
+        
+    try:
+        utilization = await cross_service_dashboard.get_resource_utilization_dashboard(
+            time_range
+        )
+        
+        return utilization
+        
+    except Exception as e:
+        logger.error(f"Error getting resource utilization: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/dashboard/ml-performance")
+async def get_ml_performance_dashboard(
+    time_range: str = Query("7d", description="Time range for ML metrics")
+):
+    """
+    Get ML performance dashboard
+    """
+    if not cross_service_dashboard:
+        raise HTTPException(status_code=503, detail="Dashboard service not initialized")
+        
+    try:
+        ml_performance = await cross_service_dashboard.get_ml_performance_dashboard(
+            time_range
+        )
+        
+        return ml_performance
+        
+    except Exception as e:
+        logger.error(f"Error getting ML performance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/dashboard/collaboration-insights")
+async def get_collaboration_insights_dashboard(
+    time_range: str = Query("30d", description="Time range for collaboration metrics")
+):
+    """
+    Get collaboration insights dashboard
+    """
+    if not cross_service_dashboard:
+        raise HTTPException(status_code=503, detail="Dashboard service not initialized")
+        
+    try:
+        insights = await cross_service_dashboard.get_collaboration_insights_dashboard(
+            time_range
+        )
+        
+        return insights
+        
+    except Exception as e:
+        logger.error(f"Error getting collaboration insights: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/dashboard/configure")
+async def configure_dashboard_refresh(
+    config: DashboardConfig
+):
+    """
+    Configure dashboard auto-refresh settings
+    """
+    if not dashboard_orchestrator:
+        raise HTTPException(status_code=503, detail="Dashboard orchestrator not initialized")
+        
+    try:
+        await dashboard_orchestrator.start_auto_refresh(config)
+        
+        return {
+            "status": "configured",
+            "config": config.dict()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error configuring dashboard: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 if __name__ == "__main__":
     import uvicorn

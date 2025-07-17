@@ -11,6 +11,14 @@ from ..crdt_synchronizer import CRDTSynchronizer
 from ..mesh_optimizer_client import MeshOptimizerClient
 from ..collaboration_engine import CollaborationEngine, GeometryOperation
 from platformq_shared.events import GeometryOperationEvent, MeshOptimizationResult
+from fastapi import APIRouter, Depends, HTTPException, WebSocket, WebSocketDisconnect, BackgroundTasks
+from typing import Dict, Any, List, Optional
+from datetime import datetime
+import json
+import logging
+
+from platformq_shared.jwt import get_current_tenant_and_user
+from ...quantum_optimization import MeshOptimizationRequest
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -422,3 +430,57 @@ async def broadcast_to_session(session_id: str, message: Dict[str, Any], exclude
     # This is a placeholder - in production, you'd maintain WebSocket connections
     # and broadcast through them
     logger.info(f"Broadcasting to session {session_id}: {message}") 
+
+
+@router.post("/sessions/{session_id}/quantum-optimize", response_model=Dict[str, Any])
+async def trigger_quantum_optimization(
+    session_id: str,
+    request: MeshOptimizationRequest,
+    background_tasks: BackgroundTasks,
+    context: dict = Depends(get_current_tenant_and_user),
+    ignite_manager = Depends(lambda: router.app.state.ignite_manager),
+    quantum_integration = Depends(lambda: router.app.state.quantum_integration)
+):
+    """
+    Trigger quantum optimization for a mesh in the CAD session
+    """
+    tenant_id = context["tenant_id"]
+    
+    try:
+        # Verify session access
+        session_cache = ignite_manager.client.get_or_create_cache("cad_sessions")
+        session = session_cache.get(session_id)
+        
+        if not session:
+            raise HTTPException(status_code=404, detail="Session not found")
+            
+        if session.get("tenant_id") != tenant_id:
+            raise HTTPException(status_code=403, detail="Access denied")
+            
+        # Process mesh update for quantum optimization
+        operation = {
+            "type": "QUANTUM_OPTIMIZATION_REQUEST",
+            "mesh_id": request.mesh_id,
+            "optimization_type": request.optimization_type,
+            "quality_threshold": request.quality_threshold,
+            "real_time": True,
+            "optimize": True
+        }
+        
+        # Queue optimization
+        await quantum_integration.process_mesh_update(
+            session_id,
+            request.mesh_id,
+            operation
+        )
+        
+        return {
+            "session_id": session_id,
+            "mesh_id": request.mesh_id,
+            "status": "queued",
+            "message": "Quantum optimization queued successfully"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error triggering quantum optimization: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 

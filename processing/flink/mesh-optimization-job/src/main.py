@@ -26,6 +26,7 @@ from datetime import datetime
 from typing import Dict, Any, List, Tuple, Optional
 import trimesh
 import hashlib
+import httpx
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -325,6 +326,91 @@ class CollaborativeMeshProcessor(CoProcessFunction):
         pass
 
 
+class QuantumOptimizationTrigger(ProcessFunction):
+    """Triggers quantum optimization for significant mesh changes"""
+    
+    def __init__(self, quantum_service_url: str, cad_service_url: str):
+        self.quantum_url = quantum_service_url
+        self.cad_url = cad_service_url
+        self.http_client = None
+        
+    def open(self, runtime_context):
+        """Initialize HTTP client"""
+        self.http_client = httpx.Client(timeout=30.0)
+        
+    def close(self):
+        """Clean up resources"""
+        if self.http_client:
+            self.http_client.close()
+            
+    def process_element(self, value, ctx):
+        """Process mesh updates and trigger quantum optimization"""
+        try:
+            mesh_event = value
+            
+            # Check if quantum optimization is warranted
+            if self._should_trigger_quantum(mesh_event):
+                # Prepare quantum optimization request
+                quantum_request = {
+                    "mesh_id": mesh_event["mesh_id"],
+                    "optimization_type": self._determine_optimization_type(mesh_event),
+                    "quality_threshold": 0.95,
+                    "quantum_backend": "simulator",
+                    "constraints": mesh_event.get("constraints", {})
+                }
+                
+                # Notify CAD service to queue quantum optimization
+                response = self.http_client.post(
+                    f"{self.cad_url}/api/v1/sessions/{mesh_event['session_id']}/quantum-optimize",
+                    json=quantum_request
+                )
+                
+                if response.status_code == 200:
+                    # Output quantum optimization event
+                    yield {
+                        "event_type": "QUANTUM_OPTIMIZATION_TRIGGERED",
+                        "session_id": mesh_event["session_id"],
+                        "mesh_id": mesh_event["mesh_id"],
+                        "optimization_type": quantum_request["optimization_type"],
+                        "timestamp": datetime.utcnow().isoformat()
+                    }
+                    
+        except Exception as e:
+            logger.error(f"Error triggering quantum optimization: {e}")
+            
+    def _should_trigger_quantum(self, event: Dict[str, Any]) -> bool:
+        """Determine if quantum optimization should be triggered"""
+        # Trigger for complex meshes
+        if event.get("vertex_count", 0) > 10000:
+            return True
+            
+        # Trigger for quality degradation
+        if event.get("quality_score", 1.0) < 0.8:
+            return True
+            
+        # Trigger for specific operations
+        if event.get("operation_type") in ["TOPOLOGY_CHANGE", "MATERIAL_ASSIGNMENT"]:
+            return True
+            
+        return False
+        
+    def _determine_optimization_type(self, event: Dict[str, Any]) -> str:
+        """Determine optimization type based on event"""
+        op_type = event.get("operation_type")
+        
+        if op_type == "DECIMATION":
+            return "lod_generation"
+        elif op_type == "TOPOLOGY_CHANGE":
+            return "topology"
+        elif op_type == "MATERIAL_ASSIGNMENT":
+            return "material"
+        else:
+            # Default based on mesh characteristics
+            if event.get("vertex_count", 0) > event.get("target_vertices", float('inf')):
+                return "lod_generation"
+            return "topology"
+
+
 def create_mesh_optimization_job():
     """Create and configure the mesh optimization Flink job"""
     
@@ -338,6 +424,10 @@ def create_mesh_optimization_job():
     
     # Create table environment
     t_env = StreamTableEnvironment.create(env)
+    
+    # Service URLs
+    quantum_service_url = "http://quantum-optimization-service:8000"
+    cad_service_url = "http://cad-collaboration-service:8000"
     
     # Configure Pulsar source
     pulsar_source = FlinkKafkaConsumer(
@@ -357,6 +447,11 @@ def create_mesh_optimization_job():
     # Apply mesh optimization
     optimized_stream = mesh_stream.process(MeshOptimizationFunction())
     
+    # Add quantum optimization trigger
+    quantum_stream = optimized_stream.process(
+        QuantumOptimizationTrigger(quantum_service_url, cad_service_url)
+    )
+    
     # Configure sink to Pulsar
     pulsar_sink = FlinkKafkaProducer(
         topic='mesh-optimization-results',
@@ -368,9 +463,10 @@ def create_mesh_optimization_job():
     
     # Write results
     optimized_stream.map(lambda x: json.dumps(x)).add_sink(pulsar_sink)
+    quantum_stream.map(lambda x: json.dumps(x)).add_sink(pulsar_sink)
     
     # Execute job
-    env.execute("Real-time Mesh Optimization Job")
+    env.execute("Real-time Mesh Optimization Job with Quantum Integration")
 
 
 if __name__ == "__main__":
