@@ -2,7 +2,7 @@ from platformq_shared.base_service import create_base_app
 from platformq_shared.config import ConfigLoader
 from platformq_shared.zulip_client import ZulipClient, ZulipError
 from platformq_shared.resilience import CircuitBreakerError, RateLimitExceeded, get_metrics_collector
-from platformq_shared.events import UserCreatedEvent, DocumentUpdatedEvent
+from platformq_shared.events import UserCreatedEvent, DocumentUpdatedEvent, ProactiveAlertEvent
 import pulsar
 from pulsar.schema import AvroSchema
 import logging
@@ -16,6 +16,7 @@ from pydantic import BaseModel, Field
 import grpc
 import zulip
 import os
+import json
 
 # Assuming the generate_grpc.sh script has been run
 from .grpc_generated import graph_intelligence_pb2, graph_intelligence_pb2_grpc
@@ -132,6 +133,23 @@ An error has occurred that requires attention:
 • Verify service health
 • Contact on-call if critical"""
 
+    @staticmethod
+    def format_proactive_alert(event: ProactiveAlertEvent) -> str:
+        """Format proactive alert notification"""
+        return f"""🔮 **Proactive Alert for Simulation {event.simulation_id}**
+
+Our predictive monitoring system has detected a potential issue:
+
+**Reason**: {event.reason}
+**Severity**: {event.severity}
+
+**Details**:
+{json.dumps(event.details, indent=2)}
+
+**Recommendation**:
+Review the simulation parameters and consider adjusting them to avoid potential problems.
+"""
+
 
 # --- Enhanced Notification Service ---
 class NotificationService:
@@ -245,6 +263,38 @@ notification_service = NotificationService()
 
 
 # --- Pulsar Consumer Thread ---
+def alert_consumer_loop(app):
+    """Consumes proactive alerts and sends notifications"""
+    logger.info("Starting proactive alert consumer thread...")
+    client = pulsar.Client('pulsar://pulsar:6650')
+    consumer = client.subscribe(
+        'proactive-alerts',
+        'notification-service-alerts-sub',
+        schema=AvroSchema(ProactiveAlertEvent)
+    )
+
+    while not app.state.stop_event.is_set():
+        try:
+            msg = consumer.receive(timeout_millis=1000)
+            if msg is None: continue
+            
+            event = msg.value()
+            content = notification_service.formatter.format_proactive_alert(event)
+            notification_service.send_notification(
+                stream=f"simulations-{event.simulation_id}",
+                topic="Predictive Alerts",
+                content=content,
+                priority="high"
+            )
+            consumer.acknowledge(msg)
+        except Exception as e:
+            logger.error(f"Error in alert consumer: {e}")
+            if 'msg' in locals() and msg:
+                consumer.negative_acknowledge(msg)
+    
+    consumer.close()
+    client.close()
+
 def notification_consumer_loop(app):
     """Enhanced notification consumer with better error handling"""
     logger.info("Starting enhanced notification consumer thread...")
@@ -408,6 +458,15 @@ def startup_event():
     consumer_thread.start()
     app.state.consumer_thread = consumer_thread
     
+    alert_thread = threading.Thread(
+        target=alert_consumer_loop,
+        args=(app,),
+        name="AlertConsumer"
+    )
+    alert_thread.daemon = True
+    alert_thread.start()
+    app.state.alert_thread = alert_thread
+    
     # Schedule periodic graph insights check
     async def periodic_insights_check():
         while not app.state.stop_event.is_set():
@@ -431,6 +490,8 @@ def shutdown_event():
     
     if hasattr(app.state, "consumer_thread"):
         app.state.consumer_thread.join(timeout=5)
+    if hasattr(app.state, "alert_thread"):
+        app.state.alert_thread.join(timeout=5)
         
     logger.info(f"Notification stats: {notification_service.stats}")
 

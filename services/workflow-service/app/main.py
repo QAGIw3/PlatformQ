@@ -7,7 +7,7 @@ import logging
 import threading
 import time
 from datetime import datetime
-from fastapi import Request, Response, status, HTTPException, Query
+from fastapi import Request, Response, status, HTTPException, Query, Depends
 from platformq_shared.events import (
     IssueVerifiableCredential, DigitalAssetCreated, ExecuteWasmFunction, 
     DocumentUpdatedEvent, ProjectCreatedEvent, DAOEvent
@@ -18,6 +18,8 @@ from typing import List, Optional, Dict, Any
 import json
 import re
 import httpx
+from pydantic import BaseModel
+import os
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -735,6 +737,81 @@ async def trigger_workflow(
     except Exception as e:
         logger.error(f"Failed to trigger workflow {workflow_id}: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/workflows/generate-from-nl")
+async def generate_workflow_from_nl(
+    request: NLWorkflowRequest,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """
+    Generates and deploys a workflow from a natural language description.
+    """
+    tenant_id = context["tenant_id"]
+    functions_service_url = settings.get("FUNCTIONS_SERVICE_URL", "http://functions-service:80")
+
+    try:
+        # Call functions-service to get structured workflow
+        async with httpx.AsyncClient() as client:
+            response = await client.post(
+                f"{functions_service_url}/workflows/generate-from-nl",
+                params={"nl_description": request.description},
+                headers={"X-Tenant-ID": tenant_id}
+            )
+            response.raise_for_status()
+            workflow_def = response.json()
+
+        # Convert the structured workflow to an Airflow DAG file
+        dag_file_content = generate_dag_file(workflow_def)
+        
+        # Save the DAG file to the Airflow DAGs folder
+        # In a real K8s setup, this would be more complex (e.g., writing to a shared volume
+        # or using the KubernetesPodOperator to launch a pod that creates the file).
+        # For simplicity, we'll write directly to the dags folder.
+        dags_folder = "/app/dags" 
+        dag_file_path = os.path.join(dags_folder, f"{workflow_def['name']}.py")
+        with open(dag_file_path, "w") as f:
+            f.write(dag_file_content)
+
+        return {"status": "workflow_generated", "dag_file": dag_file_path}
+
+    except Exception as e:
+        logger.error(f"Failed to generate workflow from NL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+def generate_dag_file(workflow_def: Dict[str, Any]) -> str:
+    """
+    Generates the Python code for an Airflow DAG from a structured definition.
+    """
+    dag_name = workflow_def.get("name", "generated_dag")
+    dag_description = workflow_def.get("description", "A DAG generated from a natural language description.")
+
+    # Basic template
+    template = f"""
+from airflow import DAG
+from airflow.operators.bash import BashOperator
+from datetime import datetime
+
+with DAG(
+    dag_id='{dag_name}',
+    start_date=datetime(2023, 1, 1),
+    schedule_interval=None,
+    description='{dag_description}',
+    catchup=False,
+) as dag:
+"""
+    
+    for i, step in enumerate(workflow_def.get("steps", [])):
+        step_name = step.get("name", f"step_{i+1}")
+        if step.get("type") == "bash_operator":
+            command = step.get("config", {}).get("bash_command", "echo 'default command'")
+            template += f"""
+    {step_name} = BashOperator(
+        task_id='{step_name}',
+        bash_command='{command}',
+    )
+"""
+
+    return template
 
 @app.get("/api/v1/workflows/{workflow_id}/runs/{run_id}")
 async def get_workflow_run_status(

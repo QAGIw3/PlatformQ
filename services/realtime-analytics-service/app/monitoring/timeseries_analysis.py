@@ -20,16 +20,64 @@ from statsmodels.tsa.stattools import adfuller, acf, pacf
 from statsmodels.tsa.seasonal import seasonal_decompose
 from statsmodels.tsa.holtwinters import ExponentialSmoothing
 import ruptures as rpt
+from pulsar import Client, ConsumerType
+from platformq_shared.event_publisher import EventPublisher
+import json
 
 logger = logging.getLogger(__name__)
 
 
+class SimulationMetricsConsumer:
+    def __init__(self, pulsar_client: Client, analyzer: 'TimeSeriesAnalyzer'):
+        self.pulsar_client = pulsar_client
+        self.analyzer = analyzer
+        self.consumer = None
+        self.running = False
+
+    async def start(self):
+        self.consumer = self.pulsar_client.subscribe(
+            topic='persistent://public/default/simulation-metrics',
+            subscription_name='timeseries-analysis-subscription',
+            consumer_type=ConsumerType.Shared
+        )
+        self.running = True
+        asyncio.create_task(self._consume())
+        logger.info("Simulation metrics consumer started.")
+
+    async def _consume(self):
+        while self.running:
+            try:
+                msg = self.consumer.receive(timeout_millis=1000)
+                if msg is None:
+                    await asyncio.sleep(1)
+                    continue
+                
+                event_data = json.loads(msg.data().decode('utf-8'))
+                simulation_id = event_data.get("simulation_id")
+                metrics = json.loads(event_data.get("metrics", "{}"))
+                
+                if simulation_id and metrics:
+                    await self.analyzer.update_and_forecast(simulation_id, metrics)
+                    
+                self.consumer.acknowledge(msg)
+            except Exception as e:
+                logger.error(f"Error in simulation metrics consumer: {e}")
+                if 'msg' in locals() and msg:
+                    self.consumer.negative_acknowledge(msg)
+                await asyncio.sleep(5)
+
+    def stop(self):
+        self.running = False
+        if self.consumer:
+            self.consumer.close()
+
 class TimeSeriesAnalyzer:
     """Advanced time-series analysis for simulation metrics"""
     
-    def __init__(self, ignite_config: Dict[str, Any], es_config: Dict[str, Any]):
+    def __init__(self, ignite_config: Dict[str, Any], es_config: Dict[str, Any], event_publisher: EventPublisher):
         self.ignite_config = ignite_config
         self.es_config = es_config
+        self.event_publisher = event_publisher
         self.ignite_client = None
         self.es_client = None
         self._initialize_clients()
@@ -553,6 +601,41 @@ class TimeSeriesAnalyzer:
                                                key=comparison['convergence_rates'].get)
             
         return comparison
+
+    async def update_and_forecast(self, simulation_id: str, metrics: Dict[str, Any]):
+        """
+        Updates the time-series data for a simulation and generates a new forecast.
+        """
+        # In a real implementation, we would append the new metrics to the time-series
+        # data store (e.g., Elasticsearch). For now, we will just log it.
+        logger.info(f"Updating time-series for {simulation_id} with metrics: {metrics}")
+
+        # We need at least 10 data points to make a forecast.
+        # In a real implementation, we would fetch the historical data here.
+        # For now, we'll assume we have enough data and proceed with a placeholder.
+        
+        # Placeholder for fetching historical data and creating a pandas Series
+        # For example:
+        # history = await self._get_simulation_timeseries(simulation_id, 24)
+        # residuals = pd.Series(...)
+        
+        # For now, we'll create a dummy series
+        dummy_residuals = pd.Series(np.random.rand(20))
+        
+        forecast_data = self._forecast_convergence(dummy_residuals)
+        
+        # Publish the forecast
+        forecast_event = {
+            "simulation_id": simulation_id,
+            "timestamp": datetime.utcnow().isoformat(),
+            "forecast": forecast_data
+        }
+        
+        self.event_publisher.publish(
+            topic_base='simulation-forecasts',
+            tenant_id='default', # Or get from session
+            data=forecast_event
+        )
         
     def close(self):
         """Close connections"""

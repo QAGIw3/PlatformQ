@@ -8,6 +8,7 @@ from pyignite import Client as IgniteClient
 from platformq.shared.event_publisher import EventPublisher
 
 from ..core.config import settings
+from .graph_feature_service import graph_feature_service
 
 logger = logging.getLogger(__name__)
 
@@ -20,6 +21,12 @@ class AggregationService:
         """Start a new training round"""
         session_data = self._get_session(session_id)
         
+        # Get asset IDs from the dataset requirements (assuming this structure)
+        asset_ids = session_data.get("dataset_requirements", {}).get("asset_ids", [])
+        
+        # Get graph features for the assets
+        graph_features = await graph_feature_service.get_asset_features(asset_ids)
+        
         participants_cache = self.ignite_client.get_cache("fl_participants")
         participant_keys = [k for k in participants_cache.keys() if k.startswith(f"{session_id}:")]
         
@@ -31,7 +38,8 @@ class AggregationService:
                 "algorithm": session_data["algorithm"],
                 "dataset_requirements": session_data["dataset_requirements"],
                 "privacy_parameters": session_data["privacy_parameters"],
-                "training_parameters": session_data["training_parameters"]
+                "training_parameters": session_data["training_parameters"],
+                "graph_features": graph_features, # Add features here
             },
             "timestamp": int(time.time() * 1000)
         }
@@ -86,6 +94,10 @@ class AggregationService:
         ]
         
         if job_type == "training":
+            # Add graph features to the Spark job config
+            config["training_config"]["graph_features"] = await graph_feature_service.get_asset_features(
+                config.get("training_config", {}).get("dataset_requirements", {}).get("asset_ids", [])
+            )
             spark_submit_cmd.extend([
                 "/app/processing/spark/ml/federated_learning.py",
                 config["session_id"],

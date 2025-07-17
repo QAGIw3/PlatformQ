@@ -20,7 +20,7 @@ import numpy as np
 from platformq_shared.crdts.simulation_crdt import (
     SimulationCRDT, SimulationOperation, SimulationOperationType
 )
-from platformq_shared.events import SimulationCollaborationEvent, SimulationStateEvent
+from platformq_shared.events import SimulationCollaborationEvent, SimulationStateEvent, SimulationOperationEvent, SimulationMetricsEvent
 from platformq_shared.event_publisher import EventPublisher
 from .ignite_manager import SimulationIgniteManager
 
@@ -30,10 +30,11 @@ logger = logging.getLogger(__name__)
 class CollaborationSession:
     """Manages a collaborative simulation session"""
     
-    def __init__(self, session_id: str, simulation_id: str, ignite_manager: SimulationIgniteManager):
+    def __init__(self, session_id: str, simulation_id: str, ignite_manager: SimulationIgniteManager, manager: 'SimulationCollaborationManager'):
         self.session_id = session_id
         self.simulation_id = simulation_id
         self.ignite = ignite_manager
+        self.manager = manager
         
         # Connected users
         self.users: Dict[str, WebSocket] = {}
@@ -132,6 +133,9 @@ class CollaborationSession:
             
             # Add to buffer for batched processing
             self.operations_buffer.append(operation)
+            
+            # Publish operation to Pulsar for other services
+            await self.manager.publish_operation(self.session_id, operation)
             
             # Send acknowledgment
             websocket = self.users.get(user_id)
@@ -261,6 +265,9 @@ class CollaborationSession:
                 # Save metrics to Ignite
                 await self.ignite.update_session_metrics(self.session_id, self.metrics)
                 
+                # Publish metrics to Pulsar
+                await self.manager.publish_metrics(self.session_id, self.simulation_id, self.metrics)
+
                 await asyncio.sleep(1.0)
                 
             except Exception as e:
@@ -325,12 +332,45 @@ class SimulationCollaborationManager:
             await session.stop()
         
         logger.info("Stopped simulation collaboration manager")
+
+    async def publish_metrics(self, session_id: str, simulation_id: str, metrics: Dict[str, Any]):
+        """Publish simulation metrics to Pulsar"""
+        event = SimulationMetricsEvent(
+            session_id=session_id,
+            simulation_id=simulation_id,
+            timestamp=int(time.time() * 1000),
+            metrics=json.dumps(metrics)
+        )
+        self.publisher.publish(
+            topic_base='simulation-metrics',
+            tenant_id='default', # Or get from session
+            schema_class=SimulationMetricsEvent,
+            data=event
+        )
+
+    async def publish_operation(self, session_id: str, operation: SimulationOperation):
+        """Publish a single operation to Pulsar"""
+        event = SimulationOperationEvent(
+            session_id=session_id,
+            operation_id=operation.id,
+            replica_id=operation.replica_id,
+            operation_type=operation.operation_type.value,
+            data=json.dumps(operation.data),
+            vector_clock=json.dumps(operation.vector_clock.clock),
+            timestamp=int(operation.timestamp * 1000)
+        )
+        self.publisher.publish(
+            topic_base='simulation-operations',
+            tenant_id='default', # Or get from session
+            schema_class=SimulationOperationEvent,
+            data=event
+        )
     
     async def create_session(self, simulation_id: str, user_id: str) -> str:
         """Create a new collaboration session"""
         session_id = str(uuid.uuid4())
         
-        session = CollaborationSession(session_id, simulation_id, self.ignite)
+        session = CollaborationSession(session_id, simulation_id, self.ignite, self) # Pass manager to session
         await session.start()
         
         self.sessions[session_id] = session

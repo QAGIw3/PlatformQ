@@ -19,10 +19,12 @@ from .crdt_synchronizer import CRDTSynchronizer
 from .mesh_optimizer_client import MeshOptimizerClient
 from .mesh_decimator import MeshDecimator
 from .collaboration_engine import CollaborationEngine
+from .simulation_consumer import SimulationConsumer
 from .api.deps import get_db_session, get_api_key_crud_placeholder, get_user_crud_placeholder, get_password_verifier_placeholder
 import asyncio
 import logging
 import json
+import pulsar
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +79,16 @@ async def startup_event():
         conflict_resolution="operational_transform",
         history_limit=1000
     )
+
+    # Initialize Pulsar client for consumer
+    pulsar_client = pulsar.Client('pulsar://pulsar:6650')
+
+    # Initialize and start simulation consumer
+    app.state.simulation_consumer = SimulationConsumer(
+        pulsar_client,
+        app.state.collaboration_engine
+    )
+    await app.state.simulation_consumer.start()
     
     # Start background tasks
     asyncio.create_task(app.state.crdt_sync.start_sync_loop())
@@ -87,6 +99,9 @@ async def startup_event():
 async def shutdown_event():
     """Clean up connections on shutdown"""
     logger.info("Shutting down CAD Collaboration Service")
+
+    if hasattr(app.state, "simulation_consumer"):
+        app.state.simulation_consumer.stop()
     
     if hasattr(app.state, "ignite_manager"):
         await app.state.ignite_manager.disconnect()

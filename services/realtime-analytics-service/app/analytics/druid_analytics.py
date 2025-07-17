@@ -291,6 +291,18 @@ class DruidAnalyticsEngine:
         except Exception as e:
             logger.error(f"Error ingesting metric: {e}")
             raise
+            
+    async def ingest_simulation_metrics(self, session_id: str, metrics: Dict[str, Any]):
+        """Ingest simulation metrics into Druid."""
+        logger.info(f"Ingesting metrics for session {session_id}: {metrics}")
+        for metric_name, metric_value in metrics.items():
+            metric_payload = {
+                "timestamp": datetime.utcnow().isoformat(),
+                "session_id": session_id,
+                "metric_name": metric_name,
+                "value": metric_value
+            }
+            await self.ingest_metric("simulation_metrics", metric_payload)
     
     async def ensure_datasource(self, datasource: str):
         """Ensure datasource exists in Druid"""

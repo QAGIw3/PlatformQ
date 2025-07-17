@@ -24,4 +24,17 @@ class IndexableEntityEvent(PlatformEvent):
     entity_id: str
     entity_type: str
     event_type: str  # CREATED, UPDATED, DELETED
-    data: Dict[str, Any] 
+    data: Dict[str, Any]
+
+@dataclass
+class SimulationMetricsEvent(PlatformEvent):
+    simulation_id: str
+    metrics: Dict[str, Any]
+
+@dataclass
+class ProactiveAlertEvent(PlatformEvent):
+    simulation_id: str
+    alert_type: str
+    severity: str
+    reason: str
+    details: Dict[str, Any] 

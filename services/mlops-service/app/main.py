@@ -28,6 +28,8 @@ from .model_marketplace import ModelMarketplaceManager
 from .performance_tracker import ModelPerformanceTracker
 from .auto_retrainer import AutomatedRetrainer, RetrainingTrigger
 from .model_versioning_marketplace import ModelVersioningMarketplace
+from .retraining_consumer import RetrainingConsumer
+import pulsar
 
 logger = logging.getLogger(__name__)
 
@@ -65,6 +67,7 @@ model_marketplace_manager = None
 performance_tracker = ModelPerformanceTracker()
 auto_retrainer = AutomatedRetrainer()
 version_marketplace = ModelVersioningMarketplace()
+retraining_consumer = None
 
 
 # Pydantic models
@@ -131,7 +134,7 @@ class ModelReviewRequest(BaseModel):
 async def startup_event():
     """Initialize services on startup"""
     global feedback_loop_manager, ab_test_manager, model_registry_manager
-    global deployment_manager, monitoring_config_manager, model_marketplace_manager
+    global deployment_manager, monitoring_config_manager, model_marketplace_manager, retraining_consumer
     
     # Connect event publisher
     event_publisher.connect()
@@ -161,12 +164,21 @@ async def startup_event():
     # Start feedback loop in background
     asyncio.create_task(feedback_loop_manager.start())
     
+    # Initialize Pulsar client for consumer
+    pulsar_client = pulsar.Client(PULSAR_URL)
+    
+    # Initialize and start retraining consumer
+    retraining_consumer = RetrainingConsumer(pulsar_client, auto_retrainer)
+    await retraining_consumer.start()
+    
     logger.info("MLOps service initialized")
 
 
 @app.on_event("shutdown")
 def shutdown_event():
     """Cleanup on shutdown"""
+    if retraining_consumer:
+        retraining_consumer.stop()
     event_publisher.disconnect()
 
 

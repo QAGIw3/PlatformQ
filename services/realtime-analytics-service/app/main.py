@@ -23,8 +23,11 @@ from .analytics.stream_processor import StreamProcessor
 from .analytics.realtime_ml import RealtimeMLEngine
 from .monitoring.dashboard_service import SimulationDashboardService
 from .monitoring.predictive_maintenance import PredictiveMaintenanceModel
-from .monitoring.timeseries_analysis import TimeSeriesAnalyzer
+from .monitoring.timeseries_analysis import TimeSeriesAnalyzer, SimulationMetricsConsumer
 from .monitoring.metrics_aggregator import MetricsAggregator
+from .analytics.simulation_analytics import SimulationAnalyticsConsumer
+from platformq_shared.event_publisher import EventPublisher
+import pulsar
 
 logger = logging.getLogger(__name__)
 
@@ -52,6 +55,7 @@ dashboard_service = None
 maintenance_model = None
 timeseries_analyzer = None
 metrics_aggregator = None
+simulation_analytics_consumer = None
 
 # Lifespan context manager
 @asynccontextmanager
@@ -68,10 +72,20 @@ async def lifespan(app: FastAPI):
     stream_processor = StreamProcessor(DRUID_CONFIG, IGNITE_CONFIG)
     realtime_ml = RealtimeMLEngine()
     
+    event_publisher = EventPublisher('pulsar://pulsar:6650')
+    event_publisher.connect()
+    
     dashboard_service = SimulationDashboardService(IGNITE_CONFIG, ES_CONFIG)
     maintenance_model = PredictiveMaintenanceModel(IGNITE_CONFIG, ES_CONFIG)
-    timeseries_analyzer = TimeSeriesAnalyzer(IGNITE_CONFIG, ES_CONFIG)
+    timeseries_analyzer = TimeSeriesAnalyzer(IGNITE_CONFIG, ES_CONFIG, event_publisher)
     metrics_aggregator = MetricsAggregator(IGNITE_CONFIG, DRUID_CONFIG)
+    
+    # Initialize Pulsar client for consumer
+    pulsar_client = pulsar.Client('pulsar://pulsar:6650')
+    
+    # Initialize and start simulation metrics consumer
+    simulation_metrics_consumer = SimulationMetricsConsumer(pulsar_client, timeseries_analyzer)
+    await simulation_metrics_consumer.start()
     
     # Start background services
     await stream_processor.start()
@@ -84,6 +98,9 @@ async def lifespan(app: FastAPI):
     # Shutdown
     logger.info("Shutting down Real-time Analytics Service...")
     
+    if simulation_metrics_consumer:
+        simulation_metrics_consumer.stop()
+        
     await stream_processor.stop()
     await realtime_ml.stop()
     

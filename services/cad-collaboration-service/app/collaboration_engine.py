@@ -277,6 +277,30 @@ class CollaborationEngine:
             "resolved": len(conflicts) > 0
         }
         
+    async def apply_remote_operation(self, session_id: str, operation_data: Dict[str, Any]):
+        """
+        Apply a geometry operation received from a remote source (e.g., simulation service).
+        """
+        if session_id not in self.sessions:
+            # If the session doesn't exist, we can't apply the operation.
+            # In a real-world scenario, we might want to cache these operations
+            # or have a mechanism to create the session if it's missing.
+            logger.warning(f"Session {session_id} not found. Dropping remote operation.")
+            return
+
+        # Adapt the incoming data to a GeometryOperation object
+        operation = GeometryOperation(
+            operation_id=operation_data.get("id", str(uuid.uuid4())),
+            operation_type=operation_data.get("type"),
+            user_id="remote-simulation-service", # Attribute to a system user
+            session_id=session_id,
+            timestamp=time.time(),
+            target_objects=operation_data.get("data", {}).get("target_objects", []),
+            parameters=operation_data.get("data", {}).get("parameters", {}),
+        )
+        
+        await self.apply_operation(session_id, operation)
+        
     def _find_concurrent_operations(self,
                                   session: CollaborationSession,
                                   operation: GeometryOperation) -> List[GeometryOperation]:

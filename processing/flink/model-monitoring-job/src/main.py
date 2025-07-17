@@ -17,6 +17,8 @@ from pyflink.common.time import Time, Duration
 from pyflink.common.watermark_strategy import WatermarkStrategy, TimestampAssigner
 from pyflink.common.serialization import SimpleStringSchema
 from pyflink.datastream.connectors import FlinkKafkaConsumer, FlinkKafkaProducer
+from pyflink.datastream.connectors.pulsar import FlinkPulsarSource, FlinkPulsarSink, PulsarSourceBuilder, PulsarSinkBuilder
+from pyflink.common.typeinfo import Types
 from pyflink.datastream.functions import RuntimeContext
 import json
 import logging
@@ -99,19 +101,18 @@ class DataDriftDetector(ProcessFunction):
             drift_detected, drift_results = self._detect_drift(state)
             
             if drift_detected:
-                # Emit drift alert
-                alert = {
-                    "alert_type": "DATA_DRIFT",
+                # Create a structured event for retraining
+                retraining_event = {
+                    "event_type": "RETRAINING_REQUIRED",
+                    "reason": "DATA_DRIFT_DETECTED",
                     "model_name": prediction_data.model_name,
                     "model_version": prediction_data.model_version,
                     "tenant_id": prediction_data.tenant_id,
                     "timestamp": datetime.utcnow().isoformat(),
-                    "drift_results": drift_results,
-                    "severity": self._calculate_severity(drift_results),
-                    "recommendation": "Consider retraining the model with recent data"
+                    "drift_details": drift_results,
+                    "severity": self._calculate_severity(drift_results)
                 }
-                
-                yield alert
+                yield retraining_event
                 
                 # Update alert history
                 state.alert_history.append(alert)
@@ -346,19 +347,20 @@ class ModelPerformanceMonitor(KeyedProcessFunction):
             
             # Check for performance degradation
             if accuracy < 0.8:  # Threshold
-                alert = {
-                    "alert_type": "PERFORMANCE_DEGRADATION",
+                retraining_event = {
+                    "event_type": "RETRAINING_REQUIRED",
+                    "reason": "PERFORMANCE_DEGRADATION",
                     "model_name": value["model_name"],
                     "model_version": value["model_version"],
                     "tenant_id": value["tenant_id"],
                     "timestamp": datetime.utcnow().isoformat(),
-                    "current_accuracy": accuracy,
-                    "total_predictions": metrics["total_predictions"],
-                    "severity": "HIGH" if accuracy < 0.7 else "MEDIUM",
-                    "recommendation": "Model performance has degraded. Consider retraining."
+                    "metrics": {
+                        "current_accuracy": accuracy,
+                        "total_predictions": metrics["total_predictions"]
+                    },
+                    "severity": "HIGH" if accuracy < 0.7 else "MEDIUM"
                 }
-                
-                yield alert
+                yield retraining_event
                 
         # Update state
         self.performance_state.update(metrics)
@@ -434,14 +436,13 @@ def create_model_monitoring_job():
     t_env = StreamTableEnvironment.create(env)
     
     # Configure Pulsar source for prediction events
-    pulsar_source = FlinkKafkaConsumer(
-        topics=['model-predictions', 'model-predictions-with-labels'],
-        deserialization_schema=SimpleStringSchema(),
-        properties={
-            'bootstrap.servers': 'pulsar://pulsar:6650',
-            'group.id': 'model-monitoring-group'
-        }
-    )
+    pulsar_source = FlinkPulsarSource.builder() \
+        .set_service_url(settings.pulsar_url) \
+        .set_admin_url(settings.pulsar_admin_url) \
+        .set_subscription_name("model-monitoring-subscription") \
+        .set_topics(["model-predictions", "model-predictions-with-labels"]) \
+        .set_deserialization_schema(SimpleStringSchema()) \
+        .build()
     
     # Create data stream with watermarks
     prediction_stream = env.add_source(pulsar_source) \
@@ -466,20 +467,19 @@ def create_model_monitoring_job():
     anomaly_alerts = prediction_stream \
         .process(PredictionAnomalyDetector(anomaly_threshold=3.0))
     
-    # Union all alerts
-    all_alerts = drift_alerts.union(performance_alerts).union(anomaly_alerts)
+    # Union the retraining events
+    retraining_requests = drift_alerts.union(performance_alerts)
     
-    # Configure Pulsar sink for alerts
-    alert_sink = FlinkKafkaProducer(
-        topic='model-monitoring-alerts',
-        serialization_schema=SimpleStringSchema(),
-        producer_config={
-            'bootstrap.servers': 'pulsar://pulsar:6650'
-        }
-    )
+    # Configure Pulsar sink for retraining requests
+    retraining_sink = FlinkPulsarSink.builder() \
+        .set_service_url(settings.pulsar_url) \
+        .set_admin_url(settings.pulsar_admin_url) \
+        .set_topic("model-retraining-requests") \
+        .set_serialization_schema(SimpleStringSchema()) \
+        .build()
     
-    # Write alerts to sink
-    all_alerts.map(lambda x: json.dumps(x)).add_sink(alert_sink)
+    # Write retraining requests to sink
+    retraining_requests.map(lambda x: json.dumps(x)).add_sink(retraining_sink)
     
     # Also write to monitoring metrics sink for dashboards
     t_env.execute_sql("""

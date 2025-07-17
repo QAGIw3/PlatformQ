@@ -367,6 +367,74 @@ CMD ["python", "serve.py"]
             logger.error(f"Failed to deploy to Knative: {e}")
             raise
 
+    async def generate_workflow_from_nl(self, nl_description: str, tenant_id: str) -> Dict[str, Any]:
+        """
+        Generates a structured workflow definition from a natural language description using an LLM.
+        """
+        # In a real implementation, this would call an LLM service (e.g., OpenAI, Anthropic)
+        # For now, we will use a placeholder that returns a pre-defined workflow.
+
+        prompt = f"""
+        Given the following natural language description, generate a structured workflow definition in JSON format.
+        The workflow should be a valid Airflow DAG definition.
+
+        Description: "{nl_description}"
+
+        The JSON output should have the following structure:
+        {{
+          "name": "workflow_name",
+          "description": "Workflow description",
+          "steps": [
+            {{
+              "name": "step_name",
+              "type": "bash_operator",
+              "config": {{
+                "bash_command": "echo 'Hello World'"
+              }}
+            }}
+          ]
+        }}
+        """
+        
+        logger.info(f"Generating workflow for tenant {tenant_id} with prompt: {prompt}")
+
+        # Placeholder for LLM call
+        # In a real implementation, you would make an API call to an LLM here.
+        # For example:
+        # response = await llm_client.generate(prompt)
+        # workflow_json = json.loads(response)
+        
+        # For this example, we'll return a hardcoded workflow
+        if "render a CAD file" in nl_description.lower():
+            workflow_json = {
+                "name": "cad_render_workflow",
+                "description": "A workflow to render a CAD file using Blender.",
+                "steps": [
+                    {
+                        "name": "download_cad_file",
+                        "type": "python_operator",
+                        "config": {"python_callable": "download_asset"}
+                    },
+                    {
+                        "name": "render_with_blender",
+                        "type": "bash_operator",
+                        "config": {"bash_command": "blender -b {input_file} -o {output_file} -f 1"}
+                    },
+                    {
+                        "name": "upload_render",
+                        "type": "python_operator",
+                        "config": {"python_callable": "upload_asset"}
+                    }
+                ]
+            }
+        else:
+            workflow_json = {
+                "name": "default_workflow",
+                "description": "A default workflow.",
+                "steps": [{"name": "step1", "type": "bash_operator", "config": {"bash_command": "echo 'No specific workflow matched'"}}]
+            }
+            
+        return workflow_json
 
 # Initialize manager
 model_manager = ModelServingManager()
@@ -629,6 +697,22 @@ async def predict(
         return prediction_result
 
 
+@router.post("/workflows/generate-from-nl")
+async def generate_workflow(
+    nl_description: str,
+    context: dict = Depends(get_current_user_from_trusted_header)
+):
+    """
+    Generates a structured workflow from a natural language description.
+    """
+    tenant_id = context["tenant_id"]
+    try:
+        workflow_definition = await model_manager.generate_workflow_from_nl(nl_description, tenant_id)
+        return workflow_definition
+    except Exception as e:
+        logger.error(f"Failed to generate workflow from NL: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+        
 @router.get("/deployments/{deployment_name}/metrics")
 async def get_deployment_metrics(
     deployment_name: str,
