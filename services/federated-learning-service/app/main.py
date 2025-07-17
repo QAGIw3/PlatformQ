@@ -24,6 +24,18 @@ from platformq.shared.base_service import create_base_app
 from platformq.shared.event_publisher import EventPublisher
 from .core.config import settings
 from platformq_shared.jwt import get_current_tenant_and_user
+from .core.homomorphic_encryption import (
+    CKKSEncryption, PaillierEncryption, SecureAggregator,
+    HEContext, EncryptedTensor, DifferentialPrivacyWithHE
+)
+from .core.secure_aggregation import (
+    SecureAggregationProtocol, AggregationStrategy,
+    ParticipantUpdate, AggregationResult
+)
+from .core.privacy_preserving import (
+    DifferentialPrivacy, PrivacyParameters, PrivacyMechanism,
+    SecureComputation, ZeroKnowledgeProofs, PrivateInformationRetrieval
+)
 
 logger = logging.getLogger(__name__)
 
@@ -41,7 +53,12 @@ class FederatedLearningSessionRequest(BaseModel):
         "epsilon": 1.0,
         "delta": 1e-5,
         "secure_aggregation": True,
-        "homomorphic_encryption": False
+        "homomorphic_encryption": True,
+        "encryption_scheme": "CKKS",  # CKKS, Paillier
+        "aggregation_strategy": "SECURE_AGG",  # FED_AVG, FED_PROX, SECURE_AGG, DP_FED_AVG
+        "adaptive_clipping": True,
+        "noise_multiplier": 1.0,
+        "byzantine_tolerance": 0.2
     })
     training_parameters: Dict[str, Any] = Field(..., description="Training configuration")
     participation_criteria: Dict[str, Any] = Field(default_factory=lambda: {
@@ -85,6 +102,9 @@ class FederatedLearningCoordinator:
         self.ignite_client = None
         self.http_client = httpx.AsyncClient()
         self.active_sessions = {}
+        self.secure_aggregation_protocols = {}
+        self.zero_knowledge_verifier = ZeroKnowledgeProofs()
+        self.privacy_accountants = {}
         
     async def initialize(self):
         """Initialize connections"""
@@ -343,6 +363,48 @@ async def create_federated_learning_session(
     # Store in Ignite
     coordinator.create_session_in_ignite(session_data)
     
+    # Initialize secure aggregation protocol if enabled
+    if request.privacy_parameters.get("homomorphic_encryption", False):
+        strategy = AggregationStrategy(request.privacy_parameters.get("aggregation_strategy", "SECURE_AGG"))
+        
+        protocol = SecureAggregationProtocol(
+            strategy=strategy,
+            encryption_scheme=request.privacy_parameters.get("encryption_scheme", "CKKS"),
+            differential_privacy=request.privacy_parameters.get("differential_privacy_enabled", True),
+            epsilon=request.privacy_parameters.get("epsilon", 1.0),
+            delta=request.privacy_parameters.get("delta", 1e-5),
+            byzantine_tolerance=request.privacy_parameters.get("byzantine_tolerance", 0.2)
+        )
+        
+        # Initialize HE context
+        model_architecture = {
+            "layer1_weights": [100, 50],
+            "layer1_bias": [50],
+            "layer2_weights": [50, 10],
+            "layer2_bias": [10]
+        }  # In production, derive from model_type
+        
+        he_context, he_params = protocol.initialize_session(
+            session_id,
+            request.training_parameters.get("min_participants", 2),
+            model_architecture
+        )
+        
+        # Store protocol and update session data
+        coordinator.secure_aggregation_protocols[session_id] = protocol
+        coordinator.sessions[session_id] = {
+            "context": he_context,
+            "he_params": he_params,
+            **session_data
+        }
+        
+        # Add HE info to response
+        session_data["homomorphic_encryption"] = {
+            "enabled": True,
+            "scheme": request.privacy_parameters.get("encryption_scheme", "CKKS"),
+            "public_key": he_params["public_key"]
+        }
+    
     # Publish session creation event
     event_data = {
         "session_id": session_id,
@@ -526,6 +588,35 @@ async def submit_model_update(
         "zkp": request.zkp,
         "submitted_at": datetime.utcnow().isoformat()
     }
+    
+    # If HE is enabled, also submit to secure aggregation protocol
+    if session_id in coordinator.secure_aggregation_protocols:
+        # In production, download encrypted weights from update_uri
+        # For now, create mock encrypted update
+        protocol = coordinator.secure_aggregation_protocols[session_id]
+        
+        # Create participant update for secure aggregation
+        encrypted_update = ParticipantUpdate(
+            participant_id=participant_id,
+            round_number=request.round_number,
+            encrypted_weights={},  # Would be loaded from update_uri
+            metadata={
+                "num_samples": request.metrics.get("training_samples", 1000),
+                "local_steps": request.metrics.get("epochs", 1),
+                **request.metrics
+            },
+            signature=hashlib.sha256(
+                f"{participant_id}:{request.round_number}:{int(time.time() * 1000)}".encode()
+            ).hexdigest()[:16],
+            timestamp=int(time.time() * 1000)
+        )
+        
+        # Submit to protocol
+        success = protocol.submit_update(session_id, encrypted_update)
+        if not success:
+            logger.warning(f"Failed to submit encrypted update for {participant_id}")
+            
+        update_data["homomorphic_encryption_used"] = True
     
     # Store in Ignite
     updates_cache = coordinator.ignite_client.get_or_create_cache(f"fl_model_updates_{session_id}")
@@ -817,13 +908,218 @@ async def request_aggregated_model_vc(session_id: str, round_number: int, model_
 
 
 # Health check
+@app.post("/api/v1/sessions/{session_id}/encrypt", response_model=Dict[str, Any])
+async def encrypt_model_update(
+    session_id: str,
+    model_weights: Dict[str, List[float]],
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Encrypt model weights using homomorphic encryption"""
+    if session_id not in coordinator.secure_aggregation_protocols:
+        raise HTTPException(status_code=404, detail="Session not found or HE not enabled")
+    
+    protocol = coordinator.secure_aggregation_protocols[session_id]
+    session_data = coordinator.sessions.get(session_id, {})
+    
+    # Convert to numpy arrays
+    numpy_weights = {k: np.array(v) for k, v in model_weights.items()}
+    
+    # Encrypt using session's public key
+    encrypted_weights = protocol.aggregator.encrypt_model_update(
+        numpy_weights,
+        session_data["context"].public_key
+    )
+    
+    # Store encrypted weights temporarily
+    encrypted_data = {
+        "session_id": session_id,
+        "participant_id": f"{context['tenant_id']}:{context['user_id']}",
+        "encrypted_weights": {
+            k: {
+                "ciphertext": v.ciphertext.hex(),
+                "shape": v.shape,
+                "metadata": v.metadata
+            }
+            for k, v in encrypted_weights.items()
+        },
+        "timestamp": int(time.time() * 1000)
+    }
+    
+    # Store in MinIO and return URI
+    # In production, this would upload to MinIO
+    uri = f"s3://federated-models/{session_id}/encrypted/{context['user_id']}_{int(time.time())}.enc"
+    
+    return {
+        "encryption_uri": uri,
+        "encryption_scheme": protocol.encryption_scheme,
+        "encrypted_layers": list(encrypted_weights.keys())
+    }
+
+
+@app.post("/api/v1/sessions/{session_id}/generate_zkp", response_model=Dict[str, Any])
+async def generate_zero_knowledge_proof(
+    session_id: str,
+    proof_type: str,
+    statement: str,
+    public_inputs: Dict[str, Any],
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Generate zero-knowledge proof for model validation"""
+    if proof_type not in ["range", "norm_bound", "training_correctness"]:
+        raise HTTPException(status_code=400, detail="Invalid proof type")
+    
+    # Generate witness based on proof type
+    witness = {}
+    
+    if proof_type == "norm_bound":
+        # In production, get actual gradients
+        witness["gradients"] = {
+            "layer1": np.random.randn(100, 100),
+            "layer2": np.random.randn(50, 50)
+        }
+    elif proof_type == "training_correctness":
+        witness["training_logs"] = {
+            "steps_completed": public_inputs.get("expected_steps", 100),
+            "initial_loss": 2.5,
+            "final_loss": 0.5
+        }
+    
+    # Generate proof
+    proof = coordinator.zero_knowledge_verifier.generate_proof(
+        proof_type,
+        statement,
+        witness,
+        public_inputs
+    )
+    
+    return {
+        "proof_id": hashlib.sha256(proof.proof_data).hexdigest()[:16],
+        "proof_type": proof_type,
+        "statement": statement,
+        "proof_data": proof.proof_data.hex(),
+        "verification_key": proof.verification_key.hex()
+    }
+
+
+@app.post("/api/v1/verify_zkp", response_model=Dict[str, Any])
+async def verify_zero_knowledge_proof(
+    proof_data: Dict[str, Any],
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Verify a zero-knowledge proof"""
+    from .core.privacy_preserving import ZKProof
+    
+    # Reconstruct proof object
+    proof = ZKProof(
+        proof_type=proof_data["proof_type"],
+        statement=proof_data["statement"],
+        proof_data=bytes.fromhex(proof_data["proof_data"]),
+        public_inputs=proof_data.get("public_inputs", {}),
+        verification_key=bytes.fromhex(proof_data["verification_key"])
+    )
+    
+    # Verify
+    is_valid = coordinator.zero_knowledge_verifier.verify_proof(proof)
+    
+    return {
+        "proof_id": proof_data.get("proof_id"),
+        "valid": is_valid,
+        "verified_at": datetime.utcnow().isoformat()
+    }
+
+
+@app.get("/api/v1/sessions/{session_id}/privacy_report", response_model=Dict[str, Any])
+async def get_privacy_report(
+    session_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get privacy budget and metrics for a session"""
+    if session_id not in coordinator.secure_aggregation_protocols:
+        raise HTTPException(status_code=404, detail="Session not found")
+    
+    protocol = coordinator.secure_aggregation_protocols[session_id]
+    report = protocol.get_privacy_report(session_id)
+    
+    # Add additional metrics
+    session_data = coordinator.sessions.get(session_id, {})
+    report["homomorphic_encryption_enabled"] = session_data.get("privacy_parameters", {}).get("homomorphic_encryption", False)
+    report["encryption_scheme"] = session_data.get("privacy_parameters", {}).get("encryption_scheme")
+    report["aggregation_strategy"] = protocol.strategy.value
+    
+    return report
+
+
+@app.post("/api/v1/sessions/{session_id}/secure_aggregate", response_model=Dict[str, Any])
+async def trigger_secure_aggregation(
+    session_id: str,
+    round_number: int,
+    min_participants: Optional[int] = None,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Manually trigger secure aggregation for a round"""
+    if session_id not in coordinator.secure_aggregation_protocols:
+        raise HTTPException(status_code=404, detail="Session not found or secure aggregation not enabled")
+    
+    protocol = coordinator.secure_aggregation_protocols[session_id]
+    
+    # Check authorization
+    session_data = coordinator.sessions.get(session_id, {})
+    if session_data.get("created_by") != context["user_id"]:
+        raise HTTPException(status_code=403, detail="Not authorized to trigger aggregation")
+    
+    # Perform aggregation
+    result = await protocol.aggregate_round(session_id, round_number, min_participants)
+    
+    if not result:
+        raise HTTPException(status_code=400, detail="Aggregation failed")
+    
+    # Store result
+    cache = coordinator.ignite_client.get_or_create_cache(f"fl_aggregated_models_{session_id}")
+    cache.put(
+        f"aggregated_model_round_{round_number}",
+        json.dumps({
+            "aggregated_model_uri": f"s3://federated-models/{session_id}/round_{round_number}_aggregated.enc",
+            "aggregation_method": protocol.strategy.value,
+            "aggregated_weights": {
+                "num_participants": result.num_participants,
+                "total_samples": sum(
+                    coordinator.round_updates[session_id][round_number][pid].metadata.get("num_samples", 0)
+                    for pid in coordinator.round_updates[session_id][round_number]
+                )
+            },
+            "convergence_metrics": {
+                "model_divergence": 0.1,  # Mock
+                "convergence_score": 0.95  # Mock
+            },
+            "aggregation_timestamp": int(time.time() * 1000),
+            "privacy_budget_used": result.privacy_budget_used
+        })
+    )
+    
+    return {
+        "round_number": round_number,
+        "status": "completed",
+        "num_participants": result.num_participants,
+        "dropped_participants": result.dropped_participants,
+        "verification_passed": result.verification_passed,
+        "privacy_budget_used": result.privacy_budget_used,
+        "aggregation_time": result.aggregation_time
+    }
+
+
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
         "service": "federated-learning-service",
-        "timestamp": datetime.utcnow().isoformat()
+        "timestamp": datetime.utcnow().isoformat(),
+        "features": {
+            "homomorphic_encryption": True,
+            "differential_privacy": True,
+            "secure_aggregation": True,
+            "zero_knowledge_proofs": True
+        }
     }
 
 

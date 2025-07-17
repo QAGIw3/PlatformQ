@@ -8,7 +8,7 @@ from fastapi import APIRouter, WebSocket, WebSocketDisconnect, Depends
 from datetime import datetime
 
 from app.ignite_manager import SimulationIgniteManager
-from app.core.deps import verify_websocket_token
+from app.api.deps import verify_websocket_token
 
 router = APIRouter()
 logger = logging.getLogger(__name__)

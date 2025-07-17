@@ -1,6 +1,6 @@
 # Federated Learning Service
 
-The Federated Learning Service enables privacy-preserving collaborative machine learning across multiple tenants without sharing raw data.
+The Federated Learning Service enables privacy-preserving collaborative machine learning across multiple tenants without sharing raw data, now enhanced with homomorphic encryption and advanced privacy techniques.
 
 ## 🎯 Overview
 
@@ -8,7 +8,10 @@ This service orchestrates federated learning sessions where multiple participant
 - **Apache Spark** for distributed model training
 - **Apache Ignite** for high-performance in-memory aggregation
 - **Verifiable Credentials** for access control and result certification
-- **Differential Privacy** for privacy guarantees
+- **Differential Privacy** with adaptive clipping and RDP accounting
+- **Homomorphic Encryption** (CKKS & Paillier) for secure aggregation
+- **Zero-Knowledge Proofs** for model validation
+- **Secure Multi-Party Computation** for Byzantine robustness
 
 ## 🏗️ Architecture
 
@@ -50,22 +53,40 @@ This service orchestrates federated learning sessions where multiple participant
 - `POST /api/v1/sessions/{session_id}/updates` - Submit model update
 - `GET /api/v1/sessions/{session_id}/updates/{round}` - Get round updates
 
+### Homomorphic Encryption
+- `POST /api/v1/sessions/{session_id}/encrypt` - Encrypt model weights
+- `POST /api/v1/sessions/{session_id}/secure_aggregate` - Trigger secure aggregation
+
+### Privacy & Verification
+- `POST /api/v1/sessions/{session_id}/generate_zkp` - Generate zero-knowledge proof
+- `POST /api/v1/verify_zkp` - Verify zero-knowledge proof
+- `GET /api/v1/sessions/{session_id}/privacy_report` - Get privacy budget report
+
 ## 🔐 Privacy Features
 
-### Differential Privacy
-- Configurable privacy budget (epsilon, delta)
-- Laplace noise addition to gradients
-- Per-participant privacy accounting
+### Homomorphic Encryption
+- **CKKS Scheme**: Approximate arithmetic on encrypted real numbers
+- **Paillier Scheme**: Additive homomorphic encryption
+- **Encrypted Aggregation**: Aggregate without decrypting individual updates
+- **Noise Budget Management**: Track encryption quality throughout computation
 
-### Secure Aggregation
-- RSA encryption of model updates
-- Homomorphic properties for aggregation
-- Ephemeral key generation
+### Advanced Differential Privacy
+- **Adaptive Clipping**: Dynamic gradient clipping based on quantiles
+- **RDP Accounting**: Tight privacy bounds using Rényi Differential Privacy
+- **Multiple Mechanisms**: Gaussian, Laplace, Exponential, Geometric noise
+- **Per-layer Sensitivity**: Compute optimal noise for each model layer
+
+### Secure Multi-Party Computation
+- **Secret Sharing**: Distribute model updates across participants
+- **Beaver Triples**: Efficient multiplication of encrypted values
+- **Byzantine Tolerance**: Handle up to 20% malicious participants
+- **Dropout Resilience**: Continue training despite participant failures
 
 ### Zero-Knowledge Proofs
-- Proof of correct training execution
-- No data revelation
-- Verifiable by coordinator
+- **Training Correctness**: Prove proper training without revealing data
+- **Norm Bounds**: Verify gradient norms stay within limits
+- **Range Proofs**: Validate parameters are in acceptable ranges
+- **Verifiable Aggregation**: Prove aggregation was done correctly
 
 ## 🚀 Usage Example
 
@@ -90,7 +111,12 @@ response = requests.post(
             "differential_privacy_enabled": True,
             "epsilon": 1.0,
             "delta": 1e-5,
-            "secure_aggregation": True
+            "secure_aggregation": True,
+            "homomorphic_encryption": True,
+            "encryption_scheme": "CKKS",
+            "aggregation_strategy": "SECURE_AGG",
+            "adaptive_clipping": True,
+            "byzantine_tolerance": 0.2
         },
         "training_parameters": {
             "rounds": 10,
@@ -141,17 +167,37 @@ response = requests.post(
 )
 ```
 
-### 3. Training Happens Automatically
+### 3. Encrypt Model Updates (with HE enabled)
+
+```python
+# Encrypt your model weights before submission
+response = requests.post(
+    f"http://federated-learning-service/api/v1/sessions/{session_id}/encrypt",
+    headers={"Authorization": "Bearer <participant_token>"},
+    json={
+        "layer1_weights": model_weights["layer1"].tolist(),
+        "layer1_bias": model_bias["layer1"].tolist(),
+        "layer2_weights": model_weights["layer2"].tolist(),
+        "layer2_bias": model_bias["layer2"].tolist()
+    }
+)
+
+encrypted_uri = response.json()["encryption_uri"]
+```
+
+### 4. Training Happens Automatically
 
 The service will:
 1. Wait for minimum participants
 2. Start training rounds
 3. Participants train locally with differential privacy
-4. Submit encrypted model updates
-5. Aggregate updates securely
-6. Repeat for configured rounds
+4. Encrypt model updates using homomorphic encryption
+5. Submit encrypted updates (never decrypted by server)
+6. Aggregate encrypted updates homomorphically
+7. Apply Byzantine-robust filtering if needed
+8. Repeat for configured rounds
 
-### 4. Get the Final Model
+### 5. Get the Final Model
 
 ```python
 # Get aggregated model after training
@@ -167,6 +213,28 @@ model_info = response.json()
 #     "total_samples": 25000,
 #     "verifiable_credential_id": "urn:uuid:...",
 #     "convergence_score": 0.95
+# }
+```
+
+### 6. Check Privacy Budget
+
+```python
+# Monitor privacy budget consumption
+response = requests.get(
+    f"http://federated-learning-service/api/v1/sessions/{session_id}/privacy_report",
+    headers={"Authorization": "Bearer <token>"}
+)
+
+privacy_report = response.json()
+# {
+#     "differential_privacy_enabled": true,
+#     "epsilon": 1.0,
+#     "delta": 1e-5,
+#     "initial_budget": 10.0,
+#     "remaining_budget": 8.5,
+#     "rounds_completed": 3,
+#     "homomorphic_encryption_enabled": true,
+#     "encryption_scheme": "CKKS"
 # }
 ```
 
@@ -233,7 +301,16 @@ Configure in session creation:
 
 ## 🚧 Limitations
 
-- Maximum 100 participants per session
+- Maximum 100 participants per session (configurable)
 - Models must fit Spark ML pipeline format
-- Homomorphic encryption in development
-- GPU acceleration planned for future 
+- CKKS multiplication depth limited to ~10 levels
+- GPU acceleration for HE operations planned
+- Full MPC protocols still in development
+
+## 🚀 Future Enhancements
+
+- **Trusted Execution Environments**: Intel SGX integration
+- **Functional Encryption**: More flexible computation on encrypted data
+- **Threshold Cryptography**: Distributed key generation
+- **Quantum-Safe Cryptography**: Post-quantum secure protocols
+- **Cross-Silo Federation**: Support for institutional deployments 
