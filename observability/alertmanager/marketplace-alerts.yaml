@@ -1,0 +1,274 @@
+global:
+  resolve_timeout: 5m
+  slack_api_url: '${SLACK_API_URL}'
+  pagerduty_url: 'https://events.pagerduty.com/v2/enqueue'
+
+route:
+  group_by: ['alertname', 'cluster', 'service']
+  group_wait: 10s
+  group_interval: 10s
+  repeat_interval: 12h
+  receiver: 'default'
+  
+  routes:
+    # Critical alerts - immediate paging
+    - match:
+        severity: critical
+      receiver: pagerduty-critical
+      continue: true
+      routes:
+        - match:
+            service: blockchain-event-bridge
+          receiver: blockchain-team-critical
+        - match:
+            service: marketplace
+          receiver: marketplace-team-critical
+        - match_re:
+            service: ^(mlops|federated-learning).*
+          receiver: ml-team-critical
+    
+    # Security alerts - immediate notification
+    - match:
+        alertname: SuspiciousTransactionPattern
+      receiver: security-team-urgent
+      group_wait: 0s
+      repeat_interval: 5m
+    
+    - match:
+        alertname: UnauthorizedAccessAttempts
+      receiver: security-team
+      group_wait: 30s
+    
+    # Financial alerts - finance team
+    - match_re:
+        alertname: ^(RoyaltyDistributionFailed|RoyaltyEscrowBalanceHigh|NFTLendingDefaultRate)$
+      receiver: finance-team
+      group_interval: 5m
+    
+    # DeFi alerts
+    - match_re:
+        alertname: ^(YieldFarmingPoolImbalance|AuctionProcessingDelayed)$
+      receiver: defi-team
+    
+    # Infrastructure alerts
+    - match:
+        severity: warning
+      receiver: ops-team
+      routes:
+        - match:
+            service: ignite
+          receiver: cache-team
+        - match:
+            service: elasticsearch
+          receiver: search-team
+        - match_re:
+            service: ^(cassandra|janusgraph)$
+          receiver: database-team
+    
+    # SLO violations
+    - match:
+        slo: error-rate
+      receiver: slo-violations-critical
+      repeat_interval: 1h
+    
+    - match:
+        slo: latency
+      receiver: slo-violations-warning
+      repeat_interval: 2h
+    
+    # DAO governance alerts
+    - match_re:
+        alertname: ^DAO.*
+      receiver: governance-team
+
+receivers:
+  - name: 'default'
+    slack_configs:
+      - channel: '#marketplace-alerts'
+        title: 'Marketplace Alert'
+        text: '{{ range .Alerts }}{{ .Annotations.summary }}{{ end }}'
+        send_resolved: true
+  
+  - name: 'pagerduty-critical'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_SERVICE_KEY}'
+        description: '{{ .GroupLabels.alertname }}: {{ .CommonAnnotations.summary }}'
+        details:
+          firing: '{{ .Alerts.Firing | len }}'
+          resolved: '{{ .Alerts.Resolved | len }}'
+          alerts: '{{ range .Alerts }}{{ .Labels.alertname }}: {{ .Annotations.description }}{{ end }}'
+  
+  - name: 'blockchain-team-critical'
+    slack_configs:
+      - channel: '#blockchain-critical'
+        title: '🚨 CRITICAL: Blockchain Service Issue'
+        text: '{{ .CommonAnnotations.summary }}'
+        color: 'danger'
+        actions:
+          - type: button
+            text: 'View Runbook'
+            url: 'https://wiki.company.com/runbooks/blockchain/{{ .GroupLabels.alertname }}'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_BLOCKCHAIN_KEY}'
+  
+  - name: 'marketplace-team-critical'
+    slack_configs:
+      - channel: '#marketplace-critical'
+        title: '🚨 CRITICAL: Marketplace Issue'
+        text: |
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Description:* {{ .CommonAnnotations.description }}
+          *Severity:* {{ .GroupLabels.severity }}
+          *Service:* {{ .GroupLabels.service }}
+        fields:
+          - title: 'Affected Chains'
+            value: '{{ .GroupLabels.chain }}'
+          - title: 'Error Rate'
+            value: '{{ .CommonAnnotations.error_rate }}'
+    email_configs:
+      - to: 'marketplace-oncall@company.com'
+        headers:
+          Subject: 'CRITICAL: {{ .GroupLabels.alertname }}'
+  
+  - name: 'ml-team-critical'
+    slack_configs:
+      - channel: '#ml-platform-critical'
+        title: '🤖 ML Platform Critical Alert'
+        text: '{{ .CommonAnnotations.summary }}'
+    webhook_configs:
+      - url: 'https://ml-platform.company.com/webhooks/alerts'
+        send_resolved: true
+  
+  - name: 'security-team-urgent'
+    slack_configs:
+      - channel: '#security-urgent'
+        title: '🔴 SECURITY ALERT - IMMEDIATE ACTION REQUIRED'
+        text: |
+          *SUSPICIOUS ACTIVITY DETECTED*
+          {{ .CommonAnnotations.description }}
+          
+          *Immediate Actions:*
+          1. Check transaction logs
+          2. Review affected accounts
+          3. Consider emergency pause if needed
+        color: 'danger'
+    pagerduty_configs:
+      - service_key: '${PAGERDUTY_SECURITY_KEY}'
+        severity: 'critical'
+    webhook_configs:
+      - url: 'https://siem.company.com/api/alerts'
+  
+  - name: 'security-team'
+    slack_configs:
+      - channel: '#security-alerts'
+        title: 'Security Alert'
+        text: '{{ .CommonAnnotations.summary }}'
+  
+  - name: 'finance-team'
+    slack_configs:
+      - channel: '#finance-alerts'
+        title: '💰 Financial Alert'
+        text: |
+          *Alert:* {{ .GroupLabels.alertname }}
+          *Description:* {{ .CommonAnnotations.description }}
+          *Impact:* Potential financial impact detected
+        fields:
+          - title: 'Escrow Balance'
+            value: '{{ .CommonLabels.escrow_balance }}'
+          - title: 'Failed Transactions'
+            value: '{{ .CommonLabels.failed_count }}'
+    email_configs:
+      - to: 'finance-team@company.com'
+        headers:
+          Subject: 'Financial Alert: {{ .GroupLabels.alertname }}'
+  
+  - name: 'defi-team'
+    slack_configs:
+      - channel: '#defi-alerts'
+        title: '🏦 DeFi Alert'
+        text: '{{ .CommonAnnotations.summary }}'
+        actions:
+          - type: button
+            text: 'View DeFi Dashboard'
+            url: 'https://grafana.company.com/d/defi-overview'
+  
+  - name: 'ops-team'
+    slack_configs:
+      - channel: '#ops-alerts'
+        title: 'Infrastructure Alert'
+        text: '{{ .CommonAnnotations.summary }}'
+        send_resolved: true
+  
+  - name: 'cache-team'
+    slack_configs:
+      - channel: '#cache-team'
+        title: 'Ignite Cache Alert'
+        text: |
+          Cache performance degradation detected
+          {{ .CommonAnnotations.description }}
+  
+  - name: 'search-team'
+    slack_configs:
+      - channel: '#search-team'
+        title: 'Elasticsearch Alert'
+        text: '{{ .CommonAnnotations.summary }}'
+  
+  - name: 'database-team'
+    slack_configs:
+      - channel: '#database-alerts'
+        title: 'Database Alert'
+        text: |
+          *Service:* {{ .GroupLabels.service }}
+          *Issue:* {{ .CommonAnnotations.description }}
+  
+  - name: 'slo-violations-critical'
+    slack_configs:
+      - channel: '#slo-violations'
+        title: '📊 SLO VIOLATION - CRITICAL'
+        text: |
+          *SLO Breached:* {{ .GroupLabels.slo }}
+          *Service:* {{ .GroupLabels.service }}
+          *Current Value:* {{ .CommonAnnotations.current_value }}
+          *Target:* {{ .CommonAnnotations.target_value }}
+        color: 'danger'
+    email_configs:
+      - to: 'platform-leadership@company.com'
+  
+  - name: 'slo-violations-warning'
+    slack_configs:
+      - channel: '#slo-violations'
+        title: '⚠️ SLO Warning'
+        text: 'SLO {{ .GroupLabels.slo }} approaching threshold'
+  
+  - name: 'governance-team'
+    slack_configs:
+      - channel: '#dao-governance'
+        title: 'DAO Governance Alert'
+        text: '{{ .CommonAnnotations.summary }}'
+    webhook_configs:
+      - url: 'https://dao.company.com/api/alerts'
+
+inhibit_rules:
+  # Inhibit warnings when there are critical alerts for the same service
+  - source_match:
+      severity: 'critical'
+    target_match:
+      severity: 'warning'
+    equal: ['alertname', 'service', 'cluster']
+  
+  # Inhibit all alerts when blockchain bridge is down
+  - source_match:
+      alertname: 'BlockchainConnectionFailure'
+    target_match_re:
+      alertname: '^(NFTMinting|LicensePurchase|RoyaltyDistribution).*'
+    equal: ['cluster']
+  
+  # Inhibit cache alerts when Ignite cluster is being restarted
+  - source_match:
+      alertname: 'IgniteClusterRestarting'
+    target_match:
+      alertname: 'IgniteCacheHitRateLow'
+    equal: ['cluster']
+
+templates:
+  - '/etc/alertmanager/templates/*.tmpl' 

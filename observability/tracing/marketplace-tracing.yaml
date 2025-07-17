@@ -1,0 +1,193 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  
+  # Prometheus receiver for metrics
+  prometheus:
+    config:
+      scrape_configs:
+        - job_name: 'marketplace-services'
+          scrape_interval: 15s
+          static_configs:
+            - targets:
+              - blockchain-event-bridge:8001
+              - digital-asset-service:8002
+              - mlops-service:8003
+              - graph-intelligence-service:8004
+              - search-service:8005
+              - data-governance-service:8006
+              - federated-learning-service:8007
+              - realtime-analytics-service:8008
+              - compute-marketplace:8009
+              - dataset-marketplace:8010
+
+processors:
+  # Add marketplace-specific attributes
+  attributes:
+    actions:
+      - key: service.namespace
+        value: marketplace
+        action: insert
+      - key: deployment.environment
+        from_attribute: DEPLOYMENT_ENV
+        action: insert
+  
+  # Batch processor for efficiency
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+  
+  # Memory limiter to prevent OOM
+  memory_limiter:
+    check_interval: 1s
+    limit_mib: 512
+    spike_limit_mib: 128
+  
+  # Span processor for marketplace operations
+  span:
+    name:
+      from_attributes: ["http.method", "http.route"]
+      separator: " "
+  
+  # Tail sampling for important traces
+  tail_sampling:
+    decision_wait: 10s
+    num_traces: 100000
+    expected_new_traces_per_sec: 1000
+    policies:
+      # Always sample errors
+      - name: errors
+        type: status_code
+        status_code: {status_codes: [ERROR]}
+      
+      # Sample high-value transactions
+      - name: high_value_transactions
+        type: string_attribute
+        string_attribute:
+          key: transaction.value_usd
+          values: ["1000", "5000", "10000"]
+          enabled_regex_matching: false
+          invert_match: false
+      
+      # Sample slow operations
+      - name: slow_operations
+        type: latency
+        latency:
+          threshold_ms: 5000
+      
+      # Sample DeFi operations
+      - name: defi_operations
+        type: string_attribute
+        string_attribute:
+          key: operation.type
+          values: ["lending", "staking", "auction", "fractional"]
+      
+      # Sample blockchain operations by chain
+      - name: multi_chain_operations
+        type: string_attribute
+        string_attribute:
+          key: blockchain.chain
+          values: ["ethereum", "polygon", "solana", "near", "avalanche"]
+      
+      # Default sampling
+      - name: default
+        type: probabilistic
+        probabilistic:
+          sampling_percentage: 10
+
+  # Resource detection
+  resource:
+    attributes:
+      - key: service.instance.id
+        from_attribute: host.name
+        action: insert
+      - key: cloud.provider
+        value: "aws"
+        action: insert
+      - key: cloud.region
+        from_attribute: AWS_REGION
+        action: insert
+
+  # Filter processor for sensitive data
+  filter:
+    traces:
+      span:
+        - 'attributes["private_key"] != nil'
+        - 'attributes["seed_phrase"] != nil'
+        - 'attributes["api_secret"] != nil'
+
+exporters:
+  # Jaeger exporter for traces
+  jaeger:
+    endpoint: jaeger-collector:14250
+    tls:
+      insecure: true
+  
+  # Prometheus exporter for metrics
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    namespace: marketplace
+    const_labels:
+      environment: production
+  
+  # Elasticsearch exporter for logs
+  elasticsearch:
+    endpoints: [http://elasticsearch:9200]
+    index: marketplace-traces
+    pipeline: marketplace_pipeline
+    retry:
+      enabled: true
+      max_requests: 5
+      initial_interval: 100ms
+      max_interval: 30s
+  
+  # Debug exporter for troubleshooting
+  logging:
+    loglevel: debug
+    sampling_initial: 5
+    sampling_thereafter: 200
+
+extensions:
+  # Health check
+  health_check:
+    endpoint: 0.0.0.0:13133
+  
+  # Performance profiler
+  pprof:
+    endpoint: 0.0.0.0:1777
+  
+  # zPages for debugging
+  zpages:
+    endpoint: 0.0.0.0:55679
+
+service:
+  extensions: [health_check, pprof, zpages]
+  
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes, resource, filter, span, tail_sampling, batch]
+      exporters: [jaeger, elasticsearch]
+    
+    metrics:
+      receivers: [prometheus, otlp]
+      processors: [memory_limiter, attributes, resource, batch]
+      exporters: [prometheus]
+    
+    logs:
+      receivers: [otlp]
+      processors: [memory_limiter, attributes, resource, filter, batch]
+      exporters: [elasticsearch]
+
+  telemetry:
+    logs:
+      level: info
+      initial_fields:
+        service: otel-collector
+    metrics:
+      level: detailed
+      address: 0.0.0.0:8888 

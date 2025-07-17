@@ -1,604 +1,665 @@
 import React, { useState, useEffect } from 'react';
-import { Card, Row, Col, Tag, Button, Select, InputNumber, Slider, Empty, Spin, Modal, Form, Input, message, Statistic, Space, Tooltip, Badge } from 'antd';
-import { ShoppingCartOutlined, DollarOutlined, FileProtectOutlined, ClockCircleOutlined, SafetyOutlined, EyeOutlined, DownloadOutlined, LockOutlined, WalletOutlined } from '@ant-design/icons';
-import api from '../../api/api';
+import { useWeb3 } from '../../hooks/useWeb3';
+import { Card, CardContent, CardHeader, CardTitle } from '../../components/ui/card';
+import { Button } from '../../components/ui/button';
+import { Tabs, TabsContent, TabsList, TabsTrigger } from '../../components/ui/tabs';
+import { Badge } from '../../components/ui/badge';
+import { Input } from '../../components/ui/input';
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '../../components/ui/select';
+import { Alert, AlertDescription } from '../../components/ui/alert';
+import { Loader2, ShoppingCart, Package, Gavel, Users, Coins, BarChart3, Vote } from 'lucide-react';
+import axios from 'axios';
 import './Marketplace.css';
-import Web3 from 'web3';
-import { ethers } from 'ethers';
 
-const { Option } = Select;
-const { Meta } = Card;
+const BLOCKCHAIN_SERVICE_URL = process.env.REACT_APP_BLOCKCHAIN_SERVICE_URL || 'http://localhost:8001';
+const MLOPS_SERVICE_URL = process.env.REACT_APP_MLOPS_SERVICE_URL || 'http://localhost:8002';
+const DATASET_SERVICE_URL = process.env.REACT_APP_DATASET_SERVICE_URL || 'http://localhost:8003';
+const COMPUTE_SERVICE_URL = process.env.REACT_APP_COMPUTE_SERVICE_URL || 'http://localhost:8004';
 
-const SUPPORTED_CHAINS = {
-  ethereum: { name: 'Ethereum', chainId: '0x1' },
-  polygon: { name: 'Polygon', chainId: '0x89' },
-  avalanche: { name: 'Avalanche', chainId: '0xa86a' },
-  arbitrum: { name: 'Arbitrum', chainId: '0xa4b1' }
-};
-
-/**
- * Marketplace Component
- * 
- * The main marketplace interface for PlatformQ's decentralized asset trading.
- * This component provides a comprehensive UI for browsing, filtering, purchasing,
- * and licensing digital assets with blockchain-based ownership and royalties.
- * 
- * Key Features:
- * - Asset browsing with real-time filtering
- * - Purchase and license workflows
- * - Asset listing with customizable royalty settings
- * - Price filtering and sorting
- * - Responsive grid layout
- * - Multi-chain support with wallet integration
- * 
- * State Management:
- * - assets: Array of marketplace assets fetched from backend
- * - filters: Object containing all filter criteria
- * - selectedAsset: Currently selected asset for purchase/license
- * - Modal visibility states for different workflows
- * - walletAddress: Connected wallet address
- * - selectedChain: Currently selected blockchain
- * 
- * @component
- */
 const Marketplace = () => {
-  const [assets, setAssets] = useState([]);
-  const [loading, setLoading] = useState(true);
-  const [walletAddress, setWalletAddress] = useState(null);
-  const [selectedChain, setSelectedChain] = useState('ethereum');
-  const [web3, setWeb3] = useState(null);
-  const [filters, setFilters] = useState({
-    forSale: true,
-    licensable: null,
-    assetType: null,
-    minPrice: null,
-    maxPrice: null,
-    sortBy: 'created_at',
-    sortOrder: 'desc'
+  const { account, chainId, connectWallet, switchChain } = useWeb3();
+  const [activeTab, setActiveTab] = useState('models');
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState('');
+  const [success, setSuccess] = useState('');
+  
+  // Marketplace state
+  const [models, setModels] = useState([]);
+  const [datasets, setDatasets] = useState([]);
+  const [computeOffers, setComputeOffers] = useState([]);
+  const [auctions, setAuctions] = useState([]);
+  const [bundles, setBundles] = useState([]);
+  const [fractionalAssets, setFractionalAssets] = useState([]);
+  const [loanOffers, setLoanOffers] = useState([]);
+  const [yieldPools, setYieldPools] = useState([]);
+  const [daoProposals, setDaoProposals] = useState([]);
+  
+  // Form state
+  const [auctionForm, setAuctionForm] = useState({
+    tokenId: '',
+    auctionType: 'english',
+    startPrice: '',
+    endPrice: '',
+    duration: '86400', // 1 day in seconds
+    minBidIncrement: '0.01',
+    priceDecrement: '0.001'
   });
-  const [selectedAsset, setSelectedAsset] = useState(null);
-  const [purchaseModalVisible, setPurchaseModalVisible] = useState(false);
-  const [licenseModalVisible, setLicenseModalVisible] = useState(false);
-  const [listingModalVisible, setListingModalVisible] = useState(false);
-  const [purchaseForm] = Form.useForm();
-  const [licenseForm] = Form.useForm();
-  const [listingForm] = Form.useForm();
+  
+  const [bundleForm, setBundleForm] = useState({
+    name: '',
+    description: '',
+    assetIds: [],
+    price: '',
+    maxSupply: '0'
+  });
+  
+  const [fractionalizeForm, setFractionalizeForm] = useState({
+    tokenId: '',
+    totalShares: '10000',
+    sharePrice: '0.001',
+    reservePrice: '1'
+  });
 
   useEffect(() => {
-    fetchMarketplaceAssets();
-    initWeb3();
-  }, [filters]);
-
-  const initWeb3 = async () => {
-    if (window.ethereum) {
-      const web3Instance = new Web3(window.ethereum);
-      setWeb3(web3Instance);
+    if (account) {
+      loadMarketplaceData();
     }
-  };
+  }, [account, activeTab]);
 
-  const connectWallet = async () => {
-    if (!window.ethereum) {
-      message.error('Please install MetaMask!');
-      return;
-    }
-
+  const loadMarketplaceData = async () => {
+    setLoading(true);
+    setError('');
+    
     try {
-      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
-      setWalletAddress(accounts[0]);
-      message.success('Wallet connected successfully!');
-    } catch (error) {
-      console.error('Failed to connect wallet:', error);
-      message.error('Failed to connect wallet');
-    }
-  };
-
-  const switchChain = async (chainKey) => {
-    if (!window.ethereum) return;
-
-    const chain = SUPPORTED_CHAINS[chainKey];
-    try {
-      await window.ethereum.request({
-        method: 'wallet_switchEthereumChain',
-        params: [{ chainId: chain.chainId }],
-      });
-      setSelectedChain(chainKey);
-      message.success(`Switched to ${chain.name}`);
-    } catch (error) {
-      console.error('Failed to switch chain:', error);
-      message.error('Failed to switch chain');
-    }
-  };
-
-  /**
-   * Fetches marketplace assets from the backend with applied filters
-   * 
-   * This function is the core data fetching mechanism for the marketplace.
-   * It constructs a query string from the current filter state and retrieves
-   * matching assets from the digital-asset-service.
-   * 
-   * Filter Parameters:
-   * - forSale: Boolean to show only assets for sale
-   * - licensable: Boolean to show only licensable assets
-   * - assetType: Specific asset type filter (3D_MODEL, SIMULATION, etc.)
-   * - minPrice/maxPrice: Price range filters
-   * - sortBy: Field to sort by (created_at, sale_price, asset_name)
-   * - sortOrder: Sort direction (asc/desc)
-   * 
-   * Error Handling:
-   * - Network errors display user-friendly message
-   * - Console logging for debugging
-   * - Loading state management for UI feedback
-   * 
-   * @async
-   * @returns {Promise<void>} Updates component state with fetched assets
-   */
-  const fetchMarketplaceAssets = async () => {
-    try {
-      setLoading(true);
-      
-      // Build query parameters from filter state
-      const params = new URLSearchParams();
-      Object.entries(filters).forEach(([key, value]) => {
-        if (value !== null) {
-          params.append(key, value);
-        }
-      });
-      
-      // Fetch assets from backend
-      const response = await api.get(`/digital-asset-service/api/v1/marketplace/assets?${params}`);
-      
-      // Update state with fetched assets
-      setAssets(response.data.assets || []);
-    } catch (error) {
-      console.error('Failed to fetch marketplace assets:', error);
-      message.error('Failed to load marketplace assets');
+      switch (activeTab) {
+        case 'models':
+          await loadModels();
+          break;
+        case 'datasets':
+          await loadDatasets();
+          break;
+        case 'compute':
+          await loadComputeOffers();
+          break;
+        case 'auctions':
+          await loadAuctions();
+          break;
+        case 'bundles':
+          await loadBundles();
+          break;
+        case 'fractional':
+          await loadFractionalAssets();
+          break;
+        case 'defi':
+          await loadDeFiData();
+          break;
+        case 'dao':
+          await loadDAOData();
+          break;
+      }
+    } catch (err) {
+      setError(err.message || 'Failed to load marketplace data');
     } finally {
       setLoading(false);
     }
   };
 
-  const handlePurchaseAsset = async (values) => {
-    try {
-      if (!walletAddress) {
-        message.error('Please connect your wallet first');
-        return;
-      }
-      
-      const response = await api.post('/blockchain-event-bridge/api/v1/marketplace/purchase-license', {
-        chain_id: selectedChain,
-        asset_id: selectedAsset.cid,
-        offer_index: 0,
-        license_type: 0  // Perpetual
-      });
-      message.success('Asset purchased successfully! Tx: ' + response.data.tx_hash);
-      setPurchaseModalVisible(false);
-      purchaseForm.resetFields();
-      fetchMarketplaceAssets();
-    } catch (error) {
-      console.error('Purchase failed:', error);
-      message.error('Failed to complete purchase');
-    }
+  const loadModels = async () => {
+    const response = await axios.get(`${MLOPS_SERVICE_URL}/api/v1/marketplace/models`);
+    setModels(response.data.models || []);
   };
 
-  const handlePurchaseLicense = async (values) => {
-    try {
-      if (!walletAddress) {
-        message.error('Please connect your wallet first');
-        return;
-      }
-      
-      const response = await api.post('/blockchain-event-bridge/api/v1/marketplace/purchase-license', {
-        chain_id: selectedChain,
-        asset_id: selectedAsset.cid,
-        offer_index: 0,
-        license_type: values.licenseType || 1
-      });
-      message.success('License purchased successfully! Tx: ' + response.data.tx_hash);
-      setLicenseModalVisible(false);
-      licenseForm.resetFields();
-    } catch (error) {
-      console.error('License purchase failed:', error);
-      message.error('Failed to purchase license');
-    }
+  const loadDatasets = async () => {
+    const response = await axios.get(`${DATASET_SERVICE_URL}/api/v1/datasets/search`);
+    setDatasets(response.data || []);
   };
 
-  const handleListAsset = async (values) => {
-    try {
-      const response = await api.post(`/digital-asset-service/api/v1/digital-assets/${values.cid}/list-for-sale`, null, {
-        params: {
-          price: values.price,
-          currency: values.currency || 'ETH',
-          royalty_percentage: values.royaltyPercentage
-        }
-      });
-      
-      message.success('Asset listed successfully!');
-      setListingModalVisible(false);
-      listingForm.resetFields();
-      fetchMarketplaceAssets();
-    } catch (error) {
-      console.error('Listing failed:', error);
-      message.error('Failed to list asset');
-    }
+  const loadComputeOffers = async () => {
+    const response = await axios.get(`${COMPUTE_SERVICE_URL}/api/v1/offerings/search`);
+    setComputeOffers(response.data || []);
   };
 
-  const formatPrice = (price, currency = 'ETH') => {
-    if (!price) return 'Free';
-    return `${price} ${currency}`;
+  const loadAuctions = async () => {
+    const response = await axios.get(`${BLOCKCHAIN_SERVICE_URL}/api/v1/marketplace/auctions/active`);
+    setAuctions(response.data.auctions || []);
   };
 
-  const getAssetTypeColor = (type) => {
-    const colors = {
-      '3D_MODEL': 'blue',
-      'SIMULATION': 'green',
-      'DATASET': 'purple',
-      'DOCUMENT': 'orange',
-      'CODE': 'cyan',
-      'IMAGE': 'magenta'
-    };
-    return colors[type] || 'default';
+  const loadBundles = async () => {
+    const response = await axios.get(`${BLOCKCHAIN_SERVICE_URL}/api/v1/marketplace/bundles`);
+    setBundles(response.data.bundles || []);
   };
 
-  const renderAssetCard = (asset) => {
-    const isLicensable = asset.is_licensable && asset.license_terms;
-    const licensePrice = isLicensable ? asset.license_terms.price : null;
+  const loadFractionalAssets = async () => {
+    const response = await axios.get(`${BLOCKCHAIN_SERVICE_URL}/api/v1/marketplace/fractional`);
+    setFractionalAssets(response.data.assets || []);
+  };
+
+  const loadDeFiData = async () => {
+    const [loansRes, yieldsRes] = await Promise.all([
+      axios.get(`${BLOCKCHAIN_SERVICE_URL}/api/v1/defi/lending/offers`),
+      axios.get(`${BLOCKCHAIN_SERVICE_URL}/api/v1/defi/yield-farming/pools`)
+    ]);
+    setLoanOffers(loansRes.data.offers || []);
+    setYieldPools(yieldsRes.data.pools || []);
+  };
+
+  const loadDAOData = async () => {
+    const response = await axios.get(`${BLOCKCHAIN_SERVICE_URL}/api/v1/dao/proposals/active`);
+    setDaoProposals(response.data.proposals || []);
+  };
+
+  const createAuction = async () => {
+    setLoading(true);
+    setError('');
     
-    return (
-      <Card
-        key={asset.asset_id}
-        hoverable
-        className="asset-card"
-        cover={
-          <div className="asset-cover">
-            <FileProtectOutlined style={{ fontSize: 48, color: '#1890ff' }} />
-            <Tag color={getAssetTypeColor(asset.asset_type)} className="asset-type-tag">
-              {asset.asset_type}
-            </Tag>
-          </div>
+    try {
+      await axios.post(`${BLOCKCHAIN_SERVICE_URL}/api/v1/defi/auctions/create`, {
+        chain: getChainName(chainId),
+        ...auctionForm
+      });
+      
+      setSuccess('Auction created successfully!');
+      await loadAuctions();
+      setAuctionForm({
+        tokenId: '',
+        auctionType: 'english',
+        startPrice: '',
+        endPrice: '',
+        duration: '86400',
+        minBidIncrement: '0.01',
+        priceDecrement: '0.001'
+      });
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to create auction');
+    } finally {
+      setLoading(false);
         }
-        actions={[
-          asset.is_for_sale && (
-            <Tooltip title="Purchase Asset">
-              <Button 
-                type="link" 
-                icon={<ShoppingCartOutlined />}
-                onClick={() => {
-                  setSelectedAsset(asset);
-                  setPurchaseModalVisible(true);
-                }}
-              >
-                Buy
-              </Button>
-            </Tooltip>
-          ),
-          isLicensable && (
-            <Tooltip title="Purchase License">
-              <Button 
-                type="link" 
-                icon={<LockOutlined />}
-                onClick={() => {
-                  setSelectedAsset(asset);
-                  setLicenseModalVisible(true);
-                }}
-              >
-                License
-              </Button>
-            </Tooltip>
-          ),
-          <Tooltip title="View Details">
-            <Button type="link" icon={<EyeOutlined />}>
-              View
-            </Button>
-          </Tooltip>
-        ].filter(Boolean)}
-      >
-        <Meta
-          title={asset.asset_name}
-          description={
-            <Space direction="vertical" size="small" style={{ width: '100%' }}>
-              <div>
-                {asset.is_for_sale && (
-                  <Tag color="green" icon={<DollarOutlined />}>
-                    For Sale: {formatPrice(asset.sale_price)}
-                  </Tag>
-                )}
-                {isLicensable && (
-                  <Tag color="blue" icon={<ClockCircleOutlined />}>
-                    License: {formatPrice(licensePrice)}/{asset.license_terms.duration}s
-                  </Tag>
-                )}
-              </div>
-              {asset.royalty_percentage > 0 && (
-                <Tag color="purple" icon={<SafetyOutlined />}>
-                  {(asset.royalty_percentage / 100).toFixed(1)}% Royalty
-                </Tag>
-              )}
-              <div className="asset-meta">
-                Created: {new Date(asset.created_at).toLocaleDateString()}
-              </div>
-            </Space>
-          }
-        />
-      </Card>
-    );
   };
 
-  return (
-    <div className="marketplace">
-      <Card className="marketplace-header">
-        <Row justify="space-between" align="middle">
-          <Col>
-            <h1>Digital Asset Marketplace</h1>
-            <p>Buy, sell, and license digital assets with automatic royalty distribution</p>
-          </Col>
-          <Col>
-            <Space>
-              <Select
-                value={selectedChain}
-                onChange={switchChain}
-                style={{ width: 150 }}
-              >
-                {Object.entries(SUPPORTED_CHAINS).map(([key, chain]) => (
-                  <Option key={key} value={key}>{chain.name}</Option>
-                ))}
-              </Select>
-              {walletAddress ? (
-                <Badge status="success" text={`${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`} />
-              ) : (
-                <Button icon={<WalletOutlined />} onClick={connectWallet}>
-                  Connect Wallet
-                </Button>
-              )}
-            </Space>
-          </Col>
-        </Row>
-        
-        <Row gutter={[16, 16]} className="marketplace-filters">
-          <Col xs={24} sm={12} md={6}>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="Asset Type"
-              allowClear
-              onChange={(value) => setFilters({ ...filters, assetType: value })}
-            >
-              <Option value="3D_MODEL">3D Model</Option>
-              <Option value="SIMULATION">Simulation</Option>
-              <Option value="DATASET">Dataset</Option>
-              <Option value="DOCUMENT">Document</Option>
-              <Option value="CODE">Code</Option>
-              <Option value="IMAGE">Image</Option>
-            </Select>
-          </Col>
-          
-          <Col xs={24} sm={12} md={6}>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="Listing Type"
-              value={filters.forSale}
-              onChange={(value) => setFilters({ ...filters, forSale: value, licensable: !value })}
-            >
-              <Option value={true}>For Sale</Option>
-              <Option value={false}>For License</Option>
-              <Option value={null}>All</Option>
-            </Select>
-          </Col>
-          
-          <Col xs={24} sm={12} md={6}>
-            <InputNumber
-              style={{ width: '100%' }}
-              placeholder="Max Price (ETH)"
-              min={0}
-              step={0.01}
-              onChange={(value) => setFilters({ ...filters, maxPrice: value })}
-            />
-          </Col>
-          
-          <Col xs={24} sm={12} md={6}>
-            <Select
-              style={{ width: '100%' }}
-              placeholder="Sort By"
-              value={filters.sortBy}
-              onChange={(value) => setFilters({ ...filters, sortBy: value })}
-            >
-              <Option value="created_at">Date Listed</Option>
-              <Option value="sale_price">Price</Option>
-              <Option value="asset_name">Name</Option>
-            </Select>
-          </Col>
-        </Row>
-        
-        <div style={{ marginTop: 16 }}>
-          <Button 
-            type="primary" 
-            icon={<DollarOutlined />}
-            onClick={() => setListingModalVisible(true)}
-          >
-            List Your Asset
-          </Button>
-        </div>
-      </Card>
+  const bidOnAuction = async (auctionId, bidAmount) => {
+    setLoading(true);
+    setError('');
+    
+    try {
+      await axios.post(`${BLOCKCHAIN_SERVICE_URL}/api/v1/defi/auctions/${auctionId}/bid`, {
+        chain: getChainName(chainId),
+        bid_amount: bidAmount
+      });
+      
+      setSuccess('Bid placed successfully!');
+      await loadAuctions();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to place bid');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      {loading ? (
-        <div className="marketplace-loading">
-          <Spin size="large" />
-        </div>
-      ) : assets.length > 0 ? (
-        <Row gutter={[16, 16]} className="marketplace-grid">
-          {assets.map(renderAssetCard)}
-        </Row>
-      ) : (
-        <Empty
-          description="No assets found"
-          image={Empty.PRESENTED_IMAGE_SIMPLE}
-          style={{ marginTop: 48 }}
-        >
-          <Button type="primary" onClick={() => setListingModalVisible(true)}>
-            Be the first to list!
-          </Button>
-        </Empty>
-      )}
+  const createBundle = async () => {
+    setLoading(true);
+    setError('');
+    
+    try {
+      await axios.post(`${BLOCKCHAIN_SERVICE_URL}/api/v1/marketplace/bundles/create`, {
+        chain: getChainName(chainId),
+        ...bundleForm
+      });
+      
+      setSuccess('Bundle created successfully!');
+      await loadBundles();
+      setBundleForm({
+        name: '',
+        description: '',
+        assetIds: [],
+        price: '',
+        maxSupply: '0'
+      });
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to create bundle');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      {/* Purchase Modal */}
-      <Modal
-        title="Purchase Asset"
-        visible={purchaseModalVisible}
-        onCancel={() => {
-          setPurchaseModalVisible(false);
-          purchaseForm.resetFields();
-        }}
-        footer={null}
-      >
-        {selectedAsset && (
-          <Form
-            form={purchaseForm}
-            layout="vertical"
-            onFinish={handlePurchaseAsset}
-            initialValues={{ assetId: selectedAsset.asset_id }}
-          >
-            <Card className="asset-preview">
-              <Statistic
-                title={selectedAsset.asset_name}
-                value={selectedAsset.sale_price}
-                suffix="ETH"
-                prefix={<DollarOutlined />}
-              />
-              <p>Type: {selectedAsset.asset_type}</p>
-              {selectedAsset.royalty_percentage > 0 && (
-                <p>Royalty: {(selectedAsset.royalty_percentage / 100).toFixed(1)}%</p>
-              )}
-            </Card>
-            
-            <Form.Item
-              name="walletAddress"
-              label="Your Wallet Address"
-              rules={[
-                { required: true, message: 'Please enter your wallet address' },
-                { pattern: /^0x[a-fA-F0-9]{40}$/, message: 'Invalid Ethereum address' }
-              ]}
-            >
-              <Input placeholder="0x..." />
-            </Form.Item>
-            
-            <Form.Item>
-              <Button type="primary" htmlType="submit" block>
-                Complete Purchase
-              </Button>
-            </Form.Item>
-          </Form>
-        )}
-      </Modal>
+  const fractionalizeAsset = async () => {
+    setLoading(true);
+    setError('');
+    
+    try {
+      await axios.post(`${BLOCKCHAIN_SERVICE_URL}/api/v1/marketplace/fractional/create`, {
+        chain: getChainName(chainId),
+        ...fractionalizeForm
+      });
+      
+      setSuccess('Asset fractionalized successfully!');
+      await loadFractionalAssets();
+      setFractionalizeForm({
+        tokenId: '',
+        totalShares: '10000',
+        sharePrice: '0.001',
+        reservePrice: '1'
+      });
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to fractionalize asset');
+    } finally {
+      setLoading(false);
+    }
+  };
 
-      {/* License Modal */}
-      <Modal
-        title="Purchase License"
-        visible={licenseModalVisible}
-        onCancel={() => {
-          setLicenseModalVisible(false);
-          licenseForm.resetFields();
-        }}
-        footer={null}
-      >
-        {selectedAsset && selectedAsset.license_terms && (
-          <Form
-            form={licenseForm}
-            layout="vertical"
-            onFinish={handlePurchaseLicense}
-          >
-            <Card className="license-preview">
-              <h3>{selectedAsset.asset_name}</h3>
-              <Space direction="vertical" style={{ width: '100%' }}>
-                <Statistic
-                  title="License Price"
-                  value={selectedAsset.license_terms.price}
-                  suffix="ETH"
-                  prefix={<DollarOutlined />}
-                />
-                <div>
-                  <strong>Duration:</strong> {selectedAsset.license_terms.duration} seconds
-                </div>
-                <div>
-                  <strong>Type:</strong> {selectedAsset.license_terms.type}
-                </div>
-                {selectedAsset.license_terms.max_usage > 0 && (
-                  <div>
-                    <strong>Max Usage:</strong> {selectedAsset.license_terms.max_usage} times
-                  </div>
-                )}
-              </Space>
-            </Card>
-            
-            <Form.Item>
-              <Button type="primary" htmlType="submit" block>
+  const stakeInPool = async (poolId, amount) => {
+    setLoading(true);
+    setError('');
+    
+    try {
+      await axios.post(`${BLOCKCHAIN_SERVICE_URL}/api/v1/defi/yield-farming/stake`, {
+        chain: getChainName(chainId),
+        pool_id: poolId,
+        amount: amount
+      });
+      
+      setSuccess('Tokens staked successfully!');
+      await loadDeFiData();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to stake tokens');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const voteOnProposal = async (proposalId, voteType) => {
+    setLoading(true);
+    setError('');
+    
+    try {
+      await axios.post(`${BLOCKCHAIN_SERVICE_URL}/api/v1/dao/proposals/${proposalId}/vote`, {
+        chain: getChainName(chainId),
+        vote_type: voteType
+      });
+      
+      setSuccess('Vote cast successfully!');
+      await loadDAOData();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to cast vote');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const getChainName = (chainId) => {
+    const chainMap = {
+      1: 'ethereum',
+      137: 'polygon',
+      43114: 'avalanche',
+      56: 'bsc',
+      250: 'fantom'
+    };
+    return chainMap[chainId] || 'ethereum';
+  };
+
+  const renderModelsTab = () => (
+    <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+      {models.map((model) => (
+        <Card key={model.id} className="hover:shadow-lg transition-shadow">
+          <CardHeader>
+            <CardTitle className="flex justify-between items-center">
+              <span>{model.name}</span>
+              <Badge>{model.category}</Badge>
+            </CardTitle>
+          </CardHeader>
+          <CardContent>
+            <p className="text-sm text-gray-600 mb-4">{model.description}</p>
+            <div className="space-y-2">
+              <div className="flex justify-between">
+                <span className="text-sm">Accuracy:</span>
+                <span className="font-semibold">{(model.metrics?.accuracy * 100).toFixed(2)}%</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sm">Version:</span>
+                <span className="font-semibold">{model.version}</span>
+              </div>
+              <div className="flex justify-between">
+                <span className="text-sm">Price:</span>
+                <span className="font-semibold">{model.price} ETH</span>
+              </div>
+          </div>
+            <div className="mt-4 space-y-2">
+              <Button className="w-full" size="sm">
                 Purchase License
               </Button>
-            </Form.Item>
-          </Form>
-        )}
-      </Modal>
+              <Button className="w-full" variant="outline" size="sm">
+                View Performance
+              </Button>
+              </div>
+          </CardContent>
+        </Card>
+      ))}
+              </div>
+  );
 
-      {/* Listing Modal */}
-      <Modal
-        title="List Asset for Sale"
-        visible={listingModalVisible}
-        onCancel={() => {
-          setListingModalVisible(false);
-          listingForm.resetFields();
-        }}
-        footer={null}
-      >
-        <Form
-          form={listingForm}
-          layout="vertical"
-          onFinish={handleListAsset}
-        >
-          <Form.Item
-            name="cid"
-            label="Asset CID"
-            rules={[{ required: true, message: 'Please enter asset CID' }]}
-          >
-            <Input placeholder="Enter your asset CID" />
-          </Form.Item>
-          
-          <Form.Item
-            name="price"
-            label="Sale Price"
-            rules={[{ required: true, message: 'Please enter price' }]}
-          >
-            <InputNumber
-              style={{ width: '100%' }}
-              min={0}
-              step={0.001}
-              placeholder="0.00"
-              suffix="ETH"
+  const renderAuctionsTab = () => (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle>Create Auction</CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <Input
+              placeholder="Token ID"
+              value={auctionForm.tokenId}
+              onChange={(e) => setAuctionForm({...auctionForm, tokenId: e.target.value})}
             />
-          </Form.Item>
-          
-          <Form.Item
-            name="royaltyPercentage"
-            label="Royalty Percentage"
-            tooltip="Percentage of future sales you'll receive"
-          >
-            <Slider
-              marks={{
-                0: '0%',
-                250: '2.5%',
-                500: '5%',
-                1000: '10%',
-                2500: '25%',
-                5000: '50%'
-              }}
-              max={5000}
-              defaultValue={250}
+            <Select
+              value={auctionForm.auctionType}
+              onValueChange={(value) => setAuctionForm({...auctionForm, auctionType: value})}
+            >
+              <SelectTrigger>
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent>
+                <SelectItem value="english">English Auction</SelectItem>
+                <SelectItem value="dutch">Dutch Auction</SelectItem>
+              </SelectContent>
+            </Select>
+            <Input
+              placeholder="Start Price (ETH)"
+              value={auctionForm.startPrice}
+              onChange={(e) => setAuctionForm({...auctionForm, startPrice: e.target.value})}
             />
-          </Form.Item>
+            {auctionForm.auctionType === 'dutch' && (
+              <Input
+                placeholder="End Price (ETH)"
+                value={auctionForm.endPrice}
+                onChange={(e) => setAuctionForm({...auctionForm, endPrice: e.target.value})}
+              />
+            )}
+          </div>
+          <Button 
+            className="mt-4" 
+            onClick={createAuction}
+            disabled={loading || !auctionForm.tokenId || !auctionForm.startPrice}
+          >
+            {loading ? <Loader2 className="animate-spin" /> : 'Create Auction'}
+          </Button>
+        </CardContent>
+      </Card>
+
+      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        {auctions.map((auction) => (
+          <Card key={auction.id} className="hover:shadow-lg transition-shadow">
+            <CardHeader>
+              <CardTitle className="flex justify-between items-center">
+                <span>Token #{auction.tokenId}</span>
+                <Badge variant={auction.type === 'english' ? 'default' : 'secondary'}>
+                  {auction.type}
+                </Badge>
+              </CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-2">
+                <div className="flex justify-between">
+                  <span className="text-sm">Current Price:</span>
+                  <span className="font-semibold">{auction.currentPrice} ETH</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-sm">Ends In:</span>
+                  <span className="font-semibold">{auction.timeRemaining}</span>
+                </div>
+                {auction.type === 'english' && (
+                  <div className="flex justify-between">
+                    <span className="text-sm">Highest Bidder:</span>
+                    <span className="font-semibold text-xs">
+                      {auction.highestBidder?.slice(0, 6)}...{auction.highestBidder?.slice(-4)}
+                    </span>
+        </div>
+                )}
+              </div>
+              <Button 
+                className="w-full mt-4" 
+                size="sm"
+                onClick={() => {
+                  if (auction.type === 'english') {
+                    const bidAmount = prompt('Enter bid amount (ETH):');
+                    if (bidAmount) bidOnAuction(auction.id, bidAmount);
+                  } else {
+                    bidOnAuction(auction.id, auction.currentPrice);
+                  }
+                }}
+              >
+                {auction.type === 'english' ? 'Place Bid' : 'Buy Now'}
+              </Button>
+            </CardContent>
+          </Card>
+        ))}
+      </div>
+    </div>
+  );
+
+  const renderDeFiTab = () => (
+    <div className="space-y-6">
+                <div>
+        <h3 className="text-lg font-semibold mb-4">Yield Farming Pools</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {yieldPools.map((pool) => (
+            <Card key={pool.id}>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <Coins className="h-5 w-5" />
+                  {pool.stakingToken} Pool
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-sm">APY:</span>
+                    <span className="font-semibold text-green-600">{pool.apy}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm">Total Staked:</span>
+                    <span className="font-semibold">${pool.totalStaked.toLocaleString()}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm">Lock Period:</span>
+                    <span className="font-semibold">{pool.lockPeriod} days</span>
+                  </div>
+                </div>
+                <Button 
+                  className="w-full mt-4" 
+                  size="sm"
+                  onClick={() => {
+                    const amount = prompt('Enter stake amount:');
+                    if (amount) stakeInPool(pool.id, amount);
+                  }}
+                >
+                  Stake Tokens
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+
+                <div>
+        <h3 className="text-lg font-semibold mb-4">NFT Lending</h3>
+        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+          {loanOffers.map((offer) => (
+            <Card key={offer.id}>
+              <CardHeader>
+                <CardTitle>Loan Offer #{offer.id}</CardTitle>
+              </CardHeader>
+              <CardContent>
+                <div className="space-y-2">
+                  <div className="flex justify-between">
+                    <span className="text-sm">Max Loan:</span>
+                    <span className="font-semibold">{offer.maxLoanAmount} USDC</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm">Interest Rate:</span>
+                    <span className="font-semibold">{offer.interestRate}% APR</span>
+                </div>
+                  <div className="flex justify-between">
+                    <span className="text-sm">Duration:</span>
+                    <span className="font-semibold">{offer.minDuration}-{offer.maxDuration} days</span>
+                  </div>
+                </div>
+                <Button className="w-full mt-4" size="sm">
+                  Borrow Against NFT
+                </Button>
+              </CardContent>
+            </Card>
+          ))}
+        </div>
+      </div>
+    </div>
+  );
+
+  const renderDAOTab = () => (
+    <div className="space-y-6">
+      <Card>
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2">
+            <Vote className="h-5 w-5" />
+            Active Proposals
+          </CardTitle>
+        </CardHeader>
+        <CardContent>
+          <div className="space-y-4">
+            {daoProposals.map((proposal) => (
+              <div key={proposal.id} className="border rounded-lg p-4">
+                <div className="flex justify-between items-start mb-2">
+                  <h4 className="font-semibold">{proposal.title}</h4>
+                  <Badge>{proposal.status}</Badge>
+                </div>
+                <p className="text-sm text-gray-600 mb-4">{proposal.description}</p>
+                <div className="grid grid-cols-3 gap-2 mb-4">
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">For</p>
+                    <p className="font-semibold text-green-600">{proposal.forVotes}</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">Against</p>
+                    <p className="font-semibold text-red-600">{proposal.againstVotes}</p>
+                  </div>
+                  <div className="text-center">
+                    <p className="text-sm text-gray-500">Abstain</p>
+                    <p className="font-semibold text-gray-600">{proposal.abstainVotes}</p>
+                  </div>
+                </div>
+                <div className="flex gap-2">
+                  <Button 
+                    size="sm" 
+                    variant="outline"
+                    onClick={() => voteOnProposal(proposal.id, 'for')}
+                  >
+                    Vote For
+              </Button>
+                  <Button 
+                    size="sm" 
+                    variant="outline"
+                    onClick={() => voteOnProposal(proposal.id, 'against')}
+                  >
+                    Vote Against
+                  </Button>
+                  <Button 
+                    size="sm" 
+                    variant="outline"
+                    onClick={() => voteOnProposal(proposal.id, 'abstain')}
+                  >
+                    Abstain
+                  </Button>
+                </div>
+              </div>
+            ))}
+          </div>
+        </CardContent>
+      </Card>
+    </div>
+  );
+
+  return (
+    <div className="container mx-auto p-6">
+      <div className="mb-6">
+        <h1 className="text-3xl font-bold mb-2">Decentralized Marketplace</h1>
+        <p className="text-gray-600">Trade AI models, datasets, and compute resources</p>
+      </div>
+
+      {!account ? (
+        <Card>
+          <CardContent className="text-center py-8">
+            <p className="mb-4">Connect your wallet to access the marketplace</p>
+            <Button onClick={connectWallet}>Connect Wallet</Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <>
+          {error && (
+            <Alert variant="destructive" className="mb-4">
+              <AlertDescription>{error}</AlertDescription>
+            </Alert>
+          )}
           
-          <Form.Item>
-            <Button type="primary" htmlType="submit" block>
-              List Asset
-            </Button>
-          </Form.Item>
-        </Form>
-      </Modal>
+          {success && (
+            <Alert className="mb-4">
+              <AlertDescription>{success}</AlertDescription>
+            </Alert>
+          )}
+
+          <Tabs value={activeTab} onValueChange={setActiveTab}>
+            <TabsList className="grid grid-cols-8 w-full">
+              <TabsTrigger value="models">Models</TabsTrigger>
+              <TabsTrigger value="datasets">Datasets</TabsTrigger>
+              <TabsTrigger value="compute">Compute</TabsTrigger>
+              <TabsTrigger value="auctions">Auctions</TabsTrigger>
+              <TabsTrigger value="bundles">Bundles</TabsTrigger>
+              <TabsTrigger value="fractional">Fractional</TabsTrigger>
+              <TabsTrigger value="defi">DeFi</TabsTrigger>
+              <TabsTrigger value="dao">DAO</TabsTrigger>
+            </TabsList>
+          
+            <TabsContent value="models">
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="animate-spin h-8 w-8" />
+                </div>
+              ) : (
+                renderModelsTab()
+              )}
+            </TabsContent>
+
+            <TabsContent value="auctions">
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="animate-spin h-8 w-8" />
+                </div>
+              ) : (
+                renderAuctionsTab()
+              )}
+            </TabsContent>
+
+            <TabsContent value="defi">
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="animate-spin h-8 w-8" />
+                </div>
+              ) : (
+                renderDeFiTab()
+              )}
+            </TabsContent>
+
+            <TabsContent value="dao">
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="animate-spin h-8 w-8" />
+                </div>
+              ) : (
+                renderDAOTab()
+              )}
+            </TabsContent>
+
+            {/* Add other tab contents as needed */}
+          </Tabs>
+        </>
+      )}
     </div>
   );
 };

@@ -1,95 +1,38 @@
 """
-Blockchain Event Bridge Service - Multi-chain governance support
+Blockchain Event Bridge Service - Enhanced with DeFi and DAO Features
+
+Bridges blockchain events with platform services, including marketplace, DeFi, and DAO operations
 """
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-import asyncio
+from typing import Dict, Any, List, Optional, Union
+from datetime import datetime, timedelta
 import logging
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+import asyncio
+import json
 from pydantic import BaseModel
+from prometheus_client import Counter, Histogram, Gauge
 import time
 
-from pyignite import Client as IgniteClient
-import pulsar
-from prometheus_client import Counter, Histogram, generate_latest
-from fastapi.responses import PlainTextResponse
-import web3
+from .chain_adapters import ChainAdapterFactory
+from .event_processor import EventProcessor
+from .transaction_manager import TransactionManager
+from platformq_shared.cache import CacheManager
+from platformq_shared.auth import get_current_user
+from platformq_shared.base_service import create_base_app
 
-from platformq_shared import get_logger, init_tracing
-from platformq_shared.config import get_config
-from platformq_shared.auth import require_api_key
-
-from .chain_manager import ChainManager
-from .chains import ChainType
-from .voting import VotingMechanism
-
-# Initialize logging
-logger = get_logger(__name__)
+# Setup logging
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger(__name__)
 
 # Metrics
-CHAIN_EVENTS = Counter('blockchain_events_total', 'Total blockchain events', ['chain', 'event_type'])
-CROSS_CHAIN_PROPOSALS = Counter('cross_chain_proposals_total', 'Total cross-chain proposals')
-REPUTATION_SYNCS = Counter('reputation_syncs_total', 'Total reputation synchronizations')
-VOTES_AGGREGATED = Counter('votes_aggregated_total', 'Total votes aggregated', ['mechanism'])
-EXECUTION_LATENCY = Histogram('execution_latency_seconds', 'Proposal execution latency')
-
-# Global instances
-chain_manager: Optional[ChainManager] = None
-ignite_client: Optional[IgniteClient] = None
-pulsar_client: Optional[pulsar.Client] = None
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manage application lifecycle"""
-    global chain_manager, ignite_client, pulsar_client
-    
-    # Startup
-    config = get_config()
-    
-    # Initialize Ignite
-    ignite_client = IgniteClient()
-    ignite_client.connect(config.get('IGNITE_HOSTS', ['localhost:10800']))
-    
-    # Initialize Pulsar
-    pulsar_client = pulsar.Client(
-        config.get('PULSAR_URL', 'pulsar://localhost:6650')
-    )
-    
-    # Initialize chain manager
-    chain_manager = ChainManager(ignite_client, pulsar_client)
-    
-    # Initialize voting strategies
-    chain_manager.init_voting_strategies(config.get('voting', {}))
-    
-    # Initialize executor
-    chain_manager.init_executor(config.get('execution', {}))
-    await chain_manager.start_executor()
-    
-    # Add configured chains
-    chains_config = config.get('chains', {})
-    for chain_id, chain_config in chains_config.items():
-        chain_type = ChainType[chain_config['type']]
-        await chain_manager.add_chain(chain_id, chain_type, chain_config)
-    
-    yield
-    
-    # Shutdown
-    await chain_manager.close()
-    pulsar_client.close()
-    ignite_client.close()
-
+BLOCKCHAIN_TRANSACTIONS = Counter('blockchain_transactions_total', 'Total blockchain transactions', ['chain', 'operation'])
+TRANSACTION_LATENCY = Histogram('blockchain_transaction_latency_seconds', 'Transaction latency', ['chain'])
+GAS_FEES = Gauge('blockchain_gas_fees', 'Current gas fees', ['chain'])
 
 # Create FastAPI app
-app = FastAPI(
-    title="Blockchain Event Bridge",
-    description="Multi-chain governance and event synchronization",
-    version="2.0.0",
-    lifespan=lifespan
-)
+app = create_base_app(service_name="blockchain-event-bridge")
 
 # Add CORS middleware
 app.add_middleware(
@@ -100,506 +43,580 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Initialize tracing
-init_tracing("blockchain-event-bridge")
+# Initialize components
+chain_factory = ChainAdapterFactory()
+event_processor = EventProcessor()
+transaction_manager = TransactionManager()
+cache_manager = CacheManager()
 
+# Request models
+class NFTMintRequest(BaseModel):
+    chain: str
+    asset_id: str
+    owner_address: str
+    metadata_uri: str
+    royalty_percentage: float = 10.0
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
-    return {
-        "status": "healthy",
-        "chains": list(chain_manager.chains.keys()) if chain_manager else [],
-        "timestamp": datetime.utcnow().isoformat()
-    }
+class LicenseOfferRequest(BaseModel):
+    chain: str
+    nft_contract: str
+    token_id: int
+    license_type: str
+    price: float
+    duration: int
+    max_uses: Optional[int] = None
 
+class LicensePurchaseRequest(BaseModel):
+    chain: str
+    offer_id: int
+    buyer_address: str
 
-@app.get("/metrics")
-async def metrics():
-    """Prometheus metrics endpoint"""
-    return PlainTextResponse(generate_latest())
+class RoyaltyDistributionRequest(BaseModel):
+    chain: str
+    nft_contract: str
+    token_id: int
+    sale_price: float
 
+# DeFi Request Models
+class AuctionCreateRequest(BaseModel):
+    chain: str
+    token_id: int
+    auction_type: str  # "english" or "dutch"
+    start_price: float
+    end_price: Optional[float] = None  # For Dutch auctions
+    duration: int  # In seconds
+    min_bid_increment: Optional[float] = None  # For English auctions
+    price_decrement: Optional[float] = None  # For Dutch auctions
 
-@app.get("/api/v1/chains")
-async def get_chains():
-    """Get list of connected chains"""
-    if not chain_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    chains = []
-    for chain_id, adapter in chain_manager.chains.items():
-        chains.append({
-            "chainId": chain_id,
-            "chainType": adapter.chain_type.value,
-            "connected": adapter.is_connected,
-            "latestBlock": await adapter.get_latest_block() if adapter.is_connected else None
-        })
-    
-    return {"chains": chains}
+class LoanOfferRequest(BaseModel):
+    chain: str
+    nft_contract: str
+    max_loan_amount: float
+    interest_rate: float  # Annual percentage
+    min_duration: int  # In days
+    max_duration: int
+    payment_token: str
 
+class YieldFarmingPoolRequest(BaseModel):
+    chain: str
+    staking_token: str
+    reward_rate: float
+    duration: int  # In days
+    min_stake_amount: float
+    lock_period: int  # In days
 
-@app.post("/api/v1/chains/{chain_id}")
-async def add_chain(chain_id: str, chain_data: Dict[str, Any]):
-    """Add a new chain"""
-    if not chain_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
+# DAO Request Models
+class ProposalCreateRequest(BaseModel):
+    chain: str
+    title: str
+    description: str
+    proposal_type: str  # "fee_change", "policy_change", "treasury_allocation"
+    proposal_data: Dict[str, Any]
+
+class VoteRequest(BaseModel):
+    chain: str
+    proposal_id: int
+    vote_type: str  # "for", "against", "abstain"
+
+# Existing endpoints...
+# ... existing code ...
+
+# DeFi Endpoints
+
+@app.post("/api/v1/defi/auctions/create")
+async def create_auction(
+    request: AuctionCreateRequest,
+    current_user: Dict = Depends(get_current_user),
+    background_tasks: BackgroundTasks = BackgroundTasks()
+):
+    """Create a Dutch or English auction for an NFT"""
     try:
-        chain_type = ChainType[chain_data['type']]
-        config = chain_data.get('config', {})
+        adapter = chain_factory.get_adapter(request.chain)
         
-        await chain_manager.add_chain(chain_id, chain_type, config)
+        # Validate NFT ownership
+        owner = await adapter.get_nft_owner(request.token_id)
+        if owner.lower() != current_user["wallet_address"].lower():
+            raise HTTPException(status_code=403, detail="Not NFT owner")
+        
+        # Create auction based on type
+        if request.auction_type.lower() == "dutch":
+            result = await adapter.create_dutch_auction(
+                token_id=request.token_id,
+                start_price=request.start_price,
+                end_price=request.end_price,
+                price_decrement=request.price_decrement,
+                duration=request.duration
+            )
+        else:  # English auction
+            result = await adapter.create_english_auction(
+                token_id=request.token_id,
+                start_price=request.start_price,
+                min_bid_increment=request.min_bid_increment,
+                duration=request.duration
+            )
+        
+        # Track metrics
+        BLOCKCHAIN_TRANSACTIONS.labels(chain=request.chain, operation="create_auction").inc()
+        
+        # Process event in background
+        background_tasks.add_task(
+            event_processor.process_auction_created,
+            request.chain,
+            result["auction_id"],
+            request.token_id,
+            request.auction_type
+        )
         
         return {
-            "status": "success",
-            "chainId": chain_id,
-            "message": f"Chain {chain_id} added successfully"
-        }
-    except Exception as e:
-        logger.error(f"Failed to add chain {chain_id}: {e}")
-        raise HTTPException(status_code=400, detail=str(e))
-
-
-@app.delete("/api/v1/chains/{chain_id}")
-async def remove_chain(chain_id: str):
-    """Remove a chain"""
-    if not chain_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    await chain_manager.remove_chain(chain_id)
-    
-    return {
-        "status": "success",
-        "message": f"Chain {chain_id} removed"
-    }
-
-
-@app.post("/api/v1/proposals/cross-chain")
-async def create_cross_chain_proposal(proposal_data: Dict[str, Any]):
-    """Create a cross-chain proposal"""
-    if not chain_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        # Validate chains exist
-        target_chains = proposal_data.get('targetChains', [])
-        for chain_id in target_chains:
-            if chain_id not in chain_manager.chains:
-                raise HTTPException(status_code=400, detail=f"Chain {chain_id} not found")
-        
-        # Create proposal on each chain
-        proposal_id = f"cross_{datetime.utcnow().timestamp()}"
-        chain_proposals = []
-        
-        for chain_id in target_chains:
-            adapter = chain_manager.chains[chain_id]
-            chain_proposal_id = await adapter.submit_proposal({
-                "title": proposal_data['title'],
-                "description": proposal_data['description'],
-                "actions": proposal_data.get('actions', []),
-                "proposer": proposal_data['proposer']
-            })
-            
-            chain_proposals.append({
-                "chainId": chain_id,
-                "proposalAddress": chain_proposal_id
-            })
-        
-        # Store cross-chain proposal
-        cross_chain_proposal = {
-            "proposalId": proposal_id,
-            "title": proposal_data['title'],
-            "description": proposal_data['description'],
-            "chainProposals": chain_proposals,
-            "votingMechanism": proposal_data.get('votingMechanism', 'SIMPLE'),
-            "aggregationStrategy": proposal_data.get('aggregationStrategy', 'WEIGHTED_AVG'),
-            "executionStrategy": proposal_data.get('executionStrategy', 'parallel'),
-            "createdAt": datetime.utcnow().timestamp(),
-            "status": "ACTIVE"
-        }
-        
-        cache = ignite_client.get_cache('crossChainProposals')
-        cache.put(proposal_id, cross_chain_proposal)
-        
-        CROSS_CHAIN_PROPOSALS.inc()
-        
-        return {
-            "proposalId": proposal_id,
-            "chainProposals": chain_proposals,
+            "auction_id": result["auction_id"],
+            "transaction_hash": result["tx_hash"],
             "status": "created"
         }
         
     except Exception as e:
-        logger.error(f"Failed to create cross-chain proposal: {e}")
+        logger.error(f"Error creating auction: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.get("/api/v1/proposals/{proposal_id}/state")
-async def get_proposal_state(proposal_id: str):
-    """Get aggregated state of a cross-chain proposal"""
-    if not chain_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
+@app.post("/api/v1/defi/auctions/{auction_id}/bid")
+async def bid_on_auction(
+    auction_id: int,
+    chain: str,
+    bid_amount: float,
+    current_user: Dict = Depends(get_current_user),
+    background_tasks: BackgroundTasks = BackgroundTasks()
+):
+    """Place a bid on an English auction or buy from Dutch auction"""
     try:
-        # Get proposal
-        cache = ignite_client.get_cache('crossChainProposals')
-        proposal = cache.get(proposal_id)
+        adapter = chain_factory.get_adapter(chain)
         
-        if not proposal:
-            raise HTTPException(status_code=404, detail="Proposal not found")
+        # Get auction details
+        auction = await adapter.get_auction_details(auction_id)
         
-        # Get state from each chain
-        chain_states = []
-        for chain_proposal in proposal['chainProposals']:
-            chain_id = chain_proposal['chainId']
-            adapter = chain_manager.chains.get(chain_id)
-            
-            if adapter and adapter.is_connected:
-                state = await adapter.get_proposal_state(chain_proposal['proposalAddress'])
-                state['chainId'] = chain_id
-                chain_states.append(state)
+        if auction["type"] == "english":
+            result = await adapter.bid_english_auction(
+                auction_id=auction_id,
+                bid_amount=bid_amount,
+                bidder=current_user["wallet_address"]
+            )
+        else:  # Dutch auction
+            result = await adapter.buy_dutch_auction(
+                auction_id=auction_id,
+                buyer=current_user["wallet_address"]
+            )
         
-        # Aggregate based on strategy
-        aggregation_strategy = proposal.get('aggregationStrategy', 'WEIGHTED_AVG')
-        aggregated_state = aggregate_proposal_states(chain_states, aggregation_strategy)
+        # Track metrics
+        BLOCKCHAIN_TRANSACTIONS.labels(chain=chain, operation="auction_bid").inc()
         
         return {
-            "proposalId": proposal_id,
-            "chainStates": chain_states,
-            "aggregatedState": aggregated_state,
-            "votingMechanism": proposal.get('votingMechanism', 'SIMPLE')
+            "transaction_hash": result["tx_hash"],
+            "status": "bid_placed" if auction["type"] == "english" else "purchased"
         }
         
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Failed to get proposal state: {e}")
+        logger.error(f"Error bidding on auction: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
-
-@app.post("/api/v1/reputation/sync")
-async def sync_reputation(sync_data: Dict[str, Any]):
-    """Synchronize reputation across chains"""
-    if not chain_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    address = sync_data.get('address')
-    if not address:
-        raise HTTPException(status_code=400, detail="Address required")
-    
+@app.post("/api/v1/defi/lending/create-offer")
+async def create_loan_offer(
+    request: LoanOfferRequest,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Create a loan offer for NFT collateral"""
     try:
-        reputation_by_chain = await chain_manager.synchronize_reputation(address)
+        adapter = chain_factory.get_adapter(request.chain)
         
-        REPUTATION_SYNCS.inc()
+        result = await adapter.create_loan_offer(
+            nft_contract=request.nft_contract,
+            max_loan_amount=request.max_loan_amount,
+            interest_rate=request.interest_rate,
+            min_duration=request.min_duration,
+            max_duration=request.max_duration,
+            payment_token=request.payment_token,
+            lender=current_user["wallet_address"]
+        )
+        
+        # Track metrics
+        BLOCKCHAIN_TRANSACTIONS.labels(chain=request.chain, operation="create_loan_offer").inc()
+        
+        return {
+            "offer_id": result["offer_id"],
+            "transaction_hash": result["tx_hash"],
+            "status": "created"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating loan offer: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/defi/lending/borrow")
+async def borrow_against_nft(
+    chain: str,
+    offer_id: int,
+    token_id: int,
+    loan_amount: float,
+    duration: int,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Borrow against NFT collateral"""
+    try:
+        adapter = chain_factory.get_adapter(chain)
+        
+        result = await adapter.borrow_against_nft(
+            offer_id=offer_id,
+            token_id=token_id,
+            loan_amount=loan_amount,
+            duration=duration,
+            borrower=current_user["wallet_address"]
+        )
+        
+        # Track metrics
+        BLOCKCHAIN_TRANSACTIONS.labels(chain=chain, operation="borrow_against_nft").inc()
+        
+        return {
+            "loan_id": result["loan_id"],
+            "transaction_hash": result["tx_hash"],
+            "repayment_due": result["repayment_due"],
+            "total_repayment": result["total_repayment"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error borrowing against NFT: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/defi/yield-farming/create-pool")
+async def create_yield_farming_pool(
+    request: YieldFarmingPoolRequest,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Create a yield farming pool"""
+    try:
+        # Admin only
+        if not current_user.get("is_admin"):
+            raise HTTPException(status_code=403, detail="Admin only")
+        
+        adapter = chain_factory.get_adapter(request.chain)
+        
+        result = await adapter.create_yield_pool(
+            staking_token=request.staking_token,
+            reward_rate=request.reward_rate,
+            duration=request.duration,
+            min_stake_amount=request.min_stake_amount,
+            lock_period=request.lock_period
+        )
+        
+        # Track metrics
+        BLOCKCHAIN_TRANSACTIONS.labels(chain=request.chain, operation="create_yield_pool").inc()
+        
+        return {
+            "pool_id": result["pool_id"],
+            "transaction_hash": result["tx_hash"],
+            "status": "created"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating yield farming pool: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/defi/yield-farming/stake")
+async def stake_in_pool(
+    chain: str,
+    pool_id: int,
+    amount: float,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Stake tokens in yield farming pool"""
+    try:
+        adapter = chain_factory.get_adapter(chain)
+        
+        result = await adapter.stake_tokens(
+            pool_id=pool_id,
+            amount=amount,
+            staker=current_user["wallet_address"]
+        )
+        
+        # Track metrics
+        BLOCKCHAIN_TRANSACTIONS.labels(chain=chain, operation="stake_tokens").inc()
+        
+        return {
+            "transaction_hash": result["tx_hash"],
+            "staked_amount": amount,
+            "lock_until": result["lock_until"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error staking tokens: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# DAO Endpoints
+
+@app.post("/api/v1/dao/proposals/create")
+async def create_dao_proposal(
+    request: ProposalCreateRequest,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Create a DAO proposal"""
+    try:
+        adapter = chain_factory.get_adapter(request.chain)
+        
+        # Check if user has enough governance tokens
+        balance = await adapter.get_governance_token_balance(current_user["wallet_address"])
+        if balance < 100000:  # Minimum threshold
+            raise HTTPException(status_code=403, detail="Insufficient governance tokens")
+        
+        result = await adapter.create_proposal(
+            title=request.title,
+            description=request.description,
+            proposal_type=request.proposal_type,
+            proposal_data=request.proposal_data,
+            proposer=current_user["wallet_address"]
+        )
+        
+        # Track metrics
+        BLOCKCHAIN_TRANSACTIONS.labels(chain=request.chain, operation="create_proposal").inc()
+        
+        return {
+            "proposal_id": result["proposal_id"],
+            "transaction_hash": result["tx_hash"],
+            "voting_starts": result["voting_starts"],
+            "voting_ends": result["voting_ends"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating proposal: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/dao/proposals/{proposal_id}/vote")
+async def vote_on_proposal(
+    proposal_id: int,
+    request: VoteRequest,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Vote on a DAO proposal"""
+    try:
+        adapter = chain_factory.get_adapter(request.chain)
+        
+        result = await adapter.vote_on_proposal(
+            proposal_id=proposal_id,
+            vote_type=request.vote_type,
+            voter=current_user["wallet_address"]
+        )
+        
+        # Track metrics
+        BLOCKCHAIN_TRANSACTIONS.labels(chain=request.chain, operation="vote_proposal").inc()
+        
+        # Cache vote for quick retrieval
+        cache_key = f"dao_vote:{request.chain}:{proposal_id}:{current_user['wallet_address']}"
+        await cache_manager.set(cache_key, request.vote_type, ttl=86400)  # 24 hours
+        
+        return {
+            "transaction_hash": result["tx_hash"],
+            "vote_weight": result["vote_weight"],
+            "status": "voted"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error voting on proposal: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/dao/proposals/{proposal_id}")
+async def get_proposal_details(
+    proposal_id: int,
+    chain: str
+):
+    """Get DAO proposal details"""
+    try:
+        adapter = chain_factory.get_adapter(chain)
+        
+        proposal = await adapter.get_proposal_details(proposal_id)
+        
+        return {
+            "proposal_id": proposal_id,
+            "title": proposal["title"],
+            "description": proposal["description"],
+            "proposer": proposal["proposer"],
+            "status": proposal["status"],
+            "for_votes": proposal["for_votes"],
+            "against_votes": proposal["against_votes"],
+            "abstain_votes": proposal["abstain_votes"],
+            "voting_ends": proposal["voting_ends"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting proposal details: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/dao/proposals/{proposal_id}/execute")
+async def execute_proposal(
+    proposal_id: int,
+    chain: str,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Execute a successful DAO proposal"""
+    try:
+        adapter = chain_factory.get_adapter(chain)
+        
+        # Check if proposal passed
+        proposal = await adapter.get_proposal_details(proposal_id)
+        if proposal["status"] != "succeeded":
+            raise HTTPException(status_code=400, detail="Proposal not succeeded")
+        
+        result = await adapter.execute_proposal(
+            proposal_id=proposal_id,
+            executor=current_user["wallet_address"]
+        )
+        
+        # Track metrics
+        BLOCKCHAIN_TRANSACTIONS.labels(chain=chain, operation="execute_proposal").inc()
+        
+        return {
+            "transaction_hash": result["tx_hash"],
+            "status": "executed"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error executing proposal: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Reputation System Endpoints
+
+@app.post("/api/v1/reputation/record-transaction")
+async def record_reputation_transaction(
+    chain: str,
+    buyer: str,
+    seller: str,
+    amount: float,
+    transaction_type: str = "marketplace"
+):
+    """Record a transaction for reputation tracking"""
+    try:
+        adapter = chain_factory.get_adapter(chain)
+        
+        result = await adapter.record_reputation_transaction(
+            buyer=buyer,
+            seller=seller,
+            amount=amount,
+            transaction_type=transaction_type
+        )
+        
+        return {
+            "transaction_id": result["transaction_id"],
+            "status": "recorded"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error recording reputation transaction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/reputation/submit-review")
+async def submit_review(
+    chain: str,
+    transaction_id: int,
+    rating: int,
+    comment: str,
+    current_user: Dict = Depends(get_current_user)
+):
+    """Submit a review for a transaction"""
+    try:
+        adapter = chain_factory.get_adapter(chain)
+        
+        result = await adapter.submit_review(
+            transaction_id=transaction_id,
+            rating=rating,
+            comment=comment,
+            reviewer=current_user["wallet_address"]
+        )
+        
+        return {
+            "transaction_hash": result["tx_hash"],
+            "status": "submitted"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error submitting review: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/reputation/{address}")
+async def get_reputation_score(
+    address: str,
+    chain: str
+):
+    """Get reputation score for an address"""
+    try:
+        adapter = chain_factory.get_adapter(chain)
+        
+        reputation = await adapter.get_reputation_details(address)
         
         return {
             "address": address,
-            "reputation": reputation_by_chain,
-            "syncedAt": datetime.utcnow().isoformat()
+            "score": reputation["score"],
+            "total_transactions": reputation["total_transactions"],
+            "successful_transactions": reputation["successful_transactions"],
+            "average_rating": reputation["average_rating"],
+            "is_verified": reputation["is_verified"]
         }
         
     except Exception as e:
-        logger.error(f"Failed to sync reputation: {e}")
+        logger.error(f"Error getting reputation score: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
+# Analytics Endpoints
 
-@app.post("/api/v1/vote")
-async def cast_vote(vote_data: Dict[str, Any]):
-    """Cast a vote on a specific chain"""
-    if not chain_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    chain_id = vote_data.get('chainId')
-    proposal_id = vote_data.get('proposalId')
-    
-    if chain_id not in chain_manager.chains:
-        raise HTTPException(status_code=400, detail=f"Chain {chain_id} not found")
-    
+@app.get("/api/v1/analytics/defi/overview")
+async def get_defi_analytics(
+    chain: Optional[str] = None,
+    days: int = 30
+):
+    """Get DeFi analytics overview"""
     try:
-        adapter = chain_manager.chains[chain_id]
-        tx_hash = await adapter.cast_vote(
-            proposal_id,
-            vote_data.get('support', True),
-            vote_data.get('voter'),
-            vote_data.get('signature')
-        )
+        analytics = {
+            "total_value_locked": 0,
+            "active_loans": 0,
+            "total_loan_volume": 0,
+            "active_auctions": 0,
+            "total_auction_volume": 0,
+            "yield_farming_tvl": 0,
+            "unique_users": 0
+        }
         
-        CHAIN_EVENTS.labels(chain=chain_id, event_type='VoteCast').inc()
+        # Aggregate across chains if not specified
+        chains = [chain] if chain else ["ethereum", "polygon", "avalanche"]
+        
+        for c in chains:
+            adapter = chain_factory.get_adapter(c)
+            chain_analytics = await adapter.get_defi_analytics(days)
+            
+            for key in analytics:
+                analytics[key] += chain_analytics.get(key, 0)
+        
+        return analytics
+        
+    except Exception as e:
+        logger.error(f"Error getting DeFi analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/analytics/dao/participation")
+async def get_dao_participation_analytics(
+    chain: str,
+    days: int = 30
+):
+    """Get DAO participation analytics"""
+    try:
+        adapter = chain_factory.get_adapter(chain)
+        
+        analytics = await adapter.get_dao_analytics(days)
         
         return {
-            "status": "success",
-            "transactionHash": tx_hash,
-            "chainId": chain_id
+            "total_proposals": analytics["total_proposals"],
+            "active_proposals": analytics["active_proposals"],
+            "unique_voters": analytics["unique_voters"],
+            "average_participation_rate": analytics["participation_rate"],
+            "proposal_success_rate": analytics["success_rate"],
+            "top_contributors": analytics["top_contributors"]
         }
         
     except Exception as e:
-        logger.error(f"Failed to cast vote: {e}")
+        logger.error(f"Error getting DAO analytics: {e}")
         raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/v1/proposals/{proposal_id}/aggregate-votes")
-async def aggregate_votes(proposal_id: str, aggregation_params: Dict[str, Any]):
-    """Aggregate votes for a cross-chain proposal using advanced voting mechanisms"""
-    if not chain_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        # Get proposal
-        cache = ignite_client.get_cache('crossChainProposals')
-        proposal = cache.get(proposal_id)
-        
-        if not proposal:
-            raise HTTPException(status_code=404, detail="Proposal not found")
-        
-        # Get voting mechanism
-        mechanism_name = aggregation_params.get('mechanism', proposal.get('votingMechanism', 'SIMPLE'))
-        mechanism = VotingMechanism[mechanism_name]
-        
-        voting_strategy = chain_manager.voting_strategies.get(mechanism)
-        if not voting_strategy:
-            raise HTTPException(status_code=400, detail=f"Voting mechanism {mechanism_name} not available")
-        
-        # Collect votes from all chains
-        all_votes = []
-        vote_cache = ignite_client.get_cache('VoteCastEvents')
-        
-        # In production, use SQL queries on Ignite
-        # For now, simulate vote collection
-        for chain_proposal in proposal['chainProposals']:
-            chain_id = chain_proposal['chainId']
-            # Would query votes for this proposal on this chain
-            # Mock data for demo
-            votes = [
-                {
-                    'voter': f'voter_{i}',
-                    'support': i % 2 == 0,
-                    'base_power': 1000 * (i + 1),
-                    'chain_id': chain_id,
-                    'timestamp': datetime.utcnow().timestamp()
-                }
-                for i in range(5)
-            ]
-            all_votes.extend(votes)
-        
-        # Aggregate using voting strategy
-        aggregated = await voting_strategy.aggregate_votes(all_votes, proposal)
-        
-        # Calculate outcome
-        outcome = await voting_strategy.calculate_outcome(aggregated, proposal)
-        
-        # Store aggregation result
-        aggregation_cache = ignite_client.get_cache('voteAggregations')
-        aggregation_cache.put(proposal_id, {
-            'proposalId': proposal_id,
-            'mechanism': mechanism_name,
-            'aggregatedVotes': aggregated,
-            'outcome': outcome,
-            'timestamp': datetime.utcnow().timestamp()
-        })
-        
-        VOTES_AGGREGATED.labels(mechanism=mechanism_name).inc()
-        
-        return {
-            'proposalId': proposal_id,
-            'mechanism': mechanism_name,
-            'aggregatedVotes': aggregated,
-            'outcome': outcome
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to aggregate votes: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/v1/proposals/{proposal_id}/execute")
-async def execute_proposal(proposal_id: str, execution_params: Dict[str, Any]):
-    """Schedule cross-chain proposal execution"""
-    if not chain_manager:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        # Check if proposal is approved
-        aggregation_cache = ignite_client.get_cache('voteAggregations')
-        aggregation = aggregation_cache.get(proposal_id)
-        
-        if not aggregation or aggregation['outcome']['status'] != 'APPROVED':
-            raise HTTPException(status_code=400, detail="Proposal not approved")
-        
-        # Schedule execution
-        strategy_type = execution_params.get('strategy', 'parallel')
-        
-        with EXECUTION_LATENCY.time():
-            execution_plan = await chain_manager.schedule_execution(
-                proposal_id,
-                strategy_type
-            )
-        
-        return {
-            'proposalId': proposal_id,
-            'executionId': execution_plan['execution_id'],
-            'strategy': strategy_type,
-            'status': 'scheduled'
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to execute proposal: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/v1/execution/{execution_id}")
-async def get_execution_status(execution_id: str):
-    """Get status of proposal execution"""
-    if not chain_manager or not chain_manager.executor:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    execution_status = await chain_manager.executor.get_execution_status(execution_id)
-    
-    if not execution_status:
-        raise HTTPException(status_code=404, detail="Execution not found")
-    
-    return execution_status
-
-
-def aggregate_proposal_states(chain_states: List[Dict[str, Any]], strategy: str) -> Dict[str, Any]:
-    """Aggregate proposal states from multiple chains"""
-    if not chain_states:
-        return {"status": "NO_DATA"}
-    
-    total_for = sum(int(state.get('forVotes', 0)) for state in chain_states)
-    total_against = sum(int(state.get('againstVotes', 0)) for state in chain_states)
-    
-    if strategy == 'WEIGHTED_AVG':
-        # Weight by total votes per chain
-        total_votes = total_for + total_against
-        if total_votes == 0:
-            approval_rate = 0
-        else:
-            approval_rate = (total_for / total_votes) * 100
-    elif strategy == 'MAJORITY_ALL':
-        # Require majority on all chains
-        approvals = sum(1 for state in chain_states 
-                       if int(state.get('forVotes', 0)) > int(state.get('againstVotes', 0)))
-        approval_rate = 100 if approvals == len(chain_states) else 0
-    else:
-        # Simple average
-        approval_rate = (total_for / (total_for + total_against) * 100) if (total_for + total_against) > 0 else 0
-    
-    return {
-        "totalForVotes": str(total_for),
-        "totalAgainstVotes": str(total_against),
-        "approvalRate": approval_rate,
-        "participatingChains": len(chain_states),
-        "status": "APPROVED" if approval_rate >= 50 else "REJECTED"
-    }
-
-
-class MintNFTRequest(BaseModel):
-    chain_id: str
-    to: str
-    uri: str
-    royalty_recipient: str
-    royalty_fraction: int
-
-class CreateLicenseOfferRequest(BaseModel):
-    chain_id: str
-    asset_id: str
-    price: int
-    duration: int
-    license_type: str
-    max_usage: int
-    royalty_percentage: int
-
-class PurchaseLicenseRequest(BaseModel):
-    chain_id: str
-    asset_id: str
-    offer_index: int
-    license_type: int
-
-class DistributeRoyaltyRequest(BaseModel):
-    chain_id: str
-    token_id: int
-    sale_price: int
-
-@app.post("/api/v1/marketplace/mint-nft")
-@require_api_key
-async def mint_nft(request: MintNFTRequest):
-    try:
-        # Check cache first
-        cache_key = f"mint_{request.chain_id}_{request.to}_{request.uri}"
-        cache = ignite_client.get_or_create_cache('marketplace_transactions')
-        cached_result = cache.get(cache_key)
-        
-        if cached_result and cached_result.get('timestamp', 0) > time.time() - 300:  # 5 min cache
-            return cached_result['data']
-        
-        tx_hash = await chain_manager.mint_asset_nft(
-            request.chain_id,
-            request.to,
-            request.uri,
-            request.royalty_recipient,
-            request.royalty_fraction
-        )
-        # Wait for transaction receipt
-        w3 = web3.Web3(web3.Web3.HTTPProvider('http://ethereum-node:8545'))  # Assume Ethereum node URL
-        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
-        # Extract token_id from Transfer event
-        contract = w3.eth.contract(address='PLATFORM_ASSET_ADDRESS', abi=PLATFORM_ASSET_ABI)  # Assume these are defined
-        logs = contract.events.Transfer().process_receipt(receipt)
-        token_id = logs[0]['args']['tokenId']
-        
-        result = {"token_id": token_id}
-        
-        # Cache result
-        cache.put(cache_key, {'data': result, 'timestamp': time.time()})
-        
-        return result
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/marketplace/create-license-offer")
-@require_api_key
-async def create_license_offer(request: CreateLicenseOfferRequest):
-    try:
-        tx_hash = await chain_manager.create_license_offer(
-            request.chain_id,
-            request.asset_id,
-            request.price,
-            request.duration,
-            request.license_type,
-            request.max_usage,
-            request.royalty_percentage
-        )
-        return {"tx_hash": tx_hash}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/marketplace/purchase-license")
-@require_api_key
-async def purchase_license(request: PurchaseLicenseRequest):
-    try:
-        tx_hash = await chain_manager.purchase_license(
-            request.chain_id,
-            request.asset_id,
-            request.offer_index,
-            request.license_type
-        )
-        return {"tx_hash": tx_hash}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/marketplace/distribute-royalty")
-@require_api_key
-async def distribute_royalty(request: DistributeRoyaltyRequest):
-    try:
-        tx_hash = await chain_manager.distribute_royalty(
-            request.chain_id,
-            request.token_id,
-            request.sale_price
-        )
-        return {"tx_hash": tx_hash}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
 
 if __name__ == "__main__":
     import uvicorn

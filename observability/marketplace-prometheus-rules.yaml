@@ -1,0 +1,356 @@
+groups:
+  - name: marketplace_alerts
+    interval: 30s
+    rules:
+      # NFT Minting Alerts
+      - alert: HighNFTMintingFailureRate
+        expr: |
+          (
+            sum(rate(marketplace_nft_mint_failures_total[5m]))
+            /
+            sum(rate(marketplace_nft_mint_total[5m]))
+          ) > 0.05
+        for: 5m
+        labels:
+          severity: warning
+          service: marketplace
+        annotations:
+          summary: "High NFT minting failure rate"
+          description: "NFT minting failure rate is {{ $value | humanizePercentage }} over the last 5 minutes"
+      
+      - alert: NFTMintingLatencyHigh
+        expr: |
+          histogram_quantile(0.95, 
+            sum(rate(marketplace_nft_mint_duration_seconds_bucket[5m])) by (le)
+          ) > 3
+        for: 5m
+        labels:
+          severity: warning
+          service: marketplace
+        annotations:
+          summary: "High NFT minting latency"
+          description: "95th percentile NFT minting latency is {{ $value }}s"
+      
+      # License Purchase Alerts
+      - alert: LicensePurchaseFailureRate
+        expr: |
+          (
+            sum(rate(marketplace_license_purchase_failures_total[5m]))
+            /
+            sum(rate(marketplace_license_purchase_total[5m]))
+          ) > 0.02
+        for: 5m
+        labels:
+          severity: critical
+          service: marketplace
+        annotations:
+          summary: "High license purchase failure rate"
+          description: "License purchase failure rate is {{ $value | humanizePercentage }}"
+      
+      # Royalty Distribution Alerts
+      - alert: RoyaltyDistributionFailed
+        expr: marketplace_royalty_distribution_failures_total > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: marketplace
+        annotations:
+          summary: "Royalty distribution failed"
+          description: "{{ $value }} royalty distributions have failed"
+      
+      - alert: RoyaltyEscrowBalanceHigh
+        expr: marketplace_royalty_escrow_balance > 10000
+        for: 10m
+        labels:
+          severity: warning
+          service: marketplace
+        annotations:
+          summary: "High escrow balance"
+          description: "Royalty escrow balance is {{ $value }} - distributions may be failing"
+      
+      # Auction Alerts
+      - alert: AuctionProcessingDelayed
+        expr: marketplace_auction_processing_delay_seconds > 300
+        for: 5m
+        labels:
+          severity: warning
+          service: marketplace
+        annotations:
+          summary: "Auction processing delayed"
+          description: "Auction processing is delayed by {{ $value }}s"
+      
+      - alert: AuctionBidRejectionRate
+        expr: |
+          (
+            sum(rate(marketplace_auction_bid_rejections_total[5m]))
+            /
+            sum(rate(marketplace_auction_bid_total[5m]))
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: marketplace
+        annotations:
+          summary: "High auction bid rejection rate"
+          description: "{{ $value | humanizePercentage }} of auction bids are being rejected"
+      
+      # DeFi Alerts
+      - alert: NFTLendingDefaultRate
+        expr: |
+          (
+            sum(marketplace_nft_loans_defaulted_total)
+            /
+            sum(marketplace_nft_loans_total)
+          ) > 0.05
+        for: 10m
+        labels:
+          severity: critical
+          service: marketplace
+        annotations:
+          summary: "High NFT loan default rate"
+          description: "{{ $value | humanizePercentage }} of NFT loans have defaulted"
+      
+      - alert: YieldFarmingPoolImbalance
+        expr: |
+          abs(
+            marketplace_yield_farming_pool_deposits_value -
+            marketplace_yield_farming_pool_rewards_allocated
+          ) / marketplace_yield_farming_pool_deposits_value > 0.1
+        for: 15m
+        labels:
+          severity: warning
+          service: marketplace
+        annotations:
+          summary: "Yield farming pool imbalance"
+          description: "Pool deposits and rewards are imbalanced by {{ $value | humanizePercentage }}"
+      
+      # Blockchain Integration Alerts
+      - alert: BlockchainConnectionFailure
+        expr: up{job="blockchain-event-bridge"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: blockchain-event-bridge
+        annotations:
+          summary: "Blockchain connection down"
+          description: "Cannot connect to blockchain network {{ $labels.chain }}"
+      
+      - alert: MultiChainLatencyHigh
+        expr: |
+          marketplace_chain_operation_duration_seconds{quantile="0.95"} > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: marketplace
+        annotations:
+          summary: "High blockchain operation latency"
+          description: "95th percentile latency for {{ $labels.chain }} is {{ $value }}s"
+      
+      - alert: GasFeesExcessive
+        expr: marketplace_gas_fees_usd > 50
+        for: 5m
+        labels:
+          severity: warning
+          service: marketplace
+        annotations:
+          summary: "Excessive gas fees"
+          description: "Gas fees on {{ $labels.chain }} are ${{ $value }}"
+      
+      # Model Performance Alerts
+      - alert: ModelAccuracyDegraded
+        expr: |
+          (
+            marketplace_model_accuracy < 0.8
+            AND
+            marketplace_model_accuracy < (marketplace_model_baseline_accuracy * 0.95)
+          )
+        for: 10m
+        labels:
+          severity: warning
+          service: mlops
+        annotations:
+          summary: "Model accuracy degraded"
+          description: "Model {{ $labels.model_id }} accuracy is {{ $value }}, below baseline"
+      
+      - alert: ModelRetrainingOverdue
+        expr: |
+          (time() - marketplace_model_last_retrain_timestamp) > 2592000  # 30 days
+        for: 1h
+        labels:
+          severity: warning
+          service: mlops
+        annotations:
+          summary: "Model retraining overdue"
+          description: "Model {{ $labels.model_id }} hasn't been retrained in {{ $value | humanizeDuration }}"
+      
+      # Search Service Alerts
+      - alert: SearchLatencyHigh
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(marketplace_search_duration_seconds_bucket[5m])) by (le)
+          ) > 1
+        for: 5m
+        labels:
+          severity: warning
+          service: search
+        annotations:
+          summary: "High search latency"
+          description: "95th percentile search latency is {{ $value }}s"
+      
+      - alert: SearchIndexingLag
+        expr: marketplace_search_indexing_lag_seconds > 300
+        for: 10m
+        labels:
+          severity: warning
+          service: search
+        annotations:
+          summary: "Search indexing lagging"
+          description: "Search index is {{ $value }}s behind real-time data"
+      
+      # Data Pipeline Alerts
+      - alert: DataPipelineBacklog
+        expr: marketplace_data_pipeline_backlog_items > 10000
+        for: 15m
+        labels:
+          severity: warning
+          service: data-pipeline
+        annotations:
+          summary: "Data pipeline backlog growing"
+          description: "{{ $value }} items in data pipeline backlog"
+      
+      - alert: FlinkJobFailure
+        expr: marketplace_flink_job_status{status="failed"} > 0
+        for: 5m
+        labels:
+          severity: critical
+          service: flink
+        annotations:
+          summary: "Flink job failed"
+          description: "Flink job {{ $labels.job_name }} has failed"
+      
+      # Infrastructure Alerts
+      - alert: IgniteCacheHitRateLow
+        expr: |
+          (
+            sum(rate(ignite_cache_hits_total[5m]))
+            /
+            sum(rate(ignite_cache_gets_total[5m]))
+          ) < 0.8
+        for: 10m
+        labels:
+          severity: warning
+          service: ignite
+        annotations:
+          summary: "Low cache hit rate"
+          description: "Ignite cache hit rate is {{ $value | humanizePercentage }}"
+      
+      - alert: CassandraCompactionLag
+        expr: cassandra_compaction_pending_tasks > 100
+        for: 15m
+        labels:
+          severity: warning
+          service: cassandra
+        annotations:
+          summary: "Cassandra compaction lagging"
+          description: "{{ $value }} compaction tasks pending"
+      
+      - alert: ElasticsearchClusterRed
+        expr: elasticsearch_cluster_health_status{status="red"} == 1
+        for: 2m
+        labels:
+          severity: critical
+          service: elasticsearch
+        annotations:
+          summary: "Elasticsearch cluster is red"
+          description: "Elasticsearch cluster health is RED"
+      
+      # DAO Governance Alerts
+      - alert: DAOProposalExecutionFailed
+        expr: marketplace_dao_proposal_execution_failures_total > 0
+        for: 1m
+        labels:
+          severity: critical
+          service: dao
+        annotations:
+          summary: "DAO proposal execution failed"
+          description: "{{ $value }} DAO proposal executions have failed"
+      
+      - alert: DAOVotingParticipationLow
+        expr: |
+          marketplace_dao_voting_participation_rate < 0.1
+        for: 24h
+        labels:
+          severity: info
+          service: dao
+        annotations:
+          summary: "Low DAO voting participation"
+          description: "Only {{ $value | humanizePercentage }} participation in recent votes"
+      
+      # Security Alerts
+      - alert: SuspiciousTransactionPattern
+        expr: |
+          rate(marketplace_suspicious_transactions_total[5m]) > 10
+        for: 5m
+        labels:
+          severity: critical
+          service: security
+        annotations:
+          summary: "Suspicious transaction pattern detected"
+          description: "{{ $value }} suspicious transactions per second detected"
+      
+      - alert: UnauthorizedAccessAttempts
+        expr: |
+          sum(rate(marketplace_unauthorized_access_attempts_total[5m])) > 100
+        for: 5m
+        labels:
+          severity: warning
+          service: security
+        annotations:
+          summary: "High rate of unauthorized access attempts"
+          description: "{{ $value }} unauthorized access attempts per second"
+      
+  - name: marketplace_slos
+    interval: 30s
+    rules:
+      # Service Level Objectives
+      - alert: MarketplaceSLOViolation
+        expr: |
+          (
+            sum(rate(marketplace_requests_total{status=~"5.."}[5m]))
+            /
+            sum(rate(marketplace_requests_total[5m]))
+          ) > 0.01  # 99% success rate SLO
+        for: 5m
+        labels:
+          severity: critical
+          service: marketplace
+          slo: "error-rate"
+        annotations:
+          summary: "Marketplace error rate SLO violation"
+          description: "Error rate is {{ $value | humanizePercentage }}, violating 99% success SLO"
+      
+      - alert: MarketplaceLatencySLOViolation
+        expr: |
+          histogram_quantile(0.95,
+            sum(rate(marketplace_request_duration_seconds_bucket[5m])) by (le)
+          ) > 2  # 2 second P95 latency SLO
+        for: 5m
+        labels:
+          severity: warning
+          service: marketplace
+          slo: "latency"
+        annotations:
+          summary: "Marketplace latency SLO violation"
+          description: "P95 latency is {{ $value }}s, violating 2s SLO"
+      
+      - alert: MarketplaceAvailabilitySLOViolation
+        expr: |
+          avg_over_time(up{job=~"marketplace.*"}[5m]) < 0.999  # 99.9% availability SLO
+        for: 5m
+        labels:
+          severity: critical
+          service: marketplace
+          slo: "availability"
+        annotations:
+          summary: "Marketplace availability SLO violation"
+          description: "Availability is {{ $value | humanizePercentage }}, violating 99.9% SLO" 

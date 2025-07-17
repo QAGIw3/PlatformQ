@@ -1,13 +1,7 @@
 """
-MLOps Service
+MLOps Service - Enhanced with Marketplace Features
 
-Centralized service for ML model lifecycle management, including:
-- Model registry integration
-- Deployment orchestration  
-- Monitoring configuration
-- A/B testing management
-- Retraining coordination
-- Model marketplace integration
+Manages ML model lifecycle, training, deployment, monitoring, and marketplace integration
 """
 
 import logging
@@ -16,7 +10,8 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 import asyncio
 
-from fastapi import Depends, HTTPException, BackgroundTasks
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel, Field
 import mlflow
 from mlflow.tracking import MlflowClient
@@ -30,11 +25,23 @@ from .model_registry import ModelRegistryManager
 from .deployment_manager import DeploymentManager
 from .monitoring_config import MonitoringConfigManager
 from .model_marketplace import ModelMarketplaceManager
+from .performance_tracker import ModelPerformanceTracker
+from .auto_retrainer import AutomatedRetrainer, RetrainingTrigger
+from .model_versioning_marketplace import ModelVersioningMarketplace
 
 logger = logging.getLogger(__name__)
 
 # Initialize base app
 app = create_base_app(service_name="mlops-service")
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 # Configuration
 MLFLOW_TRACKING_URI = os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000")
@@ -55,6 +62,9 @@ model_registry_manager = None
 deployment_manager = None
 monitoring_config_manager = None
 model_marketplace_manager = None
+performance_tracker = ModelPerformanceTracker()
+auto_retrainer = AutomatedRetrainer()
+version_marketplace = ModelVersioningMarketplace()
 
 
 # Pydantic models
@@ -670,3 +680,347 @@ async def get_marketplace_analytics(
     except Exception as e:
         logger.error(f"Failed to get marketplace analytics: {e}")
         raise HTTPException(status_code=500, detail=str(e)) 
+
+# New Performance Tracking Endpoints
+@app.post("/api/v1/models/{model_name}/performance/start-monitoring")
+async def start_performance_monitoring(
+    model_name: str,
+    version: str,
+    tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"],
+    background_tasks: BackgroundTasks = BackgroundTasks()
+):
+    """Start real-time performance monitoring for a model"""
+    try:
+        model = await model_registry_manager.get_model(model_name, version, tenant_id)
+        if not model:
+            raise HTTPException(status_code=404, detail="Model not found")
+        
+        # Start monitoring in background
+        background_tasks.add_task(
+            performance_tracker.start_monitoring,
+            model["id"],
+            model_name,
+            version,
+            tenant_id
+        )
+        
+        return {
+            "status": "monitoring_started",
+            "model_name": model_name,
+            "version": version
+        }
+        
+    except Exception as e:
+        logger.error(f"Error starting performance monitoring: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/models/{model_name}/performance/record-prediction")
+async def record_prediction(
+    model_name: str,
+    version: str,
+    prediction_data: Dict[str, Any],
+    tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"]
+):
+    """Record a model prediction for performance tracking"""
+    try:
+        await performance_tracker.record_prediction(
+            model_name=model_name,
+            version=version,
+            tenant_id=tenant_id,
+            input_data=prediction_data["input"],
+            prediction=prediction_data["output"],
+            latency_ms=prediction_data["latency_ms"],
+            prediction_id=prediction_data["prediction_id"]
+        )
+        
+        return {"status": "recorded"}
+        
+    except Exception as e:
+        logger.error(f"Error recording prediction: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/models/{model_name}/performance/record-ground-truth")
+async def record_ground_truth(
+    model_name: str,
+    version: str,
+    ground_truth_data: Dict[str, Any],
+    tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"]
+):
+    """Record ground truth for predictions"""
+    try:
+        await performance_tracker.record_ground_truth(
+            model_name=model_name,
+            version=version,
+            tenant_id=tenant_id,
+            prediction_id=ground_truth_data["prediction_id"],
+            ground_truth=ground_truth_data["ground_truth"]
+        )
+        
+        return {"status": "recorded"}
+        
+    except Exception as e:
+        logger.error(f"Error recording ground truth: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/models/{model_name}/performance/report")
+async def get_performance_report(
+    model_name: str,
+    version: str,
+    tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"]
+):
+    """Get performance report for a model"""
+    try:
+        report = await performance_tracker.get_performance_report(
+            model_name=model_name,
+            version=version,
+            tenant_id=tenant_id
+        )
+        
+        return report
+        
+    except Exception as e:
+        logger.error(f"Error getting performance report: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Auto Retraining Endpoints
+@app.post("/api/v1/models/{model_name}/retraining/policy")
+async def set_retraining_policy(
+    model_name: str,
+    policy: Dict[str, Any],
+    tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"]
+):
+    """Set automated retraining policy for a model"""
+    try:
+        await auto_retrainer.register_retraining_policy(
+            model_name=model_name,
+            tenant_id=tenant_id,
+            policy=policy
+        )
+        
+        return {
+            "status": "policy_registered",
+            "model_name": model_name,
+            "policy": policy
+        }
+        
+    except Exception as e:
+        logger.error(f"Error setting retraining policy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/models/{model_name}/retraining/evaluate")
+async def evaluate_retraining_need(
+    model_name: str,
+    version: str,
+    tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"],
+    background_tasks: BackgroundTasks = BackgroundTasks()
+):
+    """Evaluate if model needs retraining based on performance"""
+    try:
+        # Get performance metrics
+        performance = await performance_tracker.get_performance_report(
+            model_name=model_name,
+            version=version,
+            tenant_id=tenant_id
+        )
+        
+        if performance.get("status") == "no_data":
+            return {"needs_retraining": False, "reason": "insufficient_data"}
+        
+        # Evaluate retraining need
+        trigger = await auto_retrainer.evaluate_retraining_need(
+            model_name=model_name,
+            version=version,
+            tenant_id=tenant_id,
+            performance_metrics=performance["current_metrics"]
+        )
+        
+        if trigger:
+            # Trigger retraining in background
+            background_tasks.add_task(
+                auto_retrainer.trigger_retraining,
+                model_name,
+                version,
+                tenant_id,
+                trigger,
+                performance["current_metrics"]
+            )
+            
+            return {
+                "needs_retraining": True,
+                "trigger": trigger.value,
+                "metrics": performance["current_metrics"]
+            }
+        
+        return {"needs_retraining": False}
+        
+    except Exception as e:
+        logger.error(f"Error evaluating retraining need: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/models/{model_name}/retraining/history")
+async def get_retraining_history(
+    model_name: str,
+    tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"]
+):
+    """Get retraining history for a model"""
+    try:
+        history = await auto_retrainer.get_retraining_history(
+            model_name=model_name,
+            tenant_id=tenant_id
+        )
+        
+        return {
+            "model_name": model_name,
+            "retraining_jobs": [
+                {
+                    "job_id": job.job_id,
+                    "trigger": job.trigger.value,
+                    "status": job.status,
+                    "created_at": job.created_at.isoformat(),
+                    "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                    "new_version": job.new_version,
+                    "improvement_metrics": job.improvement_metrics
+                }
+                for job in history
+            ]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting retraining history: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Version Marketplace Endpoints
+@app.post("/api/v1/marketplace/versions/{model_name}/list")
+async def list_model_version(
+    model_name: str,
+    version: str,
+    version_metadata: Dict[str, Any],
+    tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"]
+):
+    """List a specific model version in the marketplace"""
+    try:
+        listing_id = await version_marketplace.create_version_listing(
+            model_name=model_name,
+            tenant_id=tenant_id,
+            version=version,
+            version_metadata=version_metadata
+        )
+        
+        return {
+            "listing_id": listing_id,
+            "model_name": model_name,
+            "version": version,
+            "status": "listed"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error listing model version: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/marketplace/versions/purchase")
+async def purchase_version_access(
+    purchase_request: Dict[str, Any],
+    buyer_id: str = Depends(get_current_tenant_and_user)["user_id"],
+    buyer_tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"]
+):
+    """Purchase access to specific model versions"""
+    try:
+        license_id = await version_marketplace.purchase_version_access(
+            model_name=purchase_request["model_name"],
+            seller_tenant_id=purchase_request["seller_tenant_id"],
+            buyer_id=buyer_id,
+            buyer_tenant_id=buyer_tenant_id,
+            tier_id=purchase_request["tier_id"],
+            duration_days=purchase_request.get("duration_days"),
+            specific_versions=purchase_request.get("specific_versions")
+        )
+        
+        return {
+            "license_id": license_id,
+            "status": "purchased",
+            "access_type": purchase_request["tier_id"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error purchasing version access: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/marketplace/versions/{model_name}/changelog")
+async def get_version_changelog(
+    model_name: str,
+    from_version: str,
+    to_version: str,
+    tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"]
+):
+    """Get changelog between model versions"""
+    try:
+        changelog = await version_marketplace.get_version_changelog(
+            model_name=model_name,
+            from_version=from_version,
+            to_version=to_version,
+            tenant_id=tenant_id
+        )
+        
+        return changelog
+        
+    except Exception as e:
+        logger.error(f"Error getting version changelog: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/v1/marketplace/versions/{model_name}/migration-guide")
+async def get_version_migration_guide(
+    model_name: str,
+    from_version: str,
+    to_version: str,
+    tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"]
+):
+    """Get migration guide between versions"""
+    try:
+        guide = await version_marketplace.get_version_migration_guide(
+            model_name=model_name,
+            from_version=from_version,
+            to_version=to_version,
+            tenant_id=tenant_id
+        )
+        
+        return guide
+        
+    except Exception as e:
+        logger.error(f"Error getting migration guide: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Marketplace Analytics Endpoints
+@app.get("/api/v1/marketplace/analytics/model-performance")
+async def get_marketplace_model_performance(
+    model_name: str,
+    tenant_id: str = Depends(get_current_tenant_and_user)["tenant_id"],
+    days: int = 30
+):
+    """Get marketplace performance analytics for a model"""
+    try:
+        # Aggregate performance across all buyers
+        analytics = {
+            "model_name": model_name,
+            "period_days": days,
+            "total_revenue": 0,
+            "total_licenses": 0,
+            "average_rating": 0,
+            "performance_metrics": {},
+            "version_distribution": {}
+        }
+        
+        # TODO: Implement aggregation logic
+        
+        return analytics
+        
+    except Exception as e:
+        logger.error(f"Error getting marketplace analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Helper functions
+def get_current_tenant_and_user():
+    return {"tenant_id": "default", "user_id": "user123"}
+
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

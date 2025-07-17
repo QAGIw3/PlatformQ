@@ -83,7 +83,7 @@ class ChainAdapter(ABC):
     async def execute_proposal(self, proposal_id: str) -> str:
         """Execute a passed proposal"""
         pass
-
+    
     @abstractmethod
     async def mint_asset_nft(self, to: str, uri: str, royalty_recipient: str, royalty_fraction: int) -> str:
         """Mints a new asset NFT."""

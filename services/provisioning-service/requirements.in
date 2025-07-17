@@ -4,4 +4,6 @@ platformq-shared
 cassandra-driver
 minio
 pulsar-client
-python-openproject 
+python-openproject
+pyignite
+elasticsearch 

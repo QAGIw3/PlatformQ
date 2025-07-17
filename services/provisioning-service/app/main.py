@@ -61,6 +61,21 @@ def get_pulsar_admin() -> PulsarAdmin:
 def get_openproject_client() -> OpenProject:
     return OpenProject(url=settings.openproject_url, api_key=settings.openproject_api_key)
 
+def get_elasticsearch_client() -> Elasticsearch:
+    """Get Elasticsearch client."""
+    from elasticsearch import Elasticsearch
+    
+    if settings.elasticsearch_username and settings.elasticsearch_password:
+        es_client = Elasticsearch(
+            [f"{settings.elasticsearch_scheme}://{settings.elasticsearch_host}:{settings.elasticsearch_port}"],
+            basic_auth=(settings.elasticsearch_username, settings.elasticsearch_password)
+        )
+    else:
+        es_client = Elasticsearch(
+            [f"{settings.elasticsearch_scheme}://{settings.elasticsearch_host}:{settings.elasticsearch_port}"]
+        )
+    return es_client
+
 @app.post("/provision")
 def provision_tenant_endpoint(
     request: TenantProvisioningRequest,
@@ -73,7 +88,11 @@ def provision_tenant_endpoint(
     Provision a new tenant.
     """
     scaler = AdaptiveScaler(ignite_client, resource_cache)
-    scaler.initialize_tenant_resources(tenant_id)
+    scaler.initialize_tenant_resources(request.tenant_id)
+    
+    # Get Elasticsearch client
+    es_client = get_elasticsearch_client()
+    
     provision_tenant(
         tenant_id=request.tenant_id,
         tenant_name=request.tenant_name,
@@ -81,6 +100,8 @@ def provision_tenant_endpoint(
         minio_client=minio_client,
         pulsar_admin=pulsar_admin,
         openproject_client=openproject_client,
+        ignite_client=ignite_client,
+        es_client=es_client,
     )
     return {"status": "success"}
 
