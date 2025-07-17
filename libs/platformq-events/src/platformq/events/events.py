@@ -37,4 +37,14 @@ class ProactiveAlertEvent(PlatformEvent):
     alert_type: str
     severity: str
     reason: str
-    details: Dict[str, Any] 
+    details: Dict[str, Any]
+
+@dataclass
+class LineageEvent(PlatformEvent):
+    processor_name: str
+    processor_version: str
+    triggered_by: str # User ID
+    input_assets: List[Dict[str, str]] # e.g., [{"asset_id": "...", "version": "..."}]
+    output_assets: List[Dict[str, str]]
+    parameters: Dict[str, Any]
+    execution_time_ms: int 

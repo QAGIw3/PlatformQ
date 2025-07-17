@@ -18,6 +18,7 @@ from platformq.shared.compute_orchestrator import (
     JobStatus
 )
 from processing.spark.processor_base import ProcessorBase
+from platformq_shared.policy_client import PolicyClient
 
 logger = logging.getLogger(__name__)
 
@@ -41,6 +42,7 @@ class FlightGearProcessor(ProcessorBase):
     def __init__(self, tenant_id: str, config: Optional[Dict[str, Any]] = None):
         super().__init__("FlightGearProcessor", tenant_id, config)
         self.orchestrator = ComputeOrchestrator("flightgear-processor")
+        self.policy_client = PolicyClient("http://simulation-service:8000")
         
         # Register job completion handler
         self.orchestrator.register_job_handler("flightgear", self._handle_job_completion)
@@ -64,14 +66,15 @@ class FlightGearProcessor(ProcessorBase):
         
         return True
     
-    def process(self, asset_uri: str, processing_config: Dict[str, Any]) -> Dict[str, Any]:
-        """Process FlightGear data."""
-        config = FlightGearProcessingConfig(**processing_config)
-        
-        if config.mode == "metadata":
-            return self._extract_metadata(asset_uri)
-        else:
-            return self._run_scenario_test(asset_uri, config)
+    async def process(self, federation_id: str, step_data: Dict[str, Any]):
+        # Read from shared state
+        input_data = await self.policy_client.get_shared_state(federation_id, "openfoam_output")
+
+        # Process data...
+        output_data = {"flightgear_results": "..."}
+
+        # Write to shared state
+        await self.policy_client.update_shared_state(federation_id, "flightgear_output", output_data)
     
     def _extract_metadata(self, asset_uri: str) -> Dict[str, Any]:
         """Extract metadata from FlightGear log file."""

@@ -14,12 +14,14 @@ from platformq.shared.multi_physics_orchestrator import (
 
 from crdt import CRDTManager
 from wasmtime import Store, Module, Instance
+from app.ignite_manager import SimulationIgniteManager
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Global job manager
 job_manager = MultiPhysicsJobManager()
+ignite_manager = SimulationIgniteManager()
 
 crdt_manager = CRDTManager()
 
@@ -32,6 +34,27 @@ async def collaborative_edit(simulation_id: str, edit_data: Dict):
     instance = Instance(store, module, [])
     preview = instance.exports['generate_preview'](edit_data)
     return preview
+
+
+@router.post("/federated/{federation_id}/state")
+async def create_federated_session(federation_id: str):
+    """Creates a new shared state cache for a federated simulation."""
+    await ignite_manager.create_federated_session_cache(federation_id)
+    return {"status": "created", "federation_id": federation_id}
+
+@router.put("/federated/{federation_id}/state/{key}")
+async def update_shared_state(federation_id: str, key: str, value: Any):
+    """Updates a value in the shared state for a federated simulation."""
+    await ignite_manager.update_shared_state(federation_id, key, value)
+    return {"status": "updated"}
+
+@router.get("/federated/{federation_id}/state/{key}")
+async def get_shared_state(federation_id: str, key: str):
+    """Gets a value from the shared state for a federated simulation."""
+    value = await ignite_manager.get_shared_state(federation_id, key)
+    if value is None:
+        raise HTTPException(status_code=404, detail="Key not found in shared state")
+    return {"key": key, "value": value}
 
 
 class DomainConfig(BaseModel):

@@ -680,13 +680,17 @@ def get_access_token_from_passwordless(
 
     user = user_repo.get_user_by_email(db, email=request.email)
     roles = role_repo.get_roles_for_user(db, user_id=user.id, tenant_id=user.tenant_id)
+    subscription = subscription_repo.get_subscription_by_user_id(db, user_id=user.id)
 
-    # In a real app, you would use a library like Authlib to create the token.
-    # For this example, we'll just return a placeholder.
-    access_token = create_access_token(
-        data={"sub": str(user.id), "tid": str(user.tenant_id)},
-        groups=roles,
-    )
+    # Add roles and subscription tier to the token
+    token_data = {
+        "sub": str(user.id),
+        "tid": str(user.tenant_id),
+        "roles": roles,
+        "tier": subscription.tier if subscription else "free",
+    }
+    
+    access_token = create_access_token(data=token_data)
     refresh_token = refresh_token_repo.create_refresh_token(db, user_id=user.id)
 
     audit_repo.create_audit_log(
@@ -717,10 +721,19 @@ def refresh_access_token(
     user = user_repo.get_user_by_id(db, user_id=token_data["user_id"])
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
+        
+    roles = role_repo.get_roles_for_user(db, user_id=user.id, tenant_id=user.tenant_id)
+    subscription = subscription_repo.get_subscription_by_user_id(db, user_id=user.id)
 
-    # In a real app, you would use a library like Authlib to create the token.
-    # For this example, we'll just return a placeholder.
-    new_access_token = "your_new_access_token_here"
+    # Add roles and subscription tier to the new token
+    token_data = {
+        "sub": str(user.id),
+        "tid": str(user.tenant_id),
+        "roles": roles,
+        "tier": subscription.tier if subscription else "free",
+    }
+
+    new_access_token = create_access_token(data=token_data)
 
     return {
         "access_token": new_access_token,

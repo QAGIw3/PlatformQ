@@ -39,4 +39,17 @@ async def get_user_assets(
         assets = await graph_service.get_user_assets(user_id)
         return assets
     except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@router.post("/internal/graph/lineage")
+async def update_lineage_endpoint(
+    lineage_data: Dict[str, Any],
+):
+    """
+    Internal endpoint to update the graph with new lineage information.
+    """
+    try:
+        await graph_service.update_lineage(lineage_data)
+        return {"status": "ok"}
+    except Exception as e:
         raise HTTPException(status_code=500, detail=str(e)) 

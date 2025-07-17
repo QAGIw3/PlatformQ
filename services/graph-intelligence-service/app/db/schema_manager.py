@@ -31,23 +31,29 @@ class SchemaManager:
                 self._define_property_key(mgmt, 'name', 'String', 'A human-readable name.')
                 self._define_property_key(mgmt, 'asset_type', 'String', 'The type of the asset (e.g., 3d-model, dataset).')
                 self._define_property_key(mgmt, 'created_at', 'Date', 'Timestamp of creation.')
+                self._define_property_key(mgmt, 'processor_name', 'String', 'The name of the processor.')
+                self._define_property_key(mgmt, 'processor_version', 'String', 'The version of the processor.')
+                self._define_property_key(mgmt, 'parameters', 'String', 'The parameters used by the processor.')
                 
                 # Define Vertex Labels
                 self._define_vertex_label(mgmt, 'asset')
                 self._define_vertex_label(mgmt, 'user')
                 self._define_vertex_label(mgmt, 'project')
+                self._define_vertex_label(mgmt, 'processor')
 
                 # Define Edge Labels
                 self._define_edge_label(mgmt, 'OWNS')
                 self._define_edge_label(mgmt, 'CREATED_BY')
                 self._define_edge_label(mgmt, 'USED_IN')
                 self._define_edge_label(mgmt, 'DERIVED_FROM')
+                self._define_edge_label(mgmt, 'PROCESSED_BY')
 
                 # Define Indexes
                 # Composite index on asset_id for fast lookups
                 self._create_composite_index(mgmt, 'by_asset_id', 'asset_id', unique=True)
                 self._create_composite_index(mgmt, 'by_user_id', 'user_id', unique=True)
                 self._create_composite_index(mgmt, 'by_project_id', 'project_id', unique=True)
+                self._create_composite_index(mgmt, 'by_processor_name', 'processor_name', unique=False)
                 
                 logger.info("Committing schema changes...")
                 mgmt.commit()

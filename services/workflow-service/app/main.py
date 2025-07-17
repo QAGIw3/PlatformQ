@@ -20,6 +20,8 @@ import re
 import httpx
 from pydantic import BaseModel
 import os
+from .dags.asset_augmentation_dag import process_asset
+from .dynamic_dags import FederatedSimulation, generate_federated_dag
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -900,3 +902,31 @@ async def get_webhook_stats(request: Request):
             "timestamp": datetime.utcnow().isoformat()
         }
     return {"error": "Webhook manager not initialized"} 
+
+class NLWorkflowRequest(BaseModel):
+    description: str
+
+class FederatedSimulationRequest(BaseModel):
+    simulation_definition: FederatedSimulation
+
+@app.post("/api/v1/simulations/federated")
+async def create_federated_simulation(
+    request: FederatedSimulationRequest,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """
+    Creates and deploys a federated simulation workflow.
+    """
+    try:
+        dag_file_content = generate_federated_dag(request.simulation_definition)
+        
+        dags_folder = "/app/dags" 
+        dag_file_path = os.path.join(dags_folder, f"{request.simulation_definition.name}.py")
+        with open(dag_file_path, "w") as f:
+            f.write(dag_file_content)
+
+        return {"status": "federated_simulation_created", "dag_file": dag_file_path}
+
+    except Exception as e:
+        logger.error(f"Failed to create federated simulation: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 

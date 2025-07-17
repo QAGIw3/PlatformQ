@@ -1,6 +1,6 @@
 import logging
 from ..db.janusgraph import JanusGraph
-from typing import Dict, List
+from typing import Dict, List, Any
 
 logger = logging.getLogger(__name__)
 
@@ -46,7 +46,7 @@ class GraphService:
             # Depending on the desired retry logic, we might want to raise the exception
             raise
         finally:
-            self.graph.close() # Ensure connection is closed
+            self.graph.close()
 
     async def get_downstream_lineage(self, asset_id: str) -> Dict:
         """
@@ -98,5 +98,44 @@ class GraphService:
         finally:
             self.graph.close()
 
+    async def update_lineage(self, lineage_data: Dict[str, Any]):
+        """
+        Updates the graph with new lineage information.
+        """
+        try:
+            self.graph.connect()
+            g = self.graph.g
+            
+            processor_name = lineage_data.get("processor_name")
+            processor_version = lineage_data.get("processor_version")
+            
+            # Create or get processor vertex
+            processor_vertex = g.V().has('processor', 'processor_name', processor_name).has('version', processor_version).fold().coalesce(
+                g.addV('processor').property('processor_name', processor_name).property('version', processor_version),
+                g.V().has('processor', 'processor_name', processor_name).has('version', processor_version)
+            ).next()
+
+            # Process input and output assets
+            for asset in lineage_data.get("output_assets", []):
+                output_asset_id = asset.get("asset_id")
+                output_vertex = g.V().has('asset', 'asset_id', output_asset_id).fold().coalesce(
+                    g.addV('asset').property('asset_id', output_asset_id),
+                    g.V().has('asset', 'asset_id', output_asset_id)
+                ).next()
+                
+                # Link output asset to processor
+                g.V(output_vertex).addE('PROCESSED_BY').to(processor_vertex).iterate()
+                
+                # Link to input assets
+                for input_asset in lineage_data.get("input_assets", []):
+                    input_asset_id = input_asset.get("asset_id")
+                    input_vertex = g.V().has('asset', 'asset_id', input_asset_id).next()
+                    g.V(output_vertex).addE('DERIVED_FROM').to(input_vertex).iterate()
+                    
+        except Exception as e:
+            logger.error(f"Error updating lineage: {e}")
+            raise
+        finally:
+            self.graph.close()
 
 graph_service = GraphService() 

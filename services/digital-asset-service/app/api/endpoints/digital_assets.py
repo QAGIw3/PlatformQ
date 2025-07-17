@@ -4,7 +4,7 @@ from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 from datetime import datetime
 from ....platformq_shared.db_models import User
-from ....platformq_shared.api.deps import get_db_session, get_current_tenant_and_user, require_service_token
+from ....platformq_shared.api.deps import get_db_session, get_current_tenant_and_user, require_service_token, get_current_user
 from ...repository import DigitalAssetRepository
 from ...schemas import digital_asset as schemas
 from ....platformq_shared.events import DigitalAssetCreated
@@ -15,6 +15,7 @@ import json
 import httpx
 from ...utils.cid import compute_cid
 from ...config import settings
+from ...policy_client import policy_client
 
 logger = logging.getLogger(__name__)
 
@@ -323,13 +324,24 @@ async def create_digital_asset(
     return db_asset
 
 @router.get("/digital-assets/{cid}", response_model=schemas.DigitalAsset)
-def read_digital_asset(
+async def read_digital_asset(
     cid: str,
     repo: DigitalAssetRepository = Depends(get_digital_asset_repository),
+    current_user: User = Depends(get_current_user),
 ):
     db_asset = repo.get(cid=cid)
     if db_asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
+
+    # Policy check
+    allowed = await policy_client.check_permission(
+        subject={"user_id": str(current_user.id), "roles": current_user.roles},
+        action="read_asset",
+        resource={"asset_id": cid, "owner_id": str(db_asset.owner_id)}
+    )
+    if not allowed:
+        raise HTTPException(status_code=403, detail="Not authorized to read this asset")
+
     return db_asset
 
 @router.get("/digital-assets", response_model=List[schemas.DigitalAsset])

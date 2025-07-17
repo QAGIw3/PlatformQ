@@ -32,6 +32,7 @@ class SimulationIgniteManager:
         self.AGENT_STATE_CACHE = "agent-states"
         self.METRICS_CACHE = "simulation-metrics"
         self.CHECKPOINT_CACHE = "simulation-checkpoints"
+        self.FEDERATED_SHARED_STATE_CACHE = "federated-shared-states"
         
         # Cache configurations
         self.cache_config = {
@@ -62,6 +63,11 @@ class SimulationIgniteManager:
                 'expiry_policy': {
                     'ttl': 300  # 5 minutes
                 }
+            },
+            self.FEDERATED_SHARED_STATE_CACHE: {
+                'cache_mode': 'PARTITIONED',
+                'atomicity_mode': 'ATOMIC',
+                'backups': 1
             }
         }
     
@@ -119,7 +125,30 @@ class SimulationIgniteManager:
         if state_entry:
             return state_entry['data']
         return None
+
+    # Federated Simulation State Management
     
+    async def create_federated_session_cache(self, federation_id: str):
+        """Creates a dedicated cache for a federated simulation session."""
+        cache_name = f"federated_{federation_id}"
+        # This is a simplified approach. In a real-world scenario, you might use
+        # cache templates or dynamic cache configuration.
+        self.client.get_or_create_cache(cache_name)
+        logger.info(f"Created dedicated cache for federation {federation_id}: {cache_name}")
+        return cache_name
+
+    async def update_shared_state(self, federation_id: str, key: str, value: Any):
+        """Updates a value in the shared state for a federated simulation."""
+        cache_name = f"federated_{federation_id}"
+        cache = self.client.get_cache(cache_name)
+        cache.put(key, value)
+        
+    async def get_shared_state(self, federation_id: str, key: str) -> Optional[Any]:
+        """Gets a value from the shared state for a federated simulation."""
+        cache_name = f"federated_{federation_id}"
+        cache = self.client.get_cache(cache_name)
+        return cache.get(key)
+        
     # Agent State Management (for distributed processing)
     
     async def update_agent_batch(self, session_id: str, agents: List[Dict[str, Any]]):

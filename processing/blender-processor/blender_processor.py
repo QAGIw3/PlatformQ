@@ -8,6 +8,7 @@ import subprocess
 from pathlib import Path
 from typing import Dict, Any, Optional, List
 from dataclasses import dataclass
+import time
 
 # Add parent directory to Python path
 sys.path.append(os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))))
@@ -17,6 +18,8 @@ from platformq.shared.compute_orchestrator import (
     ComputeJob, 
     JobStatus
 )
+from platformq_shared.events import LineageEvent
+from platformq_shared.event_publisher import EventPublisher
 from processing.spark.processor_base import ProcessorBase
 
 logger = logging.getLogger(__name__)
@@ -39,9 +42,11 @@ class BlenderProcessor(ProcessorBase):
     """Processor for Blender files with distributed rendering capabilities."""
     
     def __init__(self, tenant_id: str, config: Optional[Dict[str, Any]] = None):
-        super().__init__("BlenderProcessor", tenant_id, config)
+        super().__init__("BlenderProcessor", "1.0", tenant_id, config)
         self.orchestrator = ComputeOrchestrator("blender-processor")
         self.blender_path = config.get("blender_path", "blender")
+        self.publisher = EventPublisher('pulsar://pulsar:6650')
+        self.publisher.connect()
         
         # Register job completion handler
         self.orchestrator.register_job_handler("blender", self._handle_job_completion)
@@ -213,10 +218,25 @@ print(json.dumps(metadata))
             
             # Upload results
             output_s3 = f"s3://{self.config['output_bucket']}/renders/{self.tenant_id}/"
+            output_assets = []
             for file in output_dir.glob("*"):
                 if file.is_file():
-                    self.upload_to_s3(str(file), output_s3 + file.name)
-            
+                    output_uri = output_s3 + file.name
+                    self.upload_to_s3(str(file), output_uri)
+                    output_assets.append({"asset_id": output_uri})
+
+            # Publish lineage event
+            lineage_event = LineageEvent(
+                processor_name="blender-processor",
+                processor_version="1.0",
+                triggered_by="user_id_placeholder", # This should be passed in
+                input_assets=[{"asset_id": asset_uri}],
+                output_assets=output_assets,
+                parameters=config.parameters,
+                execution_time_ms=int((time.time() - start_time) * 1000)
+            )
+            self.publisher.publish(topic_base='lineage-events', tenant_id=self.tenant_id, data=lineage_event)
+
             return {
                 "status": "completed",
                 "mode": "local",

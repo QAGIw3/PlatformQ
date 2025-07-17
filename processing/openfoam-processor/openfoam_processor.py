@@ -17,6 +17,7 @@ from platformq.shared.compute_orchestrator import (
     JobStatus
 )
 from processing.spark.processor_base import ProcessorBase
+from platformq_shared.policy_client import PolicyClient
 
 logger = logging.getLogger(__name__)
 
@@ -46,6 +47,7 @@ class OpenFOAMProcessor(ProcessorBase):
         
         # Register job completion handler
         self.orchestrator.register_job_handler("openfoam", self._handle_job_completion)
+        self.policy_client = PolicyClient("http://simulation-service:8000")
     
     def validate_config(self, processing_config: Dict[str, Any]) -> bool:
         """Validate processing configuration."""
@@ -68,14 +70,16 @@ class OpenFOAMProcessor(ProcessorBase):
         
         return True
     
-    def process(self, asset_uri: str, processing_config: Dict[str, Any]) -> Dict[str, Any]:
+    async def process(self, federation_id: str, step_data: Dict[str, Any]):
         """Process OpenFOAM case."""
-        config = OpenFOAMProcessingConfig(**processing_config)
-        
-        if config.mode == "metadata":
-            return self._extract_metadata(asset_uri)
-        else:
-            return self._run_simulation(asset_uri, config)
+        # Read from shared state
+        input_data = await self.policy_client.get_shared_state(federation_id, "flightgear_output")
+
+        # Process data...
+        output_data = {"openfoam_results": "..."}
+
+        # Write to shared state
+        await self.policy_client.update_shared_state(federation_id, "openfoam_output", output_data)
     
     def _extract_metadata(self, asset_uri: str) -> Dict[str, Any]:
         """Extract metadata from OpenFOAM case."""
