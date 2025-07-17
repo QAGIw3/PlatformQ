@@ -1,7 +1,7 @@
 
 from fastapi import APIRouter, Depends, HTTPException, Request
 from sqlalchemy.orm import Session
-from typing import List, Dict, Any
+from typing import List, Dict, Any, Optional
 from datetime import datetime
 from ....platformq_shared.db_models import User
 from ....platformq_shared.api.deps import get_db_session, get_current_tenant_and_user, require_service_token
@@ -149,6 +149,7 @@ def is_high_value_asset(asset_type: str, asset_value: float) -> bool:
 async def create_digital_asset(
     asset: schemas.DigitalAssetCreate,
     request: Request,
+    derived_from: Optional[str] = None,
     repo: DigitalAssetRepository = Depends(get_digital_asset_repository),
     context: dict = Depends(get_current_tenant_and_user),
 ):
@@ -209,7 +210,8 @@ async def create_digital_asset(
             asset_name=db_asset.asset_name,
             asset_type=db_asset.asset_type,
             owner_id=str(db_asset.owner_id),
-            raw_data_uri=db_asset.raw_data_uri
+            raw_data_uri=db_asset.raw_data_uri,
+            derived_from=derived_from if derived_from else None
         )
         publisher.publish(
             topic_base='digital-asset-created-events',

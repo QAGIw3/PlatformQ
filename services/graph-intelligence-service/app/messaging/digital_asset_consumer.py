@@ -46,6 +46,7 @@ class DigitalAssetConsumer:
                     asset_name = event_data.get("asset_name")
                     asset_type = event_data.get("asset_type")
                     owner_id = event_data.get("owner_id")
+                    derived_from = event_data.get("derived_from")
 
                     if asset_id and owner_id and asset_type:
                         # Call the graph service to update the graph
@@ -56,6 +57,11 @@ class DigitalAssetConsumer:
                             owner_id=owner_id,
                         )
                         
+                        if derived_from:
+                            derived_vertex = g.V().has('asset', 'asset_id', derived_from).next()
+                            g.V(asset_vertex).addE('DERIVED_FROM').to(derived_vertex).iterate()
+                            logger.info(f"Added DERIVED_FROM edge from {asset_id} to {derived_from}")
+
                     await self.consumer.acknowledge(msg)
                 except json.JSONDecodeError:
                     logger.error(f"Failed to decode message: {msg.data()}")

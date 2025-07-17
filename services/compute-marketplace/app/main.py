@@ -13,6 +13,16 @@ from pydantic import BaseModel
 import asyncio
 import httpx
 from enum import Enum
+from platformq_shared.event_publisher import EventPublisher
+from pulsar.schema import Record, String, Long, Double
+
+class AssetUsed(Record):
+    tenant_id = String()
+    asset_id = String()
+    user_id = String()
+    usage_duration_minutes = Long()
+    usage_type = String()
+    event_timestamp = Long()
 
 from .compute_manager import ComputeManager, ComputeOffering, ComputePurchase
 from .pricing_engine import PricingEngine
@@ -28,6 +38,11 @@ app = FastAPI(
     description="Marketplace for buying and selling compute time for model inference",
     version="1.0.0"
 )
+
+@app.on_event("startup")
+def startup():
+    app.state.event_publisher = EventPublisher(pulsar_url='pulsar://pulsar:6650')
+    app.state.event_publisher.connect()
 
 # Add CORS middleware
 app.add_middleware(
@@ -173,6 +188,25 @@ async def purchase_compute_time(
             model_requirements=request.model_requirements,
             priority=request.priority
         )
+        
+        publisher = request.app.state.event_publisher
+        asset_id = request.model_requirements.get('asset_id')
+        if asset_id:
+            event = AssetUsed(
+                tenant_id='default',  # Add tenant context
+                asset_id=asset_id,
+                user_id=request.buyer_id,
+                usage_duration_minutes=request.duration_minutes,
+                usage_type='compute',
+                event_timestamp=int(datetime.utcnow().timestamp() * 1000)
+            )
+            publisher.publish(
+                topic_base='asset-usage-events',
+                tenant_id='default',
+                schema_class=AssetUsed,
+                data=event
+            )
+            logger.info(f"Published AssetUsed event for asset {asset_id}")
         
         # Schedule resource allocation
         background_tasks.add_task(
