@@ -15,7 +15,7 @@ import os
 import httpx
 import asyncio
 from typing import Dict, List, Any, Optional
-from datetime import datetime
+from datetime import datetime, timedelta
 import threading
 import time
 
@@ -260,6 +260,35 @@ app.include_router(endpoints.router, prefix="/api/v1", tags=["graph-intelligence
 @app.get("/")
 def read_root():
     return {"message": "graph-intelligence-service is running"}
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    try:
+        # Check JanusGraph connection
+        if graph_connector:
+            graph_status = "connected" if graph_connector.g else "disconnected"
+        else:
+            graph_status = "not initialized"
+        
+        # Check Pulsar consumers
+        consumer_status = {
+            "data_lake": "active" if data_lake_consumer else "inactive",
+            "activity": "active" if activity_consumer else "inactive"
+        }
+        
+        return {
+            "status": "healthy",
+            "graph_database": graph_status,
+            "consumers": consumer_status,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "timestamp": datetime.utcnow().isoformat()
+        }
 
 @app.get("/api/v1/insights/{insight_type}")
 def get_graph_insight(
@@ -507,3 +536,56 @@ async def find_parameter_influence(
         "result_metric": result_metric,
         "influence_paths": paths
     }
+
+@app.post("/api/v1/kyc/verify")
+async def verify_kyc(
+    user_id: str,
+    blockchain_address: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Verify user KYC status for marketplace transactions"""
+    try:
+        # Query JanusGraph for user KYC data
+        query = """
+        g.V().has('user_id', user_id)
+              .has('tenant_id', tenant_id)
+              .out('has_kyc')
+              .values('status', 'verified_at', 'level')
+        """
+        
+        results = await graph_service.execute_query(
+            query,
+            {"user_id": user_id, "tenant_id": context["tenant_id"]}
+        )
+        
+        if not results:
+            return {
+                "verified": False,
+                "reason": "No KYC record found",
+                "required_level": "basic"
+            }
+        
+        kyc_status = results[0].get("status")
+        kyc_level = results[0].get("level", "basic")
+        verified_at = results[0].get("verified_at")
+        
+        # Check if KYC is valid (not expired - 1 year validity)
+        if verified_at:
+            verified_date = datetime.fromisoformat(verified_at)
+            if datetime.utcnow() - verified_date > timedelta(days=365):
+                return {
+                    "verified": False,
+                    "reason": "KYC expired",
+                    "required_level": kyc_level
+                }
+        
+        return {
+            "verified": kyc_status == "verified",
+            "level": kyc_level,
+            "verified_at": verified_at,
+            "blockchain_address_verified": blockchain_address == results[0].get("blockchain_address")
+        }
+        
+    except Exception as e:
+        logger.error(f"KYC verification failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))

@@ -219,3 +219,88 @@ class AvalancheAdapter(EthereumAdapter):
         except Exception as e:
             logger.error(f"Error creating subnet proposal: {e}")
             raise 
+
+    async def mint_asset_nft(self, to: str, uri: str, royalty_recipient: str, royalty_fraction: int) -> str:
+        """Mints a new asset NFT on Avalanche"""
+        if royalty_fraction < 0 or royalty_fraction > 10000:
+            raise ValueError("Royalty fraction must be between 0 and 10000")
+        if not Web3.is_address(to) or not Web3.is_address(royalty_recipient):
+            raise ValueError("Invalid address")
+            
+        contract = self.contracts.get("PlatformAsset")
+        if not contract:
+            raise Exception("PlatformAsset contract not loaded")
+        
+        tx_hash = await self._send_transaction(
+            contract,
+            "safeMint",
+            to,
+            uri,
+            royalty_recipient,
+            royalty_fraction
+        )
+        return tx_hash
+
+    async def create_license_offer(self, asset_id: str, price: int, duration: int, license_type: str, max_usage: int, royalty_percentage: int) -> str:
+        """Creates a new license offer for an asset on Avalanche"""
+        contract = self.contracts.get("UsageLicense")
+        if not contract:
+            raise Exception("UsageLicense contract not loaded")
+
+        tx_hash = await self._send_transaction(
+            contract,
+            "createLicenseOffer",
+            asset_id,
+            price,
+            duration,
+            license_type,
+            max_usage,
+            royalty_percentage
+        )
+        return tx_hash
+
+    async def purchase_license(self, asset_id: str, offer_index: int, license_type: int) -> str:
+        """Purchases a license for an asset on Avalanche"""
+        contract = self.contracts.get("UsageLicense")
+        if not contract:
+            raise Exception("UsageLicense contract not loaded")
+
+        tx_hash = await self._send_transaction(
+            contract,
+            "purchaseLicense",
+            asset_id,
+            offer_index,
+            license_type
+        )
+        return tx_hash
+
+    async def distribute_royalty(self, token_id: int, sale_price: int) -> str:
+        """Distributes royalties for a sale on Avalanche"""
+        contract = self.contracts.get("RoyaltyDistributor")
+        if not contract:
+            raise Exception("RoyaltyDistributor contract not loaded")
+
+        tx_hash = await self._send_transaction(
+            contract,
+            "distributeRoyalty",
+            token_id,
+            sale_price
+        )
+        return tx_hash
+        
+    async def _send_transaction(self, contract: Contract, function_name: str, *args, **kwargs) -> str:
+        """Helper method to send a transaction to a contract function"""
+        if not self.account:
+            raise Exception("No account set up for transactions")
+        
+        nonce = self.w3.eth.get_transaction_count(self.account.address)
+        tx = contract.functions[function_name](*args).build_transaction({
+            'from': self.account.address,
+            'nonce': nonce,
+            'gas': 2000000,
+            'gasPrice': self.w3.to_wei('25', 'gwei'),  # Avalanche typical gas price
+            **kwargs
+        })
+        signed_tx = self.w3.eth.account.sign_transaction(tx, self.account.key)
+        tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
+        return tx_hash.hex() 

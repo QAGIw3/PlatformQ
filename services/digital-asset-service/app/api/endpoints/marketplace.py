@@ -14,6 +14,7 @@ from ....platformq_shared.event_publisher import EventPublisher
 from pulsar.schema import Record, String, Long, Double, Boolean
 from .deps import get_current_context
 import httpx
+from ....platformq_shared.config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -101,7 +102,7 @@ def list_marketplace_assets(
 
 
 @router.post("/digital-assets/{cid}/list-for-sale")
-def list_asset_for_sale(
+async def list_asset_for_sale(
     cid: str,
     price: float = Query(..., gt=0, description="The sale price in a standard currency (e.g., ETH, MATIC)"),
     currency: str = Query("ETH", regex="^(ETH|MATIC|USDC)$"),
@@ -188,6 +189,18 @@ def list_asset_for_sale(
     
     asset = crud_digital_asset.update_asset(db, cid, schemas.DigitalAssetUpdate(**update_data))
     
+    # Call blockchain bridge to distribute royalty if applicable
+    if royalty_percentage is not None and asset.nft_token_id:
+        async with httpx.AsyncClient() as client:
+            royalty_data = {
+                "chain_id": "ethereum",
+                "token_id": asset.nft_token_id,
+                "sale_price": price
+            }
+            response = await client.post(f"{settings.BLOCKCHAIN_BRIDGE_URL}/api/v1/marketplace/distribute-royalty", json=royalty_data)
+            if response.status_code != 200:
+                logger.warning(f"Failed to distribute royalty for asset {cid}: {response.text}")
+    
     # Publish event
     if publisher:
         event = AssetListedForSale(
@@ -226,7 +239,7 @@ def list_asset_for_sale(
 
 
 @router.post("/digital-assets/{cid}/create-license-offer")
-def create_license_offer(
+async def create_license_offer(
     cid: str,
     license_type: str = Query(..., regex="^(view|edit|commercial|exclusive)$"),
     price: float = Query(..., gt=0),
@@ -277,6 +290,24 @@ def create_license_offer(
     }
     
     asset = crud_digital_asset.update_asset(db, cid, schemas.DigitalAssetUpdate(**update_data))
+    
+    # Call blockchain bridge to create license offer
+    async with httpx.AsyncClient() as client:
+        offer_data = {
+            "chain_id": "ethereum",
+            "asset_id": str(asset.nft_token_id),
+            "price": int(price * 1e18),  # Assuming wei
+            "duration": duration,
+            "license_type": license_type,
+            "max_usage": max_usage,
+            "royalty_percentage": asset.royalty_percentage
+        }
+        response = await client.post(f"{settings.BLOCKCHAIN_BRIDGE_URL}/api/v1/marketplace/create-license-offer", json=offer_data)
+        if response.status_code == 200:
+            tx_hash = response.json()["tx_hash"]
+            logger.info(f"License offer created for asset {cid} with tx_hash {tx_hash}")
+        else:
+            logger.warning(f"Failed to create license offer for asset {cid}: {response.text}")
     
     # Publish event
     if publisher:

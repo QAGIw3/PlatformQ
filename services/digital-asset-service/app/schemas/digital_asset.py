@@ -1,5 +1,5 @@
 from pydantic import BaseModel, Field
-from typing import List, Optional, Dict
+from typing import List, Optional, Dict, Any
 from datetime import datetime
 import uuid
 
@@ -52,6 +52,7 @@ class DigitalAssetBase(BaseModel):
     license_terms: Optional[Dict[str, Any]] = None
     royalty_percentage: int = 250  # Default 2.5%
     blockchain_address: Optional[str] = None
+    nft_token_id: Optional[int] = None
 
 class DigitalAssetCreate(DigitalAssetBase):
     links: List[AssetLinkCreate] = []

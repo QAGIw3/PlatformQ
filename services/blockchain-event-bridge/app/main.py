@@ -9,11 +9,14 @@ import asyncio
 import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
+from pydantic import BaseModel
+import time
 
 from pyignite import Client as IgniteClient
 import pulsar
 from prometheus_client import Counter, Histogram, generate_latest
 from fastapi.responses import PlainTextResponse
+import web3
 
 from platformq_shared import get_logger, init_tracing
 from platformq_shared.config import get_config
@@ -488,6 +491,114 @@ def aggregate_proposal_states(chain_states: List[Dict[str, Any]], strategy: str)
         "participatingChains": len(chain_states),
         "status": "APPROVED" if approval_rate >= 50 else "REJECTED"
     }
+
+
+class MintNFTRequest(BaseModel):
+    chain_id: str
+    to: str
+    uri: str
+    royalty_recipient: str
+    royalty_fraction: int
+
+class CreateLicenseOfferRequest(BaseModel):
+    chain_id: str
+    asset_id: str
+    price: int
+    duration: int
+    license_type: str
+    max_usage: int
+    royalty_percentage: int
+
+class PurchaseLicenseRequest(BaseModel):
+    chain_id: str
+    asset_id: str
+    offer_index: int
+    license_type: int
+
+class DistributeRoyaltyRequest(BaseModel):
+    chain_id: str
+    token_id: int
+    sale_price: int
+
+@app.post("/api/v1/marketplace/mint-nft")
+@require_api_key
+async def mint_nft(request: MintNFTRequest):
+    try:
+        # Check cache first
+        cache_key = f"mint_{request.chain_id}_{request.to}_{request.uri}"
+        cache = ignite_client.get_or_create_cache('marketplace_transactions')
+        cached_result = cache.get(cache_key)
+        
+        if cached_result and cached_result.get('timestamp', 0) > time.time() - 300:  # 5 min cache
+            return cached_result['data']
+        
+        tx_hash = await chain_manager.mint_asset_nft(
+            request.chain_id,
+            request.to,
+            request.uri,
+            request.royalty_recipient,
+            request.royalty_fraction
+        )
+        # Wait for transaction receipt
+        w3 = web3.Web3(web3.Web3.HTTPProvider('http://ethereum-node:8545'))  # Assume Ethereum node URL
+        receipt = w3.eth.wait_for_transaction_receipt(tx_hash)
+        # Extract token_id from Transfer event
+        contract = w3.eth.contract(address='PLATFORM_ASSET_ADDRESS', abi=PLATFORM_ASSET_ABI)  # Assume these are defined
+        logs = contract.events.Transfer().process_receipt(receipt)
+        token_id = logs[0]['args']['tokenId']
+        
+        result = {"token_id": token_id}
+        
+        # Cache result
+        cache.put(cache_key, {'data': result, 'timestamp': time.time()})
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/marketplace/create-license-offer")
+@require_api_key
+async def create_license_offer(request: CreateLicenseOfferRequest):
+    try:
+        tx_hash = await chain_manager.create_license_offer(
+            request.chain_id,
+            request.asset_id,
+            request.price,
+            request.duration,
+            request.license_type,
+            request.max_usage,
+            request.royalty_percentage
+        )
+        return {"tx_hash": tx_hash}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/marketplace/purchase-license")
+@require_api_key
+async def purchase_license(request: PurchaseLicenseRequest):
+    try:
+        tx_hash = await chain_manager.purchase_license(
+            request.chain_id,
+            request.asset_id,
+            request.offer_index,
+            request.license_type
+        )
+        return {"tx_hash": tx_hash}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/marketplace/distribute-royalty")
+@require_api_key
+async def distribute_royalty(request: DistributeRoyaltyRequest):
+    try:
+        tx_hash = await chain_manager.distribute_royalty(
+            request.chain_id,
+            request.token_id,
+            request.sale_price
+        )
+        return {"tx_hash": tx_hash}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 if __name__ == "__main__":

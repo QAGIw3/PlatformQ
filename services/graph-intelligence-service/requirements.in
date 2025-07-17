@@ -48,3 +48,12 @@ redis
 celery
 flower
 pyarrow 
+
+# Graph analytics libraries
+python-louvain
+graphframes
+scikit-learn
+
+# Additional required libraries
+httpx
+asyncio-throttle 

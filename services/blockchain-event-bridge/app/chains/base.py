@@ -83,6 +83,26 @@ class ChainAdapter(ABC):
     async def execute_proposal(self, proposal_id: str) -> str:
         """Execute a passed proposal"""
         pass
+
+    @abstractmethod
+    async def mint_asset_nft(self, to: str, uri: str, royalty_recipient: str, royalty_fraction: int) -> str:
+        """Mints a new asset NFT."""
+        pass
+
+    @abstractmethod
+    async def create_license_offer(self, asset_id: str, price: int, duration: int, license_type: str, max_usage: int, royalty_percentage: int) -> str:
+        """Creates a new license offer for an asset."""
+        pass
+
+    @abstractmethod
+    async def purchase_license(self, asset_id: str, offer_index: int, license_type: int) -> str:
+        """Purchases a license for an asset."""
+        pass
+
+    @abstractmethod
+    async def distribute_royalty(self, token_id: int, sale_price: int) -> str:
+        """Distributes royalties for a sale."""
+        pass
     
     def register_event_handler(self, event_name: str, handler: Callable):
         """Register a handler for a specific event type"""

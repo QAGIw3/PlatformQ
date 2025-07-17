@@ -1,0 +1,119 @@
+replicaCount: 2
+
+image:
+  repository: platformq/blockchain-event-bridge
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+  hosts:
+    - host: blockchain-bridge.platformq.io
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: blockchain-bridge-tls
+      hosts:
+        - blockchain-bridge.platformq.io
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+env:
+  - name: PULSAR_URL
+    value: "pulsar://pulsar:6650"
+  - name: IGNITE_HOSTS
+    value: "ignite-0.ignite:10800,ignite-1.ignite:10800"
+
+chains:
+  ethereum:
+    enabled: true
+    nodeUrl: "wss://mainnet.infura.io/ws/v3/YOUR_KEY"
+    platformAssetAddress: "0x..."
+    usageLicenseAddress: "0x..."
+    royaltyDistributorAddress: "0x..."
+    privateKeySecret: ethereum-private-key
+    
+  polygon:
+    enabled: true
+    nodeUrl: "wss://polygon-mainnet.infura.io/ws/v3/YOUR_KEY"
+    platformAssetAddress: "0x..."
+    usageLicenseAddress: "0x..."
+    royaltyDistributorAddress: "0x..."
+    privateKeySecret: polygon-private-key
+    
+  avalanche:
+    enabled: true
+    nodeUrl: "https://api.avax.network/ext/bc/C/rpc"
+    platformAssetAddress: "0x..."
+    usageLicenseAddress: "0x..."
+    royaltyDistributorAddress: "0x..."
+    privateKeySecret: avalanche-private-key
+    
+  solana:
+    enabled: true
+    rpcUrl: "https://api.mainnet-beta.solana.com"
+    platformAssetProgram: "..."
+    usageLicenseProgram: "..."
+    royaltyDistributorProgram: "..."
+    privateKeySecret: solana-private-key
+    
+  cosmos:
+    enabled: false
+    nodeUrl: "https://cosmos-rpc.quickapi.com"
+    
+  near:
+    enabled: false
+    nodeUrl: "https://rpc.mainnet.near.org"
+    
+  hyperledger:
+    enabled: false
+    networkProfile: "/config/network-profile.yaml"
+
+secrets:
+  - name: ethereum-private-key
+    key: private-key
+  - name: polygon-private-key
+    key: private-key
+  - name: avalanche-private-key
+    key: private-key
+  - name: solana-private-key
+    key: private-key
+
+configMaps:
+  - name: contract-abis
+    data:
+      platform-asset-abi.json: |
+        [{"inputs":[],"name":"safeMint","outputs":[],"stateMutability":"nonpayable","type":"function"}]
+      usage-license-abi.json: |
+        [{"inputs":[],"name":"createLicenseOffer","outputs":[],"stateMutability":"nonpayable","type":"function"}]
+      royalty-distributor-abi.json: |
+        [{"inputs":[],"name":"distributeRoyalty","outputs":[],"stateMutability":"payable","type":"function"}]
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    path: /metrics 

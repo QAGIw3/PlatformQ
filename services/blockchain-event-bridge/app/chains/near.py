@@ -362,3 +362,89 @@ class NEARAdapter(ChainAdapter):
     def format_address(self, address: str) -> str:
         """Format NEAR account ID"""
         return address.lower() 
+
+    async def mint_asset_nft(self, to: str, uri: str, royalty_recipient: str, royalty_fraction: int) -> str:
+        """Mints NFT on NEAR"""
+        contract_id = self.config.get("platform_asset_contract", "platform-asset.near")
+        
+        # Create transaction
+        tx = await self.account.function_call(
+            contract_id,
+            "mint",
+            {
+                "receiver_id": to,
+                "metadata": {
+                    "media": uri,
+                    "copies": 1
+                },
+                "royalty": {
+                    royalty_recipient: royalty_fraction
+                }
+            },
+            gas=100000000000000,  # 100 TGas
+            amount=10000000000000000000000  # 0.01 NEAR for storage
+        )
+        
+        return tx.transaction.hash
+
+    async def create_license_offer(self, asset_id: str, price: int, duration: int, license_type: str, max_usage: int, royalty_percentage: int) -> str:
+        """Creates license offer on NEAR"""
+        contract_id = self.config.get("usage_license_contract", "usage-license.near")
+        
+        tx = await self.account.function_call(
+            contract_id,
+            "create_license_offer",
+            {
+                "asset_id": asset_id,
+                "price": str(price),
+                "duration": duration,
+                "license_type": license_type,
+                "max_usage": max_usage,
+                "royalty_percentage": royalty_percentage
+            },
+            gas=50000000000000  # 50 TGas
+        )
+        
+        return tx.transaction.hash
+
+    async def purchase_license(self, asset_id: str, offer_index: int, license_type: int) -> str:
+        """Purchase license on NEAR"""
+        contract_id = self.config.get("usage_license_contract", "usage-license.near")
+        
+        # Get offer details to know the price
+        offer = await self.connection.view_function(
+            contract_id,
+            "get_offer",
+            {"asset_id": asset_id, "index": offer_index}
+        )
+        
+        tx = await self.account.function_call(
+            contract_id,
+            "purchase_license",
+            {
+                "asset_id": asset_id,
+                "offer_index": offer_index,
+                "license_type": license_type
+            },
+            gas=100000000000000,  # 100 TGas
+            amount=int(offer["price"])  # Attach the price
+        )
+        
+        return tx.transaction.hash
+
+    async def distribute_royalty(self, token_id: int, sale_price: int) -> str:
+        """Distribute royalty on NEAR"""
+        contract_id = self.config.get("royalty_distributor_contract", "royalty-distributor.near")
+        
+        tx = await self.account.function_call(
+            contract_id,
+            "distribute_royalty",
+            {
+                "token_id": str(token_id),
+                "sale_price": str(sale_price)
+            },
+            gas=50000000000000,  # 50 TGas
+            amount=sale_price  # Attach the royalty amount
+        )
+        
+        return tx.transaction.hash 

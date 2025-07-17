@@ -78,6 +78,8 @@ class DigitalAsset(Base):
     royalty_percentage = Column(Integer, default=250)  # Basis points (250 = 2.5%)
     blockchain_address = Column(String, nullable=True)  # Owner's blockchain address
     smart_contract_addresses = Column(JsonBCompat, default=dict)  # {royalty: "0x...", license: "0x..."}
+    nft_token_id = Column(BigInteger, nullable=True)  # NFT token ID on the blockchain
+    version = Column(Integer, default=0, nullable=False)
 
     # Relationships
     processing_rule = relationship("AssetProcessingRule", back_populates="assets")

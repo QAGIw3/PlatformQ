@@ -1,11 +1,20 @@
 import React, { useState, useEffect } from 'react';
 import { Card, Row, Col, Tag, Button, Select, InputNumber, Slider, Empty, Spin, Modal, Form, Input, message, Statistic, Space, Tooltip, Badge } from 'antd';
-import { ShoppingCartOutlined, DollarOutlined, FileProtectOutlined, ClockCircleOutlined, SafetyOutlined, EyeOutlined, DownloadOutlined, LockOutlined } from '@ant-design/icons';
+import { ShoppingCartOutlined, DollarOutlined, FileProtectOutlined, ClockCircleOutlined, SafetyOutlined, EyeOutlined, DownloadOutlined, LockOutlined, WalletOutlined } from '@ant-design/icons';
 import api from '../../api/api';
 import './Marketplace.css';
+import Web3 from 'web3';
+import { ethers } from 'ethers';
 
 const { Option } = Select;
 const { Meta } = Card;
+
+const SUPPORTED_CHAINS = {
+  ethereum: { name: 'Ethereum', chainId: '0x1' },
+  polygon: { name: 'Polygon', chainId: '0x89' },
+  avalanche: { name: 'Avalanche', chainId: '0xa86a' },
+  arbitrum: { name: 'Arbitrum', chainId: '0xa4b1' }
+};
 
 /**
  * Marketplace Component
@@ -20,18 +29,24 @@ const { Meta } = Card;
  * - Asset listing with customizable royalty settings
  * - Price filtering and sorting
  * - Responsive grid layout
+ * - Multi-chain support with wallet integration
  * 
  * State Management:
  * - assets: Array of marketplace assets fetched from backend
  * - filters: Object containing all filter criteria
  * - selectedAsset: Currently selected asset for purchase/license
  * - Modal visibility states for different workflows
+ * - walletAddress: Connected wallet address
+ * - selectedChain: Currently selected blockchain
  * 
  * @component
  */
 const Marketplace = () => {
   const [assets, setAssets] = useState([]);
   const [loading, setLoading] = useState(true);
+  const [walletAddress, setWalletAddress] = useState(null);
+  const [selectedChain, setSelectedChain] = useState('ethereum');
+  const [web3, setWeb3] = useState(null);
   const [filters, setFilters] = useState({
     forSale: true,
     licensable: null,
@@ -51,7 +66,48 @@ const Marketplace = () => {
 
   useEffect(() => {
     fetchMarketplaceAssets();
+    initWeb3();
   }, [filters]);
+
+  const initWeb3 = async () => {
+    if (window.ethereum) {
+      const web3Instance = new Web3(window.ethereum);
+      setWeb3(web3Instance);
+    }
+  };
+
+  const connectWallet = async () => {
+    if (!window.ethereum) {
+      message.error('Please install MetaMask!');
+      return;
+    }
+
+    try {
+      const accounts = await window.ethereum.request({ method: 'eth_requestAccounts' });
+      setWalletAddress(accounts[0]);
+      message.success('Wallet connected successfully!');
+    } catch (error) {
+      console.error('Failed to connect wallet:', error);
+      message.error('Failed to connect wallet');
+    }
+  };
+
+  const switchChain = async (chainKey) => {
+    if (!window.ethereum) return;
+
+    const chain = SUPPORTED_CHAINS[chainKey];
+    try {
+      await window.ethereum.request({
+        method: 'wallet_switchEthereumChain',
+        params: [{ chainId: chain.chainId }],
+      });
+      setSelectedChain(chainKey);
+      message.success(`Switched to ${chain.name}`);
+    } catch (error) {
+      console.error('Failed to switch chain:', error);
+      message.error('Failed to switch chain');
+    }
+  };
 
   /**
    * Fetches marketplace assets from the backend with applied filters
@@ -103,10 +159,21 @@ const Marketplace = () => {
 
   const handlePurchaseAsset = async (values) => {
     try {
-      // In a real implementation, this would initiate blockchain transaction
-      message.info('Purchase functionality coming soon!');
+      if (!walletAddress) {
+        message.error('Please connect your wallet first');
+        return;
+      }
+      
+      const response = await api.post('/blockchain-event-bridge/api/v1/marketplace/purchase-license', {
+        chain_id: selectedChain,
+        asset_id: selectedAsset.cid,
+        offer_index: 0,
+        license_type: 0  // Perpetual
+      });
+      message.success('Asset purchased successfully! Tx: ' + response.data.tx_hash);
       setPurchaseModalVisible(false);
       purchaseForm.resetFields();
+      fetchMarketplaceAssets();
     } catch (error) {
       console.error('Purchase failed:', error);
       message.error('Failed to complete purchase');
@@ -115,8 +182,18 @@ const Marketplace = () => {
 
   const handlePurchaseLicense = async (values) => {
     try {
-      // In a real implementation, this would interact with the UsageLicense smart contract
-      message.info('License purchase functionality coming soon!');
+      if (!walletAddress) {
+        message.error('Please connect your wallet first');
+        return;
+      }
+      
+      const response = await api.post('/blockchain-event-bridge/api/v1/marketplace/purchase-license', {
+        chain_id: selectedChain,
+        asset_id: selectedAsset.cid,
+        offer_index: 0,
+        license_type: values.licenseType || 1
+      });
+      message.success('License purchased successfully! Tx: ' + response.data.tx_hash);
       setLicenseModalVisible(false);
       licenseForm.resetFields();
     } catch (error) {
@@ -249,8 +326,32 @@ const Marketplace = () => {
   return (
     <div className="marketplace">
       <Card className="marketplace-header">
-        <h1>Digital Asset Marketplace</h1>
-        <p>Buy, sell, and license digital assets with automatic royalty distribution</p>
+        <Row justify="space-between" align="middle">
+          <Col>
+            <h1>Digital Asset Marketplace</h1>
+            <p>Buy, sell, and license digital assets with automatic royalty distribution</p>
+          </Col>
+          <Col>
+            <Space>
+              <Select
+                value={selectedChain}
+                onChange={switchChain}
+                style={{ width: 150 }}
+              >
+                {Object.entries(SUPPORTED_CHAINS).map(([key, chain]) => (
+                  <Option key={key} value={key}>{chain.name}</Option>
+                ))}
+              </Select>
+              {walletAddress ? (
+                <Badge status="success" text={`${walletAddress.slice(0, 6)}...${walletAddress.slice(-4)}`} />
+              ) : (
+                <Button icon={<WalletOutlined />} onClick={connectWallet}>
+                  Connect Wallet
+                </Button>
+              )}
+            </Space>
+          </Col>
+        </Row>
         
         <Row gutter={[16, 16]} className="marketplace-filters">
           <Col xs={24} sm={12} md={6}>

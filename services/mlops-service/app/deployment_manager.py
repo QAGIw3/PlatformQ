@@ -8,6 +8,9 @@ import logging
 from typing import Dict, Any, List, Optional
 from datetime import datetime
 import httpx
+import hashlib
+import json
+import uuid
 
 from mlflow.tracking import MlflowClient
 
@@ -41,7 +44,10 @@ class DeploymentManager:
             version = model_version.version
         else:
             model_version = self.mlflow_client.get_model_version(full_model_name, version)
-            
+        
+        # Generate watermark for IP protection
+        watermark = self._generate_watermark(tenant_id, model_name, version)
+        
         # Prepare deployment request
         deployment_request = {
             "model_name": model_name,
@@ -60,7 +66,8 @@ class DeploymentManager:
                 "ENVIRONMENT": environment,
                 "MODEL_NAME": model_name,
                 "MODEL_VERSION": version,
-                "TENANT_ID": tenant_id
+                "TENANT_ID": tenant_id,
+                "MODEL_WATERMARK": watermark
             }
         }
         
@@ -182,3 +189,22 @@ class DeploymentManager:
             "rollback": True,
             "previous_version": target_version
         } 
+
+    def _generate_watermark(self, tenant_id: str, model_name: str, version: str) -> str:
+        """Generate unique watermark for model IP protection"""
+        watermark_data = {
+            "tenant_id": tenant_id,
+            "model_name": model_name,
+            "version": version,
+            "timestamp": datetime.utcnow().isoformat(),
+            "deployment_id": str(uuid.uuid4())
+        }
+        
+        # Create hash-based watermark
+        watermark_string = json.dumps(watermark_data, sort_keys=True)
+        watermark_hash = hashlib.sha256(watermark_string.encode()).hexdigest()
+        
+        # Store watermark for verification
+        self.deployments[f"watermark_{watermark_hash}"] = watermark_data
+        
+        return watermark_hash 

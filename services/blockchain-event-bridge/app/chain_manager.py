@@ -292,3 +292,41 @@ class ChainManager:
             strategy = ExecutionStrategyFactory.get_default_strategy(proposal_type)
             
         return await self.executor.schedule_execution(proposal_id, strategy) 
+
+    async def execute_proposal(self, chain_id: str, proposal_id: str) -> str:
+        adapter = self.chains.get(chain_id)
+        if not adapter:
+            raise ValueError(f"Chain {chain_id} not found")
+        return await adapter.execute_proposal(proposal_id)
+
+    async def mint_asset_nft(self, chain_id: str, to: str, uri: str, royalty_recipient: str, royalty_fraction: int) -> str:
+        adapter = self.chains.get(chain_id)
+        if not adapter:
+            raise ValueError(f"Chain {chain_id} not found")
+        retries = 0
+        while retries < 3:
+            try:
+                return await adapter.mint_asset_nft(to, uri, royalty_recipient, royalty_fraction)
+            except Exception as e:
+                retries += 1
+                if retries == 3:
+                    raise
+                await asyncio.sleep(2 ** retries)  # Exponential backoff
+
+    async def create_license_offer(self, chain_id: str, asset_id: str, price: int, duration: int, license_type: str, max_usage: int, royalty_percentage: int) -> str:
+        adapter = self.chains.get(chain_id)
+        if not adapter:
+            raise ValueError(f"Chain {chain_id} not found")
+        return await adapter.create_license_offer(asset_id, price, duration, license_type, max_usage, royalty_percentage)
+
+    async def purchase_license(self, chain_id: str, asset_id: str, offer_index: int, license_type: int) -> str:
+        adapter = self.chains.get(chain_id)
+        if not adapter:
+            raise ValueError(f"Chain {chain_id} not found")
+        return await adapter.purchase_license(asset_id, offer_index, license_type)
+
+    async def distribute_royalty(self, chain_id: str, token_id: int, sale_price: int) -> str:
+        adapter = self.chains.get(chain_id)
+        if not adapter:
+            raise ValueError(f"Chain {chain_id} not found")
+        return await adapter.distribute_royalty(token_id, sale_price) 

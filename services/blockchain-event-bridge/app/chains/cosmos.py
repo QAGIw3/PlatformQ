@@ -367,3 +367,72 @@ class CosmosAdapter(ChainAdapter):
     def format_address(self, address: str) -> str:
         """Format Cosmos address"""
         return address 
+
+    async def mint_asset_nft(self, to: str, uri: str, royalty_recipient: str, royalty_fraction: int) -> str:
+        """Mints NFT on Cosmos chain"""
+        # Cosmos-specific implementation
+        contract = self.contracts.get("platform_asset")
+        if not contract:
+            raise Exception("Platform asset contract not loaded")
+        
+        # Create and send transaction
+        tx = contract.execute({
+            "mint": {
+                "to": to,
+                "uri": uri,
+                "royalty_recipient": royalty_recipient,
+                "royalty_fraction": royalty_fraction
+            }
+        }, sender=self.wallet)
+        
+        return tx.tx_hash
+
+    async def create_license_offer(self, asset_id: str, price: int, duration: int, license_type: str, max_usage: int, royalty_percentage: int) -> str:
+        """Creates license offer on Cosmos"""
+        contract = self.contracts.get("usage_license")
+        if not contract:
+            raise Exception("Usage license contract not loaded")
+            
+        tx = contract.execute({
+            "create_offer": {
+                "asset_id": asset_id,
+                "price": str(price),
+                "duration": duration,
+                "license_type": license_type,
+                "max_usage": max_usage,
+                "royalty_percentage": royalty_percentage
+            }
+        }, sender=self.wallet)
+        
+        return tx.tx_hash
+
+    async def purchase_license(self, asset_id: str, offer_index: int, license_type: int) -> str:
+        """Purchase license on Cosmos"""
+        contract = self.contracts.get("usage_license")
+        if not contract:
+            raise Exception("Usage license contract not loaded")
+            
+        tx = contract.execute({
+            "purchase_license": {
+                "asset_id": asset_id,
+                "offer_index": offer_index,
+                "license_type": license_type
+            }
+        }, sender=self.wallet)
+        
+        return tx.tx_hash
+
+    async def distribute_royalty(self, token_id: int, sale_price: int) -> str:
+        """Distribute royalty on Cosmos"""
+        contract = self.contracts.get("royalty_distributor")
+        if not contract:
+            raise Exception("Royalty distributor contract not loaded")
+            
+        tx = contract.execute({
+            "distribute": {
+                "token_id": token_id,
+                "sale_price": str(sale_price)
+            }
+        }, sender=self.wallet)
+        
+        return tx.tx_hash 

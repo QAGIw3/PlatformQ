@@ -14,6 +14,7 @@ import hashlib
 import json
 import httpx
 from ...utils.cid import compute_cid
+from ...config import settings
 
 logger = logging.getLogger(__name__)
 
@@ -145,7 +146,7 @@ def is_high_value_asset(asset_type: str, asset_value: float) -> bool:
     return asset_value >= threshold
 
 @router.post("/digital-assets", response_model=schemas.DigitalAsset)
-def create_digital_asset(
+async def create_digital_asset(
     asset: schemas.DigitalAssetCreate,
     request: Request,
     repo: DigitalAssetRepository = Depends(get_digital_asset_repository),
@@ -154,6 +155,52 @@ def create_digital_asset(
     cid = compute_cid(asset)
     db_asset = repo.add(asset, owner_id=context["user"].id)
     
+    # Mint NFT
+    user = context["user"]
+    if hasattr(user, "blockchain_address") and user.blockchain_address:
+        async with httpx.AsyncClient() as client:
+            mint_data = {
+                "chain_id": "ethereum",  # Assuming Ethereum
+                "to": user.blockchain_address,
+                "uri": f"ipfs://{db_asset.cid}",
+                "royalty_recipient": user.blockchain_address,
+                "royalty_fraction": 250  # 2.5%
+            }
+            response = await client.post(f"{settings.BLOCKCHAIN_BRIDGE_URL}/api/v1/marketplace/mint-nft", json=mint_data)
+            if response.status_code == 200:
+                token_id = response.json()["token_id"]
+                db_asset.nft_token_id = token_id
+                db.commit()
+                db.refresh(db_asset)
+                
+                # Issue VC tied to NFT
+                try:
+                    vc_data = {
+                        "subject_id": user.blockchain_address,
+                        "credential_type": "NFTOwnership",
+                        "claims": {
+                            "asset_cid": db_asset.cid,
+                            "nft_token_id": token_id,
+                            "chain": "ethereum",
+                            "contract_address": settings.PLATFORM_ASSET_ADDRESS,
+                            "minted_at": datetime.utcnow().isoformat()
+                        }
+                    }
+                    vc_response = await client.post(
+                        f"{settings.VERIFIABLE_CREDENTIAL_SERVICE_URL}/api/v1/credentials/issue",
+                        json=vc_data
+                    )
+                    if vc_response.status_code == 200:
+                        logger.info(f"VC issued for NFT {token_id}")
+                    else:
+                        logger.warning(f"Failed to issue VC for NFT {token_id}")
+                except Exception as e:
+                    logger.error(f"Error issuing VC: {e}")
+            else:
+                logger.warning(f"Failed to mint NFT for asset {db_asset.cid}: {response.text}")
+    else:
+        logger.warning(f"No blockchain address for user {user.id}, skipping NFT mint")
+        
     publisher: EventPublisher = request.app.state.event_publisher
     if publisher:
         event = DigitalAssetCreated(

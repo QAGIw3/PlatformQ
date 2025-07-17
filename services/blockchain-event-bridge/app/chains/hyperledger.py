@@ -270,3 +270,67 @@ class HyperledgerAdapter(ChainAdapter):
     def format_address(self, address: str) -> str:
         """Format Fabric identity"""
         return address 
+
+    async def mint_asset_nft(self, to: str, uri: str, royalty_recipient: str, royalty_fraction: int) -> str:
+        """Mints NFT on Hyperledger Fabric"""
+        contract = self.contracts.get("platform_asset")
+        if not contract:
+            raise Exception("Platform asset chaincode not loaded")
+        
+        # Submit transaction to chaincode
+        response = await contract.submit_transaction(
+            'MintNFT',
+            to,
+            uri,
+            royalty_recipient,
+            str(royalty_fraction)
+        )
+        
+        return response.decode('utf-8')
+
+    async def create_license_offer(self, asset_id: str, price: int, duration: int, license_type: str, max_usage: int, royalty_percentage: int) -> str:
+        """Creates license offer on Hyperledger"""
+        contract = self.contracts.get("usage_license")
+        if not contract:
+            raise Exception("Usage license chaincode not loaded")
+        
+        response = await contract.submit_transaction(
+            'CreateLicenseOffer',
+            asset_id,
+            str(price),
+            str(duration),
+            license_type,
+            str(max_usage),
+            str(royalty_percentage)
+        )
+        
+        return response.decode('utf-8')
+
+    async def purchase_license(self, asset_id: str, offer_index: int, license_type: int) -> str:
+        """Purchase license on Hyperledger"""
+        contract = self.contracts.get("usage_license")
+        if not contract:
+            raise Exception("Usage license chaincode not loaded")
+        
+        response = await contract.submit_transaction(
+            'PurchaseLicense',
+            asset_id,
+            str(offer_index),
+            str(license_type)
+        )
+        
+        return response.decode('utf-8')
+
+    async def distribute_royalty(self, token_id: int, sale_price: int) -> str:
+        """Distribute royalty on Hyperledger"""
+        contract = self.contracts.get("royalty_distributor")
+        if not contract:
+            raise Exception("Royalty distributor chaincode not loaded")
+        
+        response = await contract.submit_transaction(
+            'DistributeRoyalty',
+            str(token_id),
+            str(sale_price)
+        )
+        
+        return response.decode('utf-8') 
