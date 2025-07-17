@@ -1,0 +1,10 @@
+{
+  "namespace": "com.platformq.events",
+  "type": "record",
+  "name": "TrustQueryEvent",
+  "fields": [
+    {"name": "query_id", "type": "string"},
+    {"name": "query_text", "type": "string"},
+    {"name": "trust_filter", "type": "float"}
+  ]
+} 

@@ -1,0 +1,13 @@
+{
+  "namespace": "com.platformq.events",
+  "type": "record",
+  "name": "ResourceAnomalyEvent",
+  "fields": [
+    {"name": "anomaly_id", "type": "string"},
+    {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+    {"name": "service_name", "type": "string"},
+    {"name": "resource_type", "type": "string"},
+    {"name": "severity", "type": "float"},
+    {"name": "details", "type": {"type": "map", "values": "string"}}
+  ]
+} 

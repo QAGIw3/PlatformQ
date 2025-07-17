@@ -1,0 +1,3 @@
+edge:
+  enabled: true
+  resources: {cpu: '500m', memory: '1Gi'} 

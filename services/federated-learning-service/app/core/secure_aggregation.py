@@ -33,6 +33,7 @@ class AggregationStrategy(Enum):
     SECURE_AGG = "SecureAgg"  # Secure Aggregation
     DP_FED_AVG = "DPFedAvg"  # Differentially Private FedAvg
     BYZANTINE_ROBUST = "ByzantineRobust"  # Byzantine-robust aggregation
+    FED_GRAPH_AVG = "FedGraphAvg"  # Federated Graph Averaging
 
 
 @dataclass
@@ -198,6 +199,8 @@ class SecureAggregationProtocol:
             result = self._dp_federated_averaging(session, round_updates)
         elif self.strategy == AggregationStrategy.BYZANTINE_ROBUST:
             result = self._byzantine_robust_aggregation(session, round_updates)
+        elif self.strategy == AggregationStrategy.FED_GRAPH_AVG:
+            result = self._federated_graph_averaging(session, round_updates)
         else:
             raise ValueError(f"Unknown strategy: {self.strategy}")
         
@@ -492,6 +495,12 @@ class SecureAggregationProtocol:
             privacy_budget_used=0.0,
             aggregation_time=0.0
         )
+    
+    def _federated_graph_averaging(self, session, round_updates):
+        # Similar to FedAvg but for graph embeddings
+        embeddings = [update.encrypted_embeddings for update in round_updates.values()]
+        aggregated = self.aggregator.aggregate_encrypted_updates(embeddings)
+        return AggregationResult(aggregated_weights=aggregated)
     
     def _verify_update_signature(self, update: ParticipantUpdate) -> bool:
         """Verify the signature of a model update"""

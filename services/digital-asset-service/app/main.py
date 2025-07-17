@@ -12,6 +12,14 @@ from platformq_shared.events import FunctionExecutionCompleted
 import uuid
 import logging
 from .messaging.vc_consumer import asset_vc_consumer
+from .core.config import settings
+from .db.session import SessionLocal, engine
+from .repository import AssetRepository
+from .messaging.data_lake_consumer import DataLakeAssetConsumer
+import asyncio
+from typing import Optional, Dict
+from fastapi import FastAPI
+from contextlib import asynccontextmanager
 
 logger = logging.getLogger(__name__)
 
@@ -79,12 +87,40 @@ def result_consumer_loop(app):
                 consumer.negative_acknowledge(msg)
 
 
-app = create_base_app(
-    service_name="digital-asset-service",
-    db_session_dependency=get_db_session,
-    api_key_crud_dependency=get_api_key_crud_placeholder,
-    user_crud_dependency=get_user_crud_placeholder,
-    password_verifier_dependency=get_password_verifier_placeholder,
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    global asset_repository, data_lake_consumer, consumer_task
+    
+    # Startup
+    logger.info("Initializing Digital Asset Service...")
+    
+    # In a real app, you'd use a dependency injection system
+    # to provide the db session to the repository.
+    db_session_factory = SessionLocal
+    asset_repository = AssetRepository(db_session_factory)
+    
+    data_lake_consumer = DataLakeAssetConsumer(asset_repository)
+    await data_lake_consumer.start()
+    
+    consumer_task = asyncio.create_task(data_lake_consumer.consume_messages())
+    
+    logger.info("Digital Asset Service initialized successfully")
+    yield
+    # Shutdown
+    logger.info("Shutting down Digital Asset Service...")
+    if consumer_task:
+        consumer_task.cancel()
+    if data_lake_consumer:
+        await data_lake_consumer.close()
+    logger.info("Digital Asset Service shutdown complete")
+
+
+app = FastAPI(
+    title="PlatformQ Digital Asset Service",
+    description="Service for managing digital assets in the PlatformQ ecosystem.",
+    version="1.0.0",
+    lifespan=lifespan
 )
 
 @app.on_event("startup")
@@ -123,3 +159,11 @@ except ImportError:
 @app.get("/")
 def read_root():
     return {"message": "digital-asset-service is running"}
+
+event_publisher = EventPublisher('pulsar://localhost:6650')
+
+def publish_event(topic: str, data: Dict):
+    event_publisher.publish(topic, data)
+
+async def automate_lifecycle(asset_id: str):
+    publish_event('asset_lifecycle', {'asset_id': asset_id})

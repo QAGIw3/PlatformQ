@@ -7,6 +7,8 @@ import os
 import sys
 import re
 import signal
+import threading
+import httpx
 
 from fastapi import FastAPI, Depends
 from pydantic import BaseModel
@@ -27,6 +29,9 @@ from platformq_shared.event_publisher import EventPublisher # We use it for crea
 from platformq_shared.events import UserCreatedEvent
 from pulsar.schema import AvroSchema
 from .nextcloud_provisioner import NextcloudProvisioner
+from pyignite import Client as IgniteClient
+from .scaling import AdaptiveScaler
+from .events import ResourceAnomalyEvent
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -67,6 +72,8 @@ def provision_tenant_endpoint(
     """
     Provision a new tenant.
     """
+    scaler = AdaptiveScaler(ignite_client, resource_cache)
+    scaler.initialize_tenant_resources(tenant_id)
     provision_tenant(
         tenant_id=request.tenant_id,
         tenant_name=request.tenant_name,
@@ -94,6 +101,26 @@ def get_tenant_from_topic(topic: str) -> str:
     if match:
         return match.group(1)
     return None
+
+def anomaly_consumer_loop():
+    client = pulsar.Client(PULSAR_URL)
+    consumer = client.subscribe('persistent://public/default/resource-anomalies', 'provisioning-sub', schema=AvroSchema(ResourceAnomalyEvent))
+    while True:
+        msg = consumer.receive()
+        anomaly = msg.value()
+        scaler.handle_anomaly(anomaly)
+        # Trigger Airflow DAG via HTTP to workflow-service
+        httpx.post('http://workflow-service:8000/api/v1/workflows/scaling_workflow/trigger', json={'anomaly': anomaly.dict()})
+        consumer.acknowledge(msg)
+
+ignite_client = IgniteClient()
+ignite_client.connect('ignite:10800')
+resource_cache = ignite_client.get_or_create_cache('resource_states')
+
+scaler = AdaptiveScaler(ignite_client, resource_cache)
+
+thread = threading.Thread(target=anomaly_consumer_loop)
+thread.start()
 
 def main():
     logger.info("Starting Tenant-Aware Provisioning Service...")

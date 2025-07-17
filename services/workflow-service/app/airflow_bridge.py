@@ -142,6 +142,11 @@ class AirflowBridge:
         except requests.exceptions.RequestException as e:
             logger.error(f"Failed to trigger DAG {dag_id}: {str(e)}")
             raise
+
+def federate_dag(dag_id: str, tenants: List[str]):
+    for tenant in tenants:
+        conf = {'tenant_id': tenant}
+        trigger_dag(dag_id, conf)
     
     def get_dag_run_status(self, dag_id: str, run_id: str) -> Dict[str, Any]:
         """

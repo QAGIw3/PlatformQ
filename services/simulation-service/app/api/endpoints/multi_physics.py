@@ -12,11 +12,26 @@ from platformq.shared.multi_physics_orchestrator import (
     OptimizationType
 )
 
+from crdt import CRDTManager
+from wasmtime import Store, Module, Instance
+
 router = APIRouter()
 logger = logging.getLogger(__name__)
 
 # Global job manager
 job_manager = MultiPhysicsJobManager()
+
+crdt_manager = CRDTManager()
+
+async def collaborative_edit(simulation_id: str, edit_data: Dict):
+    crdt_manager.apply_edit(simulation_id, edit_data)
+    # Trigger WASM preview
+    with open('preview.wasm', 'rb') as f:
+        wasmtime_bytes = f.read()
+    module = Module(store.engine, wasmtime_bytes)
+    instance = Instance(store, module, [])
+    preview = instance.exports['generate_preview'](edit_data)
+    return preview
 
 
 class DomainConfig(BaseModel):

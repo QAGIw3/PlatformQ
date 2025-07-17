@@ -31,6 +31,7 @@ import asyncpg
 from delta import DeltaTable
 
 from ..models.medallion_architecture import MedallionArchitecture, DataLayer
+from ..jobs import JobRepository
 
 logger = logging.getLogger(__name__)
 
@@ -413,10 +414,11 @@ class DataIngestionPipeline:
     
     def __init__(self,
                  spark: SparkSession,
-                 medallion: MedallionArchitecture):
+                 medallion: MedallionArchitecture,
+                 job_repository: JobRepository):
         self.spark = spark
         self.medallion = medallion
-        self.active_jobs: Dict[str, IngestionJob] = {}
+        self.job_repository = job_repository
         self.source_registry = {
             "pulsar": PulsarSource,
             "api": APISource,
@@ -439,7 +441,7 @@ class DataIngestionPipeline:
             errors=[]
         )
         
-        self.active_jobs[job_id] = job
+        self.job_repository.add_ingestion_job(job)
         
         # Start ingestion based on mode
         if config.ingestion_mode == "streaming":
@@ -626,16 +628,16 @@ class DataIngestionPipeline:
         
     async def stop_ingestion(self, job_id: str):
         """Stop an active ingestion job"""
-        if job_id in self.active_jobs:
-            job = self.active_jobs[job_id]
+        job = self.job_repository.get_ingestion_job(job_id)
+        if job:
             job.status = "stopped"
             job.completed_at = datetime.now(timezone.utc)
             logger.info(f"Stopped ingestion job {job_id}")
             
     def get_job_status(self, job_id: str) -> Optional[IngestionJob]:
         """Get status of an ingestion job"""
-        return self.active_jobs.get(job_id)
+        return self.job_repository.get_ingestion_job(job_id)
         
     def list_active_jobs(self) -> List[IngestionJob]:
         """List all active ingestion jobs"""
-        return [job for job in self.active_jobs.values() if job.status == "running"] 
+        return self.job_repository.list_active_ingestion_jobs() 

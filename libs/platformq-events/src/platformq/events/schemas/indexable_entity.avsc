@@ -1,0 +1,52 @@
+{
+    "type": "record",
+    "namespace": "io.platformq.events.search",
+    "name": "IndexableEntityEvent",
+    "version": "1",
+    "doc": "A generic event for entities that should be indexed for search.",
+    "fields": [
+        {
+            "name": "event_id", 
+            "type": "string", 
+            "doc": "Unique ID for this event."
+        },
+        {
+            "name": "event_timestamp", 
+            "type": "long", 
+            "logicalType": "timestamp-millis",
+            "doc": "Timestamp of the event in milliseconds."
+        },
+        {
+            "name": "entity_id",
+            "type": "string",
+            "doc": "The unique identifier of the entity being indexed."
+        },
+        {
+            "name": "entity_type",
+            "type": "string",
+            "doc": "The type of the entity (e.g., 'Project', 'Dataset', 'Model')."
+        },
+        {
+            "name": "event_type",
+            "type": {
+                "type": "enum",
+                "name": "EventType",
+                "symbols": ["CREATED", "UPDATED", "DELETED"]
+            },
+            "doc": "The type of event that occurred."
+        },
+        {
+            "name": "data",
+            "type": {
+                "type": "map",
+                "values": ["null", "string", "long", "double", "boolean", "bytes"]
+            },
+            "doc": "A map of key-value pairs representing the entity's metadata to be indexed."
+        },
+        {
+            "name": "source_service",
+            "type": "string",
+            "doc": "The service that originated the event."
+        }
+    ]
+} 

@@ -1,0 +1,22 @@
+import unittest
+import pulsar
+import time
+from platformq.events.schemas.resource_anomaly import ResourceAnomalyEvent
+
+class TestPulsarIntegration(unittest.TestCase):
+    def setUp(self):
+        self.client = pulsar.Client('pulsar://localhost:6650')
+        self.producer = self.client.create_producer('test-events')
+
+    def test_event_processing(self):
+        # Simulate event
+        self.producer.send('test data')
+        time.sleep(1)  # Wait for processing
+        # Check if anomaly published (mock check)
+        consumer = self.client.subscribe('resource-anomalies', 'test-sub')
+        msg = consumer.receive(timeout_millis=5000)
+        self.assertIsNotNone(msg)
+        consumer.acknowledge(msg)
+
+    def tearDown(self):
+        self.client.close() 

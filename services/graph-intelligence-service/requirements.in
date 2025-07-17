@@ -1,22 +1,50 @@
--r ../../requirements/base.in
-
-# Service-specific dependencies
-python-jose[cryptography]
-janusgraph-python
-cassandra-driver
-networkx
-
-# Development and Testing
-pytest
-black
-ruff
-redoc 
-
 -e ../../libs/platformq-shared
 -e ../../libs/platformq-events
 fastapi
 uvicorn
 pydantic
 gremlinpython
+requests
+python-dotenv
+tenacity
+asyncio
+aiohttp
+backoff
+janusgraph-python
+dse-graph
+psycopg2-binary
+numpy
+pandas
+scikit-learn
+nltk
+spacy
+gensim
+transformers
+torch
+tensorflow
+scipy
 networkx
-pandas 
+matplotlib
+seaborn
+plotly
+jupyterlab
+boto3
+pyspark
+pyignite
+py-fhe
+opacus
+syft
+cryptography
+paho-mqtt
+confluent-kafka
+pulsar-client
+aiopulsar
+apache-beam
+google-cloud-pubsub
+google-cloud-storage
+azure-eventhub
+azure-storage-blob
+redis
+celery
+flower
+pyarrow 

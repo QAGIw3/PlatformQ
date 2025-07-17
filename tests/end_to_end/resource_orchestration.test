@@ -1,0 +1,16 @@
+import http from 'k6/http';
+import { sleep, check } from 'k6';
+
+export default function () {
+  // Simulate high load
+  for (let i = 0; i < 100; i++) {
+    http.post('http://simulation-service:8000/simulate-load');
+    sleep(0.1);
+  }
+
+  sleep(5);  // Wait for detection
+
+  // Check if scaling occurred
+  let res = http.get('http://provisioning-service:8000/resources');
+  check(res, {'scaled up': (r) => r.json().scale_factor > 1.0});
+} 

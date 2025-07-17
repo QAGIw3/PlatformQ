@@ -4,3 +4,14 @@ image:
   repository: your-docker-registry/provisioning-service # CHANGE THIS
   pullPolicy: IfNotPresent
   tag: "latest" 
+
+ignite:
+  enabled: true
+  host: ignite
+  port: 10800
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70 

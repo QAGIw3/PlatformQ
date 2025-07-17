@@ -23,6 +23,9 @@ from pyspark.sql.types import StructType, StructField, StringType, TimestampType
 from delta import DeltaTable, configure_spark_with_delta_pip
 from minio import Minio
 from minio.error import S3Error
+from platformq.shared.event_publisher import EventPublisher
+from platformq.events import DatasetLineageEvent, IndexableEntityEvent
+import uuid
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +82,7 @@ class MedallionArchitecture:
     def __init__(self,
                  spark_session: SparkSession,
                  minio_client: Minio,
+                 event_publisher: EventPublisher,
                  bucket_name: str = "platformq-data-lake",
                  delta_enabled: bool = True):
         """
@@ -87,11 +91,13 @@ class MedallionArchitecture:
         Args:
             spark_session: Spark session for processing
             minio_client: MinIO client for object storage
+            event_publisher: Event publisher for sending lineage events
             bucket_name: MinIO bucket name
             delta_enabled: Whether to use Delta Lake format
         """
         self.spark = spark_session
         self.minio = minio_client
+        self.event_publisher = event_publisher
         self.bucket_name = bucket_name
         self.delta_enabled = delta_enabled
         
@@ -266,6 +272,18 @@ class MedallionArchitecture:
             # Register schema
             self._register_schema(dataset_name, df.schema)
             
+            # Publish lineage event
+            self._publish_lineage_event(
+                dataset_id=f"{dataset_name}_{timestamp}",
+                dataset_name=dataset_name,
+                layer=DataLayer.BRONZE,
+                source_datasets=[],
+                output_path=path,
+                schema=df.schema,
+                quality_results=quality_results,
+                triggered_by="ingestion_pipeline"
+            )
+
             logger.info(f"Ingested data to Bronze layer: {path}")
             return path
             
@@ -351,6 +369,18 @@ class MedallionArchitecture:
             )
             self.lineage_tracker.append(lineage)
             
+            # Publish lineage event
+            self._publish_lineage_event(
+                dataset_id=f"{dataset_name}_{timestamp}",
+                dataset_name=dataset_name,
+                layer=DataLayer.SILVER,
+                source_datasets=[bronze_path],
+                output_path=path,
+                schema=df.schema,
+                quality_results=quality_results,
+                triggered_by="processing_pipeline"
+            )
+
             logger.info(f"Processed data to Silver layer: {path}")
             return path
             
@@ -435,6 +465,18 @@ class MedallionArchitecture:
             )
             self.lineage_tracker.append(lineage)
             
+            # Publish lineage event
+            self._publish_lineage_event(
+                dataset_id=f"{dataset_name}_{timestamp}",
+                dataset_name=dataset_name,
+                layer=DataLayer.GOLD,
+                source_datasets=silver_paths,
+                output_path=path,
+                schema=df.schema,
+                quality_results=quality_results,
+                triggered_by="aggregation_pipeline"
+            )
+
             logger.info(f"Created Gold layer dataset: {path}")
             return path
             
@@ -743,3 +785,65 @@ class MedallionArchitecture:
                 logger.error(f"Error listing datasets in {layer.value}: {e}")
                 
         return catalog 
+
+    def _publish_lineage_event(self, dataset_id: str, dataset_name: str, layer: DataLayer, source_datasets: List[str],
+                               output_path: str, schema: StructType, quality_results: List[Dict], triggered_by: str):
+        # Publish lineage event
+        lineage_event = DatasetLineageEvent(
+            event_id=str(uuid.uuid4()),
+            event_timestamp=int(datetime.now(timezone.utc).timestamp() * 1000),
+            source_service="data-lake-service",
+            dataset_id=dataset_id,
+            dataset_name=dataset_name,
+            layer=layer.value,
+            source_datasets=source_datasets,
+            output_path=output_path,
+            schema={
+                "fields": [
+                    {"name": f.name, "type": str(f.dataType), "nullable": f.nullable}
+                    for f in schema.fields
+                ]
+            },
+            quality_report={
+                "overall_score": self._calculate_quality_score(quality_results),
+                "metrics": [
+                    {
+                        "name": r["name"],
+                        "dimension": "unknown",  # This could be improved
+                        "value": r.get("checked_count", 0) / r.get("original_count", 1),
+                        "passed": r["passed"]
+                    }
+                    for r in quality_results
+                ]
+            },
+            is_gold_layer=layer == DataLayer.GOLD,
+            triggered_by=triggered_by
+        )
+        self.event_publisher.publish(
+            topic="persistent://platformq/public/dataset-lineage",
+            schema_class=DatasetLineageEvent,
+            data=lineage_event
+        )
+
+        # Publish search event
+        search_event = IndexableEntityEvent(
+            event_id=str(uuid.uuid4()),
+            event_timestamp=int(datetime.now(timezone.utc).timestamp() * 1000),
+            source_service="data-lake-service",
+            entity_id=dataset_id,
+            entity_type="Dataset",
+            event_type="CREATED", # Or UPDATED, depending on the logic
+            data={
+                "name": dataset_name,
+                "description": f"{layer.value} layer dataset",
+                "layer": layer.value,
+                "path": output_path,
+                "quality_score": self._calculate_quality_score(quality_results),
+                "tags": [layer.value.lower(), "dataset"]
+            }
+        )
+        self.event_publisher.publish(
+            topic="persistent://platformq/public/search-indexing",
+            schema_class=IndexableEntityEvent,
+            data=search_event
+        ) 

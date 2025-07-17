@@ -1,0 +1,10 @@
+{
+  "namespace": "com.platformq.events",
+  "type": "record",
+  "name": "AssetLifecycleEvent",
+  "fields": [
+    {"name": "asset_id", "type": "string"},
+    {"name": "lifecycle_stage", "type": "string"},
+    {"name": "data", "type": {"type": "map", "values": "string"}}
+  ]
+} 

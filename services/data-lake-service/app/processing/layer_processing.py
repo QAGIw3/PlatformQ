@@ -22,6 +22,7 @@ import pandas as pd
 
 from ..models.medallion_architecture import MedallionArchitecture, DataLayer
 from ..quality.data_quality_framework import DataQualityFramework, QualityProfile
+from ..jobs import JobRepository
 
 logger = logging.getLogger(__name__)
 
@@ -514,12 +515,13 @@ class LayerProcessingPipeline:
     def __init__(self,
                  spark: SparkSession,
                  medallion: MedallionArchitecture,
-                 quality_framework: DataQualityFramework):
+                 quality_framework: DataQualityFramework,
+                 job_repository: JobRepository):
         self.spark = spark
         self.medallion = medallion
         self.quality_framework = quality_framework
         self.transformation_registry = TransformationRegistry()
-        self.active_jobs: Dict[str, ProcessingJob] = {}
+        self.job_repository = job_repository
         
     async def start_processing(self, config: ProcessingConfig) -> str:
         """Start a new processing job"""
@@ -534,7 +536,7 @@ class LayerProcessingPipeline:
             errors=[]
         )
         
-        self.active_jobs[job_id] = job
+        self.job_repository.add_processing_job(job)
         
         # Start processing in background
         asyncio.create_task(self._run_processing(job))
@@ -824,11 +826,11 @@ class LayerProcessingPipeline:
             
     def get_job_status(self, job_id: str) -> Optional[ProcessingJob]:
         """Get status of a processing job"""
-        return self.active_jobs.get(job_id)
+        return self.job_repository.get_processing_job(job_id)
         
     def list_active_jobs(self) -> List[ProcessingJob]:
         """List all active processing jobs"""
-        return [job for job in self.active_jobs.values() if job.status in ["pending", "running"]]
+        return self.job_repository.list_active_processing_jobs()
         
     def create_processing_schedule(self,
                                  config: ProcessingConfig,

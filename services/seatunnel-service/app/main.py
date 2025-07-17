@@ -30,6 +30,45 @@ from kubernetes.client.rest import ApiException
 from .pipeline_generator import PipelineGenerator, PipelineOptimizer, PipelinePattern
 import re
 from .monitoring import PipelineMonitor, AlertSeverity, IgniteMetricsStore
+from seatunnel import SeaTunnelPipeline
+
+# Add resource data sync pipeline
+resource_pipeline = SeaTunnelPipeline(
+    name="resource_data_sync",
+    sources=[{"type": "cassandra", "keyspace": "resources"}],
+    sinks=[{"type": "minio", "bucket": "historical_resources"}],
+    transforms=[{"type": "filter", "condition": "timestamp > now() - 1 day"}]
+)
+resource_pipeline.schedule("daily")
+
+graph_sync_pipeline = SeaTunnelPipeline(
+    name="graph_data_sync",
+    sources=[{"type": "janusgraph", "host": "janusgraph:8182"}],
+    sinks=[{"type": "minio", "bucket": "graph_data"}, {"type": "ignite", "host": "ignite:10800"}],
+    transforms=[{"type": "filter", "condition": "updated > now() - 1 hour"}]
+)
+graph_sync_pipeline.schedule("hourly")
+
+simulation_sync = SeaTunnelPipeline(
+    name="simulation_output_sync",
+    sources=[{"type": "pulsar", "topic": "simulation-events"}],
+    sinks=[{"type": "minio", "bucket": "simulation_outputs"}],
+    transforms=[{"type": "json_parse"}]
+)
+simulation_sync.schedule("continuous")
+
+opt_pipeline = SeaTunnelPipeline(
+    name="optimized_pipeline",
+    sources=[{}],
+    sinks=[{}],
+    transforms=[{}]
+)
+
+federated_workflow = SeaTunnelPipeline(
+    name="federated_workflow",
+    sources=[{}],
+    sinks=[{}]
+)
 
 # Database models
 Base = declarative_base()

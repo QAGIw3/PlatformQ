@@ -8,6 +8,7 @@ import logging
 from dataclasses import dataclass
 from enum import Enum
 from gremlin_python.process.graph_traversal import __
+import numpy as np
 
 logger = logging.getLogger(__name__)
 
@@ -231,6 +232,9 @@ class VerifiableTrustScoreService:
             user_did=user_did,
             blockchain_address=blockchain_address
         )
+
+    def federated_trust_score(self, embeddings):
+        return np.mean(embeddings)
 
     def consume_events(self):
         """

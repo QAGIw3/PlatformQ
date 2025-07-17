@@ -1,0 +1,9 @@
+{
+  "namespace": "com.platformq.events",
+  "type": "record",
+  "name": "PipelineOptRequest",
+  "fields": [
+    {"name": "pipeline_id", "type": "string"},
+    {"name": "metadata", "type": {"type": "map", "values": "string"}}
+  ]
+} 

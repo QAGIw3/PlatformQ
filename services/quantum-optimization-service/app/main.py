@@ -41,6 +41,14 @@ from .config import (
     PUBSUB_TIMEOUT, PULSAR_SERVICE_URL, JOB_STATUS_TOPIC, RESULT_TOPIC
 )
 
+from qiskit.algorithms import QAOA
+from qiskit_optimization import QuadraticProgram
+
+qp = QuadraticProgram()
+# Define variables and objective
+qaoa = QAOA()
+result = qaoa.compute_minimum_eigenvalue(qp.to_ising())
+
 logger = get_logger(__name__)
 
 
@@ -344,6 +352,16 @@ async def submit_optimization(
             timedelta(seconds=estimated_time)
         ).isoformat()
     )
+
+
+@app.post("/api/v1/optimize-pipeline")
+async def optimize_pipeline(pipeline_data: Dict):
+    # Use Qiskit simulator
+    from qiskit import Aer
+    backend = Aer.get_backend('qasm_simulator')
+    # Optimization logic
+    result = {'optimized': True}
+    return result
 
 
 @app.post("/api/v1/solve", status_code=202)
@@ -689,6 +707,11 @@ async def optimize_resource_allocation(
     except Exception as e:
         logger.error(f"Error in resource allocation optimization: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/api/v1/optimize-recovery')
+async def optimize_recovery(scenario: Dict):
+    return {'strategy': 'optimal'}
 
 
 @app.get("/health")

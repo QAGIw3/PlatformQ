@@ -1,0 +1,10 @@
+{
+  "namespace": "com.platformq.events",
+  "type": "record",
+  "name": "PhysicsEditEvent",
+  "fields": [
+    {"name": "simulation_id", "type": "string"},
+    {"name": "edit_type", "type": "string"},
+    {"name": "data", "type": {"type": "map", "values": "string"}}
+  ]
+} 

@@ -10,6 +10,9 @@ from .schemas import asset as schemas
 from platformq.shared.repository import AbstractRepository
 from .messaging.pulsar import pulsar_service
 import time
+from .schemas import AssetCreate, AssetUpdate
+from platformq.shared.event_publisher import EventPublisher
+from platformq.events import IndexableEntityEvent
 
 VC_SERVICE_URL = os.getenv("VC_SERVICE_URL", "http://verifiable-credential-service:80")
 HIGH_REP_THRESHOLD = 1000
@@ -28,8 +31,9 @@ def get_user_reputation(user_id: str) -> int:
     return 0
 
 class DigitalAssetRepository(AbstractRepository[schemas.DigitalAsset]):
-    def __init__(self, db_session: Session):
+    def __init__(self, db_session: Session, event_publisher: EventPublisher):
         self.db_session = db_session
+        self.event_publisher = event_publisher
 
     def add(self, asset: schemas.DigitalAssetCreate, owner_id: str) -> schemas.DigitalAsset:
         asset_id = uuid.uuid4()

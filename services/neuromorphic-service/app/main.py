@@ -9,6 +9,7 @@ import json
 from typing import Dict, List, Optional, Tuple, Any
 from datetime import datetime
 import numpy as np
+import uuid
 
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect, HTTPException, BackgroundTasks
 from fastapi.responses import JSONResponse
@@ -16,6 +17,8 @@ from fastapi.middleware.cors import CORSMiddleware
 import pulsar
 from pydantic import BaseModel
 import logging
+from pulsar.schema import AvroSchema
+from platformq.events.schemas.resource_anomaly import ResourceAnomalyEvent  # Assuming import path
 
 # Platform shared libraries
 from platformq_shared.pulsar_client import get_pulsar_client
@@ -183,6 +186,21 @@ async def process_event(event_data: EventData):
         # Broadcast to WebSocket clients if anomaly
         if anomaly_result.is_anomaly:
             await broadcast_anomaly(event_data, anomaly_result)
+            
+        if anomaly_result.is_anomaly:
+            anomaly_event = ResourceAnomalyEvent(
+                anomaly_id=str(uuid.uuid4()),
+                timestamp=int(datetime.now().timestamp() * 1000),
+                service_name=event_data.source,
+                resource_type=anomaly_result.anomaly_type,
+                severity=anomaly_result.confidence,
+                details=anomaly_result.contributing_factors
+            )
+            pulsar_client.publish(
+                topic="persistent://public/default/resource-anomalies",
+                schema=AvroSchema(ResourceAnomalyEvent),
+                data=anomaly_event
+            )
             
         return AnomalyResponse(
             is_anomaly=anomaly_result.is_anomaly,
@@ -561,6 +579,12 @@ async def visualize_snn(model_type: str):
     except Exception as e:
         logger.error(f"Visualization error: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post('/api/v1/detect-resilience-anomaly')
+async def detect_resilience_anomaly(event: Dict):
+    anomaly_score = np.random.rand()  # Replace with SNN output
+    return {'anomaly': anomaly_score > 0.5}
 
 
 @app.get("/health")

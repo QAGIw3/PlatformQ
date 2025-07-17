@@ -58,6 +58,10 @@ We use a CLI tool to scaffold new services.
 *   **ADR-005: GitOps (GitHub Actions)**: Chosen to provide a single, version-controlled workflow for testing and deploying all platform components.
 *   **ADR-006: Lakehouse Architecture**: Chosen for cost-effective, long-term storage of raw events and unified analytics.
 
+## New Features
+- For resource orchestration, ensure Avro schemas are defined in platformq-events and tests cover serialization.
+- Use shared ScalingUtils for modularity.
+
 ---
 
 We look forward to your contributions! 

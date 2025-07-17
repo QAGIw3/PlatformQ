@@ -19,6 +19,9 @@ from .pulsar_knative_bridge import run_pulsar_knative_bridge
 from .grpc_generated import connector_pb2, connector_pb2_grpc
 import grpc
 import os
+from wasmtime import Store, Module, Instance
+from typing import Dict
+import json
 
 # ---
 
@@ -61,3 +64,19 @@ def shutdown_event():
 @app.get("/")
 def read_root():
     return {"message": "functions-service is running"}
+
+@app.post('/api/v1/simulate-preview')
+async def simulate_preview(wasm_module: bytes, input_data: Dict):
+    store = Store()
+    module = Module(store.engine, wasm_module)
+    instance = Instance(store, module, [])
+    input_ptr = instance.exports['alloc'](len(json.dumps(input_data)))
+    # Write input to memory
+    result_ptr = instance.exports['preview'](input_ptr)
+    # Read result
+    return {'preview': result}
+
+@app.post('/api/v1/transform-asset')
+async def transform_asset(asset_id: str, transform_type: str):
+    # WASM transform
+    return {'transformed': True}

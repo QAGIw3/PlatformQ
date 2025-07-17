@@ -17,6 +17,7 @@ import asyncio
 from datetime import datetime, timedelta
 
 from .spiking_neural_network import SpikingNeuralNetwork, SpikeTrain
+from diffprivlib.tools import dp_mean
 
 logger = logging.getLogger(__name__)
 

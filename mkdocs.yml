@@ -33,4 +33,13 @@ nav:
     - 'OpenProject': 'docs/openproject_oidc_setup.md'
   - 'API Reference':
     - 'Shared Library': 'docs/shared-lib-api/index.html'
-    - 'REST APIs (OpenAPI)': 'docs/index.html' 
+    - 'REST APIs (OpenAPI)': 'docs/index.html'
+  - Architecture:
+    - Resource Orchestration: docs/architecture/resource_orchestration.md 
+    - Federated Graph Intelligence: docs/architecture/federated_graph_intelligence.md 
+    - Multi-Physics Collaboration: docs/architecture/multi_physics_collaboration.md 
+    - Data Lake Optimization: docs/architecture/data_lake_optimization.md 
+    - Trust Search Federation: docs/architecture/trust_search_federation.md 
+    - Workflow Federation: docs/architecture/workflow_federation.md 
+    - Asset Lifecycle: docs/architecture/asset_lifecycle.md 
+    - Resilience Loops: docs/architecture/resilience_loops.md 

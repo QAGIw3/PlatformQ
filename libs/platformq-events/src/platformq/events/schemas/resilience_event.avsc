@@ -1,0 +1,10 @@
+{
+  "namespace": "com.platformq.events",
+  "type": "record",
+  "name": "ResilienceEvent",
+  "fields": [
+    {"name": "event_id", "type": "string"},
+    {"name": "type", "type": "string"},
+    {"name": "data", "type": {"type": "map", "values": "string"}}
+  ]
+} 

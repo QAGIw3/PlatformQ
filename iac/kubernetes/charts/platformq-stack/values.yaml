@@ -394,3 +394,12 @@ janusgraph:
     storage.backend: "cql"
     storage.hostname: "platformq-cassandra"
     storage.cql.keyspace: "janusgraph" 
+
+scaling:
+  enabled: true
+  adaptive: true
+  anomalyThreshold: 0.7 
+
+resilience:
+  enabled: true
+  threshold: 0.5 

@@ -1,0 +1,11 @@
+{
+  "namespace": "com.platformq.events",
+  "type": "record",
+  "name": "FederatedGraphUpdate",
+  "fields": [
+    {"name": "session_id", "type": "string"},
+    {"name": "tenant_id", "type": "string"},
+    {"name": "graph_embeddings", "type": {"type": "array", "items": "float"}},
+    {"name": "metadata", "type": {"type": "map", "values": "string"}}
+  ]
+} 

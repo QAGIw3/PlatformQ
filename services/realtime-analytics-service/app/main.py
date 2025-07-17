@@ -401,6 +401,14 @@ async def batch_analysis(simulation_ids: List[str], background_tasks: Background
     }
 
 
+@app.get('/api/v1/trust-analytics')
+async def trust_analytics():
+    # Ignite query with trust
+    query = "SELECT * FROM metrics WHERE trust_score > 0.5"
+    results = ignite_client.sql(query)
+    return {'trusted_metrics': results}
+
+
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000) 

@@ -71,4 +71,12 @@ export default function () {
         check(meRes, { 'fetched user profile': (r) => r.status === 200 });
     }
   }
+
+  // Simulate event
+  let res = http.post('http://pulsar:8080/simulate-event', JSON.stringify({type: 'resource_usage', value: 90}));
+  check(res, {'event simulated': (r) => r.status === 200});
+
+  // Check anomaly detection
+  res = http.get('http://neuromorphic-service:8000/api/v1/anomalies');
+  check(res, {'anomaly detected': (r) => r.json().length > 0});
 } 

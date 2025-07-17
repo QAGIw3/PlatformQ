@@ -1,0 +1,10 @@
+{
+  "namespace": "com.platformq.events",
+  "type": "record",
+  "name": "FederatedDAGEvent",
+  "fields": [
+    {"name": "dag_id", "type": "string"},
+    {"name": "tenant_id", "type": "string"},
+    {"name": "parameters", "type": {"type": "map", "values": "string"}}
+  ]
+} 

@@ -16,6 +16,10 @@ def activity_stream_job():
     # Enable checkpointing for fault tolerance
     env.enable_checkpointing(10000)  # 10 seconds
     
+    env.get_config().set('taskmanager.network.memory.fraction', 0.7)
+    env.get_config().set('taskmanager.network.memory.min', '64mb')
+    env.get_config().set('taskmanager.network.memory.max', '1gb')
+    
     t_env = StreamTableEnvironment.create(stream_environment=env)
     
     # Configure job parameters
@@ -120,6 +124,26 @@ def activity_stream_job():
             'service-url' = '{PULSAR_SERVICE_URL}',
             'admin-url' = '{PULSAR_ADMIN_URL}',
             'topic-pattern' = 'persistent://platformq/.*/project-events',
+            'scan.startup.mode' = 'latest',
+            'format' = 'avro'
+        )
+    """)
+    
+    # Add new source for federated learning metrics
+    t_env.execute_sql(f"""
+        CREATE TABLE federated_metrics_source (
+            session_id STRING,
+            round_number INT,
+            participant_id STRING,
+            metrics MAP<STRING, DOUBLE>,
+            timestamp TIMESTAMP(3),
+            `__metadata_topic` STRING METADATA VIRTUAL,
+            WATERMARK FOR timestamp AS timestamp - INTERVAL '5' SECOND
+        ) WITH (
+            'connector' = 'pulsar',
+            'service-url' = '{PULSAR_SERVICE_URL}',
+            'admin-url' = '{PULSAR_ADMIN_URL}',
+            'topic-pattern' = 'persistent://platformq/.*/federated-metrics',
             'scan.startup.mode' = 'latest',
             'format' = 'avro'
         )
@@ -275,6 +299,25 @@ def activity_stream_job():
         FROM project_events_source
     """)
     
+    # Transform federated metrics
+    federated_transformed = t_env.sql_query("""
+        SELECT
+            extract_tenant_id(__metadata_topic) AS tenant_id,
+            timestamp AS event_timestamp,
+            generate_uuid() AS event_id,
+            participant_id AS user_id,
+            'federated-learning-service' AS event_source,
+            'FEDERATED_METRICS' AS event_type,
+            'ml_session' AS entity_type,
+            session_id AS entity_id,
+            metrics AS details,
+            CAST(YEAR(timestamp) AS STRING) AS year,
+            CAST(MONTH(timestamp) AS STRING) AS month,
+            CAST(DAY(timestamp) AS STRING) AS day,
+            CAST(HOUR(timestamp) AS STRING) AS hour
+        FROM federated_metrics_source
+    """)
+    
     # 5. Union all transformed streams
     unified_stream = user_events_transformed.union_all(
         document_events_transformed
@@ -282,6 +325,8 @@ def activity_stream_job():
         asset_events_transformed  
     ).union_all(
         project_events_transformed
+    ).union_all(
+        federated_transformed
     )
     
     # 6. Create temporary view for the unified stream
@@ -323,6 +368,24 @@ def activity_stream_job():
             hour
         FROM unified_activity_stream
     """)
+
+    # New aggregation and routing logic
+    aggregated_events = t_env.sql_query("""
+        SELECT
+            tenant_id,
+            window_start,
+            window_end,
+            COUNT(*) AS event_count,
+            AVG(CAST(details['cpu_usage'] AS DOUBLE)) AS avg_cpu,  # Assuming details has cpu_usage
+            COLLECT_LIST(event_id) AS events
+        FROM TABLE(
+            TUMBLE(TABLE unified_activity_stream, DESCRIPTOR(event_timestamp), INTERVAL '1' MINUTES)
+        )
+        GROUP BY tenant_id, window_start, window_end
+    """)
+
+    # Sink aggregated to Pulsar for neuromorphic (pseudocode, need proper sink)
+    # aggregated_events.execute_insert("neuromorphic_input_sink")  # Define a Pulsar sink table
     
     # Execute the job
     env.execute("Unified Activity Stream Processing")

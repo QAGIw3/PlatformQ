@@ -10,6 +10,9 @@ from datetime import datetime
 from typing import Dict, Any, List, Tuple
 import numpy as np
 from collections import defaultdict
+from pyflink.common.watermark_strategy import WatermarkStrategy
+from pyflink.common.serialization import SimpleStringSchema
+from pyflink.datastream.connectors import PulsarSource
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -407,6 +410,12 @@ parse_agent_data = udtf(ParseAgentData(), result_type=DataTypes.ROW([
     DataTypes.FIELD("position", DataTypes.ARRAY(DataTypes.FLOAT())),
     DataTypes.FIELD("velocity", DataTypes.ARRAY(DataTypes.FLOAT()))
 ]))
+
+def simulation_stream_job():
+    env = StreamExecutionEnvironment.get_execution_environment()
+    # Add Pulsar source
+    # Process states with Flink
+    env.execute('Simulation Collaboration')
 
 if __name__ == "__main__":
     simulation_collaboration_job() 

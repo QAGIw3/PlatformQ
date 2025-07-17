@@ -14,7 +14,7 @@ import logging
 import os
 import httpx
 import asyncio
-from typing import Dict, List, Any
+from typing import Dict, List, Any, Optional
 from datetime import datetime
 import threading
 import time
@@ -25,8 +25,61 @@ from fastapi import FastAPI
 from .messaging.pulsar_consumer import start_consumer, stop_consumer
 from .simulation_lineage import SimulationLineageTracker
 from .core.config import settings
+from .db.janusgraph_connector import JanusGraphConnector
+from .services.graph_processor import GraphProcessor
+from .messaging.data_lake_consumer import DataLakeConsumer
+from .messaging.activity_consumer import ActivityConsumer
+from contextlib import asynccontextmanager
 
-app = FastAPI()
+# Global instances
+graph_connector: Optional[JanusGraphConnector] = None
+graph_processor: Optional[GraphProcessor] = None
+data_lake_consumer: Optional[DataLakeConsumer] = None
+activity_consumer: Optional[ActivityConsumer] = None
+consumer_tasks: List[asyncio.Task] = []
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    global graph_connector, graph_processor, data_lake_consumer, activity_consumer, consumer_tasks
+    
+    # Startup
+    logger.info("Initializing Graph Intelligence Service...")
+    graph_connector = JanusGraphConnector(
+        gremlin_server=settings.GREMLIN_SERVER,
+        graph_name=settings.GRAPH_NAME
+    )
+    graph_processor = GraphProcessor(graph_connector)
+    
+    data_lake_consumer = DataLakeConsumer(graph_processor)
+    activity_consumer = ActivityConsumer()
+    
+    await activity_consumer.start()
+    
+    consumer_tasks.append(asyncio.create_task(data_lake_consumer.consume_messages()))
+    consumer_tasks.append(asyncio.create_task(activity_consumer.consume_messages()))
+    
+    logger.info("Graph Intelligence Service initialized successfully")
+    yield
+    # Shutdown
+    logger.info("Shutting down Graph Intelligence Service...")
+    for task in consumer_tasks:
+        task.cancel()
+    
+    if data_lake_consumer:
+        data_lake_consumer.close()
+    if activity_consumer:
+        await activity_consumer.close()
+    if graph_connector:
+        graph_connector.close()
+    logger.info("Graph Intelligence Service shutdown complete")
+
+app = FastAPI(
+    title="PlatformQ Graph Intelligence Service",
+    description="Service for graph-based intelligence and data discovery.",
+    version="1.0.0",
+    lifespan=lifespan,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -191,14 +244,14 @@ async def startup_event():
     sync_thread = threading.Thread(target=trust_sync.run_sync_loop, daemon=True)
     sync_thread.start()
     app.state.trust_sync = trust_sync
-    start_consumer()
+    # start_consumer() # This line is removed as per the new_code, as the consumer is now managed by lifespan
 
 @app.on_event("shutdown")
 async def shutdown_event():
     logging.info("Shutting down graph-intelligence-service...")
     if hasattr(app.state, 'trust_sync'):
         app.state.trust_sync.stop()
-    stop_consumer()
+    # stop_consumer() # This line is removed as per the new_code, as the consumer is now managed by lifespan
 
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["graph-intelligence-service"])

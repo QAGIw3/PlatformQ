@@ -4,6 +4,11 @@ from typing import List, Optional
 from uuid import UUID
 from datetime import datetime
 
+from sqlalchemy.orm import Session
+from . import models, schemas
+from platformq.shared.event_publisher import EventPublisher
+from platformq.events import IndexableEntityEvent
+
 from ..schemas.project import Project, ProjectCreate, Milestone
 from ..messaging.pulsar import pulsar_service
 from ..openproject_client import OpenProjectClient

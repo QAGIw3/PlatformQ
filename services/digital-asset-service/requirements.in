@@ -6,7 +6,36 @@ pydantic
 sqlalchemy
 psycopg2-binary
 alembic
-minio
+python-jose[cryptography]
+passlib[bcrypt]
+python-multipart
+requests
+jinja2
+python-dotenv
+asyncio
+aiohttp
+pulsar-client
+aiopulsar
+boto3
+pillow
+PyPDF2
+python-docx
+apache-tika
+speechrecognition
+pydub
+numpy
+scipy
+scikit-learn
+nltk
+spacy
+gensim
+transformers
+torch
+tensorflow
+celery
+redis
+flower
+pyarrow
 
 # Development and Testing
 # No specific test dependencies for now

@@ -1,0 +1,116 @@
+{
+    "type": "record",
+    "namespace": "io.platformq.events.datalake",
+    "name": "DatasetLineageEvent",
+    "version": "1",
+    "doc": "Event representing the creation or update of a dataset in the data lake.",
+    "fields": [
+        {
+            "name": "event_id", 
+            "type": "string", 
+            "doc": "Unique ID for this event."
+        },
+        {
+            "name": "event_timestamp", 
+            "type": "long", 
+            "logicalType": "timestamp-millis",
+            "doc": "Timestamp of the event in milliseconds."
+        },
+        {
+            "name": "dataset_id", 
+            "type": "string",
+            "doc": "A unique identifier for the dataset, often a combination of name and version."
+        },
+        {
+            "name": "dataset_name",
+            "type": "string",
+            "doc": "The human-readable name of the dataset."
+        },
+        {
+            "name": "layer",
+            "type": {
+                "type": "enum",
+                "name": "DataLayer",
+                "symbols": ["BRONZE", "SILVER", "GOLD"]
+            },
+            "doc": "The medallion architecture layer the dataset belongs to."
+        },
+        {
+            "name": "source_datasets",
+            "type": {
+                "type": "array",
+                "items": "string"
+            },
+            "doc": "List of dataset IDs that were used as input for this dataset."
+        },
+        {
+            "name": "output_path",
+            "type": "string",
+            "doc": "The physical path of the dataset in the object store (e.g., S3 or MinIO URI)."
+        },
+        {
+            "name": "schema",
+            "type": {
+                "type": "record",
+                "name": "DatasetSchema",
+                "fields": [
+                    {
+                        "name": "fields",
+                        "type": {
+                            "type": "array",
+                            "items": {
+                                "type": "record",
+                                "name": "SchemaField",
+                                "fields": [
+                                    {"name": "name", "type": "string"},
+                                    {"name": "type", "type": "string"},
+                                    {"name": "nullable", "type": "boolean"}
+                                ]
+                            }
+                        }
+                    }
+                ]
+            },
+            "doc": "The schema of the dataset."
+        },
+        {
+            "name": "quality_report",
+            "type": {
+                "type": "record",
+                "name": "QualityReport",
+                "fields": [
+                    {"name": "overall_score", "type": "double"},
+                    {
+                        "name": "metrics",
+                        "type": {
+                            "type": "array",
+                            "items": {
+                                "type": "record",
+                                "name": "QualityMetric",
+                                "fields": [
+                                    {"name": "name", "type": "string"},
+                                    {"name": "dimension", "type": "string"},
+                                    {"name": "value", "type": "double"},
+                                    {"name": "passed", "type": "boolean"}
+                                ]
+                            }
+                        }
+                    }
+                ]
+            },
+            "doc": "A summary of the data quality checks performed on the dataset."
+        },
+        {
+            "name": "is_gold_layer",
+            "type": "boolean",
+            "default": false,
+            "doc": "Flag to indicate if the dataset is in the Gold layer."
+        },
+        {
+            "name": "triggered_by",
+            "type": ["null", "string"],
+            "default": null,
+            "doc": "The user, service, or job that initiated the creation of this dataset."
+        }
+    ]
+} 
