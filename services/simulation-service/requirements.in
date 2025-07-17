@@ -6,6 +6,10 @@ websockets>=11.0.0
 pyignite>=0.6.0
 numpy>=1.24.0
 
+# Multi-physics and optimization dependencies
+httpx>=0.24.0
+scikit-learn>=1.3.0
+
 # No service-specific Python dependencies are needed for this service.
 
 # Development and Testing

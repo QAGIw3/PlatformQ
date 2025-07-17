@@ -16,6 +16,7 @@ import asyncio
 from .collaboration import SimulationCollaborationManager
 from .ignite_manager import SimulationIgniteManager
 from .api import endpoints
+from .api.endpoints import multi_physics_ws
 
 import logging
 from datetime import datetime
@@ -34,6 +35,13 @@ app = create_base_app(
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["simulation-service"])
 
+# Include multi-physics WebSocket routes
+app.include_router(
+    multi_physics_ws.router, 
+    prefix="/api/v1/multi-physics", 
+    tags=["multi-physics-ws"]
+)
+
 # Initialize services on startup
 @app.on_event("startup")
 async def startup_event():
@@ -49,7 +57,10 @@ async def startup_event():
     )
     await app.state.collaboration_manager.start()
     
-    logger.info("Simulation service started with collaboration features")
+    # Initialize multi-physics WebSocket manager
+    multi_physics_ws.initialize_ws_manager(app.state.ignite_manager)
+    
+    logger.info("Simulation service started with collaboration features and multi-physics support")
 
 @app.on_event("shutdown")
 async def shutdown_event():
