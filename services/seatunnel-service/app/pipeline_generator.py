@@ -25,6 +25,10 @@ class PipelinePattern(str, Enum):
     AGGREGATION = "aggregation"       # Raw -> Aggregated
     REPLICATION = "replication"       # Source -> Multiple Targets
     FEDERATION = "federation"         # Multiple Sources -> Unified View
+    MULTI_PHYSICS = "multi_physics"   # Multi-physics simulation data flows
+    SENSOR_STREAM = "sensor_stream"   # Real-time sensor/IoT ingestion
+    CROSS_SERVICE = "cross_service"   # Service-to-service synchronization
+    GRAPH_SYNC = "graph_sync"         # Database to graph synchronization
 
 
 class AssetTypeMapper:
@@ -86,6 +90,24 @@ class AssetTypeMapper:
             "format": "semi_structured",
             "processing": ["parsing", "enrichment", "alerting"],
             "sink_preferences": ["elasticsearch", "pulsar"]
+        },
+        
+        # Multi-physics simulation data
+        r"^(MULTI_PHYSICS_|COUPLED_SIM_|THERMAL_STRUCTURAL_)": {
+            "source_type": "streaming",
+            "format": "simulation",
+            "processing": ["state_extraction", "convergence_monitoring", "metric_aggregation"],
+            "sink_preferences": ["ignite", "minio", "cassandra"],
+            "pipeline_pattern": PipelinePattern.MULTI_PHYSICS
+        },
+        
+        # Real-time sensor/IoT data
+        r"^(SENSOR_|IOT_|TELEMETRY_|DEVICE_)": {
+            "source_type": "streaming", 
+            "format": "timeseries",
+            "processing": ["timestamp_normalization", "windowing", "aggregation", "anomaly_detection"],
+            "sink_preferences": ["ignite", "cassandra", "pulsar", "elasticsearch"],
+            "pipeline_pattern": PipelinePattern.SENSOR_STREAM
         }
     }
     
@@ -608,3 +630,410 @@ class PipelineOptimizer:
             }
         
         return optimized 
+
+    async def _generate_multi_physics_pipeline(
+        self,
+        metadata: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Generate pipeline for multi-physics simulation data"""
+        
+        domains = metadata.get("physics_domains", ["thermal", "structural"])
+        coupling_type = metadata.get("coupling_type", "one_way")
+        tenant_id = metadata.get("tenant_id", "public")
+        
+        # Source configuration for simulation data
+        source = {
+            "connector_type": "pulsar",
+            "connection_params": {
+                "service-url": "pulsar://pulsar:6650",
+                "admin-url": "http://pulsar:8080",
+                "subscription-name": f"seatunnel-multi-physics-{metadata.get('simulation_id', 'default')}"
+            },
+            "table_or_topic": f"multi-physics-updates-{tenant_id}"
+        }
+        
+        # Transformations for simulation data
+        transforms = [
+            {
+                "type": "simulation_state_extractor",
+                "config": {
+                    "domains": domains,
+                    "extract_convergence": True,
+                    "extract_coupling_metrics": coupling_type != "uncoupled"
+                }
+            },
+            {
+                "type": "window",
+                "config": {
+                    "window_type": "sliding",
+                    "window_size": "30 seconds",
+                    "slide_size": "5 seconds"
+                }
+            },
+            {
+                "type": "convergence_monitor",
+                "config": {
+                    "threshold": metadata.get("convergence_threshold", 1e-4),
+                    "alert_on_stall": True,
+                    "stall_iterations": 10
+                }
+            }
+        ]
+        
+        # Multiple sinks for simulation data
+        sinks = [
+            {
+                "connector_type": "ignite",
+                "connection_params": {
+                    "nodes": ["ignite:10800"],
+                    "cache_name": f"simulation_state_{metadata.get('simulation_id')}"
+                },
+                "config": {
+                    "write_mode": "overwrite",
+                    "key_field": "domain_id"
+                }
+            },
+            {
+                "connector_type": "minio",
+                "connection_params": {
+                    "endpoint": "http://minio:9000",
+                    "access_key": "minioadmin",
+                    "secret_key": "minioadmin"
+                },
+                "table_or_topic": f"simulations/{metadata.get('simulation_id')}/states",
+                "options": {
+                    "format": "parquet",
+                    "partition_by": ["simulation_tick", "domain"]
+                }
+            }
+        ]
+        
+        return {
+            "name": f"Multi-Physics Simulation Pipeline - {metadata.get('simulation_id')}",
+            "pattern": PipelinePattern.MULTI_PHYSICS.value,
+            "source": source,
+            "transforms": transforms,
+            "sinks": sinks,
+            "sync_mode": "streaming",
+            "checkpoint_interval": 10000
+        }
+    
+    async def _generate_sensor_stream_pipeline(
+        self,
+        metadata: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Generate pipeline for real-time sensor/IoT data"""
+        
+        sensor_type = metadata.get("sensor_type", "generic")
+        sampling_rate = metadata.get("sampling_rate_hz", 100)
+        
+        source = {
+            "connector_type": "pulsar",
+            "connection_params": {
+                "service-url": "pulsar://pulsar:6650",
+                "admin-url": "http://pulsar:8080",
+                "subscription-name": f"seatunnel-sensor-{sensor_type}"
+            },
+            "table_or_topic": f"sensor-data-{metadata.get('device_id', 'all')}"
+        }
+        
+        transforms = [
+            {
+                "type": "timestamp_normalizer",
+                "config": {
+                    "timestamp_field": "event_time",
+                    "timezone": metadata.get("timezone", "UTC")
+                }
+            },
+            {
+                "type": "data_quality",
+                "config": {
+                    "null_check": True,
+                    "range_check": {
+                        "temperature": [-50, 150],
+                        "pressure": [0, 10000],
+                        "humidity": [0, 100]
+                    },
+                    "outlier_detection": {
+                        "method": "z_score",
+                        "threshold": 3
+                    }
+                }
+            },
+            {
+                "type": "window",
+                "config": {
+                    "window_type": "tumbling",
+                    "window_size": f"{max(1, 1000/sampling_rate)} seconds",
+                    "watermark": "1 second"
+                }
+            },
+            {
+                "type": "aggregate",
+                "config": {
+                    "group_by": ["sensor_id", "location"],
+                    "aggregations": {
+                        "value": ["avg", "min", "max", "stddev"],
+                        "timestamp": ["min", "max"],
+                        "count": ["count"]
+                    }
+                }
+            }
+        ]
+        
+        sinks = [
+            {
+                "connector_type": "ignite",
+                "connection_params": {
+                    "nodes": ["ignite:10800"],
+                    "cache_name": f"sensor_realtime_{sensor_type}"
+                },
+                "config": {
+                    "write_mode": "append",
+                    "ttl": 3600  # 1 hour TTL for real-time data
+                }
+            },
+            {
+                "connector_type": "cassandra",
+                "connection_params": {
+                    "hosts": ["cassandra:9042"],
+                    "keyspace": "sensor_data",
+                    "table": f"{sensor_type}_timeseries"
+                },
+                "config": {
+                    "consistency_level": "LOCAL_QUORUM",
+                    "ttl": 2592000  # 30 days
+                }
+            },
+            {
+                "connector_type": "elasticsearch",
+                "connection_params": {
+                    "hosts": ["http://elasticsearch:9200"],
+                    "index": f"sensors-{sensor_type}",
+                    "index.type": "sensor_reading"
+                },
+                "config": {
+                    "index.time_suffix": "yyyy.MM.dd",
+                    "bulk.flush.max_actions": 1000
+                }
+            }
+        ]
+        
+        return {
+            "name": f"Sensor Stream Pipeline - {sensor_type}",
+            "pattern": PipelinePattern.SENSOR_STREAM.value,
+            "source": source,
+            "transforms": transforms,
+            "sinks": sinks,
+            "sync_mode": "streaming",
+            "checkpoint_interval": 5000
+        }
+    
+    async def _generate_cross_service_pipeline(
+        self,
+        metadata: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Generate pipeline for cross-service data synchronization"""
+        
+        source_service = metadata.get("source_service", "unknown")
+        target_services = metadata.get("target_services", [])
+        
+        # Determine source based on service
+        if source_service == "digital-asset-service":
+            source = {
+                "connector_type": "postgres-cdc",
+                "connection_params": {
+                    "hostname": "postgres",
+                    "port": 5432,
+                    "database": "digital_assets",
+                    "username": "postgres",
+                    "password": "password",
+                    "schema": "public",
+                    "table.whitelist": "assets,asset_metadata",
+                    "slot.name": "seatunnel_asset_sync"
+                }
+            }
+        else:
+            # Default to Pulsar event source
+            source = {
+                "connector_type": "pulsar",
+                "connection_params": {
+                    "service-url": "pulsar://pulsar:6650"
+                },
+                "table_or_topic": f"{source_service}-events"
+            }
+        
+        transforms = [
+            {
+                "type": "schema_mapper",
+                "config": {
+                    "source_schema": f"{source_service}_schema",
+                    "target_schemas": {service: f"{service}_schema" for service in target_services}
+                }
+            },
+            {
+                "type": "enricher",
+                "config": {
+                    "lookup_source": "ignite",
+                    "lookup_cache": "reference_data",
+                    "join_keys": ["id", "tenant_id"]
+                }
+            }
+        ]
+        
+        # Create sinks for each target service
+        sinks = []
+        for target in target_services:
+            if target == "search-service":
+                sinks.append({
+                    "connector_type": "elasticsearch",
+                    "connection_params": {
+                        "hosts": ["http://elasticsearch:9200"],
+                        "index": f"{source_service}_data"
+                    }
+                })
+            elif target == "graph-intelligence-service":
+                sinks.append({
+                    "connector_type": "janusgraph",
+                    "connection_params": {
+                        "gremlin.remote.remoteConnectionClass": "org.apache.tinkerpop.gremlin.driver.remote.DriverRemoteConnection",
+                        "gremlin.remote.driver.clusterFile": "janusgraph-remote.yaml"
+                    },
+                    "config": {
+                        "vertex_label": source_service.replace("-", "_"),
+                        "id_field": "id"
+                    }
+                })
+            else:
+                # Default to Pulsar sink
+                sinks.append({
+                    "connector_type": "pulsar",
+                    "connection_params": {
+                        "service-url": "pulsar://pulsar:6650"
+                    },
+                    "table_or_topic": f"{target}-ingestion-events"
+                })
+        
+        return {
+            "name": f"Cross-Service Sync: {source_service} → {', '.join(target_services)}",
+            "pattern": PipelinePattern.CROSS_SERVICE.value,
+            "source": source,
+            "transforms": transforms,
+            "sinks": sinks,
+            "sync_mode": "cdc" if "cdc" in source.get("connector_type", "") else "streaming"
+        }
+    
+    async def _generate_graph_sync_pipeline(
+        self,
+        metadata: Dict[str, Any],
+        config: Dict[str, Any]
+    ) -> Dict[str, Any]:
+        """Generate pipeline for Cassandra to JanusGraph synchronization"""
+        
+        entity_type = metadata.get("entity_type", "generic")
+        relationship_config = metadata.get("relationships", {})
+        
+        source = {
+            "connector_type": "cassandra-cdc",
+            "connection_params": {
+                "hosts": ["cassandra:9042"],
+                "keyspace": metadata.get("keyspace", "platformq"),
+                "table": metadata.get("table", entity_type),
+                "consistency_level": "LOCAL_QUORUM"
+            }
+        }
+        
+        transforms = [
+            {
+                "type": "graph_entity_builder",
+                "config": {
+                    "vertex_label": entity_type,
+                    "id_mapping": metadata.get("id_field", "id"),
+                    "property_mappings": metadata.get("property_mappings", {}),
+                    "relationships": relationship_config
+                }
+            },
+            {
+                "type": "relationship_resolver",
+                "config": {
+                    "lookup_strategy": "batch",
+                    "cache_ttl": 3600,
+                    "create_missing": False
+                }
+            }
+        ]
+        
+        sinks = [
+            {
+                "connector_type": "janusgraph",
+                "connection_params": {
+                    "gremlin.hosts": ["janusgraph:8182"],
+                    "gremlin.graph": "platformq_graph",
+                    "serializer.className": "org.apache.tinkerpop.gremlin.driver.ser.GraphSONMessageSerializerV3d0"
+                },
+                "config": {
+                    "batch_size": 100,
+                    "vertex_id_key": metadata.get("graph_id_key", "cassandra_id"),
+                    "edge_creation_strategy": metadata.get("edge_strategy", "merge")
+                }
+            }
+        ]
+        
+        # Add lineage tracking
+        if metadata.get("track_lineage", True):
+            sinks.append({
+                "connector_type": "pulsar",
+                "connection_params": {
+                    "service-url": "pulsar://pulsar:6650"
+                },
+                "table_or_topic": "graph-sync-lineage",
+                "config": {
+                    "include_source_metadata": True
+                }
+            })
+        
+        return {
+            "name": f"Graph Sync Pipeline - {entity_type}",
+            "pattern": PipelinePattern.GRAPH_SYNC.value,
+            "source": source,
+            "transforms": transforms,
+            "sinks": sinks,
+            "sync_mode": "cdc",
+            "error_handling": {
+                "max_retries": 3,
+                "retry_delay": "exponential",
+                "dead_letter_topic": f"graph-sync-dlq-{entity_type}"
+            }
+        }
+    
+    def _detect_pattern(self, metadata: Dict[str, Any]) -> PipelinePattern:
+        """Detect pipeline pattern from metadata"""
+        asset_type = metadata.get("asset_type", "").upper()
+        
+        if any(prefix in asset_type for prefix in ["MULTI_PHYSICS_", "COUPLED_SIM_", "THERMAL_STRUCTURAL_"]):
+            return PipelinePattern.MULTI_PHYSICS
+        elif any(prefix in asset_type for prefix in ["SENSOR_", "IOT_", "TELEMETRY_", "DEVICE_"]):
+            return PipelinePattern.SENSOR_STREAM
+        elif metadata.get("sync_type") == "cross_service":
+            return PipelinePattern.CROSS_SERVICE
+        elif metadata.get("target_type") == "graph" or metadata.get("sync_to_graph"):
+            return PipelinePattern.GRAPH_SYNC
+        elif metadata.get("cdc_enabled") or metadata.get("source_type") == "database_cdc":
+            return PipelinePattern.CDC
+        elif metadata.get("source_type") == "streaming":
+            return PipelinePattern.STREAMING
+        else:
+            return PipelinePattern.INGESTION
+    
+    async def _generate_default_pipeline(
+        self,
+        metadata: Dict[str, Any],
+        config: Dict[str, Any],
+        target_sinks: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Generate default pipeline using existing logic"""
+        # Use the existing generate_pipeline method logic
+        return self.generate_pipeline(metadata, metadata.get("tenant_id", "public")) 

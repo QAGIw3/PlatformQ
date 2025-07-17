@@ -16,6 +16,7 @@ from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel, Field
 import pulsar
+from fastapi.websockets import WebSocket
 
 # Platform shared libraries
 from platformq_shared.base_service import BaseService
@@ -29,6 +30,7 @@ from platformq_shared.vc_auth import require_vc, VCRequirement, researcher_requi
 from .engines.problem_encoder import ProblemEncoder, ProblemType
 from .engines.solution_decoder import SolutionDecoder
 from .algorithms import QAOA, VQE, QuantumAnnealing, AmplitudeEstimation
+from .algorithms.qaoa import create_qaoa_solver
 from .config import QuantumConfig
 from .solvers.base import Solver
 from .solvers.quantum_solver import QuantumSolver
@@ -165,6 +167,22 @@ class SolveRequest(BaseModel):
     job_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
     user_id: Optional[str] = None
     synchronous: bool = False
+
+
+# Multi-physics optimization models
+class MultiPhysicsOptimizationRequest(BaseModel):
+    simulation_id: str
+    domains: List[str]
+    coupling_strengths: List[List[float]]
+    convergence_history: Dict[str, List[float]]
+    optimization_config: Dict[str, Any] = {}
+
+
+class ResourceAllocationRequest(BaseModel):
+    resources: List[float]
+    demands: List[List[float]]
+    constraints: Dict[str, Any] = {}
+    circuit_depth: int = 4
 
 # Pre-defined hybrid workflows
 DEFAULT_TSP_HYBRID_WORKFLOW = [
@@ -571,6 +589,108 @@ async def serve_grpc():
 
 
 # Health check
+@app.post("/api/v1/multi-physics/optimize")
+async def optimize_multi_physics_coupling(
+    request: MultiPhysicsOptimizationRequest,
+    background_tasks: BackgroundTasks
+):
+    """Optimize coupling parameters for multi-physics simulations"""
+    try:
+        # Create QAOA solver
+        qaoa_config = {
+            "p": request.optimization_config.get("circuit_depth", 3),
+            "optimizer": request.optimization_config.get("optimizer", "COBYLA"),
+            "shots": request.optimization_config.get("shots", 1024),
+            "backend": request.optimization_config.get("backend", "aer_simulator")
+        }
+        
+        solver = create_qaoa_solver(qaoa_config)
+        
+        # Run optimization
+        result = solver.solve_coupling_optimization(
+            domains=request.domains,
+            coupling_strengths=np.array(request.coupling_strengths),
+            convergence_data=request.convergence_history
+        )
+        
+        # Store result in Ignite
+        result_data = {
+            "simulation_id": request.simulation_id,
+            "optimal_coupling": result.optimal_bitstring,
+            "objective_value": result.optimal_value,
+            "convergence_history": result.convergence_history,
+            "execution_time": result.execution_time
+        }
+        
+        await service.result_cache.put(f"coupling_opt_{request.simulation_id}", result_data)
+        
+        # Publish optimization complete event
+        await service.pulsar_client.send(
+            RESULT_TOPIC,
+            json.dumps({
+                "event_type": "COUPLING_OPTIMIZATION_COMPLETE",
+                "simulation_id": request.simulation_id,
+                "result": result_data
+            }).encode()
+        )
+        
+        return JSONResponse({
+            "status": "success",
+            "job_id": f"coupling_opt_{request.simulation_id}",
+            "result": result_data
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in multi-physics optimization: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/resource-allocation/optimize")
+async def optimize_resource_allocation(
+    request: ResourceAllocationRequest,
+    background_tasks: BackgroundTasks
+):
+    """Optimize resource allocation for simulation domains"""
+    try:
+        # Create QAOA solver
+        qaoa_config = {
+            "p": request.circuit_depth,
+            "optimizer": "COBYLA",
+            "shots": 2048
+        }
+        
+        solver = create_qaoa_solver(qaoa_config)
+        
+        # Solve resource allocation
+        result = solver.solve_resource_allocation(
+            resources=request.resources,
+            demands=request.demands,
+            constraints=request.constraints
+        )
+        
+        # Decode allocation
+        allocation = solver._decode_resource_allocation(
+            result.optimal_bitstring, 
+            request.demands
+        )
+        
+        return JSONResponse({
+            "status": "success",
+            "allocation": allocation,
+            "optimal_value": result.optimal_value,
+            "execution_time": result.execution_time,
+            "quantum_metrics": {
+                "circuit_depth": result.circuit_depth,
+                "num_parameters": result.num_parameters,
+                "final_convergence": result.convergence_history[-1] if result.convergence_history else None
+            }
+        })
+        
+    except Exception as e:
+        logger.error(f"Error in resource allocation optimization: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
 @app.get("/health")
 async def health_check():
     """Service health check"""
@@ -595,198 +715,157 @@ async def health_check():
     }
 
 
-# Helper methods for the service class
-async def _process_optimization(self, job_id: str, request: OptimizationRequest):
-    """Process optimization job"""
+# Enhanced async optimization processing
+async def _process_optimization_request(self, request: Dict[str, Any]) -> str:
+    """Process optimization request with quantum algorithms"""
+    job_id = str(uuid.uuid4())
+    problem_type = request.get("problem_type")
+    
     try:
-        # Update status
-        await self.job_cache.put(f"job:{job_id}", {
-            **await self.job_cache.get(f"job:{job_id}"),
-            'status': 'processing',
-            'started_at': datetime.utcnow().isoformat()
-        })
-        
-        # Encode problem
-        problem_type = ProblemType(request.problem_type)
-        encoded_problem = self.encoder.encode(problem_type, request.problem_data)
-        
-        # Select algorithm
-        if request.algorithm == "auto":
-            algorithm = self._select_best_algorithm(problem_type, encoded_problem)
+        # Select appropriate quantum algorithm
+        if problem_type == "multi_physics_coupling":
+            result = await self._optimize_multi_physics_coupling(request)
+        elif problem_type == "resource_allocation":
+            result = await self._optimize_resource_allocation(request)
+        elif problem_type == "molecular_simulation":
+            result = await self._run_vqe_optimization(request)
+        elif problem_type == "combinatorial":
+            result = await self._run_qaoa_optimization(request)
+        elif problem_type == "continuous":
+            result = await self._run_quantum_annealing(request)
         else:
-            algorithm = request.algorithm
-            
-        # Run optimization
-        start_time = time.time()
-        raw_result = await self.optimizer.optimize(
-            encoded_problem,
-            algorithm=algorithm,
-            constraints=request.constraints,
-            max_time=request.max_time
-        )
-        execution_time = time.time() - start_time
-        
-        # Decode solution
-        solution = self.decoder.decode(
-            raw_result,
-            problem_type,
-            request.problem_data
-        )
-        
-        # Create result
-        result = {
-            'job_id': job_id,
-            'status': 'completed',
-            'solution': solution,
-            'objective_value': raw_result['objective_value'],
-            'quality_score': raw_result.get('quality_score', 0.95),
-            'execution_time': execution_time,
-            'algorithm_used': algorithm,
-            'quantum_metrics': {
-                'num_qubits': raw_result.get('num_qubits'),
-                'circuit_depth': raw_result.get('circuit_depth'),
-                'iterations': raw_result.get('iterations'),
-                'shots': raw_result.get('shots')
-            }
-        }
+            # Default to hybrid optimization
+            result = await self._run_hybrid_optimization(request)
         
         # Store result
-        await self.result_cache.put(f"result:{job_id}", result, ttl=86400)  # 24h TTL
+        await self.result_cache.put(job_id, result)
         
-        # Update job status
-        await self.job_cache.put(f"job:{job_id}", {
-            **await self.job_cache.get(f"job:{job_id}"),
-            'status': 'completed',
-            'completed_at': datetime.utcnow().isoformat(),
-            'execution_time': execution_time
-        })
+        # Publish completion event
+        await self._publish_optimization_complete(job_id, result)
         
-        # Publish result event
-        await self._publish_result(result)
+        return job_id
         
     except Exception as e:
-        logger.error(f"Error processing job {job_id}: {e}")
-        
-        # Update job status
-        await self.job_cache.put(f"job:{job_id}", {
-            **await self.job_cache.get(f"job:{job_id}"),
-            'status': 'failed',
-            'error': str(e),
-            'failed_at': datetime.utcnow().isoformat()
-        })
+        logger.error(f"Error processing optimization request: {e}")
+        await self._publish_optimization_failed(job_id, str(e))
+        raise
 
 
-async def _publish_result(self, result: Dict):
-    """Publish optimization result to Pulsar"""
-    await self.pulsar_producer.send_async(
-        "persistent://public/default/optimization-results",
-        json.dumps(result).encode('utf-8')
+# Add methods to QuantumOptimizationService class
+async def _optimize_multi_physics_coupling(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    """Optimize multi-physics coupling using QAOA"""
+    solver = create_qaoa_solver(request.get("qaoa_config", {}))
+    
+    result = solver.solve_coupling_optimization(
+        domains=request.get("domains"),
+        coupling_strengths=np.array(request.get("coupling_matrix")),
+        convergence_data=request.get("convergence_history")
     )
-
-
-def _select_best_algorithm(self, problem_type: ProblemType, encoded_problem: Dict) -> str:
-    """Select best algorithm for the problem"""
-    if problem_type == ProblemType.RESOURCE_ALLOCATION:
-        return "qaoa"
-    elif problem_type == ProblemType.ROUTE_OPTIMIZATION:
-        return "vqe"
-    elif problem_type == ProblemType.PORTFOLIO:
-        return "amplitude_estimation"
-    elif problem_type == ProblemType.DESIGN_PARAMETERS:
-        return "vqe"
-    else:
-        # Default based on problem structure
-        if encoded_problem.get('encoding_type') == 'qubo':
-            return "qaoa"
-        else:
-            return "vqe"
-
-
-def _estimate_completion_time(self, request: OptimizationRequest) -> float:
-    """Estimate completion time in seconds"""
-    base_time = 10.0  # Base overhead
     
-    # Problem size factor
-    problem_size = len(request.problem_data.get('variables', []))
-    size_factor = problem_size * 0.5
-    
-    # Algorithm factor
-    algorithm_times = {
-        'qaoa': 20.0,
-        'vqe': 30.0,
-        'amplitude_estimation': 25.0,
-        'annealing': 15.0
-    }
-    algo_time = algorithm_times.get(request.algorithm, 25.0)
-    
-    # GPU acceleration
-    if self.config.gpu_acceleration:
-        algo_time *= 0.3
-        
-    return base_time + size_factor + algo_time
-
-
-def _calculate_avg_execution_time(self) -> float:
-    """Calculate average execution time of completed jobs"""
-    completed_times = []
-    for job in self.active_jobs.values():
-        if job['status'] == 'completed' and 'execution_time' in job:
-            completed_times.append(job['execution_time'])
-            
-    return np.mean(completed_times) if completed_times else 0.0
-
-
-def _generate_test_problem(self, problem_type: str, size: int) -> Dict:
-    """Generate test problem for benchmarking"""
-    if problem_type == "resource_allocation":
-        return {
-            'type': 'resource_allocation',
-            'resources': [f"R{i}" for i in range(size // 2)],
-            'tasks': [f"T{i}" for i in range(size // 2)],
-            'costs': np.random.rand(size // 2, size // 2).tolist()
-        }
-    elif problem_type == "route_optimization":
-        return {
-            'type': 'route_optimization',
-            'cities': size,
-            'distances': np.random.rand(size, size).tolist()
-        }
-    else:
-        return {
-            'type': 'generic',
-            'variables': size,
-            'objective': np.random.rand(size).tolist()
-        }
-
-
-async def _run_classical_optimizer(self, problem: Dict) -> Dict:
-    """Run classical optimization for comparison"""
-    # Simple classical optimizer implementation
-    from scipy.optimize import minimize
-    
-    # Convert to classical format
-    if problem['type'] == 'resource_allocation':
-        # Simple greedy allocation
-        result_value = np.random.rand() * 100
-    else:
-        # Random solution for demo
-        result_value = np.random.rand() * 100
-        
     return {
-        'objective_value': result_value,
-        'quality_score': 0.85,  # Classical baseline
-        'iterations': 1000
+        "algorithm": "QAOA",
+        "optimal_coupling": result.optimal_bitstring,
+        "objective_value": result.optimal_value,
+        "quantum_metrics": {
+            "circuit_depth": result.circuit_depth,
+            "execution_time": result.execution_time
+        }
     }
 
 
-# Add these methods to the service class
-service._process_optimization = _process_optimization.__get__(service)
-service._publish_result = _publish_result.__get__(service)
-service._select_best_algorithm = _select_best_algorithm.__get__(service)
-service._estimate_completion_time = _estimate_completion_time.__get__(service)
-service._calculate_avg_execution_time = _calculate_avg_execution_time.__get__(service)
-service._generate_test_problem = _generate_test_problem.__get__(service)
-service._run_classical_optimizer = _run_classical_optimizer.__get__(service)
+async def _run_qaoa_optimization(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    """Run QAOA for combinatorial optimization"""
+    problem_data = request.get("problem_data", {})
+    
+    # Create QAOA solver
+    solver = create_qaoa_solver(request.get("algorithm_params", {}))
+    
+    # Solve based on problem type
+    if problem_data.get("type") == "maxcut":
+        import networkx as nx
+        graph = nx.from_numpy_array(np.array(problem_data.get("adjacency_matrix")))
+        result = solver.solve_maxcut(graph)
+    else:
+        # Generic QUBO problem
+        qubo_matrix = np.array(problem_data.get("qubo_matrix"))
+        result = solver.solve_qubo(qubo_matrix)
+    
+    return {
+        "algorithm": "QAOA",
+        "optimal_solution": result.optimal_bitstring,
+        "optimal_value": result.optimal_value,
+        "convergence_history": result.convergence_history,
+        "execution_time": result.execution_time
+    }
+
+
+async def _run_hybrid_optimization(self, request: Dict[str, Any]) -> Dict[str, Any]:
+    """Run hybrid quantum-classical optimization"""
+    # Use classical optimizer for exploration
+    classical_result = await self._classical_exploration(request)
+    
+    # Refine with quantum optimization
+    quantum_config = request.get("quantum_config", {})
+    quantum_config["initial_point"] = classical_result.get("solution")
+    
+    quantum_result = await self._quantum_refinement(request, quantum_config)
+    
+    return {
+        "algorithm": "Hybrid-Quantum-Classical",
+        "classical_result": classical_result,
+        "quantum_result": quantum_result,
+        "final_solution": quantum_result.get("optimal_solution"),
+        "improvement": classical_result.get("value") - quantum_result.get("optimal_value")
+    }
+
+
+# WebSocket endpoint for real-time optimization monitoring
+@app.websocket("/ws/optimization/{job_id}")
+async def optimization_monitoring(websocket: WebSocket, job_id: str):
+    """WebSocket for monitoring optimization progress"""
+    await websocket.accept()
+    
+    try:
+        # Check if job exists
+        if job_id not in service.active_jobs:
+            await websocket.send_json({
+                "error": "Job not found"
+            })
+            await websocket.close()
+            return
+        
+        # Send updates while job is running
+        while job_id in service.active_jobs:
+            job_status = service.active_jobs[job_id]
+            
+            # Get current convergence data if available
+            convergence_data = await service.job_cache.get(f"{job_id}_convergence")
+            
+            update = {
+                "job_id": job_id,
+                "status": job_status["status"],
+                "iteration": convergence_data.get("iteration", 0) if convergence_data else 0,
+                "current_value": convergence_data.get("value") if convergence_data else None,
+                "convergence_history": convergence_data.get("history", []) if convergence_data else [],
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+            await websocket.send_json(update)
+            await asyncio.sleep(1)  # Send updates every second
+        
+        # Send final result
+        result = await service.result_cache.get(job_id)
+        if result:
+            await websocket.send_json({
+                "job_id": job_id,
+                "status": "completed",
+                "result": result
+            })
+        
+    except Exception as e:
+        logger.error(f"WebSocket error: {e}")
+    finally:
+        await websocket.close()
 
 
 # Permission discovery endpoint
