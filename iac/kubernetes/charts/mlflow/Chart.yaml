@@ -1,0 +1,11 @@
+apiVersion: v2
+name: mlflow
+description: MLflow deployment for MLOps platform
+type: application
+version: 1.0.0
+appVersion: "2.9.2"
+dependencies:
+  - name: postgresql
+    version: 12.x.x
+    repository: https://charts.bitnami.com/bitnami
+    condition: postgresql.enabled 

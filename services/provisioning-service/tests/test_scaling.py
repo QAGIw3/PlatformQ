@@ -1,5 +1,10 @@
 import unittest
-from app.scaling import AdaptiveScaler
+
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '../app'))
+
+from scaling import AdaptiveScaler
 from pyignite import Client as IgniteClient
 
 class TestAdaptiveScaler(unittest.TestCase):

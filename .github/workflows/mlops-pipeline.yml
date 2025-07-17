@@ -1,0 +1,337 @@
+name: MLOps Pipeline
+
+on:
+  workflow_dispatch:
+    inputs:
+      model_name:
+        description: 'Name of the model to deploy'
+        required: true
+        type: string
+      model_version:
+        description: 'Model version (latest if empty)'
+        required: false
+        type: string
+      environment:
+        description: 'Target environment'
+        required: true
+        type: choice
+        options:
+          - 'staging'
+          - 'production'
+  repository_dispatch:
+    types: [model-registered]
+
+env:
+  MLFLOW_TRACKING_URI: ${{ secrets.MLFLOW_TRACKING_URI }}
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}/ml-models
+
+jobs:
+  validate-model:
+    runs-on: ubuntu-latest
+    outputs:
+      model_version: ${{ steps.get-version.outputs.version }}
+      model_uri: ${{ steps.get-version.outputs.uri }}
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Set up Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+          
+      - name: Install MLflow
+        run: pip install mlflow==2.9.2
+        
+      - name: Get model version
+        id: get-version
+        run: |
+          if [ -z "${{ github.event.inputs.model_version }}" ]; then
+            VERSION=$(python -c "
+          import mlflow
+          mlflow.set_tracking_uri('${{ env.MLFLOW_TRACKING_URI }}')
+          client = mlflow.tracking.MlflowClient()
+          versions = client.get_latest_versions('${{ github.event.inputs.model_name }}', stages=['Production', 'Staging', 'None'])
+          print(versions[0].version if versions else 'none')
+          ")
+          else
+            VERSION="${{ github.event.inputs.model_version }}"
+          fi
+          echo "version=$VERSION" >> $GITHUB_OUTPUT
+          echo "uri=models:/${{ github.event.inputs.model_name }}/$VERSION" >> $GITHUB_OUTPUT
+          
+      - name: Validate model
+        run: |
+          python scripts/validate_model.py \
+            --model-name "${{ github.event.inputs.model_name }}" \
+            --model-version "${{ steps.get-version.outputs.version }}" \
+            --mlflow-uri "${{ env.MLFLOW_TRACKING_URI }}"
+
+  build-model-image:
+    needs: validate-model
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Log in to Container Registry
+        uses: docker/login-action@v3
+        with:
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+          
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+        
+      - name: Download model artifacts
+        run: |
+          pip install mlflow==2.9.2 boto3
+          python -c "
+          import mlflow
+          import os
+          mlflow.set_tracking_uri('${{ env.MLFLOW_TRACKING_URI }}')
+          mlflow.artifacts.download_artifacts(
+              artifact_uri='${{ needs.validate-model.outputs.model_uri }}',
+              dst_path='./model'
+          )
+          "
+          
+      - name: Generate Dockerfile
+        run: |
+          python scripts/generate_model_dockerfile.py \
+            --model-path ./model \
+            --output-path ./Dockerfile
+            
+      - name: Build and push image
+        uses: docker/build-push-action@v5
+        with:
+          context: .
+          push: true
+          tags: |
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.model_name }}-${{ needs.validate-model.outputs.model_version }}
+            ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.model_name }}-${{ github.event.inputs.environment }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
+
+  deploy-staging:
+    if: github.event.inputs.environment == 'staging'
+    needs: [validate-model, build-model-image]
+    runs-on: ubuntu-latest
+    environment: 
+      name: staging
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Configure kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+          
+      - name: Set up Kubeconfig
+        run: |
+          echo "${{ secrets.STAGING_KUBECONFIG }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+          
+      - name: Deploy to staging
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: serving.knative.dev/v1
+          kind: Service
+          metadata:
+            name: model-${{ github.event.inputs.model_name }}-staging
+            namespace: ml-staging
+            labels:
+              model: ${{ github.event.inputs.model_name }}
+              version: ${{ needs.validate-model.outputs.model_version }}
+              environment: staging
+          spec:
+            template:
+              metadata:
+                annotations:
+                  autoscaling.knative.dev/minScale: "1"
+                  autoscaling.knative.dev/maxScale: "3"
+              spec:
+                containers:
+                - image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.model_name }}-${{ needs.validate-model.outputs.model_version }}
+                  resources:
+                    requests:
+                      cpu: 500m
+                      memory: 1Gi
+                    limits:
+                      cpu: 2000m
+                      memory: 4Gi
+                  env:
+                  - name: MODEL_NAME
+                    value: ${{ github.event.inputs.model_name }}
+                  - name: MODEL_VERSION
+                    value: ${{ needs.validate-model.outputs.model_version }}
+                  - name: MLFLOW_TRACKING_URI
+                    value: ${{ secrets.MLFLOW_TRACKING_URI }}
+          EOF
+          
+      - name: Run smoke tests
+        run: |
+          kubectl wait --for=condition=Ready \
+            service/model-${{ github.event.inputs.model_name }}-staging \
+            -n ml-staging \
+            --timeout=300s
+          python scripts/smoke_test_model.py \
+            --endpoint "http://model-${{ github.event.inputs.model_name }}-staging.ml-staging.svc.cluster.local" \
+            --model-name "${{ github.event.inputs.model_name }}"
+
+  deploy-production:
+    if: github.event.inputs.environment == 'production'
+    needs: [validate-model, build-model-image]
+    runs-on: ubuntu-latest
+    environment:
+      name: production
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+        
+      - name: Configure kubectl
+        uses: azure/setup-kubectl@v3
+        with:
+          version: 'latest'
+          
+      - name: Set up Kubeconfig
+        run: |
+          echo "${{ secrets.PROD_KUBECONFIG }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+          
+      - name: Create canary deployment
+        run: |
+          kubectl apply -f - <<EOF
+          apiVersion: serving.knative.dev/v1
+          kind: Service
+          metadata:
+            name: model-${{ github.event.inputs.model_name }}-canary
+            namespace: ml-production
+            labels:
+              model: ${{ github.event.inputs.model_name }}
+              version: ${{ needs.validate-model.outputs.model_version }}
+              environment: production
+              deployment: canary
+          spec:
+            template:
+              metadata:
+                annotations:
+                  autoscaling.knative.dev/minScale: "2"
+                  autoscaling.knative.dev/maxScale: "10"
+              spec:
+                containers:
+                - image: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}:${{ github.event.inputs.model_name }}-${{ needs.validate-model.outputs.model_version }}
+                  resources:
+                    requests:
+                      cpu: 1000m
+                      memory: 2Gi
+                    limits:
+                      cpu: 4000m
+                      memory: 8Gi
+                  env:
+                  - name: MODEL_NAME
+                    value: ${{ github.event.inputs.model_name }}
+                  - name: MODEL_VERSION
+                    value: ${{ needs.validate-model.outputs.model_version }}
+                  - name: MLFLOW_TRACKING_URI
+                    value: ${{ secrets.MLFLOW_TRACKING_URI }}
+          EOF
+          
+      - name: Configure traffic split (10% canary)
+        run: |
+          kubectl patch service model-${{ github.event.inputs.model_name }} \
+            -n ml-production \
+            --type merge \
+            -p '{
+              "spec": {
+                "traffic": [
+                  {
+                    "tag": "stable",
+                    "revisionName": "model-${{ github.event.inputs.model_name }}-stable",
+                    "percent": 90
+                  },
+                  {
+                    "tag": "canary",
+                    "revisionName": "model-${{ github.event.inputs.model_name }}-canary",
+                    "percent": 10
+                  }
+                ]
+              }
+            }'
+            
+      - name: Monitor canary metrics
+        run: |
+          python scripts/monitor_canary.py \
+            --model-name "${{ github.event.inputs.model_name }}" \
+            --version "${{ needs.validate-model.outputs.model_version }}" \
+            --duration 600 \
+            --prometheus-url "${{ secrets.PROMETHEUS_URL }}"
+            
+      - name: Promote to stable
+        if: success()
+        run: |
+          kubectl patch service model-${{ github.event.inputs.model_name }} \
+            -n ml-production \
+            --type merge \
+            -p '{
+              "spec": {
+                "traffic": [
+                  {
+                    "tag": "stable",
+                    "revisionName": "model-${{ github.event.inputs.model_name }}-canary",
+                    "percent": 100
+                  }
+                ]
+              }
+            }'
+            
+      - name: Update MLflow model stage
+        run: |
+          python -c "
+          import mlflow
+          mlflow.set_tracking_uri('${{ env.MLFLOW_TRACKING_URI }}')
+          client = mlflow.tracking.MlflowClient()
+          client.transition_model_version_stage(
+              name='${{ github.event.inputs.model_name }}',
+              version='${{ needs.validate-model.outputs.model_version }}',
+              stage='Production'
+          )
+          "
+
+  rollback:
+    if: failure() && github.event.inputs.environment == 'production'
+    needs: deploy-production
+    runs-on: ubuntu-latest
+    steps:
+      - name: Rollback to previous version
+        run: |
+          echo "${{ secrets.PROD_KUBECONFIG }}" | base64 -d > kubeconfig
+          export KUBECONFIG=kubeconfig
+          
+          kubectl patch service model-${{ github.event.inputs.model_name }} \
+            -n ml-production \
+            --type merge \
+            -p '{
+              "spec": {
+                "traffic": [
+                  {
+                    "tag": "stable",
+                    "revisionName": "model-${{ github.event.inputs.model_name }}-stable",
+                    "percent": 100
+                  }
+                ]
+              }
+            }'
+            
+      - name: Notify rollback
+        uses: 8398a7/action-slack@v3
+        with:
+          status: ${{ job.status }}
+          text: 'Model deployment rolled back: ${{ github.event.inputs.model_name }} v${{ needs.validate-model.outputs.model_version }}'
+          webhook_url: ${{ secrets.SLACK_WEBHOOK }} 

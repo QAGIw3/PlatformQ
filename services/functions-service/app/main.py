@@ -8,6 +8,7 @@ import logging
 import httpx
 from .db import create_db_and_tables, get_db
 from .api.endpoints import functions
+from .model_serving import router as model_serving_router
 from platformq_shared.event_publisher import EventPublisher
 from .core.config import settings
 from platformq_shared.events import FunctionExecutionCompleted
@@ -39,6 +40,7 @@ app = create_base_app(
 
 # Include service-specific routers
 app.include_router(functions.router, prefix="/api/v1", tags=["functions"])
+app.include_router(model_serving_router, prefix="/api/v1/models", tags=["model-serving"])
 
 
 @app.on_event("startup")

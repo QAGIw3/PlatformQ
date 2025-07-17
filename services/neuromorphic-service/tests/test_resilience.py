@@ -1,8 +1,8 @@
 import unittest
 
+from app.main import detect_resilience_anomaly
+
 class TestResilience(unittest.TestCase):
     def test_detect(self):
-        self.assertTrue(True)
-
-    res = detect_resilience_anomaly({})
-    self.assertIn('anomaly', res) 
+        res = detect_resilience_anomaly({})
+        self.assertIn('anomaly', res) 

@@ -26,6 +26,12 @@ from pyspark.ml.evaluation import MulticlassClassificationEvaluator, RegressionE
 from pyspark.ml.linalg import Vectors, DenseVector
 import mlflow
 import mlflow.spark
+from mlflow.models.signature import infer_signature
+import os
+
+# Configure MLflow
+mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
+mlflow.spark.autolog(log_models=False, silent=True)  # Manual logging for federated context
 
 # Differential privacy imports
 from diffprivlib.models import LogisticRegression as DPLogisticRegression
@@ -211,12 +217,50 @@ class FederatedLearningJob:
         predictions = model.transform(val_df)
         metrics = self._evaluate_model(predictions, model_type)
         
-        # Log to MLflow
-        with mlflow.start_run():
+        # Set federated learning experiment
+        experiment_name = f"/Tenants/{self.tenant_id}/federated_learning/{self.session_id}"
+        mlflow.set_experiment(experiment_name)
+        
+        # Tags for federated context
+        tags = {
+            "tenant_id": self.tenant_id,
+            "session_id": self.session_id,
+            "participant_id": self.participant_id,
+            "model_type": model_type,
+            "algorithm": algorithm,
+            "federated_learning": "true",
+            "privacy_enabled": str(privacy_params.get("differential_privacy_enabled", True))
+        }
+        
+        # Log to MLflow with nested runs for federated rounds
+        with mlflow.start_run(tags=tags, nested=True) as run:
+            # Log parameters
             mlflow.log_params(hyperparameters)
             mlflow.log_params(privacy_params)
+            mlflow.log_param("training_samples", train_df.count())
+            mlflow.log_param("validation_samples", val_df.count())
+            
+            # Log privacy budget if DP is enabled
+            if privacy_params.get("differential_privacy_enabled", True):
+                mlflow.log_metric("epsilon", privacy_params.get("epsilon", 1.0))
+                mlflow.log_metric("delta", privacy_params.get("delta", 1e-5))
+            
+            # Log metrics
             mlflow.log_metrics(metrics)
-            mlflow.spark.log_model(model, f"federated_model_{self.participant_id}")
+            
+            # Log model with metadata
+            model_info = mlflow.spark.log_model(
+                model, 
+                artifact_path=f"local_model_{self.participant_id}",
+                registered_model_name=None  # Don't register local models
+            )
+            
+            # Log participant-specific info
+            mlflow.log_param("local_model_uri", model_info.model_uri)
+            mlflow.log_param("participant_data_size", train_df.count())
+            
+        logger.info(f"Local model training completed for participant {self.participant_id}")
+        logger.info(f"Metrics: {metrics}")
         
         return model, metrics
     

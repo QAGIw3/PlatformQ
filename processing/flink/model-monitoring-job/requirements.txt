@@ -1,0 +1,9 @@
+apache-flink==1.17.0
+apache-flink-libraries==1.17.0
+numpy==1.24.3
+pandas==2.1.4
+scipy==1.11.4
+pulsar-client==3.3.0
+avro-python3==1.11.2
+jsonschema==4.19.2
+pytz==2023.3 

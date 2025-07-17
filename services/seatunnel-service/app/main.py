@@ -1733,3 +1733,244 @@ async def export_metrics_prometheus(
         content=metrics_data,
         media_type=CONTENT_TYPE_LATEST
     ) 
+
+# Import core pipelines
+from .pipelines.core_pipelines import (
+    list_core_pipelines, 
+    get_core_pipeline, 
+    generate_pipeline_config,
+    CorePipelineType
+)
+
+# Core Pipeline Management Endpoints
+@app.get("/api/v1/pipelines/core")
+async def list_core_data_mesh_pipelines():
+    """List all available core data mesh pipelines"""
+    return {
+        "pipelines": list_core_pipelines(),
+        "description": "Core pipelines for unified data mesh synchronization"
+    }
+
+@app.get("/api/v1/pipelines/core/{pipeline_name}")
+async def get_core_pipeline_details(pipeline_name: str):
+    """Get details of a specific core pipeline"""
+    try:
+        pipeline = get_core_pipeline(pipeline_name)
+        return pipeline
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+@app.post("/api/v1/pipelines/core/{pipeline_name}/deploy")
+async def deploy_core_pipeline(
+    pipeline_name: str,
+    background_tasks: BackgroundTasks,
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db),
+    override_config: Optional[Dict[str, Any]] = None
+):
+    """Deploy a core data mesh pipeline for a tenant"""
+    tenant_id = context["tenant_id"]
+    
+    try:
+        # Generate tenant-specific configuration
+        pipeline_config = generate_pipeline_config(pipeline_name, tenant_id)
+        
+        # Apply any overrides
+        if override_config:
+            pipeline_config["config"].update(override_config)
+        
+        # Create job record
+        job = SeaTunnelJob(
+            tenant_id=tenant_id,
+            name=pipeline_config["name"],
+            description=pipeline_config["description"],
+            config=pipeline_config["config"],
+            sync_mode=SyncMode(pipeline_config["sync_mode"]),
+            schedule=pipeline_config.get("schedule"),
+            status=JobStatus.PENDING,
+            is_active=True
+        )
+        
+        db.add(job)
+        db.commit()
+        db.refresh(job)
+        
+        # Launch job in background
+        background_tasks.add_task(
+            launch_job, 
+            job.id, 
+            tenant_id, 
+            pipeline_config["config"], 
+            SyncMode(pipeline_config["sync_mode"])
+        )
+        
+        # Publish pipeline deployment event
+        event_publisher = EventPublisher(settings.get("PULSAR_URL"))
+        event_publisher.connect()
+        event_publisher.publish_with_schema_registry(
+            "data-mesh-pipeline-deployed",
+            tenant_id,
+            "pipeline-deployment",
+            {
+                "type": "record",
+                "name": "PipelineDeployment",
+                "namespace": "com.platformq.datamesh",
+                "fields": [
+                    {"name": "job_id", "type": "string"},
+                    {"name": "pipeline_name", "type": "string"},
+                    {"name": "pipeline_type", "type": "string"},
+                    {"name": "tenant_id", "type": "string"},
+                    {"name": "deployed_at", "type": "long", "logicalType": "timestamp-millis"}
+                ]
+            },
+            {
+                "job_id": job.id,
+                "pipeline_name": pipeline_name,
+                "pipeline_type": "core",
+                "tenant_id": tenant_id,
+                "deployed_at": int(datetime.now().timestamp() * 1000)
+            }
+        )
+        event_publisher.close()
+        
+        return {
+            "job_id": job.id,
+            "status": "deploying",
+            "pipeline_name": pipeline_name,
+            "message": f"Core pipeline '{pipeline_name}' is being deployed"
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to deploy core pipeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/v1/pipelines/core/deploy-all")
+async def deploy_all_core_pipelines(
+    background_tasks: BackgroundTasks,
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db),
+    pipeline_types: Optional[List[str]] = None
+):
+    """Deploy all core pipelines for a tenant"""
+    tenant_id = context["tenant_id"]
+    deployed_pipelines = []
+    
+    # Get all core pipelines
+    all_pipelines = list_core_pipelines()
+    
+    # Filter by type if specified
+    if pipeline_types:
+        all_pipelines = [
+            p for p in all_pipelines 
+            if p["type"] in pipeline_types
+        ]
+    
+    for pipeline_info in all_pipelines:
+        try:
+            pipeline_name = pipeline_info["name"]
+            pipeline_config = generate_pipeline_config(pipeline_name, tenant_id)
+            
+            # Check if already deployed
+            existing_job = db.query(SeaTunnelJob).filter(
+                SeaTunnelJob.tenant_id == tenant_id,
+                SeaTunnelJob.name == pipeline_config["name"],
+                SeaTunnelJob.is_active == True
+            ).first()
+            
+            if existing_job:
+                logger.info(f"Pipeline '{pipeline_name}' already deployed for tenant {tenant_id}")
+                continue
+            
+            # Create job
+            job = SeaTunnelJob(
+                tenant_id=tenant_id,
+                name=pipeline_config["name"],
+                description=pipeline_config["description"],
+                config=pipeline_config["config"],
+                sync_mode=SyncMode(pipeline_config["sync_mode"]),
+                schedule=pipeline_config.get("schedule"),
+                status=JobStatus.PENDING,
+                is_active=True
+            )
+            
+            db.add(job)
+            db.commit()
+            db.refresh(job)
+            
+            # Launch job
+            background_tasks.add_task(
+                launch_job,
+                job.id,
+                tenant_id,
+                pipeline_config["config"],
+                SyncMode(pipeline_config["sync_mode"])
+            )
+            
+            deployed_pipelines.append({
+                "job_id": job.id,
+                "pipeline_name": pipeline_name,
+                "status": "deploying"
+            })
+            
+        except Exception as e:
+            logger.error(f"Failed to deploy pipeline '{pipeline_name}': {e}")
+            deployed_pipelines.append({
+                "pipeline_name": pipeline_name,
+                "status": "failed",
+                "error": str(e)
+            })
+    
+    return {
+        "tenant_id": tenant_id,
+        "deployed_count": len([p for p in deployed_pipelines if p.get("status") == "deploying"]),
+        "pipelines": deployed_pipelines
+    }
+
+@app.get("/api/v1/pipelines/health")
+async def check_pipeline_health(
+    context: dict = Depends(get_current_tenant_and_user),
+    db: Session = Depends(get_db)
+):
+    """Check health of all data mesh pipelines"""
+    tenant_id = context["tenant_id"]
+    
+    # Get all active pipelines
+    active_pipelines = db.query(SeaTunnelJob).filter(
+        SeaTunnelJob.tenant_id == tenant_id,
+        SeaTunnelJob.is_active == True
+    ).all()
+    
+    health_status = []
+    
+    for pipeline in active_pipelines:
+        # Check last run status
+        last_run_healthy = True
+        if pipeline.last_run:
+            time_since_last_run = datetime.now() - pipeline.last_run
+            # Check if pipeline should have run based on schedule
+            if pipeline.schedule:
+                # Simple check - should be enhanced with cron parsing
+                if "hourly" in pipeline.schedule and time_since_last_run.hours > 2:
+                    last_run_healthy = False
+                elif "daily" in pipeline.schedule and time_since_last_run.days > 1:
+                    last_run_healthy = False
+        
+        health_status.append({
+            "job_id": pipeline.id,
+            "name": pipeline.name,
+            "status": pipeline.status.value,
+            "last_run": pipeline.last_run.isoformat() if pipeline.last_run else None,
+            "healthy": pipeline.status == JobStatus.COMPLETED and last_run_healthy,
+            "error_message": pipeline.error_message
+        })
+    
+    # Overall health
+    healthy_count = len([p for p in health_status if p["healthy"]])
+    total_count = len(health_status)
+    
+    return {
+        "overall_health": "healthy" if healthy_count == total_count else "degraded" if healthy_count > 0 else "unhealthy",
+        "healthy_pipelines": healthy_count,
+        "total_pipelines": total_count,
+        "pipelines": health_status
+    } 

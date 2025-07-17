@@ -1,0 +1,80 @@
+replicaCount: 3
+
+image:
+  repository: confluentinc/cp-schema-registry
+  tag: 7.5.0
+  pullPolicy: IfNotPresent
+
+service:
+  type: ClusterIP
+  port: 8081
+
+kafka:
+  bootstrapServers: "PLAINTEXT://kafka:9092"
+
+# Schema Registry specific configs
+schemaRegistry:
+  # Kafka store configs
+  kafkaStore:
+    topic: "_schemas"
+    replicationFactor: 3
+  
+  # Compatibility settings
+  compatibility: "BACKWARD"
+  
+  # Security
+  authentication:
+    method: "BASIC"
+    realm: "SchemaRegistry"
+  
+  # Avro specific settings
+  avro:
+    useLogicalTypeConverters: true
+
+# Resource limits
+resources:
+  requests:
+    memory: "512Mi"
+    cpu: "250m"
+  limits:
+    memory: "1Gi"
+    cpu: "500m"
+
+# Monitoring
+metrics:
+  enabled: true
+  port: 5556
+  jmx:
+    enabled: true
+
+# Persistence for schema storage backup
+persistence:
+  enabled: true
+  size: 10Gi
+  storageClass: "fast-ssd"
+
+# Integration with existing platform
+env:
+  - name: SCHEMA_REGISTRY_HOST_NAME
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.name
+  - name: SCHEMA_REGISTRY_LISTENERS
+    value: "http://0.0.0.0:8081"
+  - name: SCHEMA_REGISTRY_MASTER_ELIGIBILITY
+    value: "true"
+  
+# Health checks
+livenessProbe:
+  httpGet:
+    path: /
+    port: 8081
+  initialDelaySeconds: 30
+  periodSeconds: 10
+
+readinessProbe:
+  httpGet:
+    path: /subjects
+    port: 8081
+  initialDelaySeconds: 30
+  periodSeconds: 10 

@@ -2,9 +2,16 @@ import pytest
 from unittest.mock import MagicMock, patch
 from uuid import uuid4
 import datetime
+import unittest
 
-from app.crud import crud_user
+from app.crud.crud_user import crud_user, create_user, get_user
 from app.schemas.user import UserCreate
+
+class TestCRUDUser(unittest.TestCase):
+    def test_create_get_user(self):
+        user = create_user({'id': 1})
+        retrieved = get_user(1)
+        self.assertEqual(user, retrieved)
 
 def test_create_user():
     """

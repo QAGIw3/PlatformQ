@@ -1,0 +1,13 @@
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+fastapi
+uvicorn
+pydantic
+mlflow==2.9.2
+httpx
+pulsar-client
+psycopg2-binary
+boto3
+numpy
+pandas
+scipy 

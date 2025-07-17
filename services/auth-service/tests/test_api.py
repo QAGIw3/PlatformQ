@@ -3,6 +3,11 @@ from fastapi.testclient import TestClient
 from unittest.mock import patch, MagicMock
 from uuid import uuid4
 
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '../../../libs/platformq-shared/src'))
+from platformq_shared.base_service import create_base_app
+
 from app.main import app 
 
 @pytest.fixture(scope="module")

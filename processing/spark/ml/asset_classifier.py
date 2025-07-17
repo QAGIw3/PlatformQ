@@ -8,6 +8,7 @@ digital assets based on their metadata and characteristics.
 import sys
 import json
 import logging
+import os
 from typing import Dict, Any, List, Tuple
 from datetime import datetime
 
@@ -24,8 +25,13 @@ from pyspark.ml.evaluation import MulticlassClassificationEvaluator
 from pyspark.ml.tuning import CrossValidator, ParamGridBuilder
 import mlflow
 import mlflow.spark
+from mlflow.models.signature import infer_signature
 
 logger = logging.getLogger(__name__)
+
+# Configure MLflow
+mlflow.set_tracking_uri(os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"))
+mlflow.spark.autolog(log_models=True, log_input_examples=True, silent=True)
 
 
 class AssetClassifierPipeline:
@@ -199,14 +205,24 @@ class AssetClassifierPipeline:
             seed=42
         )
         
-        # Log to MLflow
-        mlflow.set_experiment(f"asset_classifier_{self.tenant_id}")
+        # Set MLflow experiment with tenant isolation
+        experiment_name = f"/Tenants/{self.tenant_id}/asset_classifier"
+        mlflow.set_experiment(experiment_name)
         
-        with mlflow.start_run():
+        # Tags for better organization
+        tags = {
+            "tenant_id": self.tenant_id,
+            "model_type": "asset_classifier",
+            "framework": "spark_ml",
+            "team": "ml_platform"
+        }
+        
+        with mlflow.start_run(tags=tags) as run:
             # Log parameters
             mlflow.log_param("tenant_id", self.tenant_id)
             mlflow.log_param("training_samples", train_df.count())
             mlflow.log_param("validation_samples", val_df.count())
+            mlflow.log_param("validation_split", validation_split)
             
             # Create pipeline
             pipeline = self.create_pipeline([])
@@ -216,6 +232,10 @@ class AssetClassifierPipeline:
                 .addGrid(pipeline.getStages()[-1].numTrees, [50, 100, 200]) \
                 .addGrid(pipeline.getStages()[-1].maxDepth, [5, 10, 15]) \
                 .build()
+            
+            # Log hyperparameter search space
+            mlflow.log_param("hp_numTrees", "[50, 100, 200]")
+            mlflow.log_param("hp_maxDepth", "[5, 10, 15]")
             
             # Cross validation
             evaluator = MulticlassClassificationEvaluator(
@@ -237,10 +257,15 @@ class AssetClassifierPipeline:
             cv_model = cv.fit(train_df)
             best_model = cv_model.bestModel
             
+            # Log best hyperparameters
+            best_rf = best_model.stages[-1]
+            mlflow.log_param("best_numTrees", best_rf.getNumTrees())
+            mlflow.log_param("best_maxDepth", best_rf.getMaxDepth())
+            
             # Evaluate on validation set
             predictions = best_model.transform(val_df)
             
-            # Calculate metrics
+            # Calculate and log metrics
             metrics = {}
             for metric in ["f1", "weightedPrecision", "weightedRecall", "accuracy"]:
                 evaluator.setMetricName(metric)
@@ -248,18 +273,33 @@ class AssetClassifierPipeline:
                 metrics[metric] = value
                 mlflow.log_metric(metric, value)
             
-            # Feature importance
-            rf_model = best_model.stages[-1]
-            feature_importance = rf_model.featureImportances.toArray()
+            # Log feature importance
+            feature_importance = self.analyze_feature_importance(best_model)
+            mlflow.log_dict(feature_importance, "feature_importance.json")
             
-            # Log model
-            mlflow.spark.log_model(
+            # Create model signature
+            input_example = train_df.limit(5).toPandas()
+            signature = infer_signature(input_example, predictions.limit(5).toPandas())
+            
+            # Log model with signature and input example
+            model_info = mlflow.spark.log_model(
                 best_model,
-                "asset_classifier",
-                registered_model_name=f"asset_classifier_{self.tenant_id}"
+                artifact_path="model",
+                registered_model_name=f"{self.tenant_id}_asset_classifier",
+                signature=signature,
+                input_example=input_example
             )
             
+            # Log model version info
+            mlflow.log_param("model_uri", model_info.model_uri)
+            mlflow.log_param("run_id", run.info.run_id)
+            
+            # Log training completion time
+            mlflow.log_metric("training_duration_seconds", 
+                            (datetime.utcnow() - datetime.fromisoformat(run.info.start_time.replace('+00:00', ''))).total_seconds())
+            
             logger.info(f"Model training completed. F1 Score: {metrics['f1']:.4f}")
+            logger.info(f"Model registered as: {self.tenant_id}_asset_classifier")
             
             return best_model, metrics
     

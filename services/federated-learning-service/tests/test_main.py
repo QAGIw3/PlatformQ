@@ -6,11 +6,10 @@ import pytest
 from fastapi.testclient import TestClient
 from unittest.mock import Mock, patch
 import json
-
-# Mock the dependencies before importing the app
-with patch('pyignite.Client'):
-    with patch('pulsar.Client'):
-        from app.main import app
+import sys
+import os
+sys.path.append(os.path.join(os.path.dirname(__file__), '../../../libs/platformq-shared/src'))
+from federated_learning_service.app.main import app
 
 client = TestClient(app)
 

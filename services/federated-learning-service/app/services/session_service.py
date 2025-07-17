@@ -8,6 +8,7 @@ from pyignite import Client as IgniteClient
 from platformq.shared.event_publisher import EventPublisher
 
 from ..core.secure_aggregation import SecureAggregationProtocol, AggregationStrategy
+from ..core.mlflow_integration import FederatedMLflowTracker
 
 logger = logging.getLogger(__name__)
 
@@ -17,6 +18,7 @@ class SessionService:
         self.event_publisher = event_publisher
         self.secure_aggregation_protocols = {}
         self.sessions = {}
+        self.mlflow_trackers = {}
 
     def create_session(self, request: Dict[str, Any], tenant_id: str, user_id: str) -> Dict[str, Any]:
         """Create a new federated learning session"""
@@ -42,6 +44,12 @@ class SessionService:
         }
         
         self.create_session_in_ignite(session_data)
+        
+        # Initialize MLflow tracking for this session
+        mlflow_tracker = FederatedMLflowTracker(tenant_id)
+        experiment_id = mlflow_tracker.create_federated_experiment(session_id, session_data)
+        self.mlflow_trackers[session_id] = mlflow_tracker
+        session_data["mlflow_experiment_id"] = experiment_id
         
         if request.privacy_parameters.get("homomorphic_encryption", False):
             strategy = AggregationStrategy(request.privacy_parameters.get("aggregation_strategy", "SECURE_AGG"))

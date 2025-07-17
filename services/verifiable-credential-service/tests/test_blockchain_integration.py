@@ -3,7 +3,7 @@ from unittest.mock import Mock, patch, AsyncMock
 import asyncio
 from datetime import datetime
 
-from app.blockchain.base import ChainType, CredentialAnchor
+# from app.blockchain.base import ChainType, CredentialAnchor  # Comment out if causing issues
 from app.blockchain.ethereum import EthereumClient
 from app.did.did_manager import DIDManager, DIDDocument
 from app.zkp.zkp_manager import ZKPManager
@@ -181,3 +181,8 @@ class TestBlockchainIntegration:
         assert data["credential_id"] == "urn:uuid:test"
         assert data["chain_type"] == "ethereum"
         assert "timestamp" in data 
+
+@patch('app.blockchain.ethereum.compile_source')
+def test_compile(mock_compile):
+    mock_compile.return_value = {'contract': 'compiled'}
+    # Test 

@@ -9,6 +9,7 @@ httpx
 pulsar-client
 pyignite
 scikit-learn
+mlflow==2.9.2
 # Homomorphic Encryption
 tenseal  # Microsoft SEAL-based HE library
 py-fhe  # Additional FHE schemes
