@@ -1,6 +1,6 @@
 # Makefile for platformQ
 
-.PHONY: help lint format test services-up services-down bootstrap-config bootstrap-gateway bootstrap-oidc-clients docs-build docs-serve package-private-cloud package-airgapped deps compile-deps clean
+.PHONY: help lint format test services-up services-down bootstrap-config bootstrap-gateway bootstrap-oidc-clients docs-build docs-serve package-private-cloud package-airgapped deps compile-deps clean scan sast-scan sca-scan container-scan install-knative uninstall-knative
 
 help:
 	@echo "Commands:"
@@ -22,6 +22,12 @@ help:
 	@echo "  clean         : Remove generated files (e.g., requirements.txt)."
 	@echo "  package-private-cloud : Package the application for online distribution."
 	@echo "  package-airgapped : Package the application for air-gapped distribution."
+	@echo "  scan          : Run all security scans."
+	@echo "  sast-scan     : Run Static Application Security Testing (SAST) scan."
+	@echo "  sca-scan      : Run Software Composition Analysis (SCA) scan."
+	@echo "  container-scan: Run container image scan."
+	@echo "  install-knative : Install Knative Serving into the Kubernetes cluster."
+	@echo "  uninstall-knative : Uninstall Knative Serving from the Kubernetes cluster."
 
 lint:
 	@echo "Running linter..."
@@ -140,3 +146,48 @@ package-airgapped:
 	kots release create --chart iac/kubernetes/charts/platformq-stack \
 		--namespace platformq --version 1.0.1 --airgap-bundle ./platformq-airgap.tar.gz
 	@echo "Air-gapped package created at ./platformq-airgap.tar.gz" 
+
+scan: sast-scan sca-scan container-scan
+	@echo "All security scans complete."
+
+sast-scan:
+	@echo "Running SAST scan with Semgrep..."
+	docker run --rm -v "$(CURDIR):/src" returntocorp/semgrep semgrep --config="p/python" --error .
+
+sca-scan:
+	@echo "Running SCA scan with pip-audit..."
+	pip-audit -r requirements/base.txt
+	@for dir in services/*/ ; do \
+		if [ -f "$${dir}requirements.txt" ]; then \
+			echo "--> Scanning $${dir}requirements.txt"; \
+			pip-audit -r "$${dir}requirements.txt"; \
+		fi \
+	done
+
+container-scan:
+	@echo "Running container scan with Trivy..."
+	@for dir in $(shell find . -name 'Dockerfile' -printf '%h\n'); do \
+		if [ -f "$${dir}/Dockerfile" ]; then \
+			IMAGE_NAME="platformq/$(shell basename $${dir}):latest"; \
+			echo "--> Building $$IMAGE_NAME"; \
+			docker build -t $$IMAGE_NAME $${dir}; \
+			echo "--> Scanning $$IMAGE_NAME"; \
+			docker run --rm -v /var/run/docker.sock:/var/run/docker.sock \
+				-v "$(HOME)/.trivy/cache:/root/.cache/" \
+				aquasec/trivy image --exit-code 1 --severity HIGH,CRITICAL $$IMAGE_NAME; \
+		fi \
+	done 
+
+install-knative:
+	@echo "Installing Knative Serving..."
+	kubectl apply -f iac/kubernetes/knative/serving-crds.yaml
+	kubectl apply -f iac/kubernetes/knative/serving-core.yaml
+	kubectl apply -f iac/kubernetes/knative/serving-hpa.yaml
+	@echo "Knative Serving installed."
+
+uninstall-knative:
+	@echo "Uninstalling Knative Serving..."
+	kubectl delete -f iac/kubernetes/knative/serving-hpa.yaml
+	kubectl delete -f iac/kubernetes/knative/serving-core.yaml
+	kubectl delete -f iac/kubernetes/knative/serving-crds.yaml
+	@echo "Knative Serving uninstalled." 

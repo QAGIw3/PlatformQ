@@ -9,6 +9,7 @@ from uuid import UUID
 from ..crud import crud_user, crud_role, crud_api_key
 from ..core.security import verify_password
 from platformq_shared import security as shared_security
+from ..repository import UserRepository, APIKeyRepository
 
 # --- Dependency Provider Functions ---
 # These functions act as the "glue" between our generic, shared security
@@ -83,6 +84,36 @@ def get_password_verifier():
     """Provides the concrete password verification function."""
     return verify_password
 
+
+def get_user_repository(db: Session = Depends(get_db_session)) -> UserRepository:
+    return UserRepository(db)
+
+def get_api_key_repository(db: Session = Depends(get_db_session)) -> APIKeyRepository:
+    return APIKeyRepository(db)
+    
+def get_invitation_repository(db: Session = Depends(get_db_session)) -> InvitationRepository:
+    return InvitationRepository(db)
+    
+def get_role_repository(db: Session = Depends(get_db_session)) -> RoleRepository:
+    return RoleRepository(db)
+
+def get_subscription_repository(db: Session = Depends(get_db_session)) -> SubscriptionRepository:
+    return SubscriptionRepository(db)
+    
+def get_tenant_repository(db: Session = Depends(get_db_session)) -> TenantRepository:
+    return TenantRepository(db)
+    
+def get_oidc_repository(db: Session = Depends(get_db_session)) -> OIDCRepository:
+    return OIDCRepository(db)
+    
+def get_siwe_repository(db: Session = Depends(get_db_session)) -> SIWERepository:
+    return SIWERepository(db)
+    
+def get_audit_repository(db: Session = Depends(get_db_session)) -> AuditRepository:
+    return AuditRepository(db)
+    
+def get_refresh_token_repository(db: Session = Depends(get_db_session)) -> RefreshTokenRepository:
+    return RefreshTokenRepository(db)
 
 # --- Main Dependencies ---
 # We "import" the fully-wired, generic dependencies from the shared library

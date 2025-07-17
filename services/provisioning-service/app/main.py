@@ -8,6 +8,16 @@ import sys
 import re
 import signal
 
+from fastapi import FastAPI, Depends
+from pydantic import BaseModel
+from cassandra.cluster import Cluster, Session
+from minio import Minio
+from pulsar.admin import PulsarAdmin
+from openproject import OpenProject
+
+from .workflow import provision_tenant
+from .core.config import settings
+
 # Add project root to path to allow imports from shared_lib
 # This is a hack for local development; in a container, this is handled by PYTHONPATH
 if "/app" not in sys.path:
@@ -20,6 +30,52 @@ from .nextcloud_provisioner import NextcloudProvisioner
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+app = FastAPI()
+
+class TenantProvisioningRequest(BaseModel):
+    tenant_id: str
+    tenant_name: str
+
+def get_cassandra_session() -> Session:
+    cluster = Cluster([settings.cassandra_host])
+    session = cluster.connect()
+    return session
+
+def get_minio_client() -> Minio:
+    return Minio(
+        settings.minio_endpoint,
+        access_key=settings.minio_access_key,
+        secret_key=settings.minio_secret_key,
+        secure=False
+    )
+
+def get_pulsar_admin() -> PulsarAdmin:
+    return PulsarAdmin(settings.pulsar_admin_url)
+
+def get_openproject_client() -> OpenProject:
+    return OpenProject(url=settings.openproject_url, api_key=settings.openproject_api_key)
+
+@app.post("/provision")
+def provision_tenant_endpoint(
+    request: TenantProvisioningRequest,
+    cassandra_session: Session = Depends(get_cassandra_session),
+    minio_client: Minio = Depends(get_minio_client),
+    pulsar_admin: PulsarAdmin = Depends(get_pulsar_admin),
+    openproject_client: OpenProject = Depends(get_openproject_client),
+):
+    """
+    Provision a new tenant.
+    """
+    provision_tenant(
+        tenant_id=request.tenant_id,
+        tenant_name=request.tenant_name,
+        cassandra_session=cassandra_session,
+        minio_client=minio_client,
+        pulsar_admin=pulsar_admin,
+        openproject_client=openproject_client,
+    )
+    return {"status": "success"}
 
 # --- Configuration ---
 PULSAR_URL = os.environ.get("PULSAR_URL", "pulsar://pulsar:6650")

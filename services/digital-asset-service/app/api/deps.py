@@ -1,6 +1,8 @@
 from fastapi import Header, Depends, HTTPException, status
 from sqlalchemy.orm import Session
 from ...db.session import get_db
+from ..postgres_db import SessionLocal
+from ..repository import DigitalAssetRepository
 
 # Placeholder for user model. In a real app, this might come from a shared library.
 class MockUser:
@@ -32,3 +34,13 @@ def get_current_tenant_user_and_reputation(
 
 # Alias for easier use in endpoints
 get_current_context = get_current_tenant_user_and_reputation 
+
+def get_db_session():
+    db = SessionLocal()
+    try:
+        yield db
+    finally:
+        db.close()
+
+def get_digital_asset_repository(db: SessionLocal = Depends(get_db_session)) -> DigitalAssetRepository:
+    return DigitalAssetRepository(db) 

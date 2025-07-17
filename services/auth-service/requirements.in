@@ -1,27 +1,9 @@
--r ../../requirements/base.in
-
-# This service has some specific dependencies not in the base set
-minio
-pdoc
-web3
-siwe
-python-jose[cryptography]
-authlib[starlette]
-hvac
-
-# Development and Testing
-pytest
-black
-ruff
-redoc 
-
--e ../../libs/platformq-shared
--e ../../libs/platformq-events
 fastapi
 uvicorn
-pydantic
-passlib[bcrypt]
-python-jose[cryptography]
-python-multipart
-pyjwt
-shortuuid 
+platformq-shared
+cassandra-driver
+python-jose
+passlib
+bcrypt
+httpx
+pip-audit 

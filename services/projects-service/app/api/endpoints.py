@@ -5,9 +5,9 @@ from datetime import datetime
 
 from ..schemas.project import Project, ProjectCreate, Milestone
 from ..schemas.openproject_webhook import OpenProjectWebhookPayload
-from ..crud.project import project as crud_project
+from ..repository import ProjectRepository
 from ..messaging.pulsar import pulsar_service
-from .deps import get_current_tenant_and_user
+from .deps import get_current_tenant_and_user, get_project_repository
 
 router = APIRouter()
 
@@ -15,33 +15,36 @@ router = APIRouter()
 def create_project(
     *,
     project_in: ProjectCreate,
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    repo: ProjectRepository = Depends(get_project_repository)
 ):
     """
     Create a new project.
     """
     owner_id = str(context["user"].id)
-    return crud_project.create(obj_in=project_in, owner_id=owner_id)
+    return repo.add(obj_in=project_in, owner_id=owner_id)
 
 @router.get("/", response_model=List[Project])
 def read_projects(
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    repo: ProjectRepository = Depends(get_project_repository)
 ):
     """
     Retrieve all projects.
     """
-    return crud_project.get_multi()
+    return repo.list()
 
 @router.get("/{project_id}", response_model=Project)
 def read_project(
     *,
     project_id: UUID,
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    repo: ProjectRepository = Depends(get_project_repository)
 ):
     """
     Get a project by ID.
     """
-    project = crud_project.get(id=project_id)
+    project = repo.get(id=project_id)
     if not project:
         raise HTTPException(status_code=404, detail="Project not found")
     return project
@@ -51,13 +54,14 @@ def complete_milestone(
     *,
     project_id: UUID,
     milestone_id: UUID,
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    repo: ProjectRepository = Depends(get_project_repository)
 ):
     """
     Mark a milestone as complete.
     """
     user_id = str(context["user"].id)
-    milestone = crud_project.complete_milestone(
+    milestone = repo.complete_milestone(
         project_id=project_id,
         milestone_id=milestone_id,
         user_id=user_id

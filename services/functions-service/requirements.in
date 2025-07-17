@@ -1,14 +1,9 @@
--r ../../requirements/base.in
-
-# Service-specific dependencies
-kubernetes
 fastapi
 uvicorn
-wasmtime
-pydantic
-grpcio-tools
-python-multipart
- 
+platformq-shared
+kubernetes
+docker
+
 # Development and Testing
 pytest
 black

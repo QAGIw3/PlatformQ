@@ -1,0 +1,74 @@
+FROM nvidia/cuda:12.2.0-runtime-ubuntu22.04
+
+# Install Python and base dependencies
+RUN apt-get update && apt-get install -y \
+    python3.11 \
+    python3-pip \
+    curl \
+    wget \
+    gnupg \
+    build-essential \
+    git \
+    xvfb \
+    libxxf86vm1 \
+    libxfixes3 \
+    libxrender1 \
+    libgl1-mesa-glx \
+    libxi6 \
+    libxkbcommon0 \
+    libsm6 \
+    && rm -rf /var/lib/apt/lists/*
+
+# Install Python packages for distributed computing
+RUN pip3 install --no-cache-dir \
+    pyspark==3.5.0 \
+    pulsar-client==3.3.0 \
+    minio==7.2.0 \
+    prometheus-client==0.19.0 \
+    opentelemetry-api==1.21.0 \
+    opentelemetry-sdk==1.21.0 \
+    opentelemetry-instrumentation==0.42b0 \
+    numpy==1.26.2 \
+    scipy==1.11.4 \
+    pandas==2.1.3 \
+    psutil==5.9.6
+
+# Install Blender with CUDA support
+RUN wget https://download.blender.org/release/Blender3.6/blender-3.6.5-linux-x64.tar.xz && \
+    tar -xf blender-3.6.5-linux-x64.tar.xz && \
+    mv blender-3.6.5-linux-x64 /opt/blender && \
+    rm blender-3.6.5-linux-x64.tar.xz
+
+# Set Blender path
+ENV PATH="/opt/blender:${PATH}"
+ENV BLENDER_PATH="/opt/blender"
+
+# Enable GPU rendering
+ENV CYCLES_OPENCL_SPLIT_KERNEL_TEST=1
+ENV CYCLES_CUDA_ADAPTIVE_COMPILE=1
+
+# Copy base worker files
+COPY --from=platformq/compute-worker-base:latest /app/worker_base.py /app/
+COPY --from=platformq/compute-worker-base:latest /app/health_check.py /app/
+
+# Copy Blender worker implementation
+COPY blender_worker.py /app/
+COPY blender_utils.py /app/
+COPY render_scripts/ /app/render_scripts/
+
+# Set working directory
+WORKDIR /app
+
+# Environment variables
+ENV SPARK_HOME=/opt/spark
+ENV PULSAR_URL=pulsar://pulsar:6650
+ENV MINIO_URL=minio:9000
+ENV PROMETHEUS_PUSHGATEWAY_URL=pushgateway:9091
+ENV ENABLE_GPU=true
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=3s --start-period=5s --retries=3 \
+    CMD python3 /app/health_check.py || exit 1
+
+# Use Xvfb for headless rendering with GPU
+CMD ["python3", "/app/blender_worker.py"] 

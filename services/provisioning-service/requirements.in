@@ -1,16 +1,7 @@
--r ../../requirements/base.in
-
-# No service-specific Python dependencies are needed for this service.
- 
-# Development and Testing
-pytest
-black
-ruff 
-
--e ../../libs/platformq-shared
--e ../../libs/platformq-events
 fastapi
 uvicorn
-pydantic
-kubernetes
-jinja2 
+platformq-shared
+cassandra-driver
+minio
+pulsar-client
+python-openproject 

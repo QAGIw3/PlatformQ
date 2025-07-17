@@ -3,22 +3,35 @@ import time
 from typing import List
 from uuid import UUID
 
+import httpx
 from cassandra.cluster import Session
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Response
 from platformq_shared.event_publisher import EventPublisher
 
-from ..api.deps import get_current_user_from_trusted_header
-from ..crud import (
-    crud_api_key,
-    crud_audit,
-    crud_invitation,
-    crud_refresh_token,
-    crud_role,
-    crud_subscription,
-    crud_user,
-    crud_oidc,
-    crud_tenant,
-    crud_siwe
+from ..api.deps import (
+    get_current_user_from_trusted_header,
+    get_user_repository,
+    get_api_key_repository,
+    get_invitation_repository,
+    get_role_repository,
+    get_subscription_repository,
+    get_tenant_repository,
+    get_oidc_repository,
+    get_siwe_repository,
+    get_audit_repository,
+    get_refresh_token_repository
+)
+from ..repository import (
+    UserRepository,
+    APIKeyRepository,
+    InvitationRepository,
+    RoleRepository,
+    SubscriptionRepository,
+    TenantRepository,
+    OIDCRepository,
+    SIWERepository,
+    AuditRepository,
+    RefreshTokenRepository
 )
 from ..db.session import get_db_session
 from ..schemas.api_key import ApiKeyCreate, ApiKeyCreateResponse, ApiKeyInfo
@@ -38,13 +51,14 @@ from ..schemas.user import (
     StorageConfigUpdate,
 )
 from ..schemas.tenant import Tenant, TenantCreate
-from .deps import get_current_tenant_and_user, require_role, get_current_user, require_service_token
+from .deps import get_current_tenant_and_user, require_role, get_current_user, require_service_token, get_event_publisher
 from ..services.user_service import UserService
 from platformq_shared.events import UserCreatedEvent, SubscriptionChangedEvent
 from siwe import SiweMessage
 from jose import jwt
 from jose.constants import ALGORITHMS
 from platformq_shared.jwt import create_access_token
+from ..core.config import settings
 
 router = APIRouter()
 
@@ -55,31 +69,52 @@ router = APIRouter()
 
 
 @router.post("/tenants", response_model=Tenant, status_code=201, tags=["Tenants"])
-def create_tenant_endpoint(
+async def create_tenant_endpoint(
     tenant_in: TenantCreate,
-    db: Session = Depends(get_db_session),
+    tenant_repo: TenantRepository = Depends(get_tenant_repository),
+    user_repo: UserRepository = Depends(get_user_repository),
+    role_repo: RoleRepository = Depends(get_role_repository),
+    subscription_repo: SubscriptionRepository = Depends(get_subscription_repository),
+    audit_repo: AuditRepository = Depends(get_audit_repository),
     publisher: EventPublisher = Depends(get_event_publisher)
 ):
     """
     Public endpoint to create a new tenant. This is the first step for a new 
-    organization to join the platform. It uses the UserService to orchestrate
-    the creation of the tenant, its first admin user, and default resources.
+    organization to join the platform. It creates the tenant and then calls the
+    provisioning service to set up all necessary resources.
     """
-    new_tenant = crud_tenant.create_tenant(db, name=tenant_in.name)
-    user_service = UserService(db)
+    new_tenant = tenant_repo.create_tenant(name=tenant_in.name)
+    
+    async with httpx.AsyncClient() as client:
+        try:
+            response = await client.post(
+                f"{settings.provisioning_service_url}/provision",
+                json={"tenant_id": str(new_tenant['id']), "tenant_name": new_tenant['name']},
+                timeout=30.0
+            )
+            response.raise_for_status()
+        except httpx.HTTPError as e:
+            # If provisioning fails, we should ideally roll back the tenant creation.
+            # For now, we'll just log the error and raise an exception.
+            print(f"Failed to provision tenant {new_tenant['id']}: {e}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to provision tenant: {str(e)}"
+            )
+
+    user_service = UserService(user_repo)
     
     # Create the first admin user for this new tenant
-    admin_user_in = UserCreate(email=tenant_in.admin_email, full_name=tenant_in.admin_full_name, did=tenant_in.admin_did) # Pass did
+    admin_user_in = UserCreate(email=tenant_in.admin_email, full_name=tenant_in.admin_full_name, did=tenant_in.admin_did)
     new_user = user_service.create_full_user(tenant_id=new_tenant['id'], user_in=admin_user_in)
-    crud_role.assign_role_to_user(db, tenant_id=new_tenant['id'], user_id=new_user.id, role='admin')
+    role_repo.assign_role_to_user(tenant_id=new_tenant['id'], user_id=new_user.id, role='admin')
     
     # Assign a default 'free' subscription tier
     sub_create = SubscriptionCreate(user_id=new_user.id, tier="free")
-    crud_subscription.create_subscription_for_user(db, subscription=sub_create)
+    subscription_repo.create_subscription_for_user(subscription=sub_create)
 
     # Create audit log
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         user_id=new_user.id,
         event_type="USER_CREATED",
         details=f"User created with email {new_user.email}",
@@ -103,31 +138,30 @@ def create_tenant_endpoint(
 @router.post("/users/", response_model=User, status_code=201)
 def create_user_endpoint(
     user: UserCreate,
-    db: Session = Depends(get_db_session),
+    user_repo: UserRepository = Depends(get_user_repository),
     publisher: EventPublisher = Depends(get_event_publisher),
 ):
     """
     Create a new user, with a default role and subscription.
     """
-    db_user = crud_user.get_user_by_email(db, email=user.email)
+    db_user = user_repo.get_by_email(email=user.email)
     if db_user:
         raise HTTPException(
             status_code=400,
             detail="Email already registered",
         )
 
-    new_user = crud_user.create_user(db=db, user=user, did=user.did) # Pass did
+    new_user = user_repo.add(user=user, tenant_id=user.tenant_id)
 
     # Assign a default 'member' role
-    crud_role.assign_role_to_user(db, user_id=new_user.id, role="member")
+    role_repo.assign_role_to_user(user_id=new_user.id, role="member")
 
     # Assign a default 'free' subscription tier
     sub_create = SubscriptionCreate(user_id=new_user.id, tier="free")
-    crud_subscription.create_subscription_for_user(db, subscription=sub_create)
+    subscription_repo.create_subscription_for_user(subscription=sub_create)
 
     # Create audit log
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         user_id=new_user.id,
         event_type="USER_CREATED",
         details=f"User created with email {new_user.email}",
@@ -160,12 +194,12 @@ def read_users_me(context: dict = Depends(get_current_tenant_and_user)):
 def update_current_user(
     user_in: UserUpdate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db_session),
+    user_repo: UserRepository = Depends(get_user_repository),
 ):
     """
     Update current user's profile.
     """
-    user = crud_user.update_user(db, user_id=current_user.id, user_update=user_in) # `user_update` already contains did
+    user = user_repo.update(user_id=current_user.id, user_update=user_in)
     return user
 
 
@@ -184,7 +218,7 @@ def update_storage_config(
         storage_backend=storage_in.storage_backend,
         storage_config=storage_in.storage_config
     )
-    updated_user = crud_user.update_user(db, user_id=current_user.id, user_update=user_update)
+    updated_user = user_repo.update_user(user_id=current_user.id, user_update=user_update)
     return updated_user
 
 
@@ -199,7 +233,7 @@ def link_wallet(
     """
     siwe_message = SiweMessage(message=request.message)
 
-    if not crud_siwe.use_nonce(db, siwe_message.nonce):
+    if not siwe_repo.use_nonce(db, siwe_message.nonce):
         raise HTTPException(status_code=422, detail="Invalid nonce.")
 
     try:
@@ -210,7 +244,7 @@ def link_wallet(
     wallet_address = siwe_message.address
     
     # Check if this wallet is already linked to another user
-    existing_user = crud_user.get_user_by_wallet_address(db, wallet_address=wallet_address)
+    existing_user = user_repo.get_user_by_wallet_address(db, wallet_address=wallet_address)
     if existing_user and existing_user.id != current_user.id:
         raise HTTPException(status_code=400, detail="Wallet is already linked to another account.")
 
@@ -218,7 +252,7 @@ def link_wallet(
     did = f"did:ethr:{wallet_address}"
     user_update = UserUpdate(wallet_address=wallet_address, did=did)
     
-    updated_user = crud_user.update_user(db, user_id=current_user.id, user_update=user_update)
+    updated_user = user_repo.update_user(user_id=current_user.id, user_update=user_update)
     return updated_user
 
 
@@ -230,10 +264,9 @@ def deactivate_current_user(
     """
     Deactivate the current user's account.
     """
-    user = crud_user.set_user_status(db, user_id=current_user.id, status="deactivated")
+    user = user_repo.set_user_status(db, user_id=current_user.id, status="deactivated")
     # Add audit log
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         user_id=current_user.id,
         event_type="USER_DEACTIVATED",
         details="User deactivated their account.",
@@ -249,12 +282,11 @@ def delete_current_user(
     """
     Delete the current user's account by calling the UserService.
     """
-    user_service = UserService(db)
+    user_service = UserService(user_repo)
     deleted_user = user_service.soft_delete_full_user(
         tenant_id=context["tenant_id"], user_id=context["user"].id
     )
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         user_id=context["user"].id,
         event_type="USER_DELETED",
         details="User deleted their account.",
@@ -272,9 +304,8 @@ def delete_user_by_admin(user_id: UUID, db: Session = Depends(get_db_session)):
     """
     Delete a user's account (Admin only).
     """
-    user = crud_user.soft_delete_user(db, user_id=user_id)
-    crud_audit.create_audit_log(
-        db,
+    user = user_repo.soft_delete_user(db, user_id=user_id)
+    audit_repo.create_audit_log(
         user_id=user_id,
         event_type="ADMIN_USER_DELETED",
         details=f"Admin deleted account for user {user_id}.",
@@ -293,14 +324,13 @@ def create_invitation_endpoint(
 ):
     """Creates an invitation for a new user within the current tenant."""
     # Check if the invited email already exists
-    if crud_user.get_user_by_email(db, email=invite_in.email_to_invite):
+    if user_repo.get_user_by_email(db, email=invite_in.email_to_invite):
         raise HTTPException(status_code=400, detail="Email already registered")
 
-    token = crud_invitation.create_invitation(
+    token = invitation_repo.create_invitation(
         db, tenant_id=context["tenant_id"], invite_in=invite_in, invited_by=context["user"].id
     )
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         user_id=context["user"].id,
         event_type="INVITATION_CREATED",
         details=f"Invitation sent to {invite_in.email_to_invite}",
@@ -317,7 +347,7 @@ def accept_invitation_endpoint(
     """Accept an invitation. Tenant is determined by the token."""
     # The get_invitation_by_token function must be updated to not require tenant_id
     # as the token is the only piece of info the new user has.
-    invite_data = crud_invitation.get_invitation_by_token(db, token=accept_in.invitation_token)
+    invite_data = invitation_repo.get_invitation_by_token(db, token=accept_in.invitation_token)
 
     if not invite_data:
         raise HTTPException(status_code=404, detail="Invitation not found or invalid.")
@@ -329,22 +359,21 @@ def accept_invitation_endpoint(
         raise HTTPException(status_code=400, detail="Invitation has expired.")
 
     # Mark invitation as used
-    crud_invitation.mark_invitation_as_accepted(db, token=accept_in.invitation_token)
+    invitation_repo.mark_invitation_as_accepted(db, token=accept_in.invitation_token)
 
     # Create the new user in the correct tenant
     user_create = UserCreate(email=invite_data['email_invited'], full_name=accept_in.full_name)
-    new_user = crud_user.create_user(db, tenant_id=invite_data['tenant_id'], user=user_create)
+    new_user = user_repo.create_user(db, tenant_id=invite_data['tenant_id'], user=user_create)
     
     # Assign a default 'member' role
-    crud_role.assign_role_to_user(db, user_id=new_user.id, role="member")
+    role_repo.assign_role_to_user(user_id=new_user.id, role="member")
 
     # Assign a default 'free' subscription tier
     sub_create = SubscriptionCreate(user_id=new_user.id, tier="free")
-    crud_subscription.create_subscription_for_user(db, subscription=sub_create)
+    subscription_repo.create_subscription_for_user(subscription=sub_create)
 
     # Create audit log
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         user_id=new_user.id,
         event_type="USER_CREATED",
         details=f"User created with email {new_user.email}",
@@ -383,15 +412,14 @@ def assign_role(
     **Note:** This should be a protected endpoint in a real application.
     """
     # Check if user exists
-    user = crud_user.get_user_by_id(db, user_id=assignment.user_id)
+    user = user_repo.get_user_by_id(db, user_id=assignment.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    crud_role.assign_role_to_user(
+    role_repo.assign_role_to_user(
         db, tenant_id=context["tenant_id"], user_id=assignment.user_id, role=assignment.role
     )
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         event_type="ROLE_ASSIGNED",
         details=f"Role '{assignment.role}' assigned to user {assignment.user_id}",
     )
@@ -409,15 +437,14 @@ def revoke_role(
     """
     Revoke a role from a user (Admin only).
     """
-    user = crud_user.get_user_by_id(db, user_id=assignment.user_id)
+    user = user_repo.get_user_by_id(db, user_id=assignment.user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    crud_role.remove_role_from_user(
+    role_repo.remove_role_from_user(
         db, user_id=assignment.user_id, role=assignment.role
     )
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         event_type="ROLE_REVOKED",
         details=f"Role '{assignment.role}' revoked from user {assignment.user_id}",
     )
@@ -429,11 +456,11 @@ def get_user_roles(user_id: UUID, db: Session = Depends(get_db_session)):
     """
     Get all roles for a specific user.
     """
-    user = crud_user.get_user_by_id(db, user_id=user_id)
+    user = user_repo.get_user_by_id(db, user_id=user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
 
-    roles = crud_role.get_roles_for_user(db, user_id=user_id)
+    roles = role_repo.get_roles_for_user(db, user_id=user_id)
     return {"user_id": user_id, "roles": roles}
 
 
@@ -454,7 +481,7 @@ def update_user_subscription(
     """
     Update a user's subscription tier or status (Admin only).
     """
-    updated_sub = crud_subscription.update_subscription_for_user(
+    updated_sub = subscription_repo.update_subscription_for_user(
         db, user_id=user_id, sub_update=sub_update
     )
     if not updated_sub:
@@ -463,8 +490,7 @@ def update_user_subscription(
         )
 
     # Create audit log
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         user_id=user_id,
         event_type="SUBSCRIPTION_UPDATED",
         details=f"Subscription updated for user {user_id}. New tier: {sub_update.tier}, new status: {sub_update.status}",
@@ -496,13 +522,13 @@ def get_user_subscription(
     Get subscription details for a user.
     A user can only see their own subscription, unless they are an admin.
     """
-    user_roles = crud_role.get_roles_for_user(db, user_id=current_user.id)
+    user_roles = role_repo.get_roles_for_user(db, user_id=current_user.id)
     if current_user.id != user_id and "admin" not in user_roles:
         raise HTTPException(
             status_code=403, detail="Not authorized to view this subscription"
         )
 
-    subscription = crud_subscription.get_subscription_by_user_id(db, user_id=user_id)
+    subscription = subscription_repo.get_subscription_by_user_id(db, user_id=user_id)
     if not subscription:
         raise HTTPException(
             status_code=404, detail="Subscription not found for this user"
@@ -518,16 +544,15 @@ def get_user_subscription(
 def create_api_key(
     key_in: ApiKeyCreate,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db_session),
+    api_key_repo: APIKeyRepository = Depends(get_api_key_repository),
 ):
     """
     Create a new API key for the current user.
     """
-    api_key = crud_api_key.create_api_key_for_user(
-        db, user_id=current_user.id, key_in=key_in
+    api_key = api_key_repo.add(
+        user_id=current_user.id, key_in=key_in
     )
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         user_id=current_user.id,
         event_type="API_KEY_CREATED",
         details=f"API key created with prefix {api_key['key_prefix']}",
@@ -538,34 +563,27 @@ def create_api_key(
 @router.get("/api-keys", response_model=List[ApiKeyInfo])
 def get_api_keys(
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db_session),
+    api_key_repo: APIKeyRepository = Depends(get_api_key_repository),
 ):
     """
     Get all API keys for the current user.
     """
-    return crud_api_key.get_api_keys_for_user(db, user_id=current_user.id)
+    return api_key_repo.list(user_id=current_user.id)
 
 
 @router.delete("/api-keys/{key_prefix}", status_code=204)
 def revoke_api_key_endpoint(
     key_prefix: str,
     current_user: User = Depends(get_current_user),
-    db: Session = Depends(get_db_session),
+    api_key_repo: APIKeyRepository = Depends(get_api_key_repository),
 ):
     """
     Revoke an API key for the current user.
     """
-    success = crud_api_key.revoke_api_key(
-        db, prefix=key_prefix, user_id=current_user.id
+    api_key_repo.delete(
+        prefix=key_prefix, user_id=current_user.id
     )
-    if not success:
-        raise HTTPException(
-            status_code=404,
-            detail="API key not found or you do not have permission to revoke it.",
-        )
-
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         user_id=current_user.id,
         event_type="API_KEY_REVOKED",
         details=f"API key with prefix {key_prefix} revoked.",
@@ -586,7 +604,7 @@ def get_user_details_for_s2s(
     """
     Internal endpoint for services to retrieve user details.
     """
-    user = crud_user.get_user_by_id(db, user_id=user_id)
+    user = user_repo.get_user_by_id(db, user_id=user_id)
     if not user:
         raise HTTPException(status_code=404, detail="User not found")
     return user
@@ -630,14 +648,14 @@ def request_passwordless_login(
     Initiate a passwordless login.
     This checks if the user exists and generates a temporary token.
     """
-    user = crud_user.get_user_by_email(db, email=request.email)
+    user = user_repo.get_user_by_email(db, email=request.email)
     if not user:
         raise HTTPException(
             status_code=404,
             detail="User with this email does not exist.",
         )
 
-    temp_token = crud_user.create_passwordless_token(db, email=request.email)
+    temp_token = user_repo.create_passwordless_token(db, email=request.email)
 
     # In a real app, you would email this token to the user.
     # For this example, we return it directly.
@@ -651,7 +669,7 @@ def get_access_token_from_passwordless(
     """
     Exchange a temporary passwordless token for a JWT access token.
     """
-    valid_token = crud_user.verify_passwordless_token(
+    valid_token = user_repo.verify_passwordless_token(
         db, email=request.email, token=request.temp_token
     )
     if not valid_token:
@@ -660,8 +678,8 @@ def get_access_token_from_passwordless(
             detail="Invalid or expired token.",
         )
 
-    user = crud_user.get_user_by_email(db, email=request.email)
-    roles = crud_role.get_roles_for_user(db, user_id=user.id, tenant_id=user.tenant_id)
+    user = user_repo.get_user_by_email(db, email=request.email)
+    roles = role_repo.get_roles_for_user(db, user_id=user.id, tenant_id=user.tenant_id)
 
     # In a real app, you would use a library like Authlib to create the token.
     # For this example, we'll just return a placeholder.
@@ -669,10 +687,9 @@ def get_access_token_from_passwordless(
         data={"sub": str(user.id), "tid": str(user.tenant_id)},
         groups=roles,
     )
-    refresh_token = crud_refresh_token.create_refresh_token(db, user_id=user.id)
+    refresh_token = refresh_token_repo.create_refresh_token(db, user_id=user.id)
 
-    crud_audit.create_audit_log(
-        db,
+    audit_repo.create_audit_log(
         user_id=user.id,
         event_type="USER_LOGIN_PASSWORDLESS",
         details=f"User {request.email} successfully logged in via passwordless token.",
@@ -691,13 +708,13 @@ def refresh_access_token(
     """
     Get a new access token from a valid refresh token.
     """
-    token_data = crud_refresh_token.validate_refresh_token(
+    token_data = refresh_token_repo.validate_refresh_token(
         db, token=request.refresh_token
     )
     if not token_data:
         raise HTTPException(status_code=401, detail="Invalid or expired refresh token")
 
-    user = crud_user.get_user_by_id(db, user_id=token_data["user_id"])
+    user = user_repo.get_user_by_id(db, user_id=token_data["user_id"])
     if not user:
         raise HTTPException(status_code=401, detail="User not found")
 
@@ -721,9 +738,8 @@ def logout(
     """
     Revoke the user's refresh token, effectively logging them out.
     """
-    crud_refresh_token.revoke_refresh_token(db, token=request.refresh_token)
-    crud_audit.create_audit_log(
-        db,
+    refresh_token_repo.revoke_refresh_token(db, token=request.refresh_token)
+    audit_repo.create_audit_log(
         user_id=current_user.id,
         event_type="USER_LOGOUT",
         details=f"User {current_user.email} logged out.",

@@ -1,11 +1,15 @@
 from fastapi import Request, Depends, Header, HTTPException, status
 from cassandra.cluster import Session
-from shared_lib import security as shared_security
+from platformq.shared import security as shared_security
+from ..repository import ProposalRepository
 
 def get_db_session(request: Request) -> Session:
     session = request.app.state.db_manager.get_session()
     session.set_keyspace('proposals_keyspace') # This should be configured for proposals
     yield session
+
+def get_proposal_repository(db: Session = Depends(get_db_session)) -> ProposalRepository:
+    return ProposalRepository(db)
 
 # For a new service, these dependencies are placeholders.
 # A real service would define its own CRUD modules and pass them here.

@@ -5,7 +5,7 @@ from typing import List, Dict, Any
 from datetime import datetime
 from ....platformq_shared.db_models import User
 from ....platformq_shared.api.deps import get_db_session, get_current_tenant_and_user, require_service_token
-from ...crud import crud_digital_asset
+from ...repository import DigitalAssetRepository
 from ...schemas import digital_asset as schemas
 from ....platformq_shared.events import DigitalAssetCreated
 from ....platformq_shared.event_publisher import EventPublisher
@@ -24,10 +24,10 @@ router = APIRouter()
 @router.post("/internal/digital-assets/{cid}/migrate", status_code=204)
 async def migrate_digital_asset_storage(
     cid: str,
-    db: Session = Depends(get_db_session),
+    repo: DigitalAssetRepository = Depends(get_digital_asset_repository),
     service_token: dict = Depends(require_service_token),
 ):
-    db_asset = crud_digital_asset.get_asset(db, cid=cid)
+    db_asset = repo.get(cid=cid)
     if not db_asset:
         raise HTTPException(status_code=404, detail="Asset not found")
 
@@ -51,8 +51,8 @@ async def migrate_digital_asset_storage(
             upload_data = upload_response.json()
             new_identifier = upload_data["identifier"]
 
-            crud_digital_asset.update_asset_storage_uri(
-                db=db, cid=cid, new_uri=new_identifier
+            repo.update_asset_storage_uri(
+                cid=cid, new_uri=new_identifier
             )
             
     except httpx.RequestError as e:
@@ -148,11 +148,11 @@ def is_high_value_asset(asset_type: str, asset_value: float) -> bool:
 def create_digital_asset(
     asset: schemas.DigitalAssetCreate,
     request: Request,
-    db: Session = Depends(get_db_session),
+    repo: DigitalAssetRepository = Depends(get_digital_asset_repository),
     context: dict = Depends(get_current_tenant_and_user),
 ):
     cid = compute_cid(asset)
-    db_asset = crud_digital_asset.create_asset(db=db, asset=asset, cid=cid)
+    db_asset = repo.add(asset, owner_id=context["user"].id)
     
     publisher: EventPublisher = request.app.state.event_publisher
     if publisher:
@@ -276,27 +276,25 @@ def create_digital_asset(
 @router.get("/digital-assets/{cid}", response_model=schemas.DigitalAsset)
 def read_digital_asset(
     cid: str,
-    db: Session = Depends(get_db_session),
+    repo: DigitalAssetRepository = Depends(get_digital_asset_repository),
 ):
-    db_asset = crud_digital_asset.get_asset(db, cid=cid)
+    db_asset = repo.get(cid=cid)
     if db_asset is None:
         raise HTTPException(status_code=404, detail="Asset not found")
     return db_asset
 
 @router.get("/digital-assets", response_model=List[schemas.DigitalAsset])
 def read_digital_assets(
-    skip: int = 0,
-    limit: int = 100,
-    db: Session = Depends(get_db_session),
+    repo: DigitalAssetRepository = Depends(get_digital_asset_repository),
 ):
-    assets = crud_digital_asset.get_assets(db, skip=skip, limit=limit)
+    assets = repo.list()
     return assets
 
 @router.post("/{asset_id}/reviews", response_model=schemas.PeerReview)
 def create_peer_review(
     asset_id: str,
     review: schemas.PeerReviewCreate,
-    db: Session = Depends(get_db_session),
+    repo: DigitalAssetRepository = Depends(get_digital_asset_repository),
     context: dict = Depends(get_current_tenant_and_user),
 ):
     """
@@ -305,28 +303,28 @@ def create_peer_review(
     approve the asset based on the new total number of reviews.
     """
     reviewer_id = str(context["user"].id)
-    db_review = crud_digital_asset.add_review(
-        db=db, asset_id=asset_id, reviewer_id=reviewer_id, review_content=review.review_content
+    db_review = repo.add_review(
+        asset_id=asset_id, reviewer_id=reviewer_id, review_content=review.review_content
     )
     if db_review is None:
         raise HTTPException(status_code=404, detail="Asset not found")
 
     # After adding a review, immediately try to approve the asset
-    crud_digital_asset.approve_asset(db=db, asset_id=asset_id)
+    repo.approve_asset(asset_id=asset_id)
     
     return db_review
 
 @router.post("/{asset_id}/approve", response_model=schemas.DigitalAsset)
 def approve_digital_asset(
     asset_id: str,
-    db: Session = Depends(get_db_session),
+    repo: DigitalAssetRepository = Depends(get_digital_asset_repository),
     context: dict = Depends(get_current_tenant_and_user)
 ):
     """
     Manually attempts to approve a digital asset. Approval is granted if the
     asset has sufficient peer reviews based on the author's reputation score.
     """
-    approved_asset = crud_digital_asset.approve_asset(db=db, asset_id=asset_id)
+    approved_asset = repo.approve_asset(asset_id=asset_id)
     if not approved_asset:
         raise HTTPException(status_code=404, detail="Asset not found or already approved.")
     
@@ -342,7 +340,7 @@ def approve_digital_asset(
 @router.get("/digital-assets/{asset_id}/lineage", response_model=Dict[str, Any])
 def get_asset_lineage(
     asset_id: str,
-    db: Session = Depends(get_db_session),
+    repo: DigitalAssetRepository = Depends(get_digital_asset_repository),
     context: dict = Depends(get_current_tenant_and_user),
 ):
     """
@@ -353,7 +351,7 @@ def get_asset_lineage(
     - All processing VCs in chronological order
     - Verification status for each VC
     """
-    db_asset = crud_digital_asset.get_asset(db=db, asset_id=asset_id)
+    db_asset = repo.get(asset_id=asset_id)
     if not db_asset:
         raise HTTPException(status_code=404, detail="Asset not found")
     
