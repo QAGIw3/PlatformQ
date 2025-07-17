@@ -1,63 +1,60 @@
-# Neuromorphic Event Processing Service Requirements
+# Neuromorphic Processing Service Requirements
 
-# Core SNN Libraries
-brian2==2.5.1  # Primary spiking neural network simulator
-norse==0.0.7  # PyTorch-based SNN library for GPU acceleration
-snntorch==0.6.4  # Additional SNN utilities and models
-nest-ml==3.5  # Alternative for large-scale simulations (optional)
+# FastAPI and web framework
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+websockets>=12.0
+httpx>=0.25.0
 
-# Scientific Computing
-numpy==1.24.3
-scipy==1.10.1
-torch==2.0.1  # For Norse and GPU acceleration
-numba==0.57.1  # JIT compilation for performance
+# Spiking Neural Network libraries
+brian2>=2.5.4  # Primary SNN simulator
+# Note: brian2 requires C++ compiler
 
-# FastAPI and async
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-websockets==12.0
-aiofiles==23.2.1
+# Alternative/additional neuromorphic libraries (optional)
+# nengo>=3.2.0  # Alternative SNN framework
+# pyNN>=0.10.1  # Common interface for neural simulators
+# spynnaker>=1!7.1.0  # SpiNNaker neuromorphic hardware support
+# norse>=0.0.7  # PyTorch-based SNN library
+# snnTorch>=0.7.0  # PyTorch spiking neural networks
+# bindsnet>=0.3.1  # PyTorch-based SNN simulation
 
-# Apache Pulsar
-pulsar-client==3.3.0
+# Scientific computing
+numpy>=1.24.3
+scipy>=1.11.4
+pandas>=2.1.3
+scikit-learn>=1.3.2
 
-# HTTP client for quantum optimization integration
-httpx==0.25.2
+# Time series and statistics
+statsmodels>=0.14.0
+prophet>=1.1.5  # Facebook Prophet for time series
+ruptures>=1.1.8  # Change point detection
 
-# Caching and state management
-pyignite==0.6.1  # Apache Ignite client
+# PyTorch (for snnTorch - optional but recommended)
+torch>=2.1.0
+torchvision>=0.16.0
 
-# Monitoring and observability
-prometheus-client==0.19.0
-opentelemetry-api==1.21.0
-opentelemetry-sdk==1.21.0
-opentelemetry-instrumentation-fastapi==0.42b0
+# Optimization
+# qiskit>=0.45.0  # Quantum-inspired optimization (optional)
 
-# Data processing
-pandas==2.0.3
-pyarrow==14.0.1  # For efficient serialization
-msgpack==1.0.7
+# Event processing
+pulsar-client>=3.3.0
+pyignite>=0.6.1
 
-# Visualization (for spike pattern analysis)
-matplotlib==3.7.2
-plotly==5.17.0
+# Data validation
+pydantic>=2.5.0
 
-# Configuration and validation
-pydantic==2.5.0
-pydantic-settings==2.1.0
-python-dotenv==1.0.0
+# Utilities
+python-dateutil>=2.8.2
+pytz>=2023.3
 
-# Testing
-pytest==7.4.3
-pytest-asyncio==0.21.1
-pytest-cov==4.1.0
+# Monitoring and logging
+prometheus-client>=0.19.0
 
-# Development tools
-black==23.11.0
-isort==5.12.0
-mypy==1.7.1
+# Visualization (optional)
+# matplotlib>=3.8.0
+# seaborn>=0.13.0
+# plotly>=5.18.0
 
-# Platform shared libraries (internal)
--e ../../libs/shared 
--e ../../libs/platformq-shared
--e ../../libs/platformq-events 
+# Platform shared libraries
+platformq-shared
+platformq-events 

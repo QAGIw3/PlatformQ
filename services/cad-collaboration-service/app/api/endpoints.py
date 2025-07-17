@@ -9,12 +9,205 @@ from .deps import get_current_tenant_and_user
 from ..ignite_manager import IgniteManager
 from ..crdt_synchronizer import CRDTSynchronizer
 from ..mesh_optimizer_client import MeshOptimizerClient
+from ..collaboration_engine import CollaborationEngine, GeometryOperation
 from platformq_shared.events import GeometryOperationEvent, MeshOptimizationResult
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
 
 
+# Collaboration session endpoints
+@router.post("/sessions")
+async def create_collaboration_session(
+    project_id: str,
+    user_name: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Create a new collaboration session"""
+    from ..main import app
+    collaboration_engine: CollaborationEngine = app.state.collaboration_engine
+    
+    user_id = context["user"]["id"]
+    
+    session = await collaboration_engine.create_session(
+        project_id=project_id,
+        user_id=user_id,
+        user_name=user_name
+    )
+    
+    return {
+        "session_id": session.session_id,
+        "project_id": session.project_id,
+        "created_at": session.created_at,
+        "join_url": f"/ws/collaborate/{session.session_id}/{user_id}"
+    }
+
+
+@router.post("/sessions/{session_id}/join")
+async def join_collaboration_session(
+    session_id: str,
+    user_name: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Join an existing collaboration session"""
+    from ..main import app
+    collaboration_engine: CollaborationEngine = app.state.collaboration_engine
+    
+    user_id = context["user"]["id"]
+    
+    try:
+        presence = await collaboration_engine.join_session(
+            session_id=session_id,
+            user_id=user_id,
+            user_name=user_name
+        )
+        
+        return {
+            "session_id": session_id,
+            "user_id": user_id,
+            "color": presence.color,
+            "join_url": f"/ws/collaborate/{session_id}/{user_id}"
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/leave")
+async def leave_collaboration_session(
+    session_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Leave a collaboration session"""
+    from ..main import app
+    collaboration_engine: CollaborationEngine = app.state.collaboration_engine
+    
+    user_id = context["user"]["id"]
+    
+    await collaboration_engine.leave_session(session_id, user_id)
+    
+    return {"status": "left", "session_id": session_id}
+
+
+@router.get("/sessions/{session_id}")
+async def get_session_info(
+    session_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get information about a collaboration session"""
+    from ..main import app
+    collaboration_engine: CollaborationEngine = app.state.collaboration_engine
+    
+    if session_id not in collaboration_engine.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    session = collaboration_engine.sessions[session_id]
+    
+    return {
+        "session_id": session.session_id,
+        "project_id": session.project_id,
+        "created_at": session.created_at,
+        "users": [
+            {
+                "id": u.user_id,
+                "name": u.name,
+                "color": u.color,
+                "status": u.status,
+                "last_seen": u.last_seen
+            }
+            for u in session.users.values()
+        ],
+        "operation_count": len(session.operations),
+        "checkpoint_count": len(session.checkpoints)
+    }
+
+
+@router.get("/sessions/{session_id}/operations")
+async def get_session_operations(
+    session_id: str,
+    limit: int = 100,
+    offset: int = 0,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get operation history for a session"""
+    from ..main import app
+    collaboration_engine: CollaborationEngine = app.state.collaboration_engine
+    
+    if session_id not in collaboration_engine.sessions:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    session = collaboration_engine.sessions[session_id]
+    
+    # Get operations with pagination
+    operations = session.operations[offset:offset + limit]
+    
+    return {
+        "operations": [
+            {
+                "id": op.operation_id,
+                "type": op.operation_type,
+                "user_id": op.user_id,
+                "timestamp": op.timestamp,
+                "target_objects": op.target_objects,
+                "parameters": op.parameters
+            }
+            for op in operations
+        ],
+        "total": len(session.operations),
+        "limit": limit,
+        "offset": offset
+    }
+
+
+@router.post("/sessions/{session_id}/checkpoints")
+async def create_checkpoint(
+    session_id: str,
+    name: str,
+    description: str = "",
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Create a checkpoint in the session"""
+    from ..main import app
+    collaboration_engine: CollaborationEngine = app.state.collaboration_engine
+    
+    try:
+        checkpoint = await collaboration_engine.create_checkpoint(
+            session_id=session_id,
+            name=name,
+            description=description
+        )
+        
+        return checkpoint
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/branch")
+async def branch_from_checkpoint(
+    session_id: str,
+    checkpoint_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Create a new branch from a checkpoint"""
+    from ..main import app
+    collaboration_engine: CollaborationEngine = app.state.collaboration_engine
+    
+    try:
+        branch_session = await collaboration_engine.branch_from_checkpoint(
+            session_id=session_id,
+            checkpoint_id=checkpoint_id
+        )
+        
+        return {
+            "branch_session_id": branch_session.session_id,
+            "parent_session_id": session_id,
+            "checkpoint_id": checkpoint_id,
+            "created_at": branch_session.created_at
+        }
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+
+
+# Original CRDT sync endpoints
 @router.post("/sessions/{session_id}/sync")
 async def sync_geometry_operations(
     session_id: str,
@@ -53,202 +246,116 @@ async def get_session_state(
     session_id: str,
     context: dict = Depends(get_current_tenant_and_user),
 ):
-    """Get current state of a CAD session"""
+    """Get the current state of a CAD collaboration session"""
     from ..main import app
-    crdt_sync: CRDTSynchronizer = app.state.crdt_sync
+    ignite_manager: IgniteManager = app.state.ignite_manager
     
-    state = await crdt_sync.get_session_state(session_id)
-    if not state:
+    # Get session state from Ignite
+    session_key = f"session:{context['tenant_id']}:{session_id}"
+    session_state = await ignite_manager.get_cache_value("cad_sessions", session_key)
+    
+    if not session_state:
         raise HTTPException(status_code=404, detail="Session not found")
         
-    return state
+    # Get geometry state
+    geometry_key = f"geometry:{context['tenant_id']}:{session_id}"
+    geometry_state = await ignite_manager.get_cache_value("cad_geometry", geometry_key)
+    
+    # Get connected users
+    users_key = f"users:{context['tenant_id']}:{session_id}"
+    connected_users = await ignite_manager.get_cache_value("cad_users", users_key) or []
+    
+    return {
+        "session_id": session_id,
+        "state": session_state,
+        "geometry": geometry_state,
+        "connected_users": connected_users,
+        "timestamp": datetime.utcnow().isoformat()
+    }
 
 
-@router.post("/sessions/{session_id}/merge")
-async def merge_remote_state(
-    session_id: str,
-    remote_state: str,  # Base64 encoded CRDT state
+@router.post("/optimize-mesh")
+async def optimize_mesh(
+    mesh_data: Dict[str, Any],
+    optimization_level: str = "medium",
+    preserve_features: bool = True,
     context: dict = Depends(get_current_tenant_and_user),
 ):
-    """Merge a remote CRDT state into the session"""
+    """Optimize a 3D mesh for better performance"""
     from ..main import app
-    crdt_sync: CRDTSynchronizer = app.state.crdt_sync
+    mesh_optimizer: MeshOptimizerClient = app.state.mesh_optimizer
     
-    import base64
     try:
-        state_bytes = base64.b64decode(remote_state)
+        # Call mesh optimization service
+        result = await mesh_optimizer.optimize_mesh(
+            vertices=mesh_data.get("vertices", []),
+            faces=mesh_data.get("faces", []),
+            normals=mesh_data.get("normals"),
+            uvs=mesh_data.get("uvs"),
+            optimization_level=optimization_level,
+            preserve_features=preserve_features
+        )
+        
+        # Publish optimization result event
+        event = MeshOptimizationResult(
+            tenant_id=context["tenant_id"],
+            mesh_id=mesh_data.get("mesh_id", str(uuid.uuid4())),
+            original_vertex_count=len(mesh_data.get("vertices", [])),
+            optimized_vertex_count=result["vertex_count"],
+            original_face_count=len(mesh_data.get("faces", [])),
+            optimized_face_count=result["face_count"],
+            optimization_level=optimization_level,
+            processing_time_ms=result["processing_time"],
+            quality_score=result.get("quality_score", 1.0)
+        )
+        
+        event_publisher: EventPublisher = app.state.event_publisher
+        await event_publisher.publish_event(event)
+        
+        return result
+        
     except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid base64 state: {e}")
-        
-    result = await crdt_sync.merge_remote_state(session_id, state_bytes)
-    return result
+        logger.error(f"Mesh optimization failed: {str(e)}")
+        raise HTTPException(status_code=500, detail=f"Mesh optimization failed: {str(e)}")
 
 
-@router.get("/sessions/{session_id}/presence")
-async def get_session_presence(
-    session_id: str,
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Get presence information for all users in a session"""
-    from ..main import app
-    ignite: IgniteManager = app.state.ignite_manager
-    
-    presence = await ignite.get_session_presence(session_id)
-    return {"session_id": session_id, "users": presence}
-
-
-@router.post("/sessions/{session_id}/presence")
-async def update_presence(
-    session_id: str,
-    presence_data: Dict[str, Any],
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Update user presence in a session"""
-    from ..main import app
-    ignite: IgniteManager = app.state.ignite_manager
-    
-    await ignite.update_user_presence(
-        session_id=session_id,
-        user_id=context["user_id"],
-        presence_data=presence_data
-    )
-    
-    return {"status": "updated"}
-
-
-@router.post("/optimize/mesh")
-async def request_mesh_optimization(
-    asset_id: str,
-    mesh_uri: str,
-    optimization_params: Dict[str, Any],
-    background_tasks: BackgroundTasks,
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Request mesh optimization for a 3D model"""
-    from ..main import app
-    optimizer: MeshOptimizerClient = app.state.mesh_optimizer
-    
-    # Define callback for when optimization completes
-    async def on_optimization_complete(result: MeshOptimizationResult):
-        logger.info(f"Optimization completed for asset {asset_id}: {result.status}")
-        # TODO: Update asset with optimized mesh URI
-        # TODO: Notify users via WebSocket
-        
-    request_id = await optimizer.request_optimization(
-        asset_id=asset_id,
-        mesh_data_uri=mesh_uri,
-        optimization_params=optimization_params,
-        callback=on_optimization_complete
-    )
-    
-    return {
-        "request_id": request_id,
-        "status": "submitted",
-        "estimated_time": 60  # seconds
-    }
-
-
-@router.post("/optimize/lod")
-async def generate_lods(
-    asset_id: str,
-    mesh_uri: str,
-    lod_levels: Optional[List[float]] = None,
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Generate Level of Detail (LOD) versions of a mesh"""
-    from ..main import app
-    optimizer: MeshOptimizerClient = app.state.mesh_optimizer
-    
-    request_id = await optimizer.request_lod_generation(
-        asset_id=asset_id,
-        mesh_data_uri=mesh_uri,
-        lod_levels=lod_levels
-    )
-    
-    return {
-        "request_id": request_id,
-        "status": "submitted",
-        "lod_levels": lod_levels or [0.5, 0.25, 0.1]
-    }
-
-
-@router.get("/optimize/status/{request_id}")
-async def get_optimization_status(
-    request_id: str,
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Get status of an optimization request"""
-    from ..main import app
-    optimizer: MeshOptimizerClient = app.state.mesh_optimizer
-    
-    status = await optimizer.get_optimization_status(request_id)
-    if not status:
-        raise HTTPException(status_code=404, detail="Request not found")
-        
-    return status
-
-
-@router.get("/cache/stats")
-async def get_cache_statistics(
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Get Ignite cache statistics"""
-    from ..main import app
-    ignite: IgniteManager = app.state.ignite_manager
-    
-    stats = await ignite.get_cache_stats()
-    return stats
-
-
-@router.post("/sessions/{session_id}/clear")
-async def clear_session_cache(
-    session_id: str,
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Clear all cached data for a session"""
-    from ..main import app
-    ignite: IgniteManager = app.state.ignite_manager
-    
-    await ignite.clear_session_data(session_id)
-    
-    # Also remove from CRDT synchronizer
-    crdt_sync: CRDTSynchronizer = app.state.crdt_sync
-    if session_id in crdt_sync.active_sessions:
-        del crdt_sync.active_sessions[session_id]
-        
-    return {"status": "cleared"}
-
-
-@router.websocket("/ws/sync/{session_id}")
-async def websocket_sync_endpoint(
+@router.websocket("/ws/{session_id}")
+async def websocket_endpoint(
     websocket: WebSocket,
     session_id: str,
-    user_id: str = "anonymous",
+    tenant_id: str,
+    user_id: str,
 ):
-    """WebSocket endpoint for real-time CRDT synchronization"""
+    """WebSocket endpoint for real-time CAD collaboration"""
+    from ..main import app
+    
     await websocket.accept()
     
-    from ..main import app
-    crdt_sync: CRDTSynchronizer = app.state.crdt_sync
-    ignite: IgniteManager = app.state.ignite_manager
+    # Store connection info
+    connection_key = f"ws:{tenant_id}:{session_id}:{user_id}"
+    ignite_manager: IgniteManager = app.state.ignite_manager
     
     try:
-        # Send initial state
-        state = await crdt_sync.get_session_state(session_id)
-        if state:
-            await websocket.send_json({
-                "type": "state_sync",
-                "data": state
-            })
-            
+        # Register user connection
+        await ignite_manager.put_cache_value(
+            "cad_connections",
+            connection_key,
+            {
+                "user_id": user_id,
+                "session_id": session_id,
+                "connected_at": datetime.utcnow().isoformat()
+            }
+        )
+        
+        # Main message loop
         while True:
-            # Receive operations from client
             data = await websocket.receive_json()
             
+            # Handle different message types
             if data["type"] == "geometry_operation":
-                # Process operation
+                # Process and broadcast geometry operation
                 event = GeometryOperationEvent(
-                    tenant_id="default",
+                    tenant_id=tenant_id,
                     asset_id=data.get("asset_id", ""),
                     session_id=session_id,
                     user_id=user_id,
@@ -258,37 +365,60 @@ async def websocket_sync_endpoint(
                     operation_data=json.dumps(data.get("data", {})),
                     vector_clock=data.get("vector_clock", {}),
                     parent_operations=data.get("parent_operations", []),
-                    timestamp=data.get("timestamp", int(datetime.utcnow().timestamp() * 1000))
+                    timestamp=int(datetime.utcnow().timestamp() * 1000)
                 )
                 
+                # Handle through CRDT synchronizer
+                crdt_sync: CRDTSynchronizer = app.state.crdt_sync
                 result = await crdt_sync.handle_geometry_operation(session_id, event)
                 
-                # Send acknowledgment
+                # Send result back
                 await websocket.send_json({
-                    "type": "operation_ack",
+                    "type": "operation_result",
                     "operation_id": data["operation_id"],
                     "result": result
                 })
                 
-            elif data["type"] == "presence_update":
-                # Update user presence
-                await ignite.update_user_presence(
-                    session_id=session_id,
-                    user_id=user_id,
-                    presence_data=data["presence"]
+            elif data["type"] == "cursor_update":
+                # Broadcast cursor position to other users
+                await broadcast_to_session(
+                    session_id,
+                    {
+                        "type": "cursor_update",
+                        "user_id": user_id,
+                        "position": data["position"]
+                    },
+                    exclude_user=user_id
                 )
                 
-            elif data["type"] == "request_sync":
-                # Send current state
-                state = await crdt_sync.get_session_state(session_id)
-                if state:
-                    await websocket.send_json({
-                        "type": "state_sync",
-                        "data": state
-                    })
-                    
+            elif data["type"] == "selection_update":
+                # Broadcast selection changes
+                await broadcast_to_session(
+                    session_id,
+                    {
+                        "type": "selection_update",
+                        "user_id": user_id,
+                        "selected_objects": data["selected_objects"]
+                    },
+                    exclude_user=user_id
+                )
+                
     except WebSocketDisconnect:
-        logger.info(f"WebSocket disconnected for session {session_id}, user {user_id}")
-    except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-        await websocket.close() 
+        # Clean up on disconnect
+        await ignite_manager.delete_cache_value("cad_connections", connection_key)
+        
+        # Notify other users
+        await broadcast_to_session(
+            session_id,
+            {
+                "type": "user_disconnected",
+                "user_id": user_id
+            }
+        )
+
+
+async def broadcast_to_session(session_id: str, message: Dict[str, Any], exclude_user: Optional[str] = None):
+    """Broadcast a message to all users in a session"""
+    # This is a placeholder - in production, you'd maintain WebSocket connections
+    # and broadcast through them
+    logger.info(f"Broadcasting to session {session_id}: {message}") 

@@ -1,11 +1,45 @@
-# Base dependencies
--r ../../requirements/base.in
+# Real-time Analytics Service Requirements
 
-# Additional dependencies for Real-time Analytics service
--e ../../libs/platformq-shared
--e ../../libs/platformq-events
-fastapi
-uvicorn
-pyignite
-pandas
-scikit-learn 
+# FastAPI and web framework
+fastapi>=0.104.1
+uvicorn[standard]>=0.24.0
+websockets>=12.0
+httpx>=0.25.0
+
+# Apache Ignite for caching (not Redis!)
+pyignite>=0.6.1
+
+# Elasticsearch for time-series data and analytics
+elasticsearch>=8.11.0
+elasticsearch-async>=6.2.0
+
+# Data processing and analytics
+numpy>=1.24.3
+pandas>=2.1.3
+scikit-learn>=1.3.2
+
+# Time series analysis
+statsmodels>=0.14.0
+prophet>=1.1.5  # Facebook Prophet for forecasting
+ruptures>=1.1.8  # Change point detection
+
+# Monitoring and observability
+prometheus-client>=0.19.0
+
+# Apache Pulsar for event streaming
+pulsar-client>=3.3.0
+
+# Data validation
+pydantic>=2.5.0
+
+# Utilities
+python-dateutil>=2.8.2
+pytz>=2023.3
+
+# Visualization (optional, for dashboard data preparation)
+# matplotlib>=3.8.0
+# plotly>=5.18.0
+
+# Platform shared libraries
+platformq-shared
+platformq-events 
