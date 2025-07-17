@@ -10,6 +10,7 @@ from .api.deps import (
     get_password_verifier_placeholder,
     get_current_tenant_and_user
 )
+from .api.endpoints import graph_api
 import logging
 import os
 import httpx
@@ -29,6 +30,9 @@ from .db.janusgraph_connector import JanusGraphConnector
 from .services.graph_processor import GraphProcessor
 from .messaging.data_lake_consumer import DataLakeConsumer
 from .messaging.activity_consumer import ActivityConsumer
+from .messaging.digital_asset_consumer import DigitalAssetConsumer
+from .db.janusgraph import JanusGraph
+from .db.schema_manager import SchemaManager
 from contextlib import asynccontextmanager
 
 # Global instances
@@ -36,15 +40,30 @@ graph_connector: Optional[JanusGraphConnector] = None
 graph_processor: Optional[GraphProcessor] = None
 data_lake_consumer: Optional[DataLakeConsumer] = None
 activity_consumer: Optional[ActivityConsumer] = None
+digital_asset_consumer: Optional[DigitalAssetConsumer] = None
 consumer_tasks: List[asyncio.Task] = []
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global graph_connector, graph_processor, data_lake_consumer, activity_consumer, consumer_tasks
+    global graph_connector, graph_processor, data_lake_consumer, activity_consumer, digital_asset_consumer, consumer_tasks
     
     # Startup
     logger.info("Initializing Graph Intelligence Service...")
+
+    # Initialize and create schema
+    janus_graph = JanusGraph()
+    schema_manager = SchemaManager(janus_graph)
+    try:
+        schema_manager.create_schema()
+        # Wait for critical indexes to be ready
+        schema_manager.wait_for_index_status('by_asset_id')
+        schema_manager.wait_for_index_status('by_user_id')
+    except Exception as e:
+        logger.error(f"Could not initialize graph schema: {e}")
+        # Decide if the application should fail to start
+        # For now, we will log the error and continue
+    
     graph_connector = JanusGraphConnector(
         gremlin_server=settings.GREMLIN_SERVER,
         graph_name=settings.GRAPH_NAME
@@ -53,11 +72,14 @@ async def lifespan(app: FastAPI):
     
     data_lake_consumer = DataLakeConsumer(graph_processor)
     activity_consumer = ActivityConsumer()
+    digital_asset_consumer = DigitalAssetConsumer()
     
     await activity_consumer.start()
+    await digital_asset_consumer.start()
     
     consumer_tasks.append(asyncio.create_task(data_lake_consumer.consume_messages()))
     consumer_tasks.append(asyncio.create_task(activity_consumer.consume_messages()))
+    consumer_tasks.append(asyncio.create_task(digital_asset_consumer.consume_messages()))
     
     logger.info("Graph Intelligence Service initialized successfully")
     yield
@@ -70,6 +92,8 @@ async def lifespan(app: FastAPI):
         data_lake_consumer.close()
     if activity_consumer:
         await activity_consumer.close()
+    if digital_asset_consumer:
+        await digital_asset_consumer.close()
     if graph_connector:
         graph_connector.close()
     logger.info("Graph Intelligence Service shutdown complete")
@@ -255,6 +279,7 @@ async def shutdown_event():
 
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["graph-intelligence-service"])
+app.include_router(graph_api.router, prefix="/api/v1/graph", tags=["graph-api"])
 
 # Service-specific root endpoint
 @app.get("/")
@@ -274,7 +299,8 @@ async def health_check():
         # Check Pulsar consumers
         consumer_status = {
             "data_lake": "active" if data_lake_consumer else "inactive",
-            "activity": "active" if activity_consumer else "inactive"
+            "activity": "active" if activity_consumer else "inactive",
+            "digital_asset": "active" if digital_asset_consumer else "inactive"
         }
         
         return {

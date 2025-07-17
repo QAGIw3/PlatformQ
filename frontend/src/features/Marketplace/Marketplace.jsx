@@ -60,6 +60,32 @@ const Marketplace = () => {
     reservePrice: '1'
   });
 
+  // Dataset search and filter state
+  const [datasetFilters, setDatasetFilters] = useState({
+    searchQuery: '',
+    category: 'all',
+    minSize: '',
+    maxSize: '',
+    format: 'all',
+    priceRange: 'all',
+    qualityScore: 0,
+    sortBy: 'relevance'
+  });
+  
+  // Compute resource state
+  const [computeFilters, setComputeFilters] = useState({
+    resourceType: 'all',
+    gpuType: 'all',
+    minMemory: '',
+    maxPrice: '',
+    region: 'all',
+    availability: 'all'
+  });
+  
+  // Revenue sharing state
+  const [revenueShares, setRevenueShares] = useState([]);
+  const [selectedAssetForRevenue, setSelectedAssetForRevenue] = useState(null);
+
   useEffect(() => {
     if (account) {
       loadMarketplaceData();
@@ -110,7 +136,15 @@ const Marketplace = () => {
   };
 
   const loadDatasets = async () => {
-    const response = await axios.get(`${DATASET_SERVICE_URL}/api/v1/datasets/search`);
+    const params = new URLSearchParams();
+    if (datasetFilters.searchQuery) params.append('q', datasetFilters.searchQuery);
+    if (datasetFilters.category !== 'all') params.append('category', datasetFilters.category);
+    if (datasetFilters.format !== 'all') params.append('format', datasetFilters.format);
+    if (datasetFilters.minSize) params.append('min_size', datasetFilters.minSize);
+    if (datasetFilters.maxSize) params.append('max_size', datasetFilters.maxSize);
+    if (datasetFilters.qualityScore > 0) params.append('min_quality', datasetFilters.qualityScore);
+    
+    const response = await axios.get(`${DATASET_SERVICE_URL}/api/v1/datasets/search?${params}`);
     setDatasets(response.data || []);
   };
 
@@ -283,6 +317,110 @@ const Marketplace = () => {
     } finally {
       setLoading(false);
     }
+  };
+
+  const purchaseDataset = async (datasetId, price) => {
+    setLoading(true);
+    setError('');
+    
+    try {
+      await axios.post(`${DATASET_SERVICE_URL}/api/v1/datasets/${datasetId}/purchase`, {
+        chain: getChainName(chainId),
+        payment_amount: price
+      });
+      
+      setSuccess('Dataset purchased successfully! Check your downloads.');
+      await loadDatasets();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to purchase dataset');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const provisionComputeResource = async (resourceId, duration, price) => {
+    setLoading(true);
+    setError('');
+    
+    try {
+      await axios.post(`${COMPUTE_SERVICE_URL}/api/v1/compute/${resourceId}/provision`, {
+        chain: getChainName(chainId),
+        duration_hours: duration,
+        payment_amount: price
+      });
+      
+      setSuccess('Compute resource provisioned! Access details sent to your email.');
+      await loadComputeOffers();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to provision compute resource');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const purchaseBundle = async (bundleId, price) => {
+    setLoading(true);
+    setError('');
+    
+    try {
+      await axios.post(`${BLOCKCHAIN_SERVICE_URL}/api/v1/marketplace/bundles/${bundleId}/purchase`, {
+        chain: getChainName(chainId),
+        payment_amount: price
+      });
+      
+      setSuccess('Bundle purchased successfully!');
+      await loadBundles();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to purchase bundle');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const buyFractionalShares = async (assetId, shareAmount, totalPrice) => {
+    setLoading(true);
+    setError('');
+    
+    try {
+      await axios.post(`${BLOCKCHAIN_SERVICE_URL}/api/v1/marketplace/fractional/${assetId}/buy`, {
+        chain: getChainName(chainId),
+        share_amount: shareAmount,
+        payment_amount: totalPrice
+      });
+      
+      setSuccess('Fractional shares purchased successfully!');
+      await loadFractionalAssets();
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to purchase shares');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const configureRevenueSharing = async (assetId, recipients) => {
+    setLoading(true);
+    setError('');
+    
+    try {
+      await axios.post(`${BLOCKCHAIN_SERVICE_URL}/api/v1/marketplace/revenue-sharing/configure`, {
+        chain: getChainName(chainId),
+        asset_id: assetId,
+        recipients: recipients // Array of {address, percentage}
+      });
+      
+      setSuccess('Revenue sharing configured successfully!');
+      setSelectedAssetForRevenue(null);
+      setRevenueShares([]);
+    } catch (err) {
+      setError(err.response?.data?.detail || 'Failed to configure revenue sharing');
+    } finally {
+      setLoading(false);
+    }
+  };
+
+  const loadRevenueData = async () => {
+    const response = await axios.get(`${BLOCKCHAIN_SERVICE_URL}/api/v1/marketplace/revenue-sharing/assets`);
+    setRevenueShares(response.data.assets || []);
   };
 
   const getChainName = (chainId) => {
@@ -626,6 +764,239 @@ const Marketplace = () => {
               )}
             </TabsContent>
 
+            <TabsContent value="datasets">
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="animate-spin h-8 w-8" />
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Search Datasets</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <Input
+                          placeholder="Search datasets..."
+                          value={datasetFilters.searchQuery}
+                          onChange={(e) => setDatasetFilters({...datasetFilters, searchQuery: e.target.value})}
+                        />
+                        <Select
+                          value={datasetFilters.category}
+                          onValueChange={(value) => setDatasetFilters({...datasetFilters, category: value})}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="All Categories" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">All Categories</SelectItem>
+                            <SelectItem value="image">Image</SelectItem>
+                            <SelectItem value="text">Text</SelectItem>
+                            <SelectItem value="audio">Audio</SelectItem>
+                            <SelectItem value="video">Video</SelectItem>
+                            <SelectItem value="tabular">Tabular</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          value={datasetFilters.format}
+                          onValueChange={(value) => setDatasetFilters({...datasetFilters, format: value})}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="All Formats" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">All Formats</SelectItem>
+                            <SelectItem value="csv">CSV</SelectItem>
+                            <SelectItem value="json">JSON</SelectItem>
+                            <SelectItem value="parquet">Parquet</SelectItem>
+                            <SelectItem value="hdf5">HDF5</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <Button 
+                        className="mt-4" 
+                        onClick={loadDatasets}
+                        disabled={loading}
+                      >
+                        {loading ? <Loader2 className="animate-spin" /> : 'Search Datasets'}
+                      </Button>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Dataset Results</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {datasets.map((dataset) => (
+                          <Card key={dataset.id} className="hover:shadow-lg transition-shadow">
+                            <CardHeader>
+                              <CardTitle className="flex justify-between items-center">
+                                <span>{dataset.name}</span>
+                                <Badge>{dataset.category}</Badge>
+                              </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <p className="text-sm text-gray-600 mb-4">{dataset.description}</p>
+                              <div className="space-y-2">
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Size:</span>
+                                  <span className="font-semibold">{dataset.size} MB</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Format:</span>
+                                  <span className="font-semibold">{dataset.format}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Price:</span>
+                                  <span className="font-semibold">{dataset.price} ETH</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Quality Score:</span>
+                                  <span className="font-semibold">{dataset.qualityScore}</span>
+                                </div>
+                              </div>
+                              <Button 
+                                className="w-full mt-4" 
+                                size="sm"
+                                onClick={() => {
+                                  // Placeholder for dataset purchase logic
+                                  alert(`Purchase dataset: ${dataset.name}`);
+                                  purchaseDataset(dataset.id, dataset.price);
+                                }}
+                              >
+                                Purchase Dataset
+                              </Button>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="compute">
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="animate-spin h-8 w-8" />
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Search Compute Resources</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mb-4">
+                        <Select
+                          value={computeFilters.resourceType}
+                          onValueChange={(value) => setComputeFilters({...computeFilters, resourceType: value})}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="All Resource Types" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">All Resource Types</SelectItem>
+                            <SelectItem value="gpu">GPU</SelectItem>
+                            <SelectItem value="cpu">CPU</SelectItem>
+                            <SelectItem value="storage">Storage</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          value={computeFilters.gpuType}
+                          onValueChange={(value) => setComputeFilters({...computeFilters, gpuType: value})}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="All GPU Types" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">All GPU Types</SelectItem>
+                            <SelectItem value="nvidia-rtx-3090">NVIDIA RTX 3090</SelectItem>
+                            <SelectItem value="nvidia-a100">NVIDIA A100</SelectItem>
+                            <SelectItem value="amd-radeon-rx-6800">AMD Radeon RX 6800</SelectItem>
+                          </SelectContent>
+                        </Select>
+                        <Select
+                          value={computeFilters.region}
+                          onValueChange={(value) => setComputeFilters({...computeFilters, region: value})}
+                        >
+                          <SelectTrigger>
+                            <SelectValue placeholder="All Regions" />
+                          </SelectTrigger>
+                          <SelectContent>
+                            <SelectItem value="all">All Regions</SelectItem>
+                            <SelectItem value="us-east">US East</SelectItem>
+                            <SelectItem value="us-west">US West</SelectItem>
+                            <SelectItem value="eu-central">EU Central</SelectItem>
+                            <SelectItem value="ap-southeast">AP Southeast</SelectItem>
+                          </SelectContent>
+                        </Select>
+                      </div>
+                      <Button 
+                        className="mt-4" 
+                        onClick={loadComputeOffers}
+                        disabled={loading}
+                      >
+                        {loading ? <Loader2 className="animate-spin" /> : 'Search Compute Resources'}
+                      </Button>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Compute Resource Results</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {computeOffers.map((offer) => (
+                          <Card key={offer.id} className="hover:shadow-lg transition-shadow">
+                            <CardHeader>
+                              <CardTitle className="flex justify-between items-center">
+                                <span>{offer.resourceType} - {offer.gpuType}</span>
+                                <Badge>{offer.region}</Badge>
+                              </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <div className="space-y-2">
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Price:</span>
+                                  <span className="font-semibold">{offer.price} ETH</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Memory:</span>
+                                  <span className="font-semibold">{offer.memory} GB</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Availability:</span>
+                                  <span className="font-semibold">{offer.availability}</span>
+                                </div>
+                              </div>
+                              <Button 
+                                className="w-full mt-4" 
+                                size="sm"
+                                onClick={() => {
+                                  // Placeholder for compute resource purchase logic
+                                  alert(`Purchase compute resource: ${offer.resourceType} - ${offer.gpuType}`);
+                                  const duration = prompt('Enter duration in hours:');
+                                  if (duration) provisionComputeResource(offer.id, duration, offer.price);
+                                }}
+                              >
+                                Purchase Resource
+                              </Button>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+            </TabsContent>
+
             <TabsContent value="auctions">
               {loading ? (
                 <div className="flex justify-center py-8">
@@ -633,6 +1004,199 @@ const Marketplace = () => {
                 </div>
               ) : (
                 renderAuctionsTab()
+              )}
+            </TabsContent>
+
+            <TabsContent value="bundles">
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="animate-spin h-8 w-8" />
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Create Bundle</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <Input
+                          placeholder="Bundle Name"
+                          value={bundleForm.name}
+                          onChange={(e) => setBundleForm({...bundleForm, name: e.target.value})}
+                        />
+                        <Input
+                          placeholder="Bundle Description"
+                          value={bundleForm.description}
+                          onChange={(e) => setBundleForm({...bundleForm, description: e.target.value})}
+                        />
+                        <Input
+                          placeholder="Bundle Price (ETH)"
+                          value={bundleForm.price}
+                          onChange={(e) => setBundleForm({...bundleForm, price: e.target.value})}
+                        />
+                        <Input
+                          placeholder="Max Supply"
+                          value={bundleForm.maxSupply}
+                          onChange={(e) => setBundleForm({...bundleForm, maxSupply: e.target.value})}
+                        />
+                      </div>
+                      <Button 
+                        className="mt-4" 
+                        onClick={createBundle}
+                        disabled={loading || !bundleForm.name || !bundleForm.price}
+                      >
+                        {loading ? <Loader2 className="animate-spin" /> : 'Create Bundle'}
+                      </Button>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Your Bundles</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {bundles.map((bundle) => (
+                          <Card key={bundle.id} className="hover:shadow-lg transition-shadow">
+                            <CardHeader>
+                              <CardTitle className="flex justify-between items-center">
+                                <span>{bundle.name}</span>
+                                <Badge>{bundle.totalSupply}/{bundle.maxSupply}</Badge>
+                              </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <p className="text-sm text-gray-600 mb-4">{bundle.description}</p>
+                              <div className="space-y-2">
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Price:</span>
+                                  <span className="font-semibold">{bundle.price} ETH</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Supply:</span>
+                                  <span className="font-semibold">{bundle.totalSupply}/{bundle.maxSupply}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Revenue Share:</span>
+                                  <span className="font-semibold">{bundle.revenueShare}%</span>
+                                </div>
+                              </div>
+                              <Button 
+                                className="w-full mt-4" 
+                                size="sm"
+                                onClick={() => {
+                                  // Placeholder for bundle purchase logic
+                                  alert(`Purchase bundle: ${bundle.name}`);
+                                  purchaseBundle(bundle.id, bundle.price);
+                                }}
+                              >
+                                Purchase Bundle
+                              </Button>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
+              )}
+            </TabsContent>
+
+            <TabsContent value="fractional">
+              {loading ? (
+                <div className="flex justify-center py-8">
+                  <Loader2 className="animate-spin h-8 w-8" />
+                </div>
+              ) : (
+                <div className="space-y-6">
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Fractionalize Asset</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
+                        <Input
+                          placeholder="Token ID"
+                          value={fractionalizeForm.tokenId}
+                          onChange={(e) => setFractionalizeForm({...fractionalizeForm, tokenId: e.target.value})}
+                        />
+                        <Input
+                          placeholder="Total Shares"
+                          value={fractionalizeForm.totalShares}
+                          onChange={(e) => setFractionalizeForm({...fractionalizeForm, totalShares: e.target.value})}
+                        />
+                        <Input
+                          placeholder="Share Price (ETH)"
+                          value={fractionalizeForm.sharePrice}
+                          onChange={(e) => setFractionalizeForm({...fractionalizeForm, sharePrice: e.target.value})}
+                        />
+                        <Input
+                          placeholder="Reserve Price (ETH)"
+                          value={fractionalizeForm.reservePrice}
+                          onChange={(e) => setFractionalizeForm({...fractionalizeForm, reservePrice: e.target.value})}
+                        />
+                      </div>
+                      <Button 
+                        className="mt-4" 
+                        onClick={fractionalizeAsset}
+                        disabled={loading || !fractionalizeForm.tokenId || !fractionalizeForm.totalShares}
+                      >
+                        {loading ? <Loader2 className="animate-spin" /> : 'Fractionalize Asset'}
+                      </Button>
+                    </CardContent>
+                  </Card>
+
+                  <Card>
+                    <CardHeader>
+                      <CardTitle>Your Fractional Assets</CardTitle>
+                    </CardHeader>
+                    <CardContent>
+                      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+                        {fractionalAssets.map((asset) => (
+                          <Card key={asset.id} className="hover:shadow-lg transition-shadow">
+                            <CardHeader>
+                              <CardTitle className="flex justify-between items-center">
+                                <span>Fractional Asset #{asset.id}</span>
+                                <Badge>{asset.totalShares} Shares</Badge>
+                              </CardTitle>
+                            </CardHeader>
+                            <CardContent>
+                              <div className="space-y-2">
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Total Shares:</span>
+                                  <span className="font-semibold">{asset.totalShares}</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Share Price:</span>
+                                  <span className="font-semibold">{asset.sharePrice} ETH</span>
+                                </div>
+                                <div className="flex justify-between">
+                                  <span className="text-sm">Reserve Price:</span>
+                                  <span className="font-semibold">{asset.reservePrice} ETH</span>
+                                </div>
+                              </div>
+                              <Button 
+                                className="w-full mt-4" 
+                                size="sm"
+                                onClick={() => {
+                                  // Placeholder for fractional asset purchase logic
+                                  alert(`Purchase fractional asset: ${asset.id}`);
+                                  const shares = prompt('Enter number of shares to purchase:');
+                                  if (shares) {
+                                    const totalPrice = parseFloat(shares) * parseFloat(asset.sharePrice);
+                                    buyFractionalShares(asset.id, shares, totalPrice.toString());
+                                  }
+                                }}
+                              >
+                                Purchase Fractional Asset
+                              </Button>
+                            </CardContent>
+                          </Card>
+                        ))}
+                      </div>
+                    </CardContent>
+                  </Card>
+                </div>
               )}
             </TabsContent>
 
@@ -658,6 +1222,75 @@ const Marketplace = () => {
 
             {/* Add other tab contents as needed */}
           </Tabs>
+
+          {/* Revenue Sharing Modal */}
+          {selectedAssetForRevenue && (
+            <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4">
+              <Card className="max-w-lg w-full">
+                <CardHeader>
+                  <CardTitle>Configure Revenue Sharing</CardTitle>
+                </CardHeader>
+                <CardContent>
+                  <div className="space-y-4">
+                    <p className="text-sm text-gray-600">
+                      Configure how revenue from this asset will be distributed.
+                    </p>
+                    <div className="space-y-2">
+                      {revenueShares.map((share, index) => (
+                        <div key={index} className="flex gap-2">
+                          <Input
+                            placeholder="Wallet address"
+                            value={share.address}
+                            onChange={(e) => {
+                              const newShares = [...revenueShares];
+                              newShares[index].address = e.target.value;
+                              setRevenueShares(newShares);
+                            }}
+                          />
+                          <Input
+                            type="number"
+                            placeholder="Percentage"
+                            value={share.percentage}
+                            onChange={(e) => {
+                              const newShares = [...revenueShares];
+                              newShares[index].percentage = e.target.value;
+                              setRevenueShares(newShares);
+                            }}
+                          />
+                        </div>
+                      ))}
+                    </div>
+                    <Button
+                      variant="outline"
+                      onClick={() => {
+                        setRevenueShares([...revenueShares, { address: '', percentage: '' }]);
+                      }}
+                    >
+                      Add Recipient
+                    </Button>
+                    <div className="flex gap-2">
+                      <Button
+                        onClick={() => {
+                          configureRevenueSharing(selectedAssetForRevenue.id, revenueShares);
+                        }}
+                      >
+                        Configure
+                      </Button>
+                      <Button
+                        variant="outline"
+                        onClick={() => {
+                          setSelectedAssetForRevenue(null);
+                          setRevenueShares([]);
+                        }}
+                      >
+                        Cancel
+                      </Button>
+                    </div>
+                  </div>
+                </CardContent>
+              </Card>
+            </div>
+          )}
         </>
       )}
     </div>
