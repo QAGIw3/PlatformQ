@@ -22,6 +22,18 @@ from pydantic import BaseModel
 import os
 from .dags.asset_augmentation_dag import process_asset
 from .dynamic_dags import FederatedSimulation, generate_federated_dag
+from .verifiable_credentials.workflow_credentials import (
+    WorkflowCredentialManager,
+    WorkflowCredentialVerifier,
+    CredentialType,
+    VerifiablePresentation
+)
+import uuid
+from datetime import timedelta
+from sqlalchemy.orm import Session
+from .database import Workflow, Task, ResourceAuthorization
+from .dependencies import get_db, get_current_user, get_current_tenant_and_user, require_admin
+from .event_publisher import publish_event
 
 # --- Setup ---
 logging.basicConfig(level=logging.INFO)
@@ -32,6 +44,28 @@ config_loader = ConfigLoader()
 settings = config_loader.load_settings()
 # We would add API keys for Zulip, Nextcloud, etc. to Vault
 # ZULIP_API_KEY = config_loader.get_secret(...)
+
+# Initialize verifiable credentials system
+config_loader = ConfigLoader()
+credential_manager = None
+credential_verifier = None
+
+if config_loader.get_setting("VERIFIABLE_CREDENTIALS_ENABLED", "false").lower() == "true":
+    issuer_did = config_loader.get_setting("WORKFLOW_ISSUER_DID", "did:platformq:workflow-service")
+    issuer_name = config_loader.get_setting("WORKFLOW_ISSUER_NAME", "PlatformQ Workflow Service")
+    
+    credential_manager = WorkflowCredentialManager(
+        issuer_did=issuer_did,
+        issuer_name=issuer_name,
+        private_key_path=config_loader.get_setting("ISSUER_PRIVATE_KEY_PATH", None)
+    )
+    
+    # Configure trusted issuers
+    trusted_issuers = config_loader.get_setting("TRUSTED_ISSUERS", "").split(",")
+    trusted_issuers = [issuer.strip() for issuer in trusted_issuers if issuer.strip()]
+    trusted_issuers.append(issuer_did)  # Trust self
+    
+    credential_verifier = WorkflowCredentialVerifier(trusted_issuers)
 
 def get_tenant_from_topic(topic: str) -> str:
     """Extracts tenant ID from a topic name using a regex."""
@@ -929,4 +963,422 @@ async def create_federated_simulation(
 
     except Exception as e:
         logger.error(f"Failed to create federated simulation: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 
+
+@app.post("/api/v1/workflows/{workflow_id}/complete-with-credential")
+async def complete_workflow_with_credential(
+    workflow_id: str,
+    completion_data: Dict[str, Any],
+    issue_credential: bool = True,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Complete workflow and issue verifiable credential
+    """
+    # Get workflow
+    workflow = db.query(Workflow).filter(
+        Workflow.id == workflow_id,
+        Workflow.tenant_id == current_user["tenant_id"]
+    ).first()
+    
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+        
+    try:
+        # Complete workflow
+        workflow.status = "completed"
+        workflow.completed_at = datetime.utcnow()
+        workflow.output = completion_data.get("output", {})
+        
+        # Calculate duration
+        duration = (workflow.completed_at - workflow.created_at).total_seconds()
+        
+        # Issue credential if requested and enabled
+        credential = None
+        if issue_credential and credential_manager:
+            # Get executor DID
+            executor_did = current_user.get("did", f"did:platformq:user:{current_user['id']}")
+            
+            # Prepare completion data for credential
+            credential_data = {
+                "completed_at": workflow.completed_at.isoformat(),
+                "duration": duration,
+                "tasks_completed": len([t for t in workflow.tasks if t.status == "completed"]),
+                "success": True,
+                "quality_score": completion_data.get("quality_score", 1.0),
+                "resources_used": completion_data.get("resources_used", {}),
+                "output": workflow.output
+            }
+            
+            # Issue credential
+            credential = await credential_manager.issue_workflow_completion_credential(
+                workflow_id=workflow_id,
+                workflow_name=workflow.name,
+                executor_did=executor_did,
+                completion_data=credential_data
+            )
+            
+            # Store credential reference
+            workflow.credential_id = credential.id
+            
+        db.commit()
+        
+        # Publish event
+        await publish_event(
+            "WORKFLOW_COMPLETED_WITH_CREDENTIAL",
+            {
+                "workflow_id": workflow_id,
+                "credential_issued": credential is not None,
+                "credential_id": credential.id if credential else None
+            }
+        )
+        
+        response = {
+            "workflow_id": workflow_id,
+            "status": "completed",
+            "completed_at": workflow.completed_at.isoformat(),
+            "duration": duration
+        }
+        
+        if credential:
+            response["credential"] = credential.dict()
+            
+        return response
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error completing workflow with credential: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/tasks/{task_id}/attest")
+async def create_task_attestation(
+    task_id: str,
+    attestation_data: Dict[str, Any],
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create verifiable attestation for task completion
+    """
+    if not credential_manager:
+        raise HTTPException(
+            status_code=503,
+            detail="Verifiable credentials not enabled"
+        )
+        
+    # Get task
+    task = db.query(Task).filter(
+        Task.id == task_id,
+        Task.workflow.has(tenant_id=current_user["tenant_id"])
+    ).first()
+    
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+        
+    try:
+        # Get performer DID
+        performer_did = current_user.get("did", f"did:platformq:user:{current_user['id']}")
+        
+        # Prepare attestation data
+        attestation = {
+            "performed_at": task.completed_at.isoformat() if task.completed_at else datetime.utcnow().isoformat(),
+            "result": attestation_data.get("result", {}),
+            "evidence": attestation_data.get("evidence", []),
+            "verification_method": attestation_data.get("verification_method", "automated"),
+            "verified_by": current_user.get("did", credential_manager.issuer_did),
+            "confidence": attestation_data.get("confidence", 1.0)
+        }
+        
+        # Issue attestation credential
+        credential = await credential_manager.issue_task_attestation_credential(
+            task_id=task_id,
+            task_type=task.task_type,
+            performer_did=performer_did,
+            attestation_data=attestation
+        )
+        
+        # Store attestation reference
+        task.attestation_id = credential.id
+        db.commit()
+        
+        return {
+            "task_id": task_id,
+            "attestation_credential": credential.dict()
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating task attestation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/resources/{resource_id}/authorize")
+async def issue_resource_authorization(
+    resource_id: str,
+    resource_type: str,
+    authorized_user_did: str,
+    permissions: List[str],
+    conditions: Dict[str, Any] = {},
+    validity_hours: int = 24,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Issue verifiable credential for resource authorization
+    """
+    if not credential_manager:
+        raise HTTPException(
+            status_code=503,
+            detail="Verifiable credentials not enabled"
+        )
+        
+    # Verify user has permission to authorize
+    if not current_user.get("can_authorize_resources", False):
+        raise HTTPException(
+            status_code=403,
+            detail="User not authorized to issue resource authorizations"
+        )
+        
+    try:
+        # Issue authorization credential
+        credential = await credential_manager.issue_resource_authorization_credential(
+            resource_id=resource_id,
+            resource_type=resource_type,
+            authorized_did=authorized_user_did,
+            permissions=permissions,
+            conditions=conditions,
+            validity_period=timedelta(hours=validity_hours)
+        )
+        
+        # Store authorization record
+        auth_record = ResourceAuthorization(
+            id=str(uuid.uuid4()),
+            resource_id=resource_id,
+            resource_type=resource_type,
+            authorized_did=authorized_user_did,
+            permissions=json.dumps(permissions),
+            conditions=json.dumps(conditions),
+            credential_id=credential.id,
+            expires_at=credential.expiration_date,
+            issued_by=current_user["id"],
+            created_at=datetime.utcnow()
+        )
+        
+        db.add(auth_record)
+        db.commit()
+        
+        return {
+            "authorization_id": auth_record.id,
+            "credential": credential.dict()
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error issuing resource authorization: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/workflows/{workflow_id}/verify-authorization")
+async def verify_workflow_authorization(
+    workflow_id: str,
+    presentation: VerifiablePresentation,
+    required_permissions: List[str],
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Verify authorization to execute workflow using verifiable presentation
+    """
+    if not credential_verifier:
+        raise HTTPException(
+            status_code=503,
+            detail="Credential verification not enabled"
+        )
+        
+    try:
+        # Verify authorization
+        verification_result = await credential_verifier.verify_workflow_authorization(
+            presentation=presentation,
+            required_permissions=required_permissions,
+            resource_id=workflow_id
+        )
+        
+        if verification_result["authorized"]:
+            # Log successful authorization
+            await publish_event(
+                "WORKFLOW_AUTHORIZATION_VERIFIED",
+                {
+                    "workflow_id": workflow_id,
+                    "user_id": current_user["id"],
+                    "credential_id": verification_result["credential_id"],
+                    "permissions": verification_result["permissions"]
+                }
+            )
+            
+        return verification_result
+        
+    except Exception as e:
+        logger.error(f"Error verifying workflow authorization: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/credentials/{credential_id}/revoke")
+async def revoke_credential(
+    credential_id: str,
+    reason: str,
+    admin_user: dict = Depends(require_admin),
+    db: Session = Depends(get_db)
+):
+    """
+    Revoke a verifiable credential (admin only)
+    """
+    if not credential_manager:
+        raise HTTPException(
+            status_code=503,
+            detail="Verifiable credentials not enabled"
+        )
+        
+    try:
+        # Revoke credential
+        result = await credential_manager.revoke_credential(
+            credential_id=credential_id,
+            reason=reason
+        )
+        
+        if result["success"]:
+            # Update database records
+            db.execute(
+                "UPDATE workflows SET credential_revoked = true WHERE credential_id = :credential_id",
+                {"credential_id": credential_id}
+            )
+            
+            db.execute(
+                "UPDATE resource_authorizations SET revoked = true WHERE credential_id = :credential_id",
+                {"credential_id": credential_id}
+            )
+            
+            db.commit()
+            
+            # Publish revocation event
+            await publish_event(
+                "CREDENTIAL_REVOKED",
+                {
+                    "credential_id": credential_id,
+                    "reason": reason,
+                    "revoked_by": admin_user["id"],
+                    "revoked_at": result["revoked_at"]
+                }
+            )
+            
+            return result
+        else:
+            raise HTTPException(
+                status_code=400,
+                detail=result.get("error", "Failed to revoke credential")
+            )
+            
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error revoking credential: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/workflows/{workflow_id}/credential")
+async def get_workflow_credential(
+    workflow_id: str,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Get verifiable credential for completed workflow
+    """
+    # Get workflow
+    workflow = db.query(Workflow).filter(
+        Workflow.id == workflow_id,
+        Workflow.tenant_id == current_user["tenant_id"]
+    ).first()
+    
+    if not workflow:
+        raise HTTPException(status_code=404, detail="Workflow not found")
+        
+    if not workflow.credential_id:
+        raise HTTPException(
+            status_code=404,
+            detail="No credential issued for this workflow"
+        )
+        
+    # Get credential from registry
+    if credential_manager and workflow.credential_id in credential_manager.credential_registry:
+        credential_data = credential_manager.credential_registry[workflow.credential_id]
+        
+        return {
+            "credential": credential_data["credential"].dict(),
+            "status": credential_data["status"].value,
+            "issued_at": credential_data["issued_at"].isoformat()
+        }
+    else:
+        raise HTTPException(
+            status_code=404,
+            detail="Credential not found in registry"
+        )
+
+
+@app.post("/api/v1/presentations/create")
+async def create_verifiable_presentation(
+    credential_ids: List[str],
+    verifier_did: Optional[str] = None,
+    challenge: Optional[str] = None,
+    current_user: dict = Depends(get_current_user)
+):
+    """
+    Create verifiable presentation from user's credentials
+    """
+    if not credential_manager:
+        raise HTTPException(
+            status_code=503,
+            detail="Verifiable credentials not enabled"
+        )
+        
+    try:
+        # Get user's DID
+        holder_did = current_user.get("did", f"did:platformq:user:{current_user['id']}")
+        
+        # Collect credentials
+        credentials = []
+        for cred_id in credential_ids:
+            if cred_id in credential_manager.credential_registry:
+                cred_data = credential_manager.credential_registry[cred_id]
+                
+                # Verify user owns the credential
+                if cred_data["credential"].credential_subject.get("id") == holder_did:
+                    credentials.append(cred_data["credential"])
+                else:
+                    raise HTTPException(
+                        status_code=403,
+                        detail=f"User does not own credential {cred_id}"
+                    )
+            else:
+                raise HTTPException(
+                    status_code=404,
+                    detail=f"Credential {cred_id} not found"
+                )
+                
+        # Create presentation
+        presentation = await credential_manager.create_verifiable_presentation(
+            credentials=credentials,
+            holder_did=holder_did,
+            verifier_did=verifier_did,
+            challenge=challenge
+        )
+        
+        return {
+            "presentation": presentation.dict()
+        }
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error creating presentation: {e}")
         raise HTTPException(status_code=500, detail=str(e)) 

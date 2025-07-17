@@ -1,27 +1,55 @@
 
-from fastapi import APIRouter, Depends, HTTPException, Request
+from fastapi import APIRouter, Depends, HTTPException, Request, Header, Query
 from sqlalchemy.orm import Session
 from typing import List, Dict, Any, Optional
 from datetime import datetime
-from ....platformq_shared.db_models import User
-from ....platformq_shared.api.deps import get_db_session, get_current_tenant_and_user, require_service_token, get_current_user
-from ...repository import DigitalAssetRepository
-from ...schemas import digital_asset as schemas
-from ....platformq_shared.events import DigitalAssetCreated
-from ....platformq_shared.event_publisher import EventPublisher
-import logging
 import hashlib
 import json
-import httpx
+import logging
+import uuid
+
+from ...database import get_db
+from ...models import DigitalAsset, AssetLineage, ProvenanceCertificate
+from ...schemas import DigitalAssetCreate, DigitalAssetUpdate, DigitalAssetResponse
+from ...auth import get_current_user
+from ...storage import storage_backend
 from ...utils.cid import compute_cid
 from ...config import settings
 from ...policy_client import policy_client
+from ...blockchain.asset_lineage_anchor import (
+    BlockchainLineageAnchor,
+    AssetLineageEvent,
+    LineageEventType,
+    LineageSmartContract
+)
+from platformq_shared.config import ConfigLoader
+from platformq_shared.event_publisher import EventPublisher
 
 logger = logging.getLogger(__name__)
+
+# Initialize event publisher
+event_publisher = EventPublisher('pulsar://pulsar:6650')
+event_publisher.connect()
+
+async def publish_event(event_type: str, data: dict):
+    """Publish event to Pulsar"""
+    await event_publisher.publish_event(event_type, data)
 
 STORAGE_PROXY_URL = "http://storage-proxy-service:8000"
 
 router = APIRouter()
+
+# Initialize blockchain lineage anchor
+config_loader = ConfigLoader()
+lineage_anchor = None
+
+if config_loader.get_setting("BLOCKCHAIN_ENABLED", "false").lower() == "true":
+    lineage_anchor = BlockchainLineageAnchor(
+        web3_provider_url=config_loader.get_setting("WEB3_PROVIDER_URL", "http://localhost:8545"),
+        contract_address=config_loader.get_setting("LINEAGE_CONTRACT_ADDRESS", ""),
+        contract_abi=LineageSmartContract.CONTRACT_ABI,
+        ipfs_api_url=config_loader.get_setting("IPFS_API_URL", "/dns/ipfs/tcp/5001")
+    )
 
 @router.post("/internal/digital-assets/{cid}/migrate", status_code=204)
 async def migrate_digital_asset_storage(
@@ -447,3 +475,369 @@ def get_asset_lineage(
     }
     
     return lineage 
+
+
+@router.post("/{asset_id}/anchor-lineage")
+async def anchor_asset_lineage(
+    asset_id: str,
+    event_type: LineageEventType,
+    parent_asset_ids: List[str] = [],
+    transformation_type: Optional[str] = None,
+    private_key: str = Header(..., description="Blockchain private key for signing"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Anchor asset lineage event on blockchain
+    """
+    if not lineage_anchor:
+        raise HTTPException(
+            status_code=503,
+            detail="Blockchain lineage anchoring not enabled"
+        )
+        
+    # Get asset
+    asset = db.query(DigitalAsset).filter(
+        DigitalAsset.id == asset_id,
+        DigitalAsset.tenant_id == current_user["tenant_id"]
+    ).first()
+    
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+        
+    try:
+        # Calculate metadata hash
+        metadata = {
+            "asset_id": asset_id,
+            "asset_type": asset.asset_type,
+            "size": asset.size,
+            "checksum": asset.checksum,
+            "created_at": asset.created_at.isoformat()
+        }
+        metadata_bytes = json.dumps(metadata, sort_keys=True).encode()
+        metadata_hash = hashlib.sha256(metadata_bytes).hexdigest()
+        
+        # Create lineage event
+        event = AssetLineageEvent(
+            event_id=str(uuid.uuid4()),
+            event_type=event_type,
+            asset_id=asset_id,
+            parent_asset_ids=parent_asset_ids,
+            transformation_type=transformation_type,
+            metadata_hash=metadata_hash,
+            timestamp=datetime.utcnow(),
+            actor_id=current_user["id"]
+        )
+        
+        # Anchor on blockchain
+        result = await lineage_anchor.anchor_lineage_event(event, private_key)
+        
+        if result["success"]:
+            # Update asset with blockchain info
+            asset.blockchain_anchored = True
+            asset.blockchain_tx_hash = result["tx_hash"]
+            asset.ipfs_hash = result["ipfs_hash"]
+            
+            # Store lineage event in database
+            lineage_record = AssetLineage(
+                id=event.event_id,
+                asset_id=asset_id,
+                event_type=event_type.value,
+                parent_asset_ids=parent_asset_ids,
+                transformation_type=transformation_type,
+                metadata_hash=metadata_hash,
+                blockchain_tx_hash=result["tx_hash"],
+                ipfs_hash=result["ipfs_hash"],
+                block_number=result["block_number"],
+                actor_id=current_user["id"],
+                created_at=datetime.utcnow()
+            )
+            
+            db.add(lineage_record)
+            db.commit()
+            
+            # Publish event
+            await publish_event(
+                "ASSET_LINEAGE_ANCHORED",
+                {
+                    "asset_id": asset_id,
+                    "event_id": event.event_id,
+                    "event_type": event_type.value,
+                    "tx_hash": result["tx_hash"],
+                    "block_number": result["block_number"]
+                }
+            )
+            
+            return {
+                "message": "Lineage event anchored successfully",
+                "event_id": event.event_id,
+                "tx_hash": result["tx_hash"],
+                "ipfs_hash": result["ipfs_hash"],
+                "block_number": result["block_number"],
+                "gas_used": result["gas_used"]
+            }
+        else:
+            raise HTTPException(
+                status_code=500,
+                detail=f"Failed to anchor lineage: {result.get('error')}"
+            )
+            
+    except Exception as e:
+        logger.error(f"Error anchoring lineage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{asset_id}/verify-lineage")
+async def verify_asset_lineage(
+    asset_id: str,
+    from_block: int = Query(0, description="Starting block number"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Verify complete lineage of an asset from blockchain
+    """
+    if not lineage_anchor:
+        raise HTTPException(
+            status_code=503,
+            detail="Blockchain lineage verification not enabled"
+        )
+        
+    # Check asset exists
+    asset = db.query(DigitalAsset).filter(
+        DigitalAsset.id == asset_id,
+        DigitalAsset.tenant_id == current_user["tenant_id"]
+    ).first()
+    
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+        
+    try:
+        # Verify lineage from blockchain
+        lineage = await lineage_anchor.verify_lineage(asset_id, from_block)
+        
+        # Enhance with local data
+        local_events = db.query(AssetLineage).filter(
+            AssetLineage.asset_id == asset_id
+        ).all()
+        
+        # Cross-reference blockchain and local data
+        verification_details = {
+            "blockchain_verified": lineage["integrity_valid"],
+            "blockchain_events": lineage["total_events"],
+            "local_events": len(local_events),
+            "discrepancies": []
+        }
+        
+        # Check for discrepancies
+        blockchain_tx_hashes = {
+            node["tx_hash"] for node in lineage["lineage_tree"]["nodes"].values()
+        }
+        
+        local_tx_hashes = {event.blockchain_tx_hash for event in local_events}
+        
+        missing_from_local = blockchain_tx_hashes - local_tx_hashes
+        missing_from_blockchain = local_tx_hashes - blockchain_tx_hashes
+        
+        if missing_from_local:
+            verification_details["discrepancies"].append({
+                "type": "missing_from_local",
+                "tx_hashes": list(missing_from_local)
+            })
+            
+        if missing_from_blockchain:
+            verification_details["discrepancies"].append({
+                "type": "missing_from_blockchain",
+                "tx_hashes": list(missing_from_blockchain)
+            })
+            
+        return {
+            "asset_id": asset_id,
+            "lineage_tree": lineage["lineage_tree"],
+            "integrity_valid": lineage["integrity_valid"],
+            "integrity_details": lineage["integrity_details"],
+            "verification_details": verification_details,
+            "verification_timestamp": lineage["verification_timestamp"]
+        }
+        
+    except Exception as e:
+        logger.error(f"Error verifying lineage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/{asset_id}/provenance-proof")
+async def get_asset_provenance_proof(
+    asset_id: str,
+    target_block: Optional[int] = Query(None, description="Target block for proof"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Generate cryptographic proof of asset provenance
+    """
+    if not lineage_anchor:
+        raise HTTPException(
+            status_code=503,
+            detail="Blockchain provenance proof not enabled"
+        )
+        
+    # Check asset exists
+    asset = db.query(DigitalAsset).filter(
+        DigitalAsset.id == asset_id,
+        DigitalAsset.tenant_id == current_user["tenant_id"]
+    ).first()
+    
+    if not asset:
+        raise HTTPException(status_code=404, detail="Asset not found")
+        
+    try:
+        # Generate provenance proof
+        proof = await lineage_anchor.get_provenance_proof(asset_id, target_block)
+        
+        # Store proof certificate
+        proof_record = ProvenanceCertificate(
+            id=str(uuid.uuid4()),
+            asset_id=asset_id,
+            certificate_hash=proof["certificate_hash"],
+            lineage_root=proof["lineage_root"],
+            proof_data=json.dumps(proof),
+            created_at=datetime.utcnow(),
+            created_by=current_user["id"]
+        )
+        
+        db.add(proof_record)
+        db.commit()
+        
+        return {
+            "certificate": proof,
+            "certificate_id": proof_record.id,
+            "download_url": f"/api/v1/assets/{asset_id}/provenance-certificate/{proof_record.id}"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error generating provenance proof: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/{asset_id}/derive")
+async def derive_new_asset(
+    asset_id: str,
+    transformation_type: str,
+    new_asset_data: dict,
+    private_key: str = Header(..., description="Blockchain private key"),
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """
+    Create a derived asset with blockchain-anchored lineage
+    """
+    # Get parent asset
+    parent_asset = db.query(DigitalAsset).filter(
+        DigitalAsset.id == asset_id,
+        DigitalAsset.tenant_id == current_user["tenant_id"]
+    ).first()
+    
+    if not parent_asset:
+        raise HTTPException(status_code=404, detail="Parent asset not found")
+        
+    try:
+        # Create new derived asset
+        new_asset = DigitalAsset(
+            id=str(uuid.uuid4()),
+            tenant_id=current_user["tenant_id"],
+            name=new_asset_data["name"],
+            description=new_asset_data.get("description"),
+            asset_type=new_asset_data["asset_type"],
+            storage_path=new_asset_data["storage_path"],
+            size=new_asset_data["size"],
+            checksum=new_asset_data["checksum"],
+            metadata=new_asset_data.get("metadata", {}),
+            created_by=current_user["id"],
+            created_at=datetime.utcnow()
+        )
+        
+        db.add(new_asset)
+        
+        # Anchor lineage if blockchain is enabled
+        if lineage_anchor:
+            # Calculate metadata hash
+            metadata = {
+                "asset_id": new_asset.id,
+                "asset_type": new_asset.asset_type,
+                "size": new_asset.size,
+                "checksum": new_asset.checksum,
+                "parent_asset_id": parent_asset.id,
+                "transformation_type": transformation_type
+            }
+            metadata_bytes = json.dumps(metadata, sort_keys=True).encode()
+            metadata_hash = hashlib.sha256(metadata_bytes).hexdigest()
+            
+            # Create lineage event
+            event = AssetLineageEvent(
+                event_id=str(uuid.uuid4()),
+                event_type=LineageEventType.DERIVED,
+                asset_id=new_asset.id,
+                parent_asset_ids=[parent_asset.id],
+                transformation_type=transformation_type,
+                metadata_hash=metadata_hash,
+                timestamp=datetime.utcnow(),
+                actor_id=current_user["id"]
+            )
+            
+            # Anchor on blockchain
+            result = await lineage_anchor.anchor_lineage_event(event, private_key)
+            
+            if result["success"]:
+                new_asset.blockchain_anchored = True
+                new_asset.blockchain_tx_hash = result["tx_hash"]
+                new_asset.ipfs_hash = result["ipfs_hash"]
+                
+                # Store lineage event
+                lineage_record = AssetLineage(
+                    id=event.event_id,
+                    asset_id=new_asset.id,
+                    event_type=LineageEventType.DERIVED.value,
+                    parent_asset_ids=[parent_asset.id],
+                    transformation_type=transformation_type,
+                    metadata_hash=metadata_hash,
+                    blockchain_tx_hash=result["tx_hash"],
+                    ipfs_hash=result["ipfs_hash"],
+                    block_number=result["block_number"],
+                    actor_id=current_user["id"],
+                    created_at=datetime.utcnow()
+                )
+                
+                db.add(lineage_record)
+                
+        db.commit()
+        
+        # Publish event
+        await publish_event(
+            "ASSET_DERIVED",
+            {
+                "parent_asset_id": parent_asset.id,
+                "derived_asset_id": new_asset.id,
+                "transformation_type": transformation_type,
+                "blockchain_anchored": new_asset.blockchain_anchored
+            }
+        )
+        
+        return {
+            "asset": {
+                "id": new_asset.id,
+                "name": new_asset.name,
+                "asset_type": new_asset.asset_type,
+                "blockchain_anchored": new_asset.blockchain_anchored,
+                "tx_hash": new_asset.blockchain_tx_hash
+            },
+            "lineage": {
+                "parent_asset_id": parent_asset.id,
+                "transformation_type": transformation_type,
+                "anchored": new_asset.blockchain_anchored
+            }
+        }
+        
+    except Exception as e:
+        db.rollback()
+        logger.error(f"Error creating derived asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 

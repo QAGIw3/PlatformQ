@@ -1,0 +1,78 @@
+[build-system]
+requires = ["setuptools>=45", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "platformq-unified-data"
+version = "0.1.0"
+description = "Unified data access layer for PlatformQ"
+readme = "README.md"
+authors = [
+    {name = "PlatformQ Team", email = "dev@platformq.io"},
+]
+license = {text = "Apache-2.0"}
+classifiers = [
+    "Development Status :: 3 - Alpha",
+    "Intended Audience :: Developers",
+    "License :: OSI Approved :: Apache Software License",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.8",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+]
+requires-python = ">=3.8"
+dependencies = [
+    "cassandra-driver>=3.25.0",
+    "pyignite>=0.5.0",
+    "elasticsearch>=8.0.0",
+    "minio>=7.1.0",
+    "aiogremlin>=3.3.0",
+    "pulsar-client>=3.0.0",
+    "trino>=0.320.0",
+    "sqlalchemy>=1.4.0",
+    "pandas>=1.5.0",
+    "pyarrow>=10.0.0",
+    "avro-python3>=1.10.0",
+    "prometheus-client>=0.15.0",
+    "tenacity>=8.1.0",
+    "cachetools>=5.2.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=7.0.0",
+    "pytest-asyncio>=0.20.0",
+    "pytest-cov>=4.0.0",
+    "black>=22.0.0",
+    "isort>=5.10.0",
+    "flake8>=5.0.0",
+    "mypy>=0.990",
+]
+
+[project.urls]
+"Homepage" = "https://github.com/platformq/platformq"
+"Bug Tracker" = "https://github.com/platformq/platformq/issues"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.black]
+line-length = 120
+target-version = ['py38', 'py39', 'py310', 'py311']
+
+[tool.isort]
+profile = "black"
+line_length = 120
+
+[tool.mypy]
+python_version = "3.8"
+ignore_missing_imports = true
+disallow_untyped_defs = true
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto" 

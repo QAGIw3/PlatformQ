@@ -6,4 +6,12 @@ minio
 pulsar-client
 python-openproject
 pyignite
-elasticsearch 
+elasticsearch
+kubernetes
+prometheus-client
+scikit-learn
+pandas
+numpy
+mlflow
+joblib
+httpx 
