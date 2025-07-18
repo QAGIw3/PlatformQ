@@ -13,11 +13,12 @@ class MultiTierCollateralEngine:
     Most advantageous approach: Multi-tier with progressive benefits
     """
     
-    def __init__(self, ignite_client, graph_client, oracle_client, graph_intelligence=None):
+    def __init__(self, ignite_client, graph_client, oracle_client, graph_intelligence=None, asset_compute_nexus=None):
         self.ignite = ignite_client
         self.graph = graph_client
         self.oracle = oracle_client
         self.graph_intelligence = graph_intelligence
+        self.asset_compute_nexus = asset_compute_nexus
         
         # Tier definitions (most advantageous configuration)
         self.tiers = {
@@ -329,4 +330,101 @@ class MultiTierCollateralEngine:
             "assets_created": 150,
             "dao_participation": 75,
             "compute_contributed": 10000  # GPU hours
-        } 
+        }
+    
+    async def add_digital_asset_collateral(
+        self,
+        user_id: str,
+        asset_id: str,
+        asset_type: str
+    ) -> Dict[str, Any]:
+        """
+        Add a digital asset as collateral
+        Enhanced with Asset-Compute Nexus integration
+        """
+        if not self.asset_compute_nexus:
+            return {
+                "success": False,
+                "error": "Asset-compute nexus not initialized"
+            }
+        
+        try:
+            # Import AssetType enum
+            from app.integrations.asset_compute_nexus import AssetType
+            
+            # Convert string to AssetType
+            asset_type_enum = AssetType(asset_type)
+            
+            # Value the asset
+            valuation = await self.asset_compute_nexus.value_digital_asset_as_collateral(
+                asset_id=asset_id,
+                asset_type=asset_type_enum,
+                owner_id=user_id
+            )
+            
+            # Check minimum collateral value
+            if valuation.collateral_value < Decimal("100"):
+                return {
+                    "success": False,
+                    "error": "Asset value too low for collateral (minimum $100)"
+                }
+            
+            # Store collateral record
+            collateral_record = {
+                "user_id": user_id,
+                "asset_id": asset_id,
+                "asset_type": asset_type,
+                "collateral_value": str(valuation.collateral_value),
+                "intrinsic_value": str(valuation.intrinsic_value),
+                "liquidity_discount": str(valuation.liquidity_discount),
+                "volatility_adjustment": str(valuation.volatility_adjustment),
+                "confidence_score": valuation.confidence_score,
+                "added_at": datetime.utcnow().isoformat()
+            }
+            
+            # Cache collateral record
+            await self.ignite.set(
+                f"digital_collateral:{user_id}:{asset_id}",
+                collateral_record,
+                ttl=86400 * 30  # 30 days
+            )
+            
+            # Update user's total collateral
+            await self._update_user_collateral_totals(user_id, valuation.collateral_value)
+            
+            return {
+                "success": True,
+                "asset_id": asset_id,
+                "collateral_value": str(valuation.collateral_value),
+                "confidence_score": valuation.confidence_score,
+                "valuation_details": {
+                    "intrinsic_value": str(valuation.intrinsic_value),
+                    "liquidity_discount": str(valuation.liquidity_discount),
+                    "volatility_adjustment": str(valuation.volatility_adjustment),
+                    "metadata": valuation.metadata
+                }
+            }
+            
+        except Exception as e:
+            logger.error(f"Error adding digital asset collateral: {e}")
+            return {
+                "success": False,
+                "error": str(e)
+            }
+    
+    async def _update_user_collateral_totals(
+        self,
+        user_id: str,
+        additional_value: Decimal
+    ):
+        """Update user's total collateral value"""
+        key = f"user_collateral_total:{user_id}"
+        
+        # Get current total
+        current_total = await self.ignite.get(key) or Decimal("0")
+        if isinstance(current_total, str):
+            current_total = Decimal(current_total)
+        
+        # Update total
+        new_total = current_total + additional_value
+        await self.ignite.set(key, str(new_total), ttl=86400 * 30) 

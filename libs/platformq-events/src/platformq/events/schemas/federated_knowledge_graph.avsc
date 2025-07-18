@@ -1,0 +1,113 @@
+[
+  {
+    "namespace": "platformq.knowledge.graph",
+    "type": "record",
+    "name": "KnowledgeNodeCreated",
+    "fields": [
+      {"name": "node_id", "type": "string"},
+      {"name": "node_type", "type": "string", "doc": "Entity type: user, asset, model, dataset, service, etc."},
+      {"name": "service_origin", "type": "string", "doc": "Service that created this node"},
+      {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+      {"name": "properties", "type": {"type": "map", "values": ["null", "string", "long", "double", "boolean"]}},
+      {"name": "trust_score", "type": "double", "doc": "Trust score of the creating entity"},
+      {"name": "visibility", "type": {"type": "enum", "name": "Visibility", "symbols": ["PUBLIC", "TENANT", "PRIVATE"]}},
+      {"name": "tenant_id", "type": ["null", "string"], "default": null},
+      {"name": "embedding", "type": ["null", {"type": "array", "items": "float"}], "default": null, "doc": "Vector embedding for similarity search"}
+    ]
+  },
+  {
+    "namespace": "platformq.knowledge.graph",
+    "type": "record",
+    "name": "KnowledgeEdgeCreated",
+    "fields": [
+      {"name": "edge_id", "type": "string"},
+      {"name": "source_node_id", "type": "string"},
+      {"name": "target_node_id", "type": "string"},
+      {"name": "edge_type", "type": "string", "doc": "Relationship type: created_by, derived_from, uses, etc."},
+      {"name": "service_origin", "type": "string"},
+      {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+      {"name": "properties", "type": {"type": "map", "values": ["null", "string", "long", "double", "boolean"]}},
+      {"name": "confidence", "type": "double", "doc": "Confidence score for this relationship"},
+      {"name": "trust_weighted", "type": "boolean", "default": true}
+    ]
+  },
+  {
+    "namespace": "platformq.knowledge.graph",
+    "type": "record",
+    "name": "FederatedGraphQuery",
+    "fields": [
+      {"name": "query_id", "type": "string"},
+      {"name": "requesting_service", "type": "string"},
+      {"name": "requesting_user", "type": "string"},
+      {"name": "query_type", "type": {"type": "enum", "name": "QueryType", "symbols": ["GREMLIN", "CYPHER", "SPARQL", "NATURAL_LANGUAGE"]}},
+      {"name": "query", "type": "string"},
+      {"name": "target_services", "type": ["null", {"type": "array", "items": "string"}], "default": null},
+      {"name": "max_hops", "type": ["null", "int"], "default": 3},
+      {"name": "trust_threshold", "type": ["null", "double"], "default": 0.0},
+      {"name": "timeout_ms", "type": "long", "default": 30000}
+    ]
+  },
+  {
+    "namespace": "platformq.knowledge.graph",
+    "type": "record",
+    "name": "KnowledgeInferred",
+    "fields": [
+      {"name": "inference_id", "type": "string"},
+      {"name": "inference_type", "type": "string", "doc": "Type of inference: similarity, causality, prediction, etc."},
+      {"name": "source_nodes", "type": {"type": "array", "items": "string"}},
+      {"name": "inferred_edges", "type": {"type": "array", "items": {
+        "type": "record",
+        "name": "InferredEdge",
+        "fields": [
+          {"name": "source", "type": "string"},
+          {"name": "target", "type": "string"},
+          {"name": "relationship", "type": "string"},
+          {"name": "confidence", "type": "double"}
+        ]
+      }}},
+      {"name": "reasoning_path", "type": ["null", "string"], "default": null},
+      {"name": "confidence", "type": "double"},
+      {"name": "inferring_service", "type": "string"},
+      {"name": "algorithm_used", "type": "string"},
+      {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"}
+    ]
+  },
+  {
+    "namespace": "platformq.knowledge.graph",
+    "type": "record",
+    "name": "KnowledgeRecommendation",
+    "fields": [
+      {"name": "recommendation_id", "type": "string"},
+      {"name": "target_entity_id", "type": "string"},
+      {"name": "target_entity_type", "type": "string"},
+      {"name": "recommendations", "type": {"type": "array", "items": {
+        "type": "record",
+        "name": "RecommendedItem",
+        "fields": [
+          {"name": "entity_id", "type": "string"},
+          {"name": "entity_type", "type": "string"},
+          {"name": "score", "type": "double"},
+          {"name": "reasoning", "type": "string"},
+          {"name": "path_distance", "type": "int"}
+        ]
+      }}},
+      {"name": "recommendation_type", "type": "string", "doc": "similar, complementary, collaborative, etc."},
+      {"name": "algorithm", "type": "string"},
+      {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"}
+    ]
+  },
+  {
+    "namespace": "platformq.knowledge.graph",
+    "type": "record",
+    "name": "GraphSyncRequest",
+    "fields": [
+      {"name": "sync_id", "type": "string"},
+      {"name": "requesting_service", "type": "string"},
+      {"name": "sync_type", "type": {"type": "enum", "name": "SyncType", "symbols": ["FULL", "INCREMENTAL", "SELECTIVE"]}},
+      {"name": "filter_criteria", "type": ["null", {"type": "map", "values": "string"}], "default": null},
+      {"name": "since_timestamp", "type": ["null", "long"], "default": null},
+      {"name": "node_types", "type": ["null", {"type": "array", "items": "string"}], "default": null},
+      {"name": "edge_types", "type": ["null", {"type": "array", "items": "string"}], "default": null}
+    ]
+  }
+] 

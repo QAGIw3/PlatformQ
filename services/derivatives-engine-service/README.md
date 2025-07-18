@@ -28,6 +28,20 @@ A high-performance derivatives trading engine for the platformQ ecosystem with c
 - **Dynamic Risk Limits** - Real-time risk limit management
 - **Monitoring Dashboard** - Comprehensive system monitoring
 
+### Graph Intelligence Integration
+- **Risk Assessment** - Multi-dimensional risk scoring (counterparty, operational, market, liquidity, reputation, systemic)
+- **Trust-Based Collateral** - Reputation directly reduces margin requirements (up to $50k unsecured for top users)
+- **Smart Recommendations** - AI-powered risk mitigation strategies and position sizing
+- **Network Analysis** - Centrality and cluster analysis for systemic risk assessment
+- **Behavior Prediction** - ML-based prediction of trader behavior and defaults
+
+### Asset-Compute-Model Nexus
+- **Digital Asset Collateral** - Accept NFTs, ML models, datasets, algorithms as collateral
+- **Model-Compute Bundles** - Create tradeable packages of ML models with guaranteed compute
+- **Asset-Backed Futures** - Issue compute futures backed by digital asset collateral
+- **Synthetic Data Derivatives** - Trade contracts for on-demand synthetic data generation
+- **Portfolio Optimization** - Balance digital assets and compute resources for maximum capital efficiency
+
 ## Architecture
 
 The service is built using:
@@ -66,6 +80,25 @@ The service is built using:
 - `GET /api/v1/capacity/allocation/{allocation_id}` - Get allocation status
 - `GET /api/v1/capacity/forecast` - Get capacity demand forecast
 - `POST /api/v1/capacity/optimize` - Trigger allocation optimization
+
+### Risk Intelligence APIs (Graph Intelligence)
+- `POST /api/v1/risk-intelligence/assess-risk` - Comprehensive counterparty risk assessment
+- `GET /api/v1/risk-intelligence/trust-score/{entity_id}` - Get multi-dimensional trust score
+- `GET /api/v1/risk-intelligence/usage-patterns/{entity_id}` - Historical compute usage patterns
+- `POST /api/v1/risk-intelligence/recommendations` - Get AI-powered recommendations
+- `GET /api/v1/risk-intelligence/similar-entities/{entity_id}` - Find similar traders
+- `POST /api/v1/risk-intelligence/predict-behavior` - Predict future trading behavior
+- `GET /api/v1/risk-intelligence/network-analysis/{entity_id}` - Analyze network position
+
+### Asset-Compute Nexus APIs
+- `POST /api/v1/asset-compute-nexus/value-asset` - Value digital asset as collateral
+- `POST /api/v1/asset-compute-nexus/create-bundle` - Create model-compute bundle
+- `POST /api/v1/asset-compute-nexus/create-asset-future` - Create asset-backed compute future
+- `GET /api/v1/asset-compute-nexus/model-metrics/{model_id}` - Get ML model performance
+- `GET /api/v1/asset-compute-nexus/model-collateral-value/{model_id}` - Evaluate model as collateral
+- `POST /api/v1/asset-compute-nexus/create-synthetic-data` - Create synthetic data derivative
+- `POST /api/v1/asset-compute-nexus/optimize-portfolio` - Optimize asset-compute portfolio
+- `GET /api/v1/asset-compute-nexus/asset-types` - List supported asset types
 
 ## Configuration
 

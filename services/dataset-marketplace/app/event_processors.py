@@ -1,384 +1,292 @@
 """
 Dataset Marketplace Event Processors
 
-Handles events for dataset listings, purchases, and quality checks.
+Event processing for dataset marketplace operations with trust-weighted features.
 """
 
 import logging
-from typing import Optional, Dict, Any, List
-from datetime import datetime, timedelta
-import uuid
-import hashlib
-import secrets
+import json
+from typing import Dict, Any, Optional
+from datetime import datetime
 
-from platformq_shared.event_framework import EventProcessor, event_handler
-from platformq_shared.events import (
-    AssetUsed,
-    DatasetListingCreated,
-    DatasetPurchaseRequested,
-    DatasetPurchaseCompleted,
-    DatasetDownloadRequested,
-    DatasetQualityCheckRequested,
-    DatasetQualityCheckCompleted,
-    PaymentProcessed,
-    DatasetReviewSubmitted
-)
-from platformq_shared.database import get_db
+from platformq_shared import EventProcessor
+from platformq_shared.schemas import DatasetEvent, TransactionEvent
+
+from .models import DatasetStatus, PurchaseStatus
 from .repository import (
     DatasetListingRepository,
     DatasetPurchaseRepository,
-    DatasetReviewRepository,
-    DatasetAnalyticsRepository,
     DatasetQualityCheckRepository
 )
-from .models import (
-    DatasetListing,
-    DatasetPurchase,
-    DatasetStatus,
-    PurchaseStatus
-)
+from .engines.trust_weighted_data_engine import TrustWeightedDataEngine
 
 logger = logging.getLogger(__name__)
 
 
 class DatasetMarketplaceEventProcessor(EventProcessor):
-    """Event processor for dataset marketplace operations"""
+    """Process events for dataset marketplace with trust-weighted features"""
     
-    def __init__(self, *args, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.listing_repo = None
-        self.purchase_repo = None
-        self.review_repo = None
-        self.analytics_repo = None
-        self.quality_repo = None
+    def __init__(self, pulsar_client, service_name: str, trust_engine: Optional[TrustWeightedDataEngine] = None):
+        super().__init__(pulsar_client, service_name)
+        self.trust_engine = trust_engine
         
-    def initialize_repos(self):
-        """Initialize repositories"""
-        if not self.listing_repo:
-            db = next(get_db())
-            self.listing_repo = DatasetListingRepository(db)
-            self.purchase_repo = DatasetPurchaseRepository(db)
-            self.review_repo = DatasetReviewRepository(db)
-            self.analytics_repo = DatasetAnalyticsRepository(db)
-            self.quality_repo = DatasetQualityCheckRepository(db)
+        # Subscribe to relevant topics
+        self.topics = [
+            "dataset-events",
+            "transaction-events",
+            "quality-assessment-events",
+            "trust-score-updates",
+            "data-access-events",
+            "platformq.data.marketplace.quality-assessments",
+            "platformq.data.marketplace.access-requests",
+            "platformq.knowledge.graph.updates"
+        ]
     
-    @event_handler("persistent://public/default/dataset-listing-events")
-    async def handle_listing_created(self, event: DatasetListingCreated):
-        """Handle new dataset listing creation"""
-        self.initialize_repos()
-        
+    async def process_event(self, topic: str, event_data: Dict[str, Any]):
+        """Process incoming events"""
         try:
-            # Trigger quality checks for new listing
-            await self.publish_event(
-                DatasetQualityCheckRequested(
-                    listing_id=event.listing_id,
-                    check_types=["schema", "format", "content", "completeness"],
-                    tenant_id=event.tenant_id
-                ),
-                "persistent://public/default/dataset-quality-events"
-            )
+            event_type = event_data.get("event_type", "")
             
-            logger.info(f"Dataset listing {event.listing_id} created, quality checks initiated")
+            # Dataset events
+            if topic == "dataset-events":
+                await self._process_dataset_event(event_type, event_data)
+            
+            # Transaction events
+            elif topic == "transaction-events":
+                await self._process_transaction_event(event_type, event_data)
+            
+            # Quality assessment events
+            elif topic in ["quality-assessment-events", "platformq.data.marketplace.quality-assessments"]:
+                await self._process_quality_assessment(event_data)
+            
+            # Trust score updates
+            elif topic == "trust-score-updates":
+                await self._process_trust_update(event_data)
+            
+            # Data access events
+            elif topic in ["data-access-events", "platformq.data.marketplace.access-requests"]:
+                await self._process_access_request(event_data)
+            
+            # Knowledge graph updates
+            elif topic == "platformq.knowledge.graph.updates":
+                await self._process_graph_update(event_data)
             
         except Exception as e:
-            logger.error(f"Error handling listing created: {e}")
+            logger.error(f"Error processing event from {topic}: {e}", exc_info=True)
     
-    @event_handler("persistent://public/default/dataset-purchase-events")
-    async def handle_purchase_request(self, event: DatasetPurchaseRequested):
-        """Handle dataset purchase request"""
-        self.initialize_repos()
+    async def _process_dataset_event(self, event_type: str, event_data: Dict[str, Any]):
+        """Process dataset-related events"""
+        dataset_id = event_data.get("dataset_id")
         
-        try:
-            # Get listing
-            listing = self.listing_repo.get_by_listing_id(event.listing_id)
-            if not listing or listing.status != DatasetStatus.ACTIVE:
-                logger.error(f"Dataset {event.listing_id} not available")
-                await self._publish_purchase_failed(event, "Dataset not available")
-                return
-            
-            # Check if already purchased
-            if self.purchase_repo.check_existing_purchase(event.buyer_id, event.listing_id):
-                await self._publish_purchase_failed(event, "Dataset already purchased")
-                return
-            
-            # Check license availability
-            if listing.max_licenses and listing.licenses_sold >= listing.max_licenses:
-                await self._publish_purchase_failed(event, "No licenses available")
-                return
-            
-            # Calculate total amount
-            total_amount = listing.price * event.license_count
-            
-            # Create purchase record
-            access_token = secrets.token_urlsafe(32)
-            purchase = self.purchase_repo.create({
-                "purchase_id": str(uuid.uuid4()),
-                "tenant_id": event.tenant_id,
-                "buyer_id": event.buyer_id,
-                "listing_id": event.listing_id,
-                "price": listing.price,
-                "license_count": event.license_count,
-                "total_amount": total_amount,
-                "access_token": access_token,
-                "download_expiry": datetime.utcnow() + timedelta(days=30),
-                "status": PurchaseStatus.PENDING
-            })
-            
-            # Publish payment request
-            await self.publish_event(
-                {
-                    "payment_id": str(uuid.uuid4()),
-                    "purchase_id": purchase.purchase_id,
-                    "buyer_id": event.buyer_id,
-                    "amount": total_amount,
-                    "currency": listing.currency,
-                    "payment_type": "dataset_purchase",
-                    "reference_id": purchase.purchase_id,
-                    "tenant_id": event.tenant_id
-                },
-                "persistent://public/default/payment-events"
-            )
-            
-            logger.info(f"Purchase {purchase.purchase_id} created for dataset {event.listing_id}")
-            
-        except Exception as e:
-            logger.error(f"Error handling purchase request: {e}")
-            await self._publish_purchase_failed(event, str(e))
-    
-    @event_handler("persistent://public/default/payment-events")
-    async def handle_payment_processed(self, event: PaymentProcessed):
-        """Handle payment confirmation for dataset purchase"""
-        self.initialize_repos()
-        
-        try:
-            # Only process dataset-related payments
-            if event.payment_type != "dataset_purchase":
-                return
-            
-            purchase = self.purchase_repo.get_by_purchase_id(event.reference_id)
-            if not purchase:
-                logger.error(f"Purchase {event.reference_id} not found")
-                return
-            
-            if event.status == "success":
-                # Update purchase status
-                self.purchase_repo.update(purchase.id, {
-                    "status": PurchaseStatus.COMPLETED,
-                    "completed_at": datetime.utcnow(),
-                    "transaction_id": event.transaction_id
-                })
-                
-                # Update listing statistics
-                listing = self.listing_repo.get_by_listing_id(purchase.listing_id)
-                if listing:
-                    self.listing_repo.update(listing.id, {
-                        "licenses_sold": listing.licenses_sold + purchase.license_count,
-                        "total_revenue": listing.total_revenue + purchase.total_amount
-                    })
-                
-                # Publish completion event
-                await self.publish_event(
-                    DatasetPurchaseCompleted(
-                        purchase_id=purchase.purchase_id,
-                        listing_id=purchase.listing_id,
-                        buyer_id=purchase.buyer_id,
-                        access_token=purchase.access_token,
-                        download_url=f"/api/v1/datasets/{purchase.listing_id}/download",
-                        tenant_id=purchase.tenant_id
-                    ),
-                    "persistent://public/default/dataset-purchase-events"
+        if event_type == "dataset_created":
+            # Register in knowledge graph
+            if self.trust_engine:
+                await self.trust_engine.register_dataset_in_graph(
+                    dataset_id=dataset_id,
+                    dataset_info=event_data,
+                    creator_id=event_data.get("seller_id")
                 )
-                
-                # Track asset usage
-                await self.publish_event(
-                    AssetUsed(
-                        tenant_id=purchase.tenant_id,
-                        asset_id=purchase.listing_id,
-                        user_id=purchase.buyer_id,
-                        usage_duration_minutes=0,  # Not time-based
-                        usage_type="dataset_purchase",
-                        event_timestamp=int(datetime.utcnow().timestamp() * 1000)
-                    ),
-                    "persistent://public/default/asset-usage-events"
+            
+            # Trigger initial quality assessment
+            await self._trigger_quality_assessment(dataset_id, event_data)
+            
+        elif event_type == "dataset_updated":
+            # Update cache
+            await self._update_dataset_cache(dataset_id, event_data)
+            
+        elif event_type == "dataset_deleted":
+            # Clean up related data
+            await self._cleanup_dataset(dataset_id)
+    
+    async def _process_transaction_event(self, event_type: str, event_data: Dict[str, Any]):
+        """Process transaction events"""
+        if event_type == "purchase_completed":
+            purchase_id = event_data.get("purchase_id")
+            dataset_id = event_data.get("dataset_id")
+            buyer_id = event_data.get("buyer_id")
+            
+            # Create access grant
+            if self.trust_engine:
+                await self.trust_engine.grant_data_access(
+                    dataset_id=dataset_id,
+                    user_id=buyer_id,
+                    access_level=event_data.get("access_level", "FULL"),
+                    duration_days=event_data.get("duration_days", 365)
                 )
-                
-            else:
-                # Payment failed
-                self.purchase_repo.update(purchase.id, {
-                    "status": PurchaseStatus.FAILED
-                })
-                
-        except Exception as e:
-            logger.error(f"Error handling payment processed: {e}")
+            
+            # Update analytics
+            await self._update_purchase_analytics(dataset_id, event_data)
+            
+            # Create graph edge for purchase relationship
+            await self._create_purchase_edge(buyer_id, dataset_id, purchase_id)
     
-    @event_handler("persistent://public/default/dataset-download-events")
-    async def handle_download_request(self, event: DatasetDownloadRequested):
-        """Handle dataset download request"""
-        self.initialize_repos()
+    async def _process_quality_assessment(self, event_data: Dict[str, Any]):
+        """Process quality assessment events"""
+        assessment_id = event_data.get("assessment_id")
+        dataset_id = event_data.get("dataset_id")
         
-        try:
-            # Validate access token
-            purchase = self.purchase_repo.get_by_access_token(event.access_token)
-            if not purchase:
-                logger.error(f"Invalid access token for download")
-                return
-            
-            # Check download limits
-            if purchase.download_count >= purchase.max_downloads:
-                logger.error(f"Download limit exceeded for purchase {purchase.purchase_id}")
-                await self._publish_download_failed(
-                    event,
-                    "Download limit exceeded"
-                )
-                return
-            
-            # Check expiry
-            if purchase.download_expiry and datetime.utcnow() > purchase.download_expiry:
-                logger.error(f"Download expired for purchase {purchase.purchase_id}")
-                await self._publish_download_failed(
-                    event,
-                    "Download link expired"
-                )
-                return
-            
-            # Record download
-            self.purchase_repo.increment_download_count(
-                purchase.id,
-                event.ip_address
-            )
-            
-            # Get dataset URL
-            listing = self.listing_repo.get_by_listing_id(purchase.listing_id)
-            if not listing:
-                logger.error(f"Listing {purchase.listing_id} not found")
-                return
-            
-            # Publish download authorized event
-            await self.publish_event(
-                {
-                    "purchase_id": purchase.purchase_id,
-                    "listing_id": purchase.listing_id,
-                    "buyer_id": purchase.buyer_id,
-                    "download_url": listing.download_url,
-                    "encryption_key": listing.encryption_key,
-                    "format": listing.format,
-                    "size_bytes": listing.size_bytes,
-                    "download_count": purchase.download_count + 1
-                },
-                "persistent://public/default/dataset-download-authorized-events"
-            )
-            
-        except Exception as e:
-            logger.error(f"Error handling download request: {e}")
-    
-    @event_handler("persistent://public/default/dataset-quality-events")
-    async def handle_quality_check_completed(self, event: DatasetQualityCheckCompleted):
-        """Handle dataset quality check completion"""
-        self.initialize_repos()
+        if not self.trust_engine:
+            logger.warning("Trust engine not available for quality assessment")
+            return
         
-        try:
-            # Get all quality checks for the listing
-            checks = self.quality_repo.get_latest_checks(event.listing_id)
-            
-            # Calculate overall quality score
-            total_score = 0
-            check_count = 0
-            has_failures = False
-            
-            for check in checks:
-                if check.score:
-                    total_score += check.score
-                    check_count += 1
-                if check.status == "failed":
-                    has_failures = True
-            
-            quality_score = (total_score / check_count) if check_count > 0 else 0
-            
-            # Update listing with quality info
-            listing = self.listing_repo.get_by_listing_id(event.listing_id)
-            if listing:
-                update_data = {
-                    "quality_score": quality_score,
-                    "validation_results": {
-                        "last_check": datetime.utcnow().isoformat(),
-                        "has_failures": has_failures,
-                        "check_count": len(checks)
-                    }
-                }
-                
-                # Auto-activate if quality is good and currently draft
-                if listing.status == DatasetStatus.DRAFT and quality_score >= 70 and not has_failures:
-                    update_data["status"] = DatasetStatus.ACTIVE
-                    update_data["published_at"] = datetime.utcnow()
-                
-                self.listing_repo.update(listing.id, update_data)
-                
-                logger.info(f"Dataset {event.listing_id} quality score: {quality_score}")
-            
-        except Exception as e:
-            logger.error(f"Error handling quality check completed: {e}")
-    
-    @event_handler("persistent://public/default/dataset-review-events")
-    async def handle_review_submitted(self, event: DatasetReviewSubmitted):
-        """Handle dataset review submission"""
-        self.initialize_repos()
-        
-        try:
-            # Update listing rating
-            self.listing_repo.update_rating(event.listing_id)
-            
-            # Record analytics
-            self.analytics_repo.record_view(
-                event.listing_id,
-                {
-                    "type": "review",
-                    "rating": event.rating
-                }
-            )
-            
-            logger.info(f"Review submitted for dataset {event.listing_id}")
-            
-        except Exception as e:
-            logger.error(f"Error handling review submission: {e}")
-    
-    @event_handler("persistent://public/default/dataset-view-events")
-    async def handle_dataset_viewed(self, event: Dict[str, Any]):
-        """Handle dataset view tracking"""
-        self.initialize_repos()
-        
-        try:
-            listing_id = event.get("listing_id")
-            viewer_info = event.get("viewer_info", {})
-            
-            # Increment view count
-            self.listing_repo.increment_view_count(listing_id)
-            
-            # Record analytics
-            self.analytics_repo.record_view(listing_id, viewer_info)
-            
-        except Exception as e:
-            logger.error(f"Error handling dataset view: {e}")
-    
-    async def _publish_purchase_failed(self, event: DatasetPurchaseRequested, reason: str):
-        """Publish purchase failed event"""
-        await self.publish_event(
-            {
-                "request_id": event.request_id,
-                "buyer_id": event.buyer_id,
-                "listing_id": event.listing_id,
-                "reason": reason,
-                "timestamp": datetime.utcnow().isoformat()
-            },
-            "persistent://public/default/dataset-purchase-failed-events"
+        # Register assessment in knowledge graph
+        await self.trust_engine.graph_intelligence.register_quality_assessment(
+            assessment_id=assessment_id,
+            dataset_id=dataset_id,
+            assessor_id=event_data.get("assessor_id"),
+            quality_score=event_data.get("overall_quality_score"),
+            dimensions=event_data.get("quality_dimensions", {})
         )
+        
+        # Update dataset quality metrics
+        await self._update_quality_metrics(dataset_id, event_data)
+        
+        # Trigger pricing update based on new quality score
+        await self._update_dynamic_pricing(dataset_id, event_data.get("trust_adjusted_score"))
     
-    async def _publish_download_failed(self, event: DatasetDownloadRequested, reason: str):
-        """Publish download failed event"""
-        await self.publish_event(
-            {
-                "access_token": event.access_token,
-                "reason": reason,
+    async def _process_trust_update(self, event_data: Dict[str, Any]):
+        """Process trust score updates"""
+        entity_id = event_data.get("entity_id")
+        entity_type = event_data.get("entity_type")
+        new_trust_scores = event_data.get("trust_scores", {})
+        
+        # Update cached trust scores
+        if self.trust_engine:
+            await self.trust_engine.update_cached_trust_scores(
+                entity_id=entity_id,
+                trust_scores=new_trust_scores
+            )
+        
+        # If it's a dataset owner, update their datasets' trust-weighted scores
+        if entity_type == "user":
+            await self._update_user_datasets_trust(entity_id, new_trust_scores)
+    
+    async def _process_access_request(self, event_data: Dict[str, Any]):
+        """Process data access requests"""
+        request_id = event_data.get("request_id")
+        dataset_id = event_data.get("dataset_id")
+        requester_id = event_data.get("requester_id")
+        
+        if not self.trust_engine:
+            logger.warning("Trust engine not available for access request")
+            return
+        
+        # Evaluate access based on trust scores
+        access_decision = await self.trust_engine.evaluate_access_request(
+            dataset_id=dataset_id,
+            user_id=requester_id,
+            requested_level=event_data.get("requested_access_level"),
+            purpose=event_data.get("access_purpose")
+        )
+        
+        # Publish access decision
+        await self.publish_event("data-access-decisions", {
+            "request_id": request_id,
+            "dataset_id": dataset_id,
+            "requester_id": requester_id,
+            "decision": access_decision.get("granted"),
+            "reason": access_decision.get("reason"),
+            "granted_level": access_decision.get("granted_level"),
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    
+    async def _process_graph_update(self, event_data: Dict[str, Any]):
+        """Process knowledge graph updates"""
+        update_type = event_data.get("update_type")
+        
+        if update_type == "node_created":
+            # Cache new node if it's a dataset
+            if event_data.get("node_type") == "dataset":
+                await self._cache_dataset_node(event_data)
+        
+        elif update_type == "edge_created":
+            # Update relationship caches
+            await self._update_relationship_cache(event_data)
+        
+        elif update_type == "inference_generated":
+            # Process new inferences about datasets
+            await self._process_inference(event_data)
+    
+    async def _trigger_quality_assessment(self, dataset_id: str, dataset_info: Dict[str, Any]):
+        """Trigger automated quality assessment for a dataset"""
+        if self.trust_engine:
+            # Publish event to trigger quality assessment
+            await self.publish_event("dataset-uploads", {
+                "dataset_id": dataset_id,
+                "data_uri": dataset_info.get("download_url"),
+                "format": dataset_info.get("format"),
+                "schema_info": dataset_info.get("schema_info"),
                 "timestamp": datetime.utcnow().isoformat()
-            },
-            "persistent://public/default/dataset-download-failed-events"
-        ) 
+            })
+    
+    async def _update_dataset_cache(self, dataset_id: str, updates: Dict[str, Any]):
+        """Update dataset information in cache"""
+        if self.trust_engine:
+            await self.trust_engine.ignite.put(
+                "datasets",
+                dataset_id,
+                updates,
+                ttl=3600  # 1 hour cache
+            )
+    
+    async def _cleanup_dataset(self, dataset_id: str):
+        """Clean up dataset-related data"""
+        if self.trust_engine:
+            # Remove from caches
+            await self.trust_engine.ignite.remove("datasets", dataset_id)
+            await self.trust_engine.ignite.remove("quality_scores", dataset_id)
+            await self.trust_engine.ignite.remove("trust_chains", dataset_id)
+    
+    async def _update_purchase_analytics(self, dataset_id: str, purchase_data: Dict[str, Any]):
+        """Update purchase analytics"""
+        # Implementation for updating analytics
+        pass
+    
+    async def _create_purchase_edge(self, buyer_id: str, dataset_id: str, purchase_id: str):
+        """Create purchase relationship in knowledge graph"""
+        if self.trust_engine:
+            await self.trust_engine.graph_intelligence.graph_client.create_knowledge_edge(
+                source_node_id=buyer_id,
+                target_node_id=dataset_id,
+                edge_type="purchased",
+                properties={
+                    "purchase_id": purchase_id,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            )
+    
+    async def _update_quality_metrics(self, dataset_id: str, assessment_data: Dict[str, Any]):
+        """Update quality metrics for a dataset"""
+        # Implementation for updating quality metrics
+        pass
+    
+    async def _update_dynamic_pricing(self, dataset_id: str, quality_score: float):
+        """Update dynamic pricing based on quality score"""
+        if self.trust_engine:
+            await self.trust_engine.update_dataset_pricing(dataset_id, quality_score)
+    
+    async def _update_user_datasets_trust(self, user_id: str, trust_scores: Dict[str, float]):
+        """Update trust-weighted scores for all datasets owned by a user"""
+        # Implementation for updating user's datasets
+        pass
+    
+    async def _cache_dataset_node(self, node_data: Dict[str, Any]):
+        """Cache dataset node from knowledge graph"""
+        if self.trust_engine:
+            dataset_id = node_data.get("node_id")
+            await self.trust_engine.ignite.put(
+                "knowledge_nodes",
+                f"dataset:{dataset_id}",
+                node_data.get("properties", {}),
+                ttl=3600
+            )
+    
+    async def _update_relationship_cache(self, edge_data: Dict[str, Any]):
+        """Update relationship caches"""
+        # Implementation for caching relationships
+        pass
+    
+    async def _process_inference(self, inference_data: Dict[str, Any]):
+        """Process inferences from knowledge graph"""
+        # Implementation for processing inferences
+        pass 

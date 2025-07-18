@@ -1,0 +1,177 @@
+[
+  {
+    "namespace": "platformq.data.marketplace",
+    "type": "record",
+    "name": "DataQualityAssessment",
+    "fields": [
+      {"name": "assessment_id", "type": "string"},
+      {"name": "dataset_id", "type": "string"},
+      {"name": "asset_id", "type": "string"},
+      {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+      {"name": "assessor_id", "type": "string"},
+      {"name": "assessor_trust_score", "type": "double"},
+      {
+        "name": "quality_dimensions",
+        "type": {
+          "type": "record",
+          "name": "QualityDimensions",
+          "fields": [
+            {"name": "completeness", "type": "double", "doc": "0.0-1.0 score for data completeness"},
+            {"name": "accuracy", "type": "double", "doc": "0.0-1.0 score for data accuracy"},
+            {"name": "consistency", "type": "double", "doc": "0.0-1.0 score for internal consistency"},
+            {"name": "timeliness", "type": "double", "doc": "0.0-1.0 score for data freshness"},
+            {"name": "validity", "type": "double", "doc": "0.0-1.0 score for conformance to rules"},
+            {"name": "uniqueness", "type": "double", "doc": "0.0-1.0 score for absence of duplicates"}
+          ]
+        }
+      },
+      {"name": "overall_quality_score", "type": "double", "doc": "Weighted average of quality dimensions"},
+      {"name": "trust_adjusted_score", "type": "double", "doc": "Quality score adjusted by assessor trust"},
+      {
+        "name": "quality_issues",
+        "type": {
+          "type": "array",
+          "items": {
+            "type": "record",
+            "name": "QualityIssue",
+            "fields": [
+              {"name": "issue_type", "type": "string"},
+              {"name": "severity", "type": {"type": "enum", "name": "Severity", "symbols": ["LOW", "MEDIUM", "HIGH", "CRITICAL"]}},
+              {"name": "description", "type": "string"},
+              {"name": "affected_rows", "type": ["null", "long"], "default": null},
+              {"name": "affected_columns", "type": ["null", {"type": "array", "items": "string"}], "default": null}
+            ]
+          }
+        },
+        "default": []
+      },
+      {"name": "automated_checks", "type": {"type": "map", "values": "boolean"}},
+      {"name": "verification_proofs", "type": ["null", {"type": "array", "items": "string"}], "default": null}
+    ]
+  },
+  {
+    "namespace": "platformq.data.marketplace",
+    "type": "record",
+    "name": "DataAccessRequest",
+    "fields": [
+      {"name": "request_id", "type": "string"},
+      {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+      {"name": "requester_id", "type": "string"},
+      {"name": "dataset_id", "type": "string"},
+      {"name": "requester_trust_scores", "type": {"type": "map", "values": "double"}},
+      {"name": "access_purpose", "type": "string"},
+      {"name": "intended_use", "type": "string"},
+      {"name": "duration_days", "type": ["null", "int"], "default": null},
+      {
+        "name": "requested_access_level",
+        "type": {
+          "type": "enum",
+          "name": "AccessLevel",
+          "symbols": ["SAMPLE", "FILTERED", "AGGREGATED", "FULL", "REAL_TIME"]
+        }
+      },
+      {"name": "offered_price", "type": ["null", "string"], "default": null},
+      {"name": "collateral_assets", "type": ["null", {"type": "array", "items": "string"}], "default": null}
+    ]
+  },
+  {
+    "namespace": "platformq.data.marketplace",
+    "type": "record",
+    "name": "DataAccessGrant",
+    "fields": [
+      {"name": "grant_id", "type": "string"},
+      {"name": "request_id", "type": "string"},
+      {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+      {"name": "dataset_id", "type": "string"},
+      {"name": "grantee_id", "type": "string"},
+      {"name": "granted_access_level", "type": "AccessLevel"},
+      {"name": "trust_requirements", "type": {"type": "map", "values": "double"}},
+      {"name": "access_uri", "type": "string"},
+      {"name": "encryption_key_id", "type": ["null", "string"], "default": null},
+      {"name": "expires_at", "type": "long", "logicalType": "timestamp-millis"},
+      {"name": "usage_limits", "type": {"type": "map", "values": "long"}},
+      {"name": "price_paid", "type": ["null", "string"], "default": null},
+      {"name": "quality_tier", "type": "string"},
+      {"name": "sla_terms", "type": ["null", {"type": "map", "values": "string"}], "default": null}
+    ]
+  },
+  {
+    "namespace": "platformq.data.marketplace",
+    "type": "record",
+    "name": "DataPricingUpdate",
+    "fields": [
+      {"name": "pricing_id", "type": "string"},
+      {"name": "dataset_id", "type": "string"},
+      {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+      {
+        "name": "pricing_tiers",
+        "type": {
+          "type": "array",
+          "items": {
+            "type": "record",
+            "name": "PricingTier",
+            "fields": [
+              {"name": "tier_name", "type": "string"},
+              {"name": "min_trust_score", "type": "double"},
+              {"name": "access_level", "type": "AccessLevel"},
+              {"name": "base_price", "type": "string"},
+              {"name": "quality_multiplier", "type": "double"},
+              {"name": "volume_discounts", "type": ["null", {"type": "map", "values": "double"}], "default": null}
+            ]
+          }
+        }
+      },
+      {"name": "dynamic_pricing_enabled", "type": "boolean"},
+      {"name": "reputation_discount_max", "type": "double"},
+      {"name": "data_freshness_premium", "type": "double"}
+    ]
+  },
+  {
+    "namespace": "platformq.data.marketplace",
+    "type": "record",
+    "name": "DataLineageEnriched",
+    "fields": [
+      {"name": "lineage_id", "type": "string"},
+      {"name": "dataset_id", "type": "string"},
+      {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+      {
+        "name": "trust_chain",
+        "type": {
+          "type": "array",
+          "items": {
+            "type": "record",
+            "name": "TrustNode",
+            "fields": [
+              {"name": "entity_id", "type": "string"},
+              {"name": "entity_type", "type": "string"},
+              {"name": "trust_score", "type": "double"},
+              {"name": "contribution_type", "type": "string"},
+              {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+              {"name": "quality_impact", "type": "double"}
+            ]
+          }
+        }
+      },
+      {"name": "aggregated_trust_score", "type": "double"},
+      {"name": "weakest_link_score", "type": "double"},
+      {"name": "provenance_verified", "type": "boolean"},
+      {"name": "verification_proofs", "type": ["null", {"type": "array", "items": "string"}], "default": null}
+    ]
+  },
+  {
+    "namespace": "platformq.data.marketplace",
+    "type": "record",
+    "name": "DataQualityDerivative",
+    "fields": [
+      {"name": "derivative_id", "type": "string"},
+      {"name": "dataset_id", "type": "string"},
+      {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+      {"name": "derivative_type", "type": {"type": "enum", "name": "DerivativeType", "symbols": ["QUALITY_FUTURE", "FRESHNESS_SWAP", "ACCURACY_OPTION", "COMPLETENESS_BOND"]}},
+      {"name": "strike_quality", "type": "double"},
+      {"name": "expiry", "type": "long", "logicalType": "timestamp-millis"},
+      {"name": "premium", "type": "string"},
+      {"name": "collateral_required", "type": "string"},
+      {"name": "trust_adjusted_pricing", "type": "boolean"}
+    ]
+  }
+] 

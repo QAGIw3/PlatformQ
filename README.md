@@ -77,6 +77,37 @@ PlatformQ transforms from a simple marketplace into a comprehensive compute util
 - **SLA Enforcement** - Automated monitoring and penalties
 - **Physical Settlement** - Automatic resource provisioning on contract expiry
 
+### Unified Intelligence Layer
+
+PlatformQ integrates Graph Intelligence across all services for enhanced decision-making:
+
+#### Risk Management
+- **Multi-Dimensional Risk Assessment** - Counterparty, operational, market, liquidity analysis
+- **Trust-Based Collateral** - Reputation directly reduces collateral requirements
+- **Network Analysis** - Systemic risk assessment based on network position
+- **Predictive Analytics** - Behavior and outcome predictions using AI
+
+#### Service Integrations
+- **Derivatives Engine** - Risk-adjusted margins and intelligent position limits
+- **MLOps Service** - Model quality prediction and collaboration recommendations
+- **Simulation Service** - Trust-based resource sharing and quality predictions
+
+### Asset-Compute-Model Nexus
+
+Deep integration between digital assets, compute resources, and ML models:
+
+#### Digital Assets as Collateral
+- **Model NFTs** - ML models valued based on performance and revenue
+- **Dataset NFTs** - Valuable datasets assessed for quality and uniqueness
+- **Compute Vouchers** - Pre-paid compute time as tradeable assets
+- **Algorithm NFTs** - Proprietary algorithms with proven performance
+
+#### New Financial Instruments
+- **Model-Compute Bundles** - Pre-packaged ML models with guaranteed compute
+- **Asset-Backed Futures** - Compute futures collateralized by digital assets
+- **Synthetic Data Derivatives** - Generate valuable data on demand
+- **Portfolio Optimization** - Balance assets and compute for maximum efficiency
+
 ### Core Services
 
 1. **Digital Asset Service** - Asset management with marketplace integration
@@ -258,6 +289,26 @@ We welcome contributions! Please see [CONTRIBUTING.md](CONTRIBUTING.md) for guid
 3. Commit your changes (`git commit -m 'Add amazing feature'`)
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
+
+## 🚀 Recent Platform Enhancements
+
+### Unified Intelligence Layer ✅
+- Integrated Graph Intelligence across Derivatives Engine, MLOps, and Simulation services
+- Multi-dimensional risk assessment with trust-based collateral requirements
+- AI-powered recommendations and predictive analytics
+- Network effect benefits for well-connected ecosystem participants
+
+### Asset-Compute-Model Nexus ✅
+- Digital assets (NFTs, models, datasets) now accepted as collateral
+- Model-compute bundles create new tradeable instruments
+- Asset-backed compute futures enable new hedging strategies
+- Portfolio optimization balances digital assets with compute needs
+
+### Compute Market Integration ✅
+- Physical settlement with automatic provisioning
+- Multi-tier capacity sourcing (platform, wholesale, spot, P2P)
+- Cross-service compute coordination
+- SLA enforcement with automated penalties
 
 ## 📊 Performance Metrics
 

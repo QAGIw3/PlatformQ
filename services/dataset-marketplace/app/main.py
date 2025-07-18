@@ -1,7 +1,7 @@
 """
 Dataset Marketplace Service
 
-Specialized marketplace for training data sales
+Specialized marketplace for training data sales with trust-weighted access control
 """
 
 import logging
@@ -11,11 +11,12 @@ from datetime import datetime, timedelta
 import hashlib
 import json
 import uuid
+import asyncio
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, WebSocket, WebSocketDisconnect
+from fastapi.middleware.cors import CORSMiddleware
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
-import asyncio
 import httpx
 
 from platformq_shared import (
@@ -34,7 +35,10 @@ from .models import (
     DatasetType,
     LicenseType,
     DatasetStatus,
-    PurchaseStatus
+    PurchaseStatus,
+    DatasetReview,
+    DatasetAnalytics,
+    DatasetQualityCheck
 )
 from .repository import (
     DatasetListingRepository,
@@ -45,29 +49,113 @@ from .repository import (
 )
 from .event_processors import DatasetMarketplaceEventProcessor
 
+# Import trust-weighted components
+from .engines.trust_weighted_data_engine import TrustWeightedDataEngine
+from .api import trust_weighted_data
+from .integrations import (
+    GraphIntelligenceClient,
+    IgniteCache,
+    PulsarEventPublisher,
+    SeaTunnelClient,
+    SparkClient,
+    FlinkClient,
+    ElasticsearchClient,
+    MinIOClient,
+    CassandraClient,
+    JanusGraphClient
+)
+from .integrations.seatunnel_quality_integration import SeaTunnelQualityIntegration
+from .integrations.graph_intelligence_integration import GraphIntelligenceIntegration
+from .monitoring import PrometheusMetrics
+
 # Setup logging
 logger = logging.getLogger(__name__)
 
-# Event processor instance
+# Global instances
 event_processor = None
+trust_engine: Optional[TrustWeightedDataEngine] = None
+graph_intelligence: Optional[GraphIntelligenceIntegration] = None
+seatunnel_integration: Optional[SeaTunnelQualityIntegration] = None
+metrics: Optional[PrometheusMetrics] = None
+ignite_cache: Optional[IgniteCache] = None
+pulsar_publisher: Optional[PulsarEventPublisher] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global event_processor
+    global event_processor, trust_engine, graph_intelligence, seatunnel_integration
+    global metrics, ignite_cache, pulsar_publisher
     
     # Startup
-    logger.info("Initializing Dataset Marketplace Service...")
+    logger.info("Initializing Dataset Marketplace Service with Trust-Weighted Data System...")
     
-    # Initialize event processor
+    # Initialize Ignite cache
+    ignite_cache = IgniteCache()
+    await ignite_cache.connect()
+    
+    # Initialize Pulsar publisher
     pulsar_client = get_pulsar_client()
-    event_processor = DatasetMarketplaceEventProcessor(
-        pulsar_client=pulsar_client,
-        service_name="dataset-marketplace-service"
+    pulsar_publisher = PulsarEventPublisher(pulsar_client)
+    await pulsar_publisher.initialize()
+    
+    # Initialize integrations
+    graph_client = GraphIntelligenceClient()
+    seatunnel_client = SeaTunnelClient()
+    spark_client = SparkClient()
+    flink_client = FlinkClient()
+    es_client = ElasticsearchClient()
+    minio_client = MinIOClient()
+    cassandra_client = CassandraClient()
+    janusgraph_client = JanusGraphClient()
+    
+    # Initialize Graph Intelligence integration
+    graph_intelligence = GraphIntelligenceIntegration(
+        graph_service_url="http://graph-intelligence-service:8000",
+        ignite_cache=ignite_cache,
+        pulsar_publisher=pulsar_publisher
     )
     
-    # Start event processor
+    # Initialize Trust-Weighted Data Engine
+    trust_engine = TrustWeightedDataEngine(
+        graph_client=graph_client,
+        ignite=ignite_cache,
+        pulsar=pulsar_publisher,
+        seatunnel=seatunnel_client,
+        spark=spark_client,
+        flink=flink_client,
+        elasticsearch=es_client
+    )
+    
+    # Initialize SeaTunnel Quality Integration
+    seatunnel_integration = SeaTunnelQualityIntegration(
+        seatunnel_client=seatunnel_client,
+        ignite_cache=ignite_cache,
+        pulsar_publisher=pulsar_publisher,
+        elasticsearch=es_client,
+        cassandra=cassandra_client,
+        janusgraph=janusgraph_client
+    )
+    
+    # Initialize metrics
+    metrics = PrometheusMetrics()
+    
+    # Initialize event processor
+    event_processor = DatasetMarketplaceEventProcessor(
+        pulsar_client=pulsar_client,
+        service_name="dataset-marketplace-service",
+        trust_engine=trust_engine
+    )
+    
+    # Start background tasks
     await event_processor.start()
+    asyncio.create_task(trust_engine.start_monitoring())
+    asyncio.create_task(seatunnel_integration.start_quality_pipelines())
+    
+    # Setup data quality pipelines
+    await setup_quality_monitoring_pipelines(flink_client, seatunnel_client)
+    
+    # Setup data synchronization pipelines
+    await setup_data_sync_pipelines(seatunnel_integration)
     
     logger.info("Dataset Marketplace Service initialized successfully")
     
@@ -79,16 +167,38 @@ async def lifespan(app: FastAPI):
     if event_processor:
         await event_processor.stop()
     
+    if trust_engine:
+        await trust_engine.stop()
+        
+    if seatunnel_integration:
+        await seatunnel_integration.stop()
+    
+    # Close connections
+    await ignite_cache.close()
+    await pulsar_publisher.close()
+    
     logger.info("Dataset Marketplace Service shutdown complete")
 
 # Create FastAPI app
 app = create_base_app(
     title="Dataset Marketplace Service",
-    description="Marketplace for buying and selling training datasets",
+    description="Marketplace for buying and selling training datasets with trust-weighted access control",
     version="1.0.0",
     lifespan=lifespan,
     event_processors=[event_processor] if event_processor else []
 )
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # Configure appropriately for production
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(trust_weighted_data.router)
 
 
 class DatasetType(Enum):
@@ -606,6 +716,186 @@ async def fetch_dataset_lineage(dataset_id: str) -> Dict[str, Any]:
         "versions": [],
         "citations": []
     }
+
+
+async def setup_quality_monitoring_pipelines(flink_client: FlinkClient, seatunnel_client: SeaTunnelClient):
+    """Setup Flink jobs for real-time data quality monitoring"""
+    
+    # Data quality monitoring job configuration
+    quality_job_config = {
+        "job_name": "data-quality-monitoring",
+        "parallelism": 4,
+        "checkpointing_interval": 60000,  # 1 minute
+        "source": {
+            "type": "pulsar",
+            "topic": "dataset-uploads",
+            "subscription": "quality-monitor"
+        },
+        "pipeline": [
+            {
+                "operator": "quality_assessor",
+                "class": "com.platformq.flink.quality.QualityAssessor",
+                "config": {
+                    "dimensions": [
+                        "completeness",
+                        "accuracy",
+                        "consistency",
+                        "timeliness",
+                        "validity",
+                        "uniqueness"
+                    ],
+                    "sampling_rate": 0.1  # Sample 10% for large datasets
+                }
+            },
+            {
+                "operator": "anomaly_detector",
+                "class": "com.platformq.flink.quality.AnomalyDetector",
+                "config": {
+                    "algorithms": ["isolation_forest", "autoencoder"],
+                    "threshold": 0.95
+                }
+            },
+            {
+                "operator": "drift_detector",
+                "class": "com.platformq.flink.quality.DriftDetector",
+                "config": {
+                    "window_size": "1h",
+                    "reference_window": "7d",
+                    "metrics": ["kl_divergence", "js_divergence"]
+                }
+            }
+        ],
+        "sinks": [
+            {
+                "type": "pulsar",
+                "topic": "quality-assessments"
+            },
+            {
+                "type": "ignite",
+                "cache": "quality_scores"
+            },
+            {
+                "type": "elasticsearch",
+                "index": "data-quality-metrics"
+            }
+        ]
+    }
+    
+    await flink_client.submit_job(quality_job_config)
+    logger.info("Data quality monitoring pipeline started")
+
+
+async def setup_data_sync_pipelines(seatunnel_integration: SeaTunnelQualityIntegration):
+    """Setup SeaTunnel pipelines for data synchronization"""
+    
+    # Quality assessment sync pipeline
+    quality_sync_pipeline = {
+        "name": "quality_assessment_sync",
+        "source": {
+            "type": "pulsar",
+            "topic": "quality-assessments",
+            "subscription": "seatunnel-quality-sync"
+        },
+        "transform": [
+            {
+                "type": "sql",
+                "query": """
+                    SELECT 
+                        assessment_id,
+                        dataset_id,
+                        asset_id,
+                        overall_quality_score,
+                        trust_adjusted_score,
+                        quality_dimensions,
+                        assessor_trust_score,
+                        timestamp
+                    FROM source
+                """
+            }
+        ],
+        "sink": [
+            {
+                "type": "cassandra",
+                "keyspace": "platformq",
+                "table": "quality_assessments",
+                "consistency": "QUORUM"
+            },
+            {
+                "type": "elasticsearch",
+                "index": "quality-assessments",
+                "id_field": "assessment_id"
+            }
+        ]
+    }
+    
+    # Trust-weighted access log pipeline
+    access_log_pipeline = {
+        "name": "trust_access_log",
+        "source": {
+            "type": "pulsar",
+            "topic": "data-access-requests",
+            "subscription": "seatunnel-access-sync"
+        },
+        "transform": [
+            {
+                "type": "enrichment",
+                "enrichments": [
+                    {
+                        "field": "requester_id",
+                        "lookup": "graph_intelligence",
+                        "output": "trust_scores"
+                    }
+                ]
+            }
+        ],
+        "sink": [
+            {
+                "type": "janusgraph",
+                "graph": "platformq-knowledge",
+                "vertex_label": "DataAccess"
+            },
+            {
+                "type": "influxdb",
+                "bucket": "access_metrics",
+                "measurement": "trust_weighted_access"
+            }
+        ]
+    }
+    
+    # Data lineage tracking pipeline
+    lineage_pipeline = {
+        "name": "data_lineage_tracking",
+        "source": {
+            "type": "pulsar",
+            "topic": "data-lineage-events",
+            "subscription": "seatunnel-lineage-sync"
+        },
+        "transform": [
+            {
+                "type": "graph_builder",
+                "vertices": {
+                    "dataset": ["dataset_id", "name", "type"],
+                    "user": ["user_id", "trust_score"],
+                    "quality_check": ["check_id", "score"]
+                },
+                "edges": {
+                    "created_by": ["dataset", "user"],
+                    "assessed_by": ["dataset", "quality_check"]
+                }
+            }
+        ],
+        "sink": [
+            {
+                "type": "janusgraph",
+                "graph": "platformq-knowledge"
+            }
+        ]
+    }
+    
+    await seatunnel_integration.create_pipeline(quality_sync_pipeline)
+    await seatunnel_integration.create_pipeline(access_log_pipeline)
+    await seatunnel_integration.create_pipeline(lineage_pipeline)
+    logger.info("Data synchronization pipelines created")
 
 
 if __name__ == "__main__":
