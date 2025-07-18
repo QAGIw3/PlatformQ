@@ -1,0 +1,58 @@
+# Base dependencies
+-r ../../requirements/base.in
+
+# Shared libraries
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+
+# API Framework
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+
+# Database drivers
+asyncpg  # PostgreSQL async driver
+aiocassandra  # Cassandra async driver
+motor  # MongoDB async driver
+pyignite[async]  # Apache Ignite
+gremlinpython  # JanusGraph/TinkerPop
+aioelasticsearch  # Elasticsearch async
+influxdb-client[async]  # InfluxDB for time-series
+
+# Connection pooling and management
+asyncio-pool
+sqlalchemy[asyncio]
+databases
+
+# Apache Avro for data serialization
+fastavro
+avro-python3
+
+# Caching with Ignite
+pyignite[async]
+
+# Query optimization
+pyparsing  # For query parsing
+sqlparse  # SQL query parsing
+
+# Monitoring and metrics
+prometheus-client
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-sqlalchemy
+opentelemetry-instrumentation-cassandra
+
+# Performance
+orjson  # Fast JSON serialization
+aiocache  # Async caching abstractions
+xxhash  # Fast hashing for cache keys
+
+# Security
+cryptography  # For encrypted connection strings
+
+# Development
+pytest
+pytest-asyncio
+pytest-mock
+black
+ruff 
