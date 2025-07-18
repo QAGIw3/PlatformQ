@@ -1,0 +1,135 @@
+version: '3.8'
+
+services:
+  compute-marketplace:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: compute-marketplace
+    environment:
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/compute_marketplace
+      - PULSAR_URL=pulsar://pulsar:6650
+      - IGNITE_HOSTS=ignite:10800
+      - NEUROMORPHIC_SERVICE_URL=http://neuromorphic-service:8000
+      - GRAPH_INTELLIGENCE_URL=http://graph-intelligence-service:8000
+      - FEDERATED_LEARNING_URL=http://federated-learning-service:8000
+      - QUANTUM_OPTIMIZATION_URL=http://quantum-optimization-service:8000
+      - VC_SERVICE_URL=http://verifiable-credential-service:8000
+      - WEB3_PROVIDER_URL=${WEB3_PROVIDER_URL}
+      - CHAIN_ID=${CHAIN_ID:-137}
+      - TOKEN_FACTORY_ADDRESS=${TOKEN_FACTORY_ADDRESS}
+      - AMM_ROUTER_ADDRESS=${AMM_ROUTER_ADDRESS}
+      - LENDING_POOL_ADDRESS=${LENDING_POOL_ADDRESS}
+      - PRICE_ORACLE_ADDRESS=${PRICE_ORACLE_ADDRESS}
+      - OPERATOR_PRIVATE_KEY=${OPERATOR_PRIVATE_KEY}
+    ports:
+      - "8011:8000"
+    depends_on:
+      - postgres
+      - ignite
+      - pulsar
+    networks:
+      - platformq-network
+    volumes:
+      - ./app:/app
+    command: uvicorn app.main:app --host 0.0.0.0 --port 8000 --reload
+
+  postgres:
+    image: postgres:15-alpine
+    container_name: compute-marketplace-db
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=compute_marketplace
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "5433:5432"
+    networks:
+      - platformq-network
+
+  ignite:
+    image: apacheignite/ignite:2.15.0
+    container_name: compute-marketplace-ignite
+    environment:
+      - IGNITE_QUIET=false
+      - JVM_OPTS=-Xms512m -Xmx2g -server
+    ports:
+      - "10800:10800"
+      - "10801:10801"
+      - "11211:11211"
+      - "47100:47100"
+      - "47500:47500"
+    volumes:
+      - ignite_data:/opt/ignite/work
+      - ./infra/ignite/compute-marketplace-config.xml:/opt/ignite/config/default-config.xml
+    networks:
+      - platformq-network
+
+  # Mock services for local development
+  mock-neuromorphic:
+    image: mockserver/mockserver:latest
+    container_name: neuromorphic-service
+    environment:
+      - MOCKSERVER_PROPERTY_FILE=/config/mockserver.properties
+      - MOCKSERVER_INITIALIZATION_JSON_PATH=/config/neuromorphic-mocks.json
+    ports:
+      - "8001:8000"
+    volumes:
+      - ./tests/mocks/neuromorphic-mocks.json:/config/neuromorphic-mocks.json
+    networks:
+      - platformq-network
+
+  mock-graph-intelligence:
+    image: mockserver/mockserver:latest
+    container_name: graph-intelligence-service
+    environment:
+      - MOCKSERVER_INITIALIZATION_JSON_PATH=/config/graph-mocks.json
+    ports:
+      - "8002:8000"
+    volumes:
+      - ./tests/mocks/graph-mocks.json:/config/graph-mocks.json
+    networks:
+      - platformq-network
+
+  # Development tools
+  pgadmin:
+    image: dpage/pgadmin4:latest
+    container_name: compute-marketplace-pgadmin
+    environment:
+      - PGADMIN_DEFAULT_EMAIL=admin@platformq.io
+      - PGADMIN_DEFAULT_PASSWORD=admin
+    ports:
+      - "5050:80"
+    depends_on:
+      - postgres
+    networks:
+      - platformq-network
+
+  # Web3 local blockchain for development
+  ganache:
+    image: trufflesuite/ganache:latest
+    container_name: compute-marketplace-ganache
+    ports:
+      - "8545:8545"
+    command: >
+      -a 10
+      --deterministic
+      --host 0.0.0.0
+      --port 8545
+      --chainId 1337
+      --gasLimit 12000000
+      --gasPrice 20000000000
+    networks:
+      - platformq-network
+    volumes:
+      - ganache_data:/ganache_data
+
+volumes:
+  postgres_data:
+  ignite_data:
+  ganache_data:
+
+networks:
+  platformq-network:
+    external: true
