@@ -6,10 +6,11 @@ from typing import Dict, List, Optional
 from decimal import Decimal
 import logging
 
-from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures
+from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard
 from app.engines.matching_engine import MatchingEngine
 from app.engines.funding_engine import FundingEngine
 from app.engines.settlement_engine import SettlementEngine
+from app.engines.compute_futures_engine import ComputeFuturesEngine
 from app.collateral.multi_tier_engine import MultiTierCollateralEngine
 from app.liquidation.partial_liquidator import PartialLiquidationEngine
 from app.fees.dynamic_fee_engine import DynamicFeeEngine
@@ -35,6 +36,7 @@ logger = logging.getLogger(__name__)
 matching_engine: Optional[MatchingEngine] = None
 funding_engine: Optional[FundingEngine] = None
 settlement_engine: Optional[SettlementEngine] = None
+compute_futures_engine: Optional[ComputeFuturesEngine] = None
 collateral_engine: Optional[MultiTierCollateralEngine] = None
 liquidation_engine: Optional[PartialLiquidationEngine] = None
 fee_engine: Optional[DynamicFeeEngine] = None
@@ -65,7 +67,7 @@ async def lifespan(app: FastAPI):
     seatunnel_client = SeaTunnelClient()
     
     # Initialize engines
-    global matching_engine, funding_engine, settlement_engine
+    global matching_engine, funding_engine, settlement_engine, compute_futures_engine
     global collateral_engine, liquidation_engine, fee_engine
     global market_dao, websocket_manager, metrics
     
@@ -104,6 +106,13 @@ async def lifespan(app: FastAPI):
         pulsar
     )
     
+    # Compute futures engine
+    compute_futures_engine = ComputeFuturesEngine(
+        ignite,
+        pulsar,
+        oracle_client
+    )
+    
     # Governance
     market_dao = MarketCreationDAO(
         graph_client,
@@ -123,6 +132,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(funding_engine.start_funding_calculation_loop())
     asyncio.create_task(liquidation_engine.start_monitoring_loop())
     asyncio.create_task(websocket_manager.start_broadcasting())
+    asyncio.create_task(compute_futures_engine.start())
     
     # Setup data pipelines with SeaTunnel
     await setup_data_pipelines(seatunnel_client)
@@ -244,6 +254,10 @@ app.include_router(liquidity.router)  # Already has prefix in router definition
 app.include_router(options.router)  # Already has prefix in router definition
 app.include_router(market_makers.router)  # Already has prefix in router definition
 app.include_router(compute_futures.router)  # Compute futures trading
+app.include_router(variance_swaps.router)  # Variance swaps trading
+app.include_router(structured_products.router)  # Structured products
+app.include_router(risk_limits.router)  # Risk limits management
+app.include_router(monitoring_dashboard.router)  # Monitoring dashboard
 
 # Health check
 @app.get("/health")
