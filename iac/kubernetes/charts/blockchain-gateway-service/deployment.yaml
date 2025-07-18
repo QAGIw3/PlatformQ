@@ -1,0 +1,306 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: blockchain-gateway-service
+  namespace: platformq
+  labels:
+    app: blockchain-gateway-service
+    component: blockchain
+    tier: backend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: blockchain-gateway-service
+  template:
+    metadata:
+      labels:
+        app: blockchain-gateway-service
+        component: blockchain
+        tier: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: blockchain-gateway-service
+      containers:
+      - name: blockchain-gateway-service
+        image: platformq/blockchain-gateway-service:latest
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        env:
+        - name: SERVICE_NAME
+          value: "blockchain-gateway-service"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: ENVIRONMENT
+          value: "production"
+        
+        # Ignite configuration
+        - name: IGNITE_ADDRESSES
+          value: "ignite-0.ignite.platformq.svc.cluster.local:10800,ignite-1.ignite.platformq.svc.cluster.local:10800"
+        - name: IGNITE_CACHE_NAME
+          value: "blockchain-gateway"
+        
+        # Pulsar configuration
+        - name: PULSAR_SERVICE_URL
+          value: "pulsar://pulsar-broker.platformq.svc.cluster.local:6650"
+        - name: PULSAR_TOPIC_PREFIX
+          value: "persistent://public/blockchain"
+        
+        # Blockchain configuration
+        - name: ETHEREUM_RPC_URL
+          valueFrom:
+            secretKeyRef:
+              name: blockchain-config
+              key: ethereum-rpc-url
+        - name: POLYGON_RPC_URL
+          valueFrom:
+            secretKeyRef:
+              name: blockchain-config
+              key: polygon-rpc-url
+        - name: ARBITRUM_RPC_URL
+          valueFrom:
+            secretKeyRef:
+              name: blockchain-config
+              key: arbitrum-rpc-url
+        
+        # API Keys
+        - name: ETHERSCAN_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: blockchain-config
+              key: etherscan-api-key
+        - name: POLYGONSCAN_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: blockchain-config
+              key: polygonscan-api-key
+              
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "2Gi"
+            cpu: "2000m"
+            
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+          
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: chain-configs
+          mountPath: /app/chain-configs
+          readOnly: true
+          
+      volumes:
+      - name: config
+        configMap:
+          name: blockchain-gateway-config
+      - name: chain-configs
+        configMap:
+          name: blockchain-chain-configs
+          
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - blockchain-gateway-service
+              topologyKey: kubernetes.io/hostname
+              
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: blockchain-gateway-service
+  namespace: platformq
+  labels:
+    app: blockchain-gateway-service
+    component: blockchain
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8000
+    targetPort: http
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    app: blockchain-gateway-service
+    
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: blockchain-gateway-service
+  namespace: platformq
+  labels:
+    app: blockchain-gateway-service
+    
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blockchain-gateway-config
+  namespace: platformq
+data:
+  config.yaml: |
+    service:
+      name: blockchain-gateway-service
+      version: 1.0.0
+      
+    server:
+      host: 0.0.0.0
+      port: 8000
+      cors:
+        enabled: true
+        origins:
+          - "*"
+          
+    metrics:
+      enabled: true
+      port: 9090
+      
+    rate_limiting:
+      enabled: true
+      requests_per_minute: 60
+      burst: 100
+      
+    connection_pool:
+      min_connections: 5
+      max_connections: 20
+      connection_timeout: 30
+      idle_timeout: 300
+      
+    gas_optimization:
+      enabled: true
+      cache_ttl: 60
+      price_update_interval: 15
+      
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: blockchain-chain-configs
+  namespace: platformq
+data:
+  ethereum.json: |
+    {
+      "chain_type": "ethereum",
+      "chain_id": 1,
+      "name": "Ethereum Mainnet",
+      "native_currency": "ETH",
+      "explorer_url": "https://etherscan.io",
+      "block_time": 12,
+      "finality_blocks": 12,
+      "gas_limits": {
+        "transfer": 21000,
+        "erc20_transfer": 65000,
+        "contract_deployment": 3000000
+      }
+    }
+    
+  polygon.json: |
+    {
+      "chain_type": "polygon",
+      "chain_id": 137,
+      "name": "Polygon",
+      "native_currency": "MATIC",
+      "explorer_url": "https://polygonscan.com",
+      "block_time": 2,
+      "finality_blocks": 128,
+      "gas_limits": {
+        "transfer": 21000,
+        "erc20_transfer": 65000,
+        "contract_deployment": 3000000
+      }
+    }
+    
+  arbitrum.json: |
+    {
+      "chain_type": "arbitrum",
+      "chain_id": 42161,
+      "name": "Arbitrum One",
+      "native_currency": "ETH",
+      "explorer_url": "https://arbiscan.io",
+      "block_time": 0.25,
+      "finality_blocks": 1,
+      "gas_limits": {
+        "transfer": 21000,
+        "erc20_transfer": 65000,
+        "contract_deployment": 3000000
+      }
+    }
+    
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: blockchain-gateway-service
+  namespace: platformq
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: blockchain-gateway-service
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+        
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: blockchain-gateway-service
+  namespace: platformq
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: blockchain-gateway-service 

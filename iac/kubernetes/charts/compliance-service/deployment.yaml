@@ -1,0 +1,365 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compliance-service
+  namespace: platformq
+  labels:
+    app: compliance-service
+    component: compliance
+    tier: backend
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: compliance-service
+  template:
+    metadata:
+      labels:
+        app: compliance-service
+        component: compliance
+        tier: backend
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8000"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: compliance-service
+      containers:
+      - name: compliance-service
+        image: platformq/compliance-service:latest
+        imagePullPolicy: Always
+        ports:
+        - name: http
+          containerPort: 8000
+          protocol: TCP
+        - name: metrics
+          containerPort: 9090
+          protocol: TCP
+        env:
+        - name: SERVICE_NAME
+          value: "compliance-service"
+        - name: LOG_LEVEL
+          value: "info"
+        - name: ENVIRONMENT
+          value: "production"
+        
+        # Ignite configuration
+        - name: IGNITE_ADDRESSES
+          value: "ignite-0.ignite.platformq.svc.cluster.local:10800,ignite-1.ignite.platformq.svc.cluster.local:10800"
+        - name: IGNITE_CACHE_NAME
+          value: "compliance"
+        
+        # Pulsar configuration
+        - name: PULSAR_SERVICE_URL
+          value: "pulsar://pulsar-broker.platformq.svc.cluster.local:6650"
+        - name: PULSAR_TOPIC_PREFIX
+          value: "persistent://public/compliance"
+        
+        # Elasticsearch configuration
+        - name: ELASTICSEARCH_HOSTS
+          value: "elasticsearch-master.platformq.svc.cluster.local:9200"
+        - name: ELASTICSEARCH_INDEX_PREFIX
+          value: "compliance"
+        
+        # Compliance API Keys
+        - name: IDENTITY_VERIFICATION_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: compliance-secrets
+              key: identity-verification-api-key
+        - name: SANCTIONS_CHECK_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: compliance-secrets
+              key: sanctions-check-api-key
+        - name: AML_PROVIDER_API_KEY
+          valueFrom:
+            secretKeyRef:
+              name: compliance-secrets
+              key: aml-provider-api-key
+              
+        # ML Model configuration
+        - name: MODEL_SERVING_URL
+          value: "http://mlflow-server.platformq.svc.cluster.local:5000"
+        - name: RISK_MODEL_NAME
+          value: "risk-scoring-model"
+        - name: FRAUD_MODEL_NAME
+          value: "fraud-detection-model"
+          
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "250m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+            
+        livenessProbe:
+          httpGet:
+            path: /health
+            port: http
+          initialDelaySeconds: 30
+          periodSeconds: 30
+          timeoutSeconds: 5
+          failureThreshold: 3
+          
+        readinessProbe:
+          httpGet:
+            path: /ready
+            port: http
+          initialDelaySeconds: 10
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+          
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+          readOnly: true
+        - name: compliance-rules
+          mountPath: /app/rules
+          readOnly: true
+          
+      volumes:
+      - name: config
+        configMap:
+          name: compliance-config
+      - name: compliance-rules
+        configMap:
+          name: compliance-rules
+          
+      affinity:
+        podAntiAffinity:
+          preferredDuringSchedulingIgnoredDuringExecution:
+          - weight: 100
+            podAffinityTerm:
+              labelSelector:
+                matchExpressions:
+                - key: app
+                  operator: In
+                  values:
+                  - compliance-service
+              topologyKey: kubernetes.io/hostname
+              
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: compliance-service
+  namespace: platformq
+  labels:
+    app: compliance-service
+    component: compliance
+spec:
+  type: ClusterIP
+  ports:
+  - name: http
+    port: 8000
+    targetPort: http
+    protocol: TCP
+  - name: metrics
+    port: 9090
+    targetPort: metrics
+    protocol: TCP
+  selector:
+    app: compliance-service
+    
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: compliance-service
+  namespace: platformq
+  labels:
+    app: compliance-service
+    
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compliance-config
+  namespace: platformq
+data:
+  config.yaml: |
+    service:
+      name: compliance-service
+      version: 1.0.0
+      
+    server:
+      host: 0.0.0.0
+      port: 8000
+      cors:
+        enabled: true
+        origins:
+          - "*"
+          
+    metrics:
+      enabled: true
+      port: 9090
+      
+    kyc:
+      enabled: true
+      levels:
+        - name: basic
+          required_documents:
+            - government_id
+        - name: enhanced
+          required_documents:
+            - government_id
+            - proof_of_address
+        - name: full
+          required_documents:
+            - government_id
+            - proof_of_address
+            - bank_statement
+            - source_of_funds
+      verification_timeout: 300
+      retry_attempts: 3
+      
+    aml:
+      enabled: true
+      check_types:
+        - sanctions
+        - pep
+        - adverse_media
+      monitoring:
+        enabled: true
+        check_interval: 86400
+      thresholds:
+        high_risk_score: 0.8
+        medium_risk_score: 0.5
+        
+    transaction_monitoring:
+      enabled: true
+      rules:
+        high_value_threshold: 10000
+        velocity_check_window: 3600
+        max_transactions_per_hour: 100
+      alert_channels:
+        - pulsar
+        - email
+        
+    risk_scoring:
+      enabled: true
+      factors:
+        - name: kyc_completeness
+          weight: 0.3
+        - name: transaction_behavior
+          weight: 0.4
+        - name: geographic_risk
+          weight: 0.3
+      update_interval: 300
+      
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: compliance-rules
+  namespace: platformq
+data:
+  sanctions-lists.json: |
+    {
+      "lists": [
+        {
+          "name": "OFAC SDN",
+          "source": "US Treasury",
+          "update_frequency": "daily"
+        },
+        {
+          "name": "EU Consolidated",
+          "source": "European Union",
+          "update_frequency": "daily"
+        },
+        {
+          "name": "UN Security Council",
+          "source": "United Nations",
+          "update_frequency": "weekly"
+        }
+      ]
+    }
+    
+  risk-countries.json: |
+    {
+      "high_risk": [
+        "AF", "IR", "KP", "MM", "SY", "VU", "YE"
+      ],
+      "medium_risk": [
+        "AL", "BB", "BF", "KH", "KY", "HT", "JM", "ML", "MA", "MZ", 
+        "NI", "PK", "PA", "PH", "SN", "TJ", "TR", "UG", "AE", "VN", "ZW"
+      ],
+      "enhanced_due_diligence": [
+        "AF", "IR", "KP", "SY"
+      ]
+    }
+    
+  transaction-patterns.json: |
+    {
+      "suspicious_patterns": [
+        {
+          "name": "rapid_movement",
+          "description": "Rapid movement of funds through multiple accounts",
+          "risk_score": 0.8
+        },
+        {
+          "name": "structuring",
+          "description": "Multiple transactions just below reporting threshold",
+          "risk_score": 0.9
+        },
+        {
+          "name": "dormant_activation",
+          "description": "Sudden activity in previously dormant account",
+          "risk_score": 0.7
+        }
+      ]
+    }
+    
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: compliance-service
+  namespace: platformq
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: compliance-service
+  minReplicas: 2
+  maxReplicas: 8
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+        
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: compliance-service
+  namespace: platformq
+spec:
+  minAvailable: 1
+  selector:
+    matchLabels:
+      app: compliance-service
+      
+---
+apiVersion: v1
+kind: Secret
+metadata:
+  name: compliance-secrets
+  namespace: platformq
+type: Opaque
+stringData:
+  identity-verification-api-key: "PLACEHOLDER_IDENTITY_API_KEY"
+  sanctions-check-api-key: "PLACEHOLDER_SANCTIONS_API_KEY"
+  aml-provider-api-key: "PLACEHOLDER_AML_API_KEY" 

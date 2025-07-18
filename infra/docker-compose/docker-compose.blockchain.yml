@@ -1,0 +1,184 @@
+version: '3.8'
+
+services:
+  blockchain-gateway-service:
+    image: platformq/blockchain-gateway-service:latest
+    build:
+      context: ../../services/blockchain-gateway-service
+      dockerfile: Dockerfile
+    container_name: blockchain-gateway-service
+    environment:
+      - SERVICE_NAME=blockchain-gateway-service
+      - LOG_LEVEL=info
+      - ENVIRONMENT=development
+      # Ignite configuration
+      - IGNITE_ADDRESSES=ignite:10800
+      - IGNITE_CACHE_NAME=blockchain-gateway
+      # Pulsar configuration
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+      - PULSAR_TOPIC_PREFIX=persistent://public/blockchain
+      # Blockchain configuration
+      - ETHEREUM_RPC_URL=${ETHEREUM_RPC_URL:-https://eth-mainnet.g.alchemy.com/v2/demo}
+      - POLYGON_RPC_URL=${POLYGON_RPC_URL:-https://polygon-mainnet.g.alchemy.com/v2/demo}
+      - ARBITRUM_RPC_URL=${ARBITRUM_RPC_URL:-https://arb-mainnet.g.alchemy.com/v2/demo}
+      # API Keys
+      - ETHERSCAN_API_KEY=${ETHERSCAN_API_KEY:-demo}
+      - POLYGONSCAN_API_KEY=${POLYGONSCAN_API_KEY:-demo}
+    ports:
+      - "8010:8000"
+      - "9010:9090"
+    depends_on:
+      - ignite
+      - pulsar
+    networks:
+      - platformq-network
+    volumes:
+      - ./blockchain-configs:/app/config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  compliance-service:
+    image: platformq/compliance-service:latest
+    build:
+      context: ../../services/compliance-service
+      dockerfile: Dockerfile
+    container_name: compliance-service
+    environment:
+      - SERVICE_NAME=compliance-service
+      - LOG_LEVEL=info
+      - ENVIRONMENT=development
+      # Ignite configuration
+      - IGNITE_ADDRESSES=ignite:10800
+      - IGNITE_CACHE_NAME=compliance
+      # Pulsar configuration
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+      - PULSAR_TOPIC_PREFIX=persistent://public/compliance
+      # Elasticsearch configuration
+      - ELASTICSEARCH_HOSTS=elasticsearch:9200
+      - ELASTICSEARCH_INDEX_PREFIX=compliance
+      # Compliance API Keys
+      - IDENTITY_VERIFICATION_API_KEY=${IDENTITY_VERIFICATION_API_KEY:-demo}
+      - SANCTIONS_CHECK_API_KEY=${SANCTIONS_CHECK_API_KEY:-demo}
+      - AML_PROVIDER_API_KEY=${AML_PROVIDER_API_KEY:-demo}
+      # ML Model configuration
+      - MODEL_SERVING_URL=http://mlflow-server:5000
+      - RISK_MODEL_NAME=risk-scoring-model
+      - FRAUD_MODEL_NAME=fraud-detection-model
+    ports:
+      - "8011:8000"
+      - "9011:9090"
+    depends_on:
+      - ignite
+      - pulsar
+      - elasticsearch
+    networks:
+      - platformq-network
+    volumes:
+      - ./compliance-rules:/app/rules
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  defi-protocol-service:
+    image: platformq/defi-protocol-service:latest
+    build:
+      context: ../../services/defi-protocol-service
+      dockerfile: Dockerfile
+    container_name: defi-protocol-service
+    environment:
+      - SERVICE_NAME=defi-protocol-service
+      - LOG_LEVEL=info
+      - ENVIRONMENT=development
+      # Ignite configuration
+      - IGNITE_ADDRESSES=ignite:10800
+      - IGNITE_CACHE_NAME=defi-protocol
+      # Pulsar configuration
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+      - PULSAR_TOPIC_PREFIX=persistent://public/defi
+      # Blockchain Gateway
+      - BLOCKCHAIN_GATEWAY_URL=http://blockchain-gateway-service:8000
+      # Contract addresses (development/testnet)
+      - ETHEREUM_LENDING_POOL=0x0000000000000000000000000000000000000000
+      - ETHEREUM_AUCTION_PROTOCOL=0x0000000000000000000000000000000000000000
+      - POLYGON_LENDING_POOL=0x0000000000000000000000000000000000000000
+      - POLYGON_AUCTION_PROTOCOL=0x0000000000000000000000000000000000000000
+      # Price oracle configuration
+      - CHAINLINK_PRICE_FEEDS=true
+      - PRICE_UPDATE_INTERVAL=60
+      # Risk parameters
+      - MAX_LEVERAGE_RATIO=3.0
+      - LIQUIDATION_THRESHOLD=0.85
+      - MIN_HEALTH_FACTOR=1.0
+    ports:
+      - "8012:8000"
+      - "9012:9090"
+    depends_on:
+      - ignite
+      - pulsar
+      - blockchain-gateway-service
+    networks:
+      - platformq-network
+    volumes:
+      - ./defi-configs:/app/protocols
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Ganache for local blockchain development
+  ganache:
+    image: trufflesuite/ganache:latest
+    container_name: ganache
+    ports:
+      - "8545:8545"
+    environment:
+      - DOCKER=true
+    command: >
+      --accounts 10
+      --account_keys_path /ganache_keys.json
+      --host 0.0.0.0
+      --port 8545
+      --deterministic
+      --mnemonic "abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon abandon about"
+      --chain.chainId 1337
+      --chain.networkId 1337
+    networks:
+      - platformq-network
+    volumes:
+      - ganache-data:/ganache_data
+
+  # Contract deployment helper
+  smart-contract-deployer:
+    image: platformq/smart-contract-deployer:latest
+    build:
+      context: ../../services/contracts
+      dockerfile: Dockerfile
+    container_name: smart-contract-deployer
+    environment:
+      - NETWORK=development
+      - RPC_URL=http://ganache:8545
+      - PRIVATE_KEY=${DEPLOYER_PRIVATE_KEY:-0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80}
+    depends_on:
+      - ganache
+    networks:
+      - platformq-network
+    volumes:
+      - ./deployed-contracts:/app/deployments
+      - ../../services/contracts:/app/contracts
+    command: ["npm", "run", "deploy:dev"]
+
+volumes:
+  ganache-data:
+  
+networks:
+  platformq-network:
+    external: true 

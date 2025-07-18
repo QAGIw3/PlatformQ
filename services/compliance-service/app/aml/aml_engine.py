@@ -20,6 +20,7 @@ import hmac
 
 from pyignite import Client as IgniteClient
 import pulsar
+from ..core.ignite_cache import IgniteCacheManager
 
 logger = logging.getLogger(__name__)
 
@@ -79,6 +80,7 @@ class AMLEngine:
         high_value_threshold_usd: Decimal = Decimal("10000")
     ):
         self.ignite_client = ignite_client
+        self.cache_manager = IgniteCacheManager(ignite_client)
         self.pulsar_client = pulsar_client
         self.blockchain_gateway_url = blockchain_gateway_url
         self.blockchain_analytics_url = blockchain_analytics_url
@@ -101,17 +103,17 @@ class AMLEngine:
         
     async def initialize(self):
         """Initialize the AML engine"""
-        # Initialize caches
-        self._transaction_cache = await self.ignite_client.get_or_create_cache(
+        # Initialize caches using cache manager
+        self._transaction_cache = await self.cache_manager.get_or_create_cache(
             "aml_transactions"
         )
-        self._risk_cache = await self.ignite_client.get_or_create_cache(
+        self._risk_cache = await self.cache_manager.get_or_create_cache(
             "aml_risk_assessments"
         )
-        self._alert_cache = await self.ignite_client.get_or_create_cache(
+        self._alert_cache = await self.cache_manager.get_or_create_cache(
             "aml_alerts"
         )
-        self._pattern_cache = await self.ignite_client.get_or_create_cache(
+        self._pattern_cache = await self.cache_manager.get_or_create_cache(
             "aml_patterns"
         )
         

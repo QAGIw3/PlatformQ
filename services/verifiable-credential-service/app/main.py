@@ -31,7 +31,7 @@ from .standards.advanced_standards import (
     PresentationRequest,
     PresentationPurpose
 )
-from .api import endpoints, direct_issuance, cross_chain, presentations, kyc_zkp
+from .api import endpoints, direct_issuance, cross_chain, presentations, kyc_zkp, aml_zkp
 from fastapi import FastAPI
 from .messaging.pulsar_consumer import start_consumer, stop_consumer, PulsarConsumer
 from .blockchain.reputation_oracle import reputation_oracle_service
@@ -971,6 +971,9 @@ app.include_router(direct_issuance.router, prefix="/api/v1", tags=["direct-issua
 
 # KYC Zero-Knowledge Proof operations
 app.include_router(kyc_zkp.router, prefix="/api/v1", tags=["kyc-zkp"])
+
+# AML Zero-Knowledge Proof operations
+app.include_router(aml_zkp.router, prefix="/api/v1", tags=["aml-zkp"])
 
 @app.get("/api/v1/dids/{did}/credentials", response_model=List[Dict[str, Any]])
 def get_user_credentials(
