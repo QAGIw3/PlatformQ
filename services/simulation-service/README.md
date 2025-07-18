@@ -42,6 +42,14 @@ Its primary responsibilities are:
 │  │    Flink     │  │  JanusGraph  │  │     Pulsar      │  │
 │  │ (Analytics)  │  │  (Lineage)   │  │   (Events)      │  │
 │  └──────────────┘  └──────────────┘  └─────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                 Compute Resource Layer                        │
+│  ┌──────────────────────────────────────────────────────┐  │
+│  │      Derivatives Engine Integration                    │  │
+│  │  - Automatic GPU/CPU allocation for simulations       │  │
+│  │  - Compute futures for cost hedging                   │  │
+│  │  - Multi-provider resource procurement                │  │
+│  └──────────────────────────────────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
@@ -190,6 +198,54 @@ The service uses a custom `SimulationCRDT` that supports:
 - **State Broadcast**: Limited to 1,000 agents per update for performance
 - **Operation Buffer**: 100ms flush interval for batching
 - **Checkpoint Interval**: Every 1,000 simulation ticks
+
+## Compute Resource Integration
+
+### Automatic Resource Allocation
+
+The simulation service integrates with the derivatives engine for automatic compute resource allocation:
+
+1. **Simulation Start**: When a large-scale simulation is initiated, compute requirements are calculated based on:
+   - Number of agents
+   - Simulation complexity
+   - Expected runtime
+   - Real-time collaboration needs
+
+2. **Resource Request**: The service requests compute capacity through the cross-service coordinator:
+   ```python
+   # Automatic GPU allocation for physics simulations
+   capacity_request = {
+       "service_type": "simulation",
+       "resource_type": "gpu",
+       "quantity": "4",  # 4 GPUs
+       "duration_hours": 24,
+       "priority": 8,  # High priority
+       "flexibility_hours": 2
+   }
+   ```
+
+3. **Multi-Provider Support**: Resources can be allocated from:
+   - Platform-owned GPU clusters
+   - Partner cloud providers (AWS, Azure, GCP)
+   - Spot market through compute futures
+   - Peer-to-peer compute network
+
+4. **Cost Optimization**: The system automatically selects the most cost-effective option while meeting performance requirements.
+
+### Performance-Based Derivatives
+
+For critical simulations, users can purchase performance derivatives:
+- **Latency Futures**: Guarantee maximum simulation tick latency
+- **Accuracy Bonds**: Ensure simulation accuracy meets specified thresholds
+- **Uptime Swaps**: Guarantee continuous simulation availability
+
+### Resource Monitoring
+
+Real-time monitoring of allocated compute resources:
+- GPU utilization and temperature
+- Memory usage and bandwidth
+- Network latency between nodes
+- Cost tracking per simulation
 
 ## How to Run Locally
 

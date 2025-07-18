@@ -24,6 +24,10 @@ PlatformQ is a cutting-edge decentralized platform that revolutionizes how digit
 - **📊 Real-Time Analytics** - Apache Flink for stream processing
 - **🎯 Neuromorphic Computing** - Next-gen AI for pattern recognition
 - **Trust-Infused Search: Federated analytics with trust.**
+- **💻 Compute Futures Market** - Trade compute capacity futures for GPU, CPU, memory
+- **🔄 Partner Capacity Management** - Wholesale procurement from cloud providers
+- **⚡ Cross-Service Resource Coordination** - Unified compute allocation across platform
+- **📈 Wholesale Arbitrage Engine** - Automated price optimization between providers
 
 ### New Features
 - Adaptive Neuromorphic-Driven Resource Orchestration: Real-time anomaly detection and auto-scaling.
@@ -51,6 +55,28 @@ PlatformQ is a cutting-edge decentralized platform that revolutionizes how digit
 - **Search**: Elasticsearch
 - **Container Orchestration**: Kubernetes
 
+### Compute Market Integration
+
+PlatformQ transforms from a simple marketplace into a comprehensive compute utility:
+
+#### Capacity Sources
+- **Platform-Owned Infrastructure** - Dedicated GPU/CPU clusters
+- **Partner Wholesale Contracts** - Bulk capacity from Rackspace, AWS, Azure, GCP
+- **Spot Market** - Dynamic pricing through compute futures
+- **Peer-to-Peer Network** - Community-provided resources
+
+#### Financial Instruments
+- **Compute Futures** - Day-ahead and monthly contracts
+- **Variance Swaps** - Trade compute price volatility
+- **Quality Derivatives** - Latency futures, uptime swaps, performance bonds
+- **Structured Products** - Custom compute hedging strategies
+
+#### Service Integration
+- **Automatic Allocation** - Services request compute, platform handles procurement
+- **Cost Optimization** - Real-time arbitrage between providers
+- **SLA Enforcement** - Automated monitoring and penalties
+- **Physical Settlement** - Automatic resource provisioning on contract expiry
+
 ### Core Services
 
 1. **Digital Asset Service** - Asset management with marketplace integration
@@ -61,6 +87,10 @@ PlatformQ is a cutting-edge decentralized platform that revolutionizes how digit
 6. **CAD Collaboration Service** - Real-time 3D model collaboration
 7. **Projects Service** - Decentralized project management
 8. **Auth Service** - OIDC-compliant authentication
+9. **Derivatives Engine Service** - Compute futures trading and capacity management
+10. **MLOps Service** - ML lifecycle with integrated compute allocation
+11. **Provisioning Service** - Dynamic resource provisioning with partner integration
+12. **Simulation Service** - Large-scale simulations with automatic GPU allocation
 
 ## 🚀 Quick Start
 
