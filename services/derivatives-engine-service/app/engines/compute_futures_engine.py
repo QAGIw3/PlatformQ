@@ -814,10 +814,6 @@ class ComputeFuturesEngine:
             except Exception as e:
                 logger.error(f"Error calling provisioning service: {e}")
                 await self._handle_provisioning_failure(settlement)
-                
-        except Exception as e:
-            logger.error(f"Error calling provisioning service: {e}")
-            await self._handle_provisioning_failure(settlement)
             
         return settlement
         
