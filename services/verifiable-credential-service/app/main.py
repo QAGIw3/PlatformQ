@@ -18,11 +18,8 @@ from platformq_shared.event_publisher import EventPublisher
 from platformq_shared.config import ConfigLoader
 from platformq_shared.events import IssueVerifiableCredential, VerifiableCredentialIssued
 from .schemas.dao_schemas import DAOMembershipCredentialSubject, VotingPowerCredentialSubject, ReputationScoreCredentialSubject, ProposalApprovalCredentialSubject
-from web3 import Web3
-
-# Import blockchain components
-from .blockchain import BlockchainClient, ChainType, EthereumClient, PolygonClient, FabricClient
-from .blockchain.bridge import CrossChainBridge, AtomicCrossChainBridge
+# Import blockchain gateway client instead of direct blockchain components
+from .blockchain_gateway_client import BlockchainGatewayClient, ChainType, AnchorResult
 from .did import DIDManager, DIDResolver
 from .zkp import ZKPManager, SelectiveDisclosure
 from .storage.ipfs_storage import IPFSCredentialStorage, DistributedCredentialNetwork
@@ -54,16 +51,14 @@ settings = config_loader.load_settings() # Keep for now for non-secret config
 PULSAR_URL = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
 SEARCH_SERVICE_URL = settings.get("SEARCH_SERVICE_URL", "http://search-service:80")
 
-# Initialize blockchain clients
-blockchain_clients = {}
+# Initialize components
+blockchain_gateway_client = None
 did_manager = DIDManager()
 did_resolver = DIDResolver()
 zkp_manager = ZKPManager()
 selective_disclosure = SelectiveDisclosure()
 
 # Initialize new components
-cross_chain_bridge = None
-atomic_bridge = None
 ipfs_storage = None
 distributed_storage = None
 trust_network = TrustNetwork()
@@ -71,34 +66,12 @@ verification_network = CredentialVerificationNetwork(trust_network)
 credential_manifest = CredentialManifest()
 sbt_manager = None
 
-def initialize_blockchain_clients():
-    """Initialize blockchain clients based on configuration"""
-    # Ethereum client
-    if settings.get("ETHEREUM_ENABLED", False):
-        eth_config = {
-            "provider_url": settings.get("ETHEREUM_PROVIDER_URL"),
-            "private_key": platform_settings.get("ETHEREUM_PRIVATE_KEY"),
-            "contract_address": settings.get("ETHEREUM_CONTRACT_ADDRESS")
-        }
-        blockchain_clients["ethereum"] = EthereumClient(eth_config)
-    
-    # Polygon client
-    if settings.get("POLYGON_ENABLED", False):
-        polygon_config = {
-            "provider_url": settings.get("POLYGON_PROVIDER_URL"),
-            "private_key": platform_settings.get("POLYGON_PRIVATE_KEY"),
-            "contract_address": settings.get("POLYGON_CONTRACT_ADDRESS")
-        }
-        blockchain_clients["polygon"] = PolygonClient(polygon_config)
-    
-    # Fabric client
-    if settings.get("FABRIC_ENABLED", False):
-        fabric_config = {
-            "network_profile": settings.get("FABRIC_NETWORK_PROFILE"),
-            "channel_name": settings.get("FABRIC_CHANNEL_NAME"),
-            "chaincode_name": settings.get("FABRIC_CHAINCODE_NAME")
-        }
-        blockchain_clients["fabric"] = FabricClient(fabric_config)
+def initialize_blockchain_gateway():
+    """Initialize blockchain gateway client"""
+    global blockchain_gateway_client
+    gateway_url = settings.get("BLOCKCHAIN_GATEWAY_URL", "http://blockchain-gateway-service:8000")
+    blockchain_gateway_client = BlockchainGatewayClient(gateway_url)
+    logger.info(f"Initialized blockchain gateway client with URL: {gateway_url}")
         
     # Initialize cross-chain bridge
     global cross_chain_bridge, atomic_bridge
@@ -199,42 +172,51 @@ async def issue_and_record_credential(tenant_id: str, subject: Dict[str, Any], c
         ipfs_cid = storage_receipt["cid"]
         vc.data["proof"]["ipfsCID"] = ipfs_cid
     
-    # Anchor on blockchain(s)
+    # Anchor on blockchain(s) via gateway
     blockchain_type = options.get("blockchain", "ethereum")
-    if blockchain_type in blockchain_clients:
-        client = blockchain_clients[blockchain_type]
-        if await client.connect():
-            anchor = await client.anchor_credential(vc.data, tenant_id)
+    if blockchain_gateway_client:
+        try:
+            anchor = await blockchain_gateway_client.anchor_credential(vc.data, blockchain_type, tenant_id)
             vc.data["proof"]["blockchainAnchor"] = anchor.to_dict()
-            await client.disconnect()
             logger.info(f"Credential anchored on {blockchain_type}: {anchor.transaction_hash}")
+        except Exception as e:
+            logger.error(f"Failed to anchor credential on {blockchain_type}: {e}")
     
     # Store credential hash on multiple chains if requested
-    if options.get("multi_chain", False):
-        for chain_name, client in blockchain_clients.items():
-            if chain_name != blockchain_type:  # Skip already anchored chain
-                if await client.connect():
-                    anchor = await client.anchor_credential(vc.data, tenant_id)
-                    if "additionalAnchors" not in vc.data["proof"]:
-                        vc.data["proof"]["additionalAnchors"] = []
+    if options.get("multi_chain", False) and blockchain_gateway_client:
+        chains = options.get("chains", ["ethereum", "polygon", "arbitrum"])
+        # Remove already anchored chain
+        chains = [c for c in chains if c != blockchain_type]
+        
+        if chains:
+            try:
+                results = await blockchain_gateway_client.anchor_multiple_chains(vc.data, chains, tenant_id)
+                vc.data["proof"]["additionalAnchors"] = []
+                for chain, anchor in results.items():
                     vc.data["proof"]["additionalAnchors"].append(anchor.to_dict())
-                    await client.disconnect()
+                    logger.info(f"Additional anchor on {chain}: {anchor.transaction_hash}")
+            except Exception as e:
+                logger.error(f"Failed to anchor on multiple chains: {e}")
     
     # Create SoulBound Token if requested
-    if sbt_manager and options.get("create_sbt", False):
+    if blockchain_gateway_client and options.get("create_sbt", False):
         owner_address = options.get("owner_address")
-        issuer_address = options.get("issuer_address", issuer_did)
         if owner_address:
-            sbt = await sbt_manager.mint_sbt(
-                vc.data,
-                owner_address,
-                issuer_address,
-                metadata_uri=f"ipfs://{ipfs_cid}" if ipfs_cid else None
-            )
-            vc.data["soulBoundToken"] = {
-                "tokenId": sbt.token_id,
-                "soulSignature": sbt.soul_signature
-            }
+            try:
+                sbt_result = await blockchain_gateway_client.create_soulbound_token(
+                    vc.data,
+                    owner_address,
+                    blockchain_type,
+                    metadata_uri=f"ipfs://{ipfs_cid}" if ipfs_cid else None
+                )
+                vc.data["soulBoundToken"] = {
+                    "tokenId": sbt_result.get("token_id"),
+                    "transactionHash": sbt_result.get("transaction_hash"),
+                    "chain": blockchain_type
+                }
+                logger.info(f"Created SoulBound Token: {sbt_result.get('token_id')}")
+            except Exception as e:
+                logger.error(f"Failed to create SoulBound Token: {e}")
     
     # Add issuer to trust network
     trust_network.add_entity(issuer_did)
@@ -856,7 +838,7 @@ async def startup_event():
     app.state.trust_consumer.start()
     
     # Initialize blockchain clients
-    initialize_blockchain_clients()
+    initialize_blockchain_gateway()
     
     # Initialize storage
     initialize_storage()
@@ -1436,27 +1418,26 @@ async def create_presentation(
     
     return derived
 
-# Blockchain Verification Endpoints (existing, kept for compatibility)
+# Blockchain Verification Endpoints (updated to use gateway)
 @app.get("/api/v1/credentials/{credential_id}/verify")
 async def verify_credential(
     credential_id: str,
     blockchain: str = "ethereum"
 ):
-    """Verify a credential's blockchain anchor"""
-    if blockchain not in blockchain_clients:
-        raise HTTPException(status_code=400, detail=f"Blockchain {blockchain} not supported")
+    """Verify a credential's blockchain anchor via gateway"""
+    if not blockchain_gateway_client:
+        raise HTTPException(status_code=503, detail="Blockchain gateway not initialized")
     
-    client = blockchain_clients[blockchain]
-    if not await client.connect():
-        raise HTTPException(status_code=503, detail="Blockchain connection failed")
-    
-    anchor = await client.verify_credential_anchor(credential_id)
-    await client.disconnect()
-    
-    if not anchor:
-        raise HTTPException(status_code=404, detail="Credential anchor not found")
-    
-    return anchor.to_dict()
+    try:
+        anchor = await blockchain_gateway_client.verify_anchor(credential_id, blockchain)
+        
+        if not anchor:
+            raise HTTPException(status_code=404, detail="Credential anchor not found")
+        
+        return anchor.to_dict()
+    except Exception as e:
+        logger.error(f"Error verifying credential: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 @app.get("/api/v1/credentials/{credential_id}/history")
 async def get_credential_history(
@@ -1464,14 +1445,11 @@ async def get_credential_history(
     blockchain: str = "ethereum"
 ):
     """Get the history of a credential including revocations"""
-    if blockchain not in blockchain_clients:
-        raise HTTPException(status_code=400, detail=f"Blockchain {blockchain} not supported")
-    
-    client = blockchain_clients[blockchain]
-    if not await client.connect():
-        raise HTTPException(status_code=503, detail="Blockchain connection failed")
-    
-    history = await client.get_credential_history(credential_id)
-    await client.disconnect()
-    
-    return [anchor.to_dict() for anchor in history]
+    # Note: This endpoint would need to be implemented in blockchain-gateway-service
+    # For now, return a placeholder response
+    logger.warning("Credential history endpoint not yet implemented in gateway")
+    return {
+        "message": "Credential history tracking coming soon",
+        "credential_id": credential_id,
+        "chain": blockchain
+    }

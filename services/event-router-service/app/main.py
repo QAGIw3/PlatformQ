@@ -26,7 +26,8 @@ from .core.schema_registry import SchemaRegistry
 from .core.transformation_engine import TransformationEngine
 from .core.dead_letter_handler import DeadLetterHandler
 from .core.event_store import EventStore
-from .api import routes, admin, health
+from .api import routes, admin, health, blockchain
+from .core.blockchain_event_handler import BlockchainEventHandler
 from .monitoring import EventMetrics
 
 logger = logging.getLogger(__name__)
@@ -104,6 +105,14 @@ async def lifespan(app: FastAPI):
     await event_router.initialize()
     app.state.event_router = event_router
     
+    # Initialize blockchain event handler
+    blockchain_event_handler = BlockchainEventHandler(
+        event_router=event_router,
+        schema_registry=schema_registry,
+        event_store=event_store
+    )
+    app.state.blockchain_event_handler = blockchain_event_handler
+    
     # Start background tasks
     asyncio.create_task(event_router.start_routing())
     asyncio.create_task(dead_letter_handler.process_dead_letters())
@@ -155,6 +164,7 @@ app.add_middleware(
 app.include_router(routes.router, prefix="/api/v1/routes", tags=["routes"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
 app.include_router(health.router, prefix="/api/v1/health", tags=["health"])
+app.include_router(blockchain.router, prefix="/api/v1/blockchain", tags=["blockchain"])
 
 # Root endpoint
 @app.get("/")

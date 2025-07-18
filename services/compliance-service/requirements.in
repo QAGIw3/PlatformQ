@@ -1,67 +1,73 @@
-# Compliance Service Requirements
+# Base dependencies
+-r ../../requirements/base.in
 
-# Web framework
-fastapi==0.104.1
-uvicorn[standard]==0.24.0
-python-multipart==0.0.6
+# Shared libraries
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+-e ../../libs/platformq-event-framework
 
-# Async support
-aiohttp==3.9.1
-asyncio==3.4.3
+# API Framework
+fastapi
+uvicorn[standard]
+pydantic
 
-# Data validation
-pydantic==2.5.0
-pydantic-settings==2.1.0
+# Compliance and KYC/AML
+# Identity verification providers
+jumio-api-python>=1.0.0  # Jumio identity verification
+onfido-python>=2.0.0  # Onfido KYC verification
 
-# Storage & Caching
-pyignite==0.6.1  # Apache Ignite client
-elasticsearch==8.11.0
-redis==5.0.1  # For temporary caching
+# Sanctions and watchlist screening
+ofac-api>=0.1.0  # OFAC sanctions checking
+dow-jones-risk>=1.0.0  # Dow Jones risk & compliance
+
+# AML/Transaction monitoring
+aml-python>=0.5.0  # AML rule engine
+transaction-monitoring>=1.0.0  # Real-time transaction monitoring
+
+# Document processing
+pytesseract>=0.3.10  # OCR for documents
+pdf2image>=1.16.0  # PDF processing
+pillow>=9.0.0  # Image processing
+
+# Machine learning for risk scoring
+scikit-learn>=1.0.0
+pandas>=1.4.0
+numpy>=1.22.0
+
+# Rules engine
+drools-python>=0.1.0  # Business rules engine
+pyknow>=1.7.0  # Expert system framework
+
+# Cryptography
+cryptography>=38.0.0  # Document encryption
+pycryptodome>=3.15.0  # Additional crypto utilities
+
+# Data storage
+motor  # MongoDB async driver
+pyignite[async]  # Apache Ignite
 
 # Messaging
-pulsar-client==3.3.0  # Apache Pulsar
+aiopulsar  # Apache Pulsar async client
 
-# Security & Cryptography
-cryptography==41.0.7
-python-jose[cryptography]==3.3.0
-passlib[bcrypt]==1.7.4
-
-# Database
-asyncpg==0.29.0  # PostgreSQL async driver
-sqlalchemy==2.0.23
-
-# Graph database
-gremlinpython==3.7.0  # For JanusGraph
-
-# Blockchain
-web3==6.11.3
-eth-account==0.10.0
-
-# Machine Learning (for AML)
-scikit-learn==1.3.2
-numpy==1.26.2
-pandas==2.1.4
-
-# API clients
-httpx==0.25.2
+# Caching
+aiocache  # Async caching
+redis>=4.0.0  # Redis client
 
 # Monitoring
-prometheus-client==0.19.0
-opentelemetry-api==1.21.0
-opentelemetry-sdk==1.21.0
+prometheus-client
+opentelemetry-instrumentation-fastapi
+opentelemetry-exporter-prometheus
 
-# Logging
-python-json-logger==2.0.7
+# Utilities
+httpx  # Async HTTP client
+tenacity  # Retry logic
+python-multipart  # File uploads
+pycountry  # Country data
+phonenumbers  # Phone number validation
+email-validator  # Email validation
 
-# Development
-pytest==7.4.3
-pytest-asyncio==0.21.1
-black==23.12.0
-mypy==1.7.1
-
-# KYC/AML providers SDKs (when available)
-# chainalysis-sdk
-# elliptic-sdk
-
-# Zero-knowledge proofs
-py-ecc==6.0.0  # Elliptic curve cryptography 
+# Testing
+pytest
+pytest-asyncio
+pytest-mock
+faker  # Test data generation 

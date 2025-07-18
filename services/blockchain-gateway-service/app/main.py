@@ -17,6 +17,7 @@ import pulsar
 from platformq_blockchain_common import ChainType, ChainConfig
 from app.core import BlockchainGateway
 from app.api.endpoints import router
+from app.api.credentials import router as credentials_router
 
 logger = logging.getLogger(__name__)
 
@@ -132,8 +133,9 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-# Include API router
+# Include API routers
 app.include_router(router, prefix="/api/v1")
+app.include_router(credentials_router, prefix="/api/v1")
 
 # Root endpoint
 @app.get("/")
