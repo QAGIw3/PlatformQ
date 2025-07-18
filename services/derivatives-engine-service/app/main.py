@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 from decimal import Decimal
 import logging
 
-from app.api import markets, trading, positions, analytics
+from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers
 from app.engines.matching_engine import MatchingEngine
 from app.engines.funding_engine import FundingEngine
 from app.engines.settlement_engine import SettlementEngine
@@ -237,6 +237,12 @@ app.include_router(markets.router, prefix="/api/v1/markets", tags=["markets"])
 app.include_router(trading.router, prefix="/api/v1/trading", tags=["trading"])
 app.include_router(positions.router, prefix="/api/v1/positions", tags=["positions"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
+app.include_router(compliant_pools.router)  # Already has prefix in router definition
+app.include_router(risk.router)  # Already has prefix in router definition
+app.include_router(lending.router)  # Already has prefix in router definition
+app.include_router(liquidity.router)  # Already has prefix in router definition
+app.include_router(options.router)  # Already has prefix in router definition
+app.include_router(market_makers.router)  # Already has prefix in router definition
 
 # Health check
 @app.get("/health")

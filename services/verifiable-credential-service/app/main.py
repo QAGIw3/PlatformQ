@@ -34,7 +34,7 @@ from .standards.advanced_standards import (
     PresentationRequest,
     PresentationPurpose
 )
-from .api import endpoints
+from .api import endpoints, direct_issuance, cross_chain, presentations, kyc_zkp
 from fastapi import FastAPI
 from .messaging.pulsar_consumer import start_consumer, stop_consumer, PulsarConsumer
 from .blockchain.reputation_oracle import reputation_oracle_service
@@ -982,14 +982,13 @@ def get_reputation_from_chain(user_address: str) -> int:
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["verifiable-credential-service"])
 
-# Import and include new routers
-try:
-    from .api import cross_chain, presentations, direct_issuance
-    app.include_router(cross_chain.router, prefix="/api/v1/cross-chain", tags=["cross-chain"])
-    app.include_router(presentations.router, prefix="/api/v1", tags=["presentations"])
-    app.include_router(direct_issuance.router, prefix="/api/v1", tags=["direct-issuance"])
-except ImportError as e:
-    logger.warning(f"Could not import additional routers: {e}")
+# Cross-chain operations
+app.include_router(cross_chain.router, prefix="/api/v1/cross-chain", tags=["cross-chain"])
+app.include_router(presentations.router, prefix="/api/v1", tags=["presentations"])
+app.include_router(direct_issuance.router, prefix="/api/v1", tags=["direct-issuance"])
+
+# KYC Zero-Knowledge Proof operations
+app.include_router(kyc_zkp.router, prefix="/api/v1", tags=["kyc-zkp"])
 
 @app.get("/api/v1/dids/{did}/credentials", response_model=List[Dict[str, Any]])
 def get_user_credentials(
