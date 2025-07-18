@@ -1,26 +1,45 @@
-from platformq_shared.base_service import create_base_app
+"""
+Workflow Service
+
+Airflow-based workflow orchestration with verifiable credentials.
+"""
+
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Request, Response, status, HTTPException, Query, Depends
+import logging
+import asyncio
+from typing import List, Optional, Dict, Any
+from datetime import datetime, timedelta
+import uuid
+
+from platformq_shared import (
+    create_base_app,
+    EventProcessor,
+    event_handler,
+    ProcessingResult,
+    ProcessingStatus,
+    ServiceClients,
+    add_error_handlers
+)
 from platformq_shared.config import ConfigLoader
 from platformq_shared.event_publisher import EventPublisher
-from platformq_shared.webhooks import setup_webhooks, WebhookManager
-import pulsar
-import logging
-import threading
-import time
-from datetime import datetime
-from fastapi import Request, Response, status, HTTPException, Query, Depends
-from platformq_shared.events import (
-    IssueVerifiableCredential, DigitalAssetCreated, ExecuteWasmFunction, 
-    DocumentUpdatedEvent, ProjectCreatedEvent, DAOEvent
+from platformq_events import (
+    WorkflowCreatedEvent,
+    WorkflowStartedEvent,
+    WorkflowCompletedEvent,
+    WorkflowFailedEvent,
+    TaskCompletedEvent,
+    AssetCreatedEvent,
+    DocumentUpdatedEvent,
+    ProjectCreatedEvent,
+    DAOEvent
 )
-from pulsar.schema import AvroSchema
+
+from .api import endpoints
+from .api.deps import get_db_session, get_api_key_crud, get_user_crud, get_password_verifier
+from .repository import WorkflowRepository, TaskRepository, ResourceAuthorizationRepository
+from .event_processors import WorkflowEventProcessor, AssetWorkflowProcessor
 from .airflow_bridge import AirflowBridge, EventToDAGProcessor
-from typing import List, Optional, Dict, Any
-import json
-import re
-import httpx
-from pydantic import BaseModel
-import os
-from .dags.asset_augmentation_dag import process_asset
 from .dynamic_dags import FederatedSimulation, generate_federated_dag
 from .verifiable_credentials.workflow_credentials import (
     WorkflowCredentialManager,
@@ -28,1357 +47,152 @@ from .verifiable_credentials.workflow_credentials import (
     CredentialType,
     VerifiablePresentation
 )
-import uuid
-from datetime import timedelta
-from sqlalchemy.orm import Session
-from .database import Workflow, Task, ResourceAuthorization
-from .dependencies import get_db, get_current_user, get_current_tenant_and_user, require_admin
-from .event_publisher import publish_event
 
-# --- Setup ---
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# --- Configuration & Globals ---
-config_loader = ConfigLoader()
-settings = config_loader.load_settings()
-# We would add API keys for Zulip, Nextcloud, etc. to Vault
-# ZULIP_API_KEY = config_loader.get_secret(...)
-
-# Initialize verifiable credentials system
-config_loader = ConfigLoader()
+# Service components
+workflow_event_processor = None
+asset_workflow_processor = None
+airflow_bridge = None
 credential_manager = None
 credential_verifier = None
+service_clients = None
 
-if config_loader.get_setting("VERIFIABLE_CREDENTIALS_ENABLED", "false").lower() == "true":
-    issuer_did = config_loader.get_setting("WORKFLOW_ISSUER_DID", "did:platformq:workflow-service")
-    issuer_name = config_loader.get_setting("WORKFLOW_ISSUER_NAME", "PlatformQ Workflow Service")
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    global workflow_event_processor, asset_workflow_processor, airflow_bridge
+    global credential_manager, credential_verifier, service_clients
     
+    # Startup
+    logger.info("Starting Workflow Service...")
+    
+    # Initialize configuration
+    config_loader = ConfigLoader()
+    settings = config_loader.load_settings()
+    
+    # Initialize service clients
+    service_clients = ServiceClients(base_timeout=30.0, max_retries=3)
+    app.state.service_clients = service_clients
+    
+    # Initialize repositories
+    app.state.workflow_repo = WorkflowRepository(
+        get_db_session,
+        event_publisher=app.state.event_publisher
+    )
+    app.state.task_repo = TaskRepository(get_db_session)
+    app.state.resource_auth_repo = ResourceAuthorizationRepository(get_db_session)
+    
+    # Initialize Airflow bridge
+    airflow_bridge = AirflowBridge(
+        airflow_url=settings.get("airflow_url", "http://airflow-webserver:8080"),
+        username=settings.get("airflow_username", "admin"),
+        password=settings.get("airflow_password", "admin")
+    )
+    app.state.airflow_bridge = airflow_bridge
+    
+    # Initialize credential system
     credential_manager = WorkflowCredentialManager(
-        issuer_did=issuer_did,
-        issuer_name=issuer_name,
-        private_key_path=config_loader.get_setting("ISSUER_PRIVATE_KEY_PATH", None)
+        issuer_did=settings.get("workflow_issuer_did", "did:example:workflow-service"),
+        signing_key=settings.get("workflow_signing_key", ""),
+        vc_service_url=settings.get("vc_service_url", "http://verifiable-credential-service:8000")
+    )
+    await credential_manager.initialize()
+    app.state.credential_manager = credential_manager
+    
+    credential_verifier = WorkflowCredentialVerifier(
+        vc_service_url=settings.get("vc_service_url", "http://verifiable-credential-service:8000")
+    )
+    app.state.credential_verifier = credential_verifier
+    
+    # Initialize event processors
+    workflow_event_processor = WorkflowEventProcessor(
+        service_name="workflow-service",
+        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
+        workflow_repo=app.state.workflow_repo,
+        task_repo=app.state.task_repo,
+        airflow_bridge=airflow_bridge,
+        credential_manager=credential_manager,
+        service_clients=service_clients
     )
     
-    # Configure trusted issuers
-    trusted_issuers = config_loader.get_setting("TRUSTED_ISSUERS", "").split(",")
-    trusted_issuers = [issuer.strip() for issuer in trusted_issuers if issuer.strip()]
-    trusted_issuers.append(issuer_did)  # Trust self
-    
-    credential_verifier = WorkflowCredentialVerifier(trusted_issuers)
-
-def get_tenant_from_topic(topic: str) -> str:
-    """Extracts tenant ID from a topic name using a regex."""
-    # This regex looks for the tenant ID in topics like:
-    # persistent://platformq/0a1b2c3d-..../proposal-approved-events
-    match = re.search(r'platformq/([a-f0-9-]+)/', topic)
-    if match:
-        return match.group(1)
-    logger.warning(f"Could not extract tenant ID from topic: {topic}")
-    return None
-
-# --- Pulsar Consumer Thread for Workflows ---
-def workflow_consumer_loop(app):
-    logger.info("Starting workflow consumer thread...")
-    publisher = app.state.event_publisher
-    client = pulsar.Client(settings["PULSAR_URL"])
-    
-    # This consumer handles the dynamic WASM processing workflow
-    asset_consumer = client.subscribe(
-        topic_pattern="persistent://platformq/.*/digital-asset-created-events",
-        subscription_name="workflow-service-asset-sub",
-        consumer_type=pulsar.ConsumerType.Shared,
-        schema=AvroSchema(DigitalAssetCreated)
-    )
-
-    # We would have other consumers for other workflows, e.g.:
-    # proposal_consumer = client.subscribe(...)
-
-    while True: # This loop would need to be more sophisticated to handle multiple consumers
-        try:
-            msg = asset_consumer.receive(timeout_millis=1000)
-            if msg is None: continue
-            
-            asset_event = msg.value()
-            logger.info(f"  - (Workflow) Received DigitalAssetCreated event for asset: {asset_event.asset_id}")
-            
-            # Check for a processing rule
-            rule = None
-            try:
-                # The service name 'digital-asset-service' would come from a service discovery mechanism
-                api_url = f"http://digital-asset-service:8000/api/v1/processing-rules/{asset_event.asset_type}"
-                with httpx.Client() as http_client:
-                    response = http_client.get(api_url, timeout=5.0)
-                    if response.status_code == 200:
-                        rule = response.json()
-                        logger.info(f"  - (Workflow) Found processing rule for asset_type '{asset_event.asset_type}': route to WASM module '{rule['wasm_module_id']}'")
-                    elif response.status_code != 404:
-                            logger.warning(f"  - (Workflow) Non-404 error when checking for processing rule: {response.status_code}")
-            except httpx.RequestError as e:
-                logger.error(f"  - (Workflow) Could not connect to digital-asset-service to check for rules: {e}")
-
-            if rule:
-                exec_event = ExecuteWasmFunction(
-                    tenant_id=asset_event.tenant_id,
-                    asset_id=asset_event.asset_id,
-                    asset_uri=asset_event.raw_data_uri,
-                    wasm_module_id=rule['wasm_module_id']
-                )
-                publisher.publish(
-                    topic_base='wasm-function-execution-requests',
-                    tenant_id=asset_event.tenant_id,
-                    schema_class=ExecuteWasmFunction,
-                    data=exec_event
-                )
-                logger.info(f"  - (Workflow) Published ExecuteWasmFunction event for asset {asset_event.asset_id}")
-
-            asset_consumer.acknowledge(msg)
-            
-        except Exception as e:
-            logger.error(f"Error in workflow consumer loop: {e}")
-            if 'asset_consumer' in locals() and msg:
-                asset_consumer.negative_acknowledge(msg)
-
-
-
-# --- Project Workflow Consumer ---
-def project_workflow_consumer_loop(app):
-    """Enhanced project workflow consumer that processes project events"""
-    logger.info("Starting project workflow consumer...")
-    
-    publisher = app.state.event_publisher
-    client = pulsar.Client(settings["PULSAR_URL"])
-    
-    # Subscribe to project events
-    consumer = client.subscribe(
-        topic_pattern="persistent://platformq/.*/project-events",
-        subscription_name="workflow-project-sub",
-        consumer_type=pulsar.ConsumerType.Shared,
-        schema=AvroSchema(ProjectCreatedEvent)
+    asset_workflow_processor = AssetWorkflowProcessor(
+        service_name="workflow-service-assets",
+        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
+        workflow_repo=app.state.workflow_repo,
+        airflow_bridge=airflow_bridge
     )
     
-    while not app.state.stop_event.is_set():
-        try:
-            msg = consumer.receive(timeout_millis=1000)
-            if msg is None:
-                continue
-                
-            event = msg.value()
-            tenant_id = get_tenant_from_topic(msg.topic_name())
-            
-            logger.info(f"Processing project event: {event.project_name}")
-            
-            # Trigger additional project setup workflows
-            if hasattr(app.state, 'airflow_bridge'):
-                # Trigger Airflow DAG for project setup
-                app.state.airflow_bridge.trigger_dag(
-                    'project_setup_workflow',
-                    conf={
-                        'project_id': event.project_id,
-                        'project_name': event.project_name,
-                        'tenant_id': tenant_id,
-                        'creator_id': event.creator_id
-                    }
-                )
-            
-            consumer.acknowledge(msg)
-            
-        except Exception as e:
-            logger.error(f"Error in project workflow consumer: {e}")
-            if 'msg' in locals() and msg:
-                consumer.negative_acknowledge(msg)
-                
-    consumer.close()
-    client.close()
-
-# --- Document Update Consumer ---
-def document_update_consumer_loop(app):
-    """Enhanced document update consumer"""
-    logger.info("Starting document update consumer...")
-    
-    publisher = app.state.event_publisher
-    client = pulsar.Client(settings["PULSAR_URL"])
-    
-    consumer = client.subscribe(
-        topic_pattern="persistent://platformq/.*/document-events",
-        subscription_name="workflow-document-sub",
-        consumer_type=pulsar.ConsumerType.Shared,
-        schema=AvroSchema(DocumentUpdatedEvent)
+    # Start event processors
+    await asyncio.gather(
+        workflow_event_processor.start(),
+        asset_workflow_processor.start()
     )
     
-    while not app.state.stop_event.is_set():
-        try:
-            msg = consumer.receive(timeout_millis=1000)
-            if msg is None:
-                continue
-                
-            event = msg.value()
-            logger.info(f"Processing document update: {event.document_path}")
-            
-            # Trigger document processing workflows
-            if event.document_path.endswith('.md'):
-                # Trigger markdown processing
-                logger.info("Triggering markdown processing workflow")
-            elif event.document_path.endswith('.pdf'):
-                # Trigger PDF processing  
-                logger.info("Triggering PDF processing workflow")
-                
-            consumer.acknowledge(msg)
-            
-        except Exception as e:
-            logger.error(f"Error in document update consumer: {e}")
-            if 'msg' in locals() and msg:
-                consumer.negative_acknowledge(msg)
-                
-    consumer.close()
-    client.close()
-
-# --- Trust Activity Consumer for Automated Reputation ---
-def trust_activity_consumer_loop(app):
-    """
-    Consumes trust activity events and updates reputation scores automatically.
-    Tracks activities like:
-    - Successful credential issuance/verification
-    - Cross-chain bridge operations
-    - High-value asset creation
-    - Dispute resolutions
-    """
-    logger.info("Starting trust activity consumer...")
-    publisher = app.state.event_publisher
-    client = pulsar.Client(settings["PULSAR_URL"])
-    
-    consumer = client.subscribe(
-        "persistent://platformq/trust/activity-events",
-        subscription_name="workflow-trust-activity-sub",
-        consumer_type=pulsar.ConsumerType.Shared
+    # Initialize event to DAG processor
+    app.state.event_to_dag_processor = EventToDAGProcessor(
+        airflow_bridge=airflow_bridge,
+        event_publisher=app.state.event_publisher
     )
     
-    # Activity impact scores
-    activity_impacts = {
-        'credential_issued': 0.02,
-        'credential_verified': 0.03,
-        'bridge_transfer_completed': 0.05,
-        'high_value_asset_created': 0.04,
-        'dispute_resolved_positive': 0.10,
-        'dispute_resolved_negative': -0.15,
-        'event_published': 0.001,
-        'verification_failed': -0.05,
-        'suspicious_activity': -0.20,
-    }
+    logger.info("Workflow Service initialized successfully")
     
-    vc_service_url = settings.get("VC_SERVICE_URL", "http://verifiable-credential-service:8000")
-    graph_service_url = settings.get("GRAPH_SERVICE_URL", "http://graph-intelligence-service:8000")
+    yield
     
-    while not app.state.stop_event.is_set():
-        try:
-            msg = consumer.receive(timeout_millis=1000)
-            if msg is None:
-                continue
-                
-            # Parse activity event
-            activity_data = json.loads(msg.data().decode('utf-8'))
-            entity_id = activity_data['entity_id']
-            activity_type = activity_data['activity_type']
-            metadata = activity_data.get('metadata', {})
-            
-            logger.info(f"Processing trust activity: {activity_type} for entity {entity_id}")
-            
-            # Calculate trust impact
-            base_impact = activity_impacts.get(activity_type, 0.0)
-            
-            # Adjust impact based on metadata
-            if activity_type == 'credential_issued':
-                # Higher impact for more valuable credentials
-                cred_type = metadata.get('credential_type', '')
-                if 'HighValue' in cred_type or 'SoulBound' in cred_type:
-                    base_impact *= 1.5
-                    
-            elif activity_type == 'bridge_transfer_completed':
-                # Higher impact for larger transfers
-                transfer_value = metadata.get('transfer_value', 0)
-                if transfer_value > 10000:
-                    base_impact *= 2.0
-                elif transfer_value > 1000:
-                    base_impact *= 1.5
-                    
-            # Send trust event to graph intelligence service
-            try:
-                with httpx.Client() as http_client:
-                    response = http_client.post(
-                        f"{graph_service_url}/api/v1/graph/ingest-trust-event",
-                        json={
-                            "event_type": activity_type,
-                            "entity_id": entity_id,
-                            "trust_delta": base_impact,
-                            "metadata": metadata
-                        }
-                    )
-                    response.raise_for_status()
-                    logger.info(f"Trust event ingested for {entity_id}: delta={base_impact}")
-            except Exception as e:
-                logger.error(f"Failed to ingest trust event: {e}")
-                
-            # Check for reputation milestones
-            if base_impact > 0:
-                check_reputation_milestones(entity_id, activity_type, metadata, publisher)
-                
-            consumer.acknowledge(msg)
-            
-        except Exception as e:
-            logger.error(f"Error in trust activity consumer: {e}", exc_info=True)
-            if 'msg' in locals() and msg:
-                consumer.negative_acknowledge(msg)
+    # Shutdown
+    logger.info("Shutting down Workflow Service...")
     
-    consumer.close()
-    client.close()
-
-
-# --- DAO Event Consumer ---
-def dao_event_consumer_loop(app):
-    """
-    Consumes DAO events from Pulsar and triggers Airflow DAGs.
-    """
-    logger.info("Starting DAO event consumer...")
-    
-    publisher = app.state.event_publisher
-    client = pulsar.Client(settings["PULSAR_URL"])
-    
-    consumer = client.subscribe(
-        topic_pattern="persistent://platformq/.*/dao-events",
-        subscription_name="workflow-dao-event-sub",
-        consumer_type=pulsar.ConsumerType.Shared,
-        schema=AvroSchema(DAOEvent)
+    # Stop event processors
+    await asyncio.gather(
+        workflow_event_processor.stop() if workflow_event_processor else asyncio.sleep(0),
+        asset_workflow_processor.stop() if asset_workflow_processor else asyncio.sleep(0)
     )
     
-    while not app.state.stop_event.is_set():
-        try:
-            msg = consumer.receive(timeout_millis=1000)
-            if msg is None:
-                continue
-                
-            event = msg.value()
-            tenant_id = get_tenant_from_topic(msg.topic_name())
-            
-            if not tenant_id:
-                logger.warning(f"Skipping DAO event from topic {msg.topic_name()} due to missing tenant ID.")
-                consumer.acknowledge(msg)
-                continue
-
-            logger.info(f"Processing DAO event for tenant {tenant_id}: {event.event_type} (DAO: {event.dao_id})")
-            
-            # Map DAO event type to specific Airflow DAGs
-            dag_id = None
-            conf = {
-                "tenant_id": tenant_id,
-                "dao_id": event.dao_id,
-                "event_type": event.event_type,
-                "blockchain_tx_hash": event.blockchain_tx_hash,
-                "event_timestamp": event.event_timestamp
-            }
-
-            if event.proposal_id: # For proposal-related events
-                conf["proposal_id"] = event.proposal_id
-            if event.voter_id: # For vote-related events
-                conf["voter_id"] = event.voter_id
-            if event.event_data: # For generic extra data
-                try:
-                    conf["event_data"] = json.loads(event.event_data)
-                except json.JSONDecodeError:
-                    logger.warning(f"Could not parse event_data for DAO event {event.dao_id}: {event.event_data}")
-                    conf["event_data"] = event.event_data
-            
-            # Example mappings:
-            if event.event_type == "ProposalCreated":
-                dag_id = "dao_proposal_created_workflow"
-            elif event.event_type == "VoteCast":
-                dag_id = "dao_vote_cast_workflow"
-            elif event.event_type == "ProposalExecuted":
-                dag_id = "dao_proposal_executed_workflow"
-            elif event.event_type == "DaoInitialized":
-                dag_id = "dao_initialization_workflow"
-
-            if dag_id and hasattr(app.state, 'airflow_bridge'):
-                app.state.airflow_bridge.trigger_dag(
-                    dag_id,
-                    conf=conf
-                )
-                logger.info(f"Triggered Airflow DAG '{dag_id}' for DAO event {event.event_type} (DAO: {event.dao_id})")
-            elif not dag_id:
-                logger.info(f"No specific Airflow DAG mapping found for DAO event type: {event.event_type}")
-            
-            consumer.acknowledge(msg)
-            
-        except Exception as e:
-            logger.error(f"Error in DAO event consumer: {e}", exc_info=True)
-            if 'msg' in locals() and msg:
-                consumer.negative_acknowledge(msg)
-                
-    consumer.close()
-    client.close()
+    logger.info("Workflow Service shutdown complete")
 
 
-def check_reputation_milestones(entity_id: str, activity_type: str, metadata: dict, publisher):
-    """
-    Check if entity has reached reputation milestones and trigger rewards.
-    
-    Milestones:
-    - First verified credential: Award "Trusted Member" badge
-    - 10 successful verifications: Award "Verification Expert" credential
-    - 100 trust score: Award "Community Leader" SBT
-    - 5 successful bridges: Award "Cross-Chain Pioneer" credential
-    """
-    vc_service_url = settings.get("VC_SERVICE_URL", "http://verifiable-credential-service:8000")
-    
-    try:
-        # Get current entity stats
-        with httpx.Client() as client:
-            response = client.get(f"{vc_service_url}/api/v1/trust/entities/{entity_id}")
-            if response.status_code != 200:
-                return
-                
-            entity_data = response.json()
-            trust_score = entity_data.get('trust_score', 0)
-            activity_counts = entity_data.get('activity_counts', {})
-            
-        # Check milestones
-        milestones_triggered = []
-        
-        # First verification milestone
-        if (activity_type == 'credential_verified' and 
-            activity_counts.get('credential_verified', 0) == 1):
-            milestones_triggered.append({
-                'type': 'TrustedMemberBadge',
-                'reason': 'First credential verification completed'
-            })
-            
-        # Verification expert milestone
-        if activity_counts.get('credential_verified', 0) >= 10:
-            milestones_triggered.append({
-                'type': 'VerificationExpertCredential',
-                'reason': '10 successful verifications completed'
-            })
-            
-        # Community leader milestone
-        if trust_score >= 0.9:  # 90% trust score
-            milestones_triggered.append({
-                'type': 'CommunityLeaderSBT',
-                'reason': 'Achieved exceptional trust score',
-                'is_sbt': True
-            })
-            
-        # Cross-chain pioneer milestone
-        if activity_counts.get('bridge_transfer_completed', 0) >= 5:
-            milestones_triggered.append({
-                'type': 'CrossChainPioneerCredential',
-                'reason': '5 successful cross-chain transfers'
-            })
-            
-        # Issue milestone credentials
-        for milestone in milestones_triggered:
-            logger.info(f"Milestone reached for {entity_id}: {milestone['type']}")
-            
-            # Request credential issuance
-            issue_event = IssueVerifiableCredential(
-                tenant_id="platform",  # Platform-wide milestone
-                subject={
-                    "id": entity_id,
-                    "achievement": milestone['type'],
-                    "reason": milestone['reason'],
-                    "achieved_at": datetime.utcnow().isoformat() + "Z"
-                },
-                credential_type=milestone['type'],
-                options={
-                    "store_on_ipfs": True,
-                    "create_sbt": milestone.get('is_sbt', False)
-                }
-            )
-            
-            if publisher:
-                publisher.publish(
-                    topic_base='issue-verifiable-credential-events',
-                    tenant_id="platform",
-                    schema_class=IssueVerifiableCredential,
-                    data=issue_event
-                )
-                
-    except Exception as e:
-        logger.error(f"Error checking reputation milestones: {e}")
-
-
-# --- Custom Webhook Handlers ---
-
-async def handle_nextcloud_file_created(event):
-    """Handle Nextcloud file created events"""
-    logger.info(f"Nextcloud file created: {event.data.get('file', {}).get('path')}")
-    # Trigger file processing workflows based on file type
-
-async def handle_zulip_command(event):
-    """Handle Zulip bot commands"""
-    message = event.data.get('message', {})
-    content = message.get('content', '')
-    
-    if '/platformq create-project' in content:
-        # Extract project name and trigger project creation
-        logger.info("Project creation requested via Zulip command")
-
-async def handle_openproject_work_package(event):
-    """Handle OpenProject work package events"""
-    wp = event.data.get('work_package', {})
-    logger.info(f"Work package {event.event_type}: {wp.get('subject')}")
-    
-    # Trigger workflows based on work package type/status
-    if wp.get('type', {}).get('name') == 'Epic' and wp.get('status', {}).get('name') == 'Closed':
-        logger.info("Epic completed, triggering milestone workflow")
-
-
-# --- FastAPI App ---
+# Create app with enhanced patterns
 app = create_base_app(
     service_name="workflow-service",
-    # Pass placeholders as this service doesn't use these directly
-    db_session_dependency=lambda: None,
-    api_key_crud_dependency=lambda: None,
-    user_crud_dependency=lambda: None,
-    password_verifier_dependency=lambda: None,
+    db_session_dependency=get_db_session,
+    api_key_crud_dependency=get_api_key_crud,
+    user_crud_dependency=get_user_crud,
+    password_verifier_dependency=get_password_verifier,
+    event_processors=[workflow_event_processor, asset_workflow_processor] 
+    if all([workflow_event_processor, asset_workflow_processor]) else []
 )
 
-@app.on_event("startup")
-def startup_event():
-    # Make the event publisher available to the app
-    pulsar_url = settings.get("PULSAR_URL", "pulsar://pulsar:6650")
-    app.state.event_publisher = EventPublisher(pulsar_url=pulsar_url)
-    app.state.event_publisher.connect()
-    app.state.stop_event = threading.Event()
-    
-    # Set up webhook handlers
-    setup_webhooks(app, config_loader, app.state.event_publisher)
-    
-    # Register custom webhook handlers
-    if hasattr(app.state, 'webhook_manager'):
-        webhook_manager: WebhookManager = app.state.webhook_manager
-        
-        # Nextcloud handlers
-        webhook_manager.register_handler('nextcloud', 'file_created', handle_nextcloud_file_created)
-        
-        # Zulip handlers
-        webhook_manager.register_handler('zulip', 'message', handle_zulip_command)
-        
-        # OpenProject handlers
-        webhook_manager.register_handler('openproject', 'work_package:created', handle_openproject_work_package)
-        webhook_manager.register_handler('openproject', 'work_package:updated', handle_openproject_work_package)
-        
-        logger.info("Custom webhook handlers registered")
-    
-    # Initialize Airflow bridge if enabled
-    airflow_enabled = settings.get("AIRFLOW_ENABLED", "false").lower() == "true"
-    if airflow_enabled:
-        pulsar_client = pulsar.Client(pulsar_url)
-        app.state.airflow_bridge = AirflowBridge(
-            airflow_url=settings.get("AIRFLOW_API_URL", "http://airflow_webserver:8080"),
-            pulsar_client=pulsar_client
-        )
-        
-        # Start event to DAG processor
-        app.state.event_processor = EventToDAGProcessor(
-            app.state.airflow_bridge, 
-            pulsar_client
-        )
-        
-        # Subscribe to events that should trigger DAGs
-        event_topics = [
-            "persistent://platformq/.*/digital-asset-created-events",
-            "persistent://platformq/.*/project-creation-requests",
-            "persistent://platformq/.*/proposal-approved-events",
-            "persistent://platformq/.*/document-updated-events"
+# Set lifespan
+app.router.lifespan_context = lifespan
+
+# Include service-specific routers
+app.include_router(endpoints.router, prefix="/api/v1", tags=["workflows"])
+
+# Service root endpoint
+@app.get("/")
+def read_root():
+    return {
+        "service": "workflow-service",
+        "version": "2.0",
+        "features": [
+            "airflow-orchestration",
+            "verifiable-credentials",
+            "event-driven-workflows",
+            "dynamic-dag-generation",
+            "federated-simulations"
         ]
-        app.state.event_processor.subscribe_to_events(
-            event_topics, 
-            "workflow-airflow-bridge"
-        )
-        
-        # Start processing in background thread
-        thread = threading.Thread(
-            target=app.state.event_processor.process_events, 
-            daemon=True
-        )
-        thread.start()
-        logger.info("Airflow bridge initialized and event processing started")
-    else:
-        # Start the legacy Pulsar consumer in a background thread
-        thread = threading.Thread(target=workflow_consumer_loop, args=(app,), daemon=True)
-        thread.start()
-        app.state.workflow_thread = thread
-        logger.info("Running in legacy mode without Airflow integration")
-    
-    # Start project workflow consumer
-    proj_thread = threading.Thread(target=project_workflow_consumer_loop, args=(app,), daemon=True)
-    proj_thread.start()
-    app.state.project_thread = proj_thread
-    
-    # Start document update consumer
-    doc_thread = threading.Thread(target=document_update_consumer_loop, args=(app,), daemon=True)
-    doc_thread.start()
-    app.state.document_thread = doc_thread
-    
-    # Start trust activity tracking consumer
-    trust_thread = threading.Thread(target=trust_activity_consumer_loop, args=(app,), daemon=True)
-    trust_thread.start()
-    app.state.trust_thread = trust_thread
-
-    # DAO event consumer
-    dao_thread = threading.Thread(target=dao_event_consumer_loop, args=(app,), daemon=True)
-    dao_thread.start()
-    app.state.dao_event_consumer_thread = dao_thread
-    
-    logger.info("All consumer threads started")
-
-@app.on_event("shutdown")
-def shutdown_event():
-    logger.info("Shutdown signal received, stopping consumer threads.")
-    
-    # Signal all threads to stop
-    if hasattr(app.state, 'stop_event'):
-        app.state.stop_event.set()
-    
-    # Wait for threads to complete
-    if hasattr(app.state, 'workflow_thread'):
-        app.state.workflow_thread.join(timeout=5)
-    if hasattr(app.state, 'project_thread'):
-        app.state.project_thread.join(timeout=5)
-    if hasattr(app.state, 'document_thread'):
-        app.state.document_thread.join(timeout=5)
-    if hasattr(app.state, 'trust_thread'):
-        app.state.trust_thread.join(timeout=5)
-    if hasattr(app.state, 'dao_event_consumer_thread'): # Join the new thread
-        app.state.dao_event_consumer_thread.join()
-    
-    # Stop event publisher
-    if app.state.event_publisher:
-        app.state.event_publisher.close()
-    
-    # Stop Airflow event processor if running
-    if hasattr(app.state, 'event_processor'):
-        app.state.event_processor.stop()
-    
-    logger.info("All consumer threads stopped.")
-
-# Legacy webhook endpoints (kept for backward compatibility)
-@app.post("/webhooks/openproject/legacy")
-async def handle_openproject_webhook_legacy(request: Request):
-    """
-    Legacy webhook handler - use the new webhook routes instead
-    """
-    logger.warning("Legacy OpenProject webhook endpoint called - please update to new webhook routes")
-    
-    publisher = request.app.state.event_publisher
-    payload = await request.json()
-
-    project_created_event = ProjectCreatedEvent(
-        project_id=str(payload.get("project", {}).get("id", "")),
-        project_name=payload.get("project", {}).get("name", ""),
-        creator_id=str(payload.get("created_by", {}).get("id", "")),
-        event_timestamp=int(time.time() * 1000)
-    )
-    
-    publisher.publish(
-        topic_base='project-events',
-        tenant_id="00000000-0000-0000-0000-000000000000",
-        schema_class=ProjectCreatedEvent,
-        data=project_created_event
-    )
-    
-    return Response(status_code=status.HTTP_204_NO_CONTENT) 
-
-@app.post("/webhooks/onlyoffice/legacy")
-async def handle_onlyoffice_webhook_legacy(request: Request):
-    """
-    Legacy OnlyOffice webhook handler - use Nextcloud webhooks instead
-    """
-    logger.warning("Legacy OnlyOffice webhook endpoint called - please update to Nextcloud webhook routes")
-    
-    publisher = request.app.state.event_publisher
-    payload = await request.json()
-    
-    tenant_id = "00000000-0000-0000-0000-000000000000"
-
-    document_updated_event = DocumentUpdatedEvent(
-        tenant_id=tenant_id,
-        document_id=str(payload.get("fileid", "")),
-        document_path=payload.get("path", ""),
-        saved_by_user_id=str(payload.get("userid", "")),
-        event_timestamp=int(time.time() * 1000)
-    )
-    
-    publisher.publish(
-        topic_base='document-events',
-        tenant_id=tenant_id,
-        schema_class=DocumentUpdatedEvent,
-        data=document_updated_event
-    )
-    
-    return {"error": 0}
-
-# --- Airflow Management API Endpoints ---
-
-@app.get("/api/v1/workflows")
-async def list_workflows(
-    request: Request,
-    only_active: bool = Query(False, description="Only show active workflows")
-):
-    """
-    List all available workflows (Airflow DAGs)
-    """
-    if not hasattr(request.app.state, 'airflow_bridge'):
-        return {"error": "Airflow integration not enabled"}
-    
-    try:
-        dags = request.app.state.airflow_bridge.list_dags()
-        
-        if only_active:
-            dags = [dag for dag in dags if not dag.get('is_paused', True)]
-        
-        return {
-            "workflows": dags,
-            "total": len(dags)
-        }
-    except Exception as e:
-        logger.error(f"Failed to list workflows: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/workflows/{workflow_id}/trigger")
-async def trigger_workflow(
-    request: Request,
-    workflow_id: str,
-    conf: Optional[Dict[str, Any]] = None
-):
-    """
-    Manually trigger a workflow (DAG run)
-    """
-    if not hasattr(request.app.state, 'airflow_bridge'):
-        return {"error": "Airflow integration not enabled"}
-    
-    try:
-        # Add tenant context from request
-        conf = conf or {}
-        conf['manual_trigger'] = True
-        conf['triggered_at'] = datetime.utcnow().isoformat()
-        
-        result = request.app.state.airflow_bridge.trigger_dag(workflow_id, conf)
-        
-        return {
-            "workflow_id": workflow_id,
-            "run_id": result.get('dag_run_id'),
-            "state": result.get('state'),
-            "execution_date": result.get('execution_date')
-        }
-    except Exception as e:
-        logger.error(f"Failed to trigger workflow {workflow_id}: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/v1/workflows/generate-from-nl")
-async def generate_workflow_from_nl(
-    request: NLWorkflowRequest,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """
-    Generates and deploys a workflow from a natural language description.
-    """
-    tenant_id = context["tenant_id"]
-    functions_service_url = settings.get("FUNCTIONS_SERVICE_URL", "http://functions-service:80")
-
-    try:
-        # Call functions-service to get structured workflow
-        async with httpx.AsyncClient() as client:
-            response = await client.post(
-                f"{functions_service_url}/workflows/generate-from-nl",
-                params={"nl_description": request.description},
-                headers={"X-Tenant-ID": tenant_id}
-            )
-            response.raise_for_status()
-            workflow_def = response.json()
-
-        # Convert the structured workflow to an Airflow DAG file
-        dag_file_content = generate_dag_file(workflow_def)
-        
-        # Save the DAG file to the Airflow DAGs folder
-        # In a real K8s setup, this would be more complex (e.g., writing to a shared volume
-        # or using the KubernetesPodOperator to launch a pod that creates the file).
-        # For simplicity, we'll write directly to the dags folder.
-        dags_folder = "/app/dags" 
-        dag_file_path = os.path.join(dags_folder, f"{workflow_def['name']}.py")
-        with open(dag_file_path, "w") as f:
-            f.write(dag_file_content)
-
-        return {"status": "workflow_generated", "dag_file": dag_file_path}
-
-    except Exception as e:
-        logger.error(f"Failed to generate workflow from NL: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-def generate_dag_file(workflow_def: Dict[str, Any]) -> str:
-    """
-    Generates the Python code for an Airflow DAG from a structured definition.
-    """
-    dag_name = workflow_def.get("name", "generated_dag")
-    dag_description = workflow_def.get("description", "A DAG generated from a natural language description.")
-
-    # Basic template
-    template = f"""
-from airflow import DAG
-from airflow.operators.bash import BashOperator
-from datetime import datetime
-
-with DAG(
-    dag_id='{dag_name}',
-    start_date=datetime(2023, 1, 1),
-    schedule_interval=None,
-    description='{dag_description}',
-    catchup=False,
-) as dag:
-"""
-    
-    for i, step in enumerate(workflow_def.get("steps", [])):
-        step_name = step.get("name", f"step_{i+1}")
-        if step.get("type") == "bash_operator":
-            command = step.get("config", {}).get("bash_command", "echo 'default command'")
-            template += f"""
-    {step_name} = BashOperator(
-        task_id='{step_name}',
-        bash_command='{command}',
-    )
-"""
-
-    return template
-
-@app.get("/api/v1/workflows/{workflow_id}/runs/{run_id}")
-async def get_workflow_run_status(
-    request: Request,
-    workflow_id: str,
-    run_id: str
-):
-    """
-    Get the status of a workflow run
-    """
-    if not hasattr(request.app.state, 'airflow_bridge'):
-        return {"error": "Airflow integration not enabled"}
-    
-    try:
-        status = request.app.state.airflow_bridge.get_dag_run_status(workflow_id, run_id)
-        return status
-    except Exception as e:
-        logger.error(f"Failed to get workflow run status: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.patch("/api/v1/workflows/{workflow_id}")
-async def update_workflow_state(
-    request: Request,
-    workflow_id: str,
-    is_paused: bool = Query(..., description="Whether to pause or unpause the workflow")
-):
-    """
-    Pause or unpause a workflow
-    """
-    if not hasattr(request.app.state, 'airflow_bridge'):
-        return {"error": "Airflow integration not enabled"}
-    
-    try:
-        result = request.app.state.airflow_bridge.pause_dag(workflow_id, is_paused)
-        return {
-            "workflow_id": workflow_id,
-            "is_paused": result.get('is_paused'),
-            "message": f"Workflow {'paused' if is_paused else 'unpaused'} successfully"
-        }
-    except Exception as e:
-        logger.error(f"Failed to update workflow state: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/v1/event-mappings")
-async def get_event_mappings(request: Request):
-    """
-    Get all event to workflow mappings
-    """
-    if not hasattr(request.app.state, 'airflow_bridge'):
-        return {"error": "Airflow integration not enabled"}
-    
-    mappings = request.app.state.airflow_bridge.get_event_mappings()
-    return {
-        "mappings": mappings,
-        "total": len(mappings)
     }
 
-@app.post("/api/v1/event-mappings")
-async def register_event_mapping(
-    request: Request,
-    event_type: str = Query(..., description="Event type to map"),
-    workflow_id: str = Query(..., description="Workflow ID to trigger")
-):
-    """
-    Register a new event to workflow mapping
-    """
-    if not hasattr(request.app.state, 'airflow_bridge'):
-        return {"error": "Airflow integration not enabled"}
-    
-    request.app.state.airflow_bridge.register_event_mapping(event_type, workflow_id)
-    
-    return {
-        "event_type": event_type,
-        "workflow_id": workflow_id,
-        "message": "Mapping registered successfully"
-    }
 
-# --- Webhook Statistics Endpoint ---
-@app.get("/api/v1/webhook-stats")
-async def get_webhook_stats(request: Request):
-    """Get webhook processing statistics"""
-    if hasattr(request.app.state, 'webhook_manager'):
-        stats = request.app.state.webhook_manager.get_stats()
-        return {
-            "stats": stats,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    return {"error": "Webhook manager not initialized"} 
-
-class NLWorkflowRequest(BaseModel):
-    description: str
-
-class FederatedSimulationRequest(BaseModel):
-    simulation_definition: FederatedSimulation
-
-@app.post("/api/v1/simulations/federated")
-async def create_federated_simulation(
-    request: FederatedSimulationRequest,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """
-    Creates and deploys a federated simulation workflow.
-    """
-    try:
-        dag_file_content = generate_federated_dag(request.simulation_definition)
-        
-        dags_folder = "/app/dags" 
-        dag_file_path = os.path.join(dags_folder, f"{request.simulation_definition.name}.py")
-        with open(dag_file_path, "w") as f:
-            f.write(dag_file_content)
-
-        return {"status": "federated_simulation_created", "dag_file": dag_file_path}
-
-    except Exception as e:
-        logger.error(f"Failed to create federated simulation: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) 
-
-@app.post("/api/v1/workflows/{workflow_id}/complete-with-credential")
-async def complete_workflow_with_credential(
-    workflow_id: str,
-    completion_data: Dict[str, Any],
-    issue_credential: bool = True,
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Complete workflow and issue verifiable credential
-    """
-    # Get workflow
-    workflow = db.query(Workflow).filter(
-        Workflow.id == workflow_id,
-        Workflow.tenant_id == current_user["tenant_id"]
-    ).first()
-    
-    if not workflow:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-        
-    try:
-        # Complete workflow
-        workflow.status = "completed"
-        workflow.completed_at = datetime.utcnow()
-        workflow.output = completion_data.get("output", {})
-        
-        # Calculate duration
-        duration = (workflow.completed_at - workflow.created_at).total_seconds()
-        
-        # Issue credential if requested and enabled
-        credential = None
-        if issue_credential and credential_manager:
-            # Get executor DID
-            executor_did = current_user.get("did", f"did:platformq:user:{current_user['id']}")
-            
-            # Prepare completion data for credential
-            credential_data = {
-                "completed_at": workflow.completed_at.isoformat(),
-                "duration": duration,
-                "tasks_completed": len([t for t in workflow.tasks if t.status == "completed"]),
-                "success": True,
-                "quality_score": completion_data.get("quality_score", 1.0),
-                "resources_used": completion_data.get("resources_used", {}),
-                "output": workflow.output
-            }
-            
-            # Issue credential
-            credential = await credential_manager.issue_workflow_completion_credential(
-                workflow_id=workflow_id,
-                workflow_name=workflow.name,
-                executor_did=executor_did,
-                completion_data=credential_data
-            )
-            
-            # Store credential reference
-            workflow.credential_id = credential.id
-            
-        db.commit()
-        
-        # Publish event
-        await publish_event(
-            "WORKFLOW_COMPLETED_WITH_CREDENTIAL",
-            {
-                "workflow_id": workflow_id,
-                "credential_issued": credential is not None,
-                "credential_id": credential.id if credential else None
-            }
-        )
-        
-        response = {
-            "workflow_id": workflow_id,
-            "status": "completed",
-            "completed_at": workflow.completed_at.isoformat(),
-            "duration": duration
-        }
-        
-        if credential:
-            response["credential"] = credential.dict()
-            
-        return response
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error completing workflow with credential: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Legacy webhook endpoints (to be migrated to event-driven)
+@app.post("/webhooks/document-updated")
+async def handle_document_webhook(request: Request):
+    """Legacy webhook - use event processing instead"""
+    return {"status": "deprecated", "message": "Use event-driven processing"}
 
 
-@app.post("/api/v1/tasks/{task_id}/attest")
-async def create_task_attestation(
-    task_id: str,
-    attestation_data: Dict[str, Any],
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Create verifiable attestation for task completion
-    """
-    if not credential_manager:
-        raise HTTPException(
-            status_code=503,
-            detail="Verifiable credentials not enabled"
-        )
-        
-    # Get task
-    task = db.query(Task).filter(
-        Task.id == task_id,
-        Task.workflow.has(tenant_id=current_user["tenant_id"])
-    ).first()
-    
-    if not task:
-        raise HTTPException(status_code=404, detail="Task not found")
-        
-    try:
-        # Get performer DID
-        performer_did = current_user.get("did", f"did:platformq:user:{current_user['id']}")
-        
-        # Prepare attestation data
-        attestation = {
-            "performed_at": task.completed_at.isoformat() if task.completed_at else datetime.utcnow().isoformat(),
-            "result": attestation_data.get("result", {}),
-            "evidence": attestation_data.get("evidence", []),
-            "verification_method": attestation_data.get("verification_method", "automated"),
-            "verified_by": current_user.get("did", credential_manager.issuer_did),
-            "confidence": attestation_data.get("confidence", 1.0)
-        }
-        
-        # Issue attestation credential
-        credential = await credential_manager.issue_task_attestation_credential(
-            task_id=task_id,
-            task_type=task.task_type,
-            performer_did=performer_did,
-            attestation_data=attestation
-        )
-        
-        # Store attestation reference
-        task.attestation_id = credential.id
-        db.commit()
-        
-        return {
-            "task_id": task_id,
-            "attestation_credential": credential.dict()
-        }
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error creating task attestation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/v1/resources/{resource_id}/authorize")
-async def issue_resource_authorization(
-    resource_id: str,
-    resource_type: str,
-    authorized_user_did: str,
-    permissions: List[str],
-    conditions: Dict[str, Any] = {},
-    validity_hours: int = 24,
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Issue verifiable credential for resource authorization
-    """
-    if not credential_manager:
-        raise HTTPException(
-            status_code=503,
-            detail="Verifiable credentials not enabled"
-        )
-        
-    # Verify user has permission to authorize
-    if not current_user.get("can_authorize_resources", False):
-        raise HTTPException(
-            status_code=403,
-            detail="User not authorized to issue resource authorizations"
-        )
-        
-    try:
-        # Issue authorization credential
-        credential = await credential_manager.issue_resource_authorization_credential(
-            resource_id=resource_id,
-            resource_type=resource_type,
-            authorized_did=authorized_user_did,
-            permissions=permissions,
-            conditions=conditions,
-            validity_period=timedelta(hours=validity_hours)
-        )
-        
-        # Store authorization record
-        auth_record = ResourceAuthorization(
-            id=str(uuid.uuid4()),
-            resource_id=resource_id,
-            resource_type=resource_type,
-            authorized_did=authorized_user_did,
-            permissions=json.dumps(permissions),
-            conditions=json.dumps(conditions),
-            credential_id=credential.id,
-            expires_at=credential.expiration_date,
-            issued_by=current_user["id"],
-            created_at=datetime.utcnow()
-        )
-        
-        db.add(auth_record)
-        db.commit()
-        
-        return {
-            "authorization_id": auth_record.id,
-            "credential": credential.dict()
-        }
-        
-    except Exception as e:
-        db.rollback()
-        logger.error(f"Error issuing resource authorization: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/v1/workflows/{workflow_id}/verify-authorization")
-async def verify_workflow_authorization(
-    workflow_id: str,
-    presentation: VerifiablePresentation,
-    required_permissions: List[str],
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Verify authorization to execute workflow using verifiable presentation
-    """
-    if not credential_verifier:
-        raise HTTPException(
-            status_code=503,
-            detail="Credential verification not enabled"
-        )
-        
-    try:
-        # Verify authorization
-        verification_result = await credential_verifier.verify_workflow_authorization(
-            presentation=presentation,
-            required_permissions=required_permissions,
-            resource_id=workflow_id
-        )
-        
-        if verification_result["authorized"]:
-            # Log successful authorization
-            await publish_event(
-                "WORKFLOW_AUTHORIZATION_VERIFIED",
-                {
-                    "workflow_id": workflow_id,
-                    "user_id": current_user["id"],
-                    "credential_id": verification_result["credential_id"],
-                    "permissions": verification_result["permissions"]
-                }
-            )
-            
-        return verification_result
-        
-    except Exception as e:
-        logger.error(f"Error verifying workflow authorization: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/v1/credentials/{credential_id}/revoke")
-async def revoke_credential(
-    credential_id: str,
-    reason: str,
-    admin_user: dict = Depends(require_admin),
-    db: Session = Depends(get_db)
-):
-    """
-    Revoke a verifiable credential (admin only)
-    """
-    if not credential_manager:
-        raise HTTPException(
-            status_code=503,
-            detail="Verifiable credentials not enabled"
-        )
-        
-    try:
-        # Revoke credential
-        result = await credential_manager.revoke_credential(
-            credential_id=credential_id,
-            reason=reason
-        )
-        
-        if result["success"]:
-            # Update database records
-            db.execute(
-                "UPDATE workflows SET credential_revoked = true WHERE credential_id = :credential_id",
-                {"credential_id": credential_id}
-            )
-            
-            db.execute(
-                "UPDATE resource_authorizations SET revoked = true WHERE credential_id = :credential_id",
-                {"credential_id": credential_id}
-            )
-            
-            db.commit()
-            
-            # Publish revocation event
-            await publish_event(
-                "CREDENTIAL_REVOKED",
-                {
-                    "credential_id": credential_id,
-                    "reason": reason,
-                    "revoked_by": admin_user["id"],
-                    "revoked_at": result["revoked_at"]
-                }
-            )
-            
-            return result
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=result.get("error", "Failed to revoke credential")
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error revoking credential: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/v1/workflows/{workflow_id}/credential")
-async def get_workflow_credential(
-    workflow_id: str,
-    current_user: dict = Depends(get_current_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Get verifiable credential for completed workflow
-    """
-    # Get workflow
-    workflow = db.query(Workflow).filter(
-        Workflow.id == workflow_id,
-        Workflow.tenant_id == current_user["tenant_id"]
-    ).first()
-    
-    if not workflow:
-        raise HTTPException(status_code=404, detail="Workflow not found")
-        
-    if not workflow.credential_id:
-        raise HTTPException(
-            status_code=404,
-            detail="No credential issued for this workflow"
-        )
-        
-    # Get credential from registry
-    if credential_manager and workflow.credential_id in credential_manager.credential_registry:
-        credential_data = credential_manager.credential_registry[workflow.credential_id]
-        
-        return {
-            "credential": credential_data["credential"].dict(),
-            "status": credential_data["status"].value,
-            "issued_at": credential_data["issued_at"].isoformat()
-        }
-    else:
-        raise HTTPException(
-            status_code=404,
-            detail="Credential not found in registry"
-        )
-
-
-@app.post("/api/v1/presentations/create")
-async def create_verifiable_presentation(
-    credential_ids: List[str],
-    verifier_did: Optional[str] = None,
-    challenge: Optional[str] = None,
-    current_user: dict = Depends(get_current_user)
-):
-    """
-    Create verifiable presentation from user's credentials
-    """
-    if not credential_manager:
-        raise HTTPException(
-            status_code=503,
-            detail="Verifiable credentials not enabled"
-        )
-        
-    try:
-        # Get user's DID
-        holder_did = current_user.get("did", f"did:platformq:user:{current_user['id']}")
-        
-        # Collect credentials
-        credentials = []
-        for cred_id in credential_ids:
-            if cred_id in credential_manager.credential_registry:
-                cred_data = credential_manager.credential_registry[cred_id]
-                
-                # Verify user owns the credential
-                if cred_data["credential"].credential_subject.get("id") == holder_did:
-                    credentials.append(cred_data["credential"])
-                else:
-                    raise HTTPException(
-                        status_code=403,
-                        detail=f"User does not own credential {cred_id}"
-                    )
-            else:
-                raise HTTPException(
-                    status_code=404,
-                    detail=f"Credential {cred_id} not found"
-                )
-                
-        # Create presentation
-        presentation = await credential_manager.create_verifiable_presentation(
-            credentials=credentials,
-            holder_did=holder_did,
-            verifier_did=verifier_did,
-            challenge=challenge
-        )
-        
-        return {
-            "presentation": presentation.dict()
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating presentation: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+@app.post("/webhooks/project-created")
+async def handle_project_webhook(request: Request):
+    """Legacy webhook - use event processing instead"""
+    return {"status": "deprecated", "message": "Use event-driven processing"} 

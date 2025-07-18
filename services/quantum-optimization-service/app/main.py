@@ -1,933 +1,694 @@
 """
-Quantum Optimization Engine Service
+Quantum Optimization Service
 
-Leverages quantum computing simulators for complex optimization problems.
+Provides quantum and hybrid optimization solvers for complex optimization problems.
 """
 
+import logging
+from contextlib import asynccontextmanager
+from typing import Dict, Any, Optional, List
+from datetime import datetime
 import asyncio
-import json
-import time
-from typing import Dict, List, Optional, Any
-from datetime import datetime, timedelta
-import numpy as np
-import uuid
 
-from fastapi import FastAPI, HTTPException, BackgroundTasks, Request, Depends
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel, Field
-import pulsar
-from fastapi.websockets import WebSocket
+from sqlalchemy.orm import Session
 
-# Platform shared libraries
-from platformq_shared.base_service import BaseService
-from platformq_shared.pulsar_client import PulsarClient
-from platformq_shared.ignite_utils import IgniteCache
-from platformq_shared.logging_config import get_logger
-from platformq_shared.monitoring import track_processing_time
-from platformq_shared.vc_auth import require_vc, VCRequirement, researcher_required, compute_allowance_required
+from platformq_shared import (
+    create_base_app,
+    ErrorCode,
+    AppException,
+    EventProcessor,
+    get_pulsar_client
+)
+from platformq_shared.event_publisher import EventPublisher
+from platformq_shared.database import get_db
 
-# Local modules
-from .engines.problem_encoder import ProblemEncoder, ProblemType
-from .engines.solution_decoder import SolutionDecoder
-from .algorithms import QAOA, VQE, QuantumAnnealing, AmplitudeEstimation
-from .algorithms.qaoa import create_qaoa_solver
-from .config import QuantumConfig
-from .solvers.base import Solver
-from .solvers.quantum_solver import QuantumSolver
-from .solvers.hybrid_solver import HybridSolver
-from .solvers.benders_solver import BendersSolver
-from .solvers.neuromorphic_solver import NeuromorphicSolver
-from .config import (
-    PUBSUB_TIMEOUT, PULSAR_SERVICE_URL, JOB_STATUS_TOPIC, RESULT_TOPIC
+from .models import (
+    OptimizationProblem,
+    OptimizationJob,
+    QuantumCircuit,
+    OptimizationTemplate,
+    SolverBenchmark,
+    QuantumResourceAllocation,
+    ProblemType,
+    SolverType,
+    JobStatus,
+    BackendType
+)
+from .repository import (
+    OptimizationProblemRepository,
+    OptimizationJobRepository,
+    QuantumCircuitRepository,
+    OptimizationTemplateRepository,
+    SolverBenchmarkRepository,
+    QuantumResourceAllocationRepository
+)
+from .event_processors import QuantumOptimizationEventProcessor
+
+# Setup logging
+logger = logging.getLogger(__name__)
+
+# Global instances
+event_processor = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    global event_processor
+    
+    # Startup
+    logger.info("Initializing Quantum Optimization Service...")
+    
+    # Initialize event processor
+    pulsar_client = get_pulsar_client()
+    event_processor = QuantumOptimizationEventProcessor(
+        pulsar_client=pulsar_client,
+        service_name="quantum-optimization-service"
+    )
+    
+    # Start event processor
+    await event_processor.start()
+    
+    logger.info("Quantum Optimization Service initialized successfully")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Quantum Optimization Service...")
+    
+    if event_processor:
+        await event_processor.stop()
+    
+    logger.info("Quantum Optimization Service shutdown complete")
+
+# Create FastAPI app
+app = create_base_app(
+    title="PlatformQ Quantum Optimization Service",
+    description="Quantum and hybrid optimization solvers for complex problems",
+    version="1.0.0",
+    lifespan=lifespan,
+    event_processors=[event_processor] if event_processor else []
 )
 
-from qiskit.algorithms import QAOA
-from qiskit_optimization import QuadraticProgram
-
-qp = QuadraticProgram()
-# Define variables and objective
-qaoa = QAOA()
-result = qaoa.compute_minimum_eigenvalue(qp.to_ising())
-
-logger = get_logger(__name__)
-
-
-class QuantumOptimizationService(BaseService):
-    """
-    Quantum Optimization Engine Service
-    """
-    
-    def __init__(self):
-        super().__init__("quantum-optimization-service", "Quantum Optimization Engine")
-        self.config = QuantumConfig()
-        self.encoder = None
-        self.decoder = None
-        self.job_cache = None
-        self.result_cache = None
-        self.active_jobs = {}
-        
-    async def startup(self):
-        """Initialize service components"""
-        await super().startup()
-        
-        # Initialize components
-        self.encoder = ProblemEncoder()
-        self.decoder = SolutionDecoder()
-        
-        # Initialize caches
-        self.job_cache = IgniteCache("quantum_jobs")
-        self.result_cache = IgniteCache("quantum_results")
-        
-        # Start consuming optimization requests
-        await self._start_request_consumer()
-        
-        logger.info("Quantum Optimization Service initialized.")
-        
-    async def _start_request_consumer(self):
-        """Start consuming optimization requests from Pulsar"""
-        topics = [
-            "persistent://public/default/optimization-requests",
-            "persistent://public/default/anomaly-triggered-optimization",
-            "persistent://public/default/causal-optimization-requests"
-        ]
-        
-        for topic in topics:
-            asyncio.create_task(self._consume_requests(topic))
-            
-    async def _consume_requests(self, topic: str):
-        """Consume and process optimization requests"""
-        consumer = self.pulsar_client.subscribe(
-            topic,
-            subscription_name=f"quantum-opt-{topic.split('/')[-1]}",
-            consumer_type=pulsar.ConsumerType.Shared
-        )
-        
-        while True:
-            try:
-                msg = consumer.receive(timeout_millis=1000)
-                request = json.loads(msg.data())
-                
-                # Process optimization request
-                job_id = await self._process_optimization_request(request)
-                
-                consumer.acknowledge(msg)
-                
-                # Track job
-                self.active_jobs[job_id] = {
-                    'status': 'processing',
-                    'started_at': datetime.utcnow(),
-                    'request': request
-                }
-                
-            except Exception as e:
-                if "timeout" not in str(e).lower():
-                    logger.error(f"Error processing request: {e}")
+# Pydantic models for API requests/responses
+class ProblemCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    problem_type: ProblemType
+    objective_function: Dict[str, Any]
+    constraints: List[Dict[str, Any]] = Field(default_factory=list)
+    variables: Dict[str, Any]
+    solver_preferences: Optional[Dict[str, Any]] = None
+    accuracy_requirement: float = Field(default=0.95, ge=0, le=1)
+    time_limit_seconds: Optional[int] = None
 
 
-# Initialize service and app
-service = QuantumOptimizationService()
-app = service.app
+class JobSubmitRequest(BaseModel):
+    problem_id: str
+    solver_type: Optional[SolverType] = None
+    backend_type: BackendType = BackendType.SIMULATOR
+    backend_config: Optional[Dict[str, Any]] = None
+    solver_params: Optional[Dict[str, Any]] = None
+    max_iterations: Optional[int] = None
+    convergence_threshold: Optional[float] = None
+    optimize_for: str = "quality"  # quality, speed, cost
 
 
-# API Models
-class OptimizationRequest(BaseModel):
-    problem_type: str
-    problem_data: Dict[str, Any]
-    constraints: Optional[Dict[str, Any]] = None
-    algorithm: Optional[str] = "auto"
-    max_time: Optional[int] = 300  # seconds
-    quality_target: Optional[float] = 0.95
+class TemplateCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    category: str
+    problem_type: ProblemType
+    template_definition: Dict[str, Any]
+    parameters: Dict[str, Any]
+    example_data: Optional[Dict[str, Any]] = None
+    recommended_solver: Optional[SolverType] = None
+    is_public: bool = False
 
 
-class OptimizationResponse(BaseModel):
-    job_id: str
-    status: str
-    created_at: str
-    estimated_completion: Optional[str] = None
+class CircuitCreateRequest(BaseModel):
+    name: str
+    description: Optional[str] = None
+    circuit_type: str
+    qasm_code: Optional[str] = None
+    circuit_json: Optional[Dict[str, Any]] = None
+    is_template: bool = False
 
 
-class OptimizationResult(BaseModel):
-    job_id: str
-    status: str
-    solution: Dict[str, Any]
-    objective_value: float
-    quality_score: float
-    execution_time: float
-    algorithm_used: str
-    quantum_metrics: Dict[str, Any]
+# API Endpoints
 
-
-class BenchmarkRequest(BaseModel):
-    problem_type: str
-    problem_size: int
-    algorithms: List[str] = ["qaoa", "vqe", "classical"]
-
-
-class SolveRequest(BaseModel):
-    problem_type: str
-    problem_data: Dict[str, Any]
-    solver_type: str = "quantum"  # 'quantum', 'hybrid', or 'benders'
-    algorithm_name: Optional[str] = None
-    algorithm_params: Optional[Dict[str, Any]] = None
-    workflow: Optional[List[Dict[str, Any]]] = None
-    engine: str = "qiskit"
-    backend: str = "aer_simulator"
-    job_id: str = Field(default_factory=lambda: str(uuid.uuid4()))
-    user_id: Optional[str] = None
-    synchronous: bool = False
-
-
-# Multi-physics optimization models
-class MultiPhysicsOptimizationRequest(BaseModel):
-    simulation_id: str
-    domains: List[str]
-    coupling_strengths: List[List[float]]
-    convergence_history: Dict[str, List[float]]
-    optimization_config: Dict[str, Any] = {}
-
-
-class ResourceAllocationRequest(BaseModel):
-    resources: List[float]
-    demands: List[List[float]]
-    constraints: Dict[str, Any] = {}
-    circuit_depth: int = 4
-
-# Pre-defined hybrid workflows
-DEFAULT_TSP_HYBRID_WORKFLOW = [
-    {
-        "solver_type": "classical",
-        "algorithm": "greedy_tsp",
-        "params": {},
-        "output_mapping": {
-            "solution_vector": "initial_tour"
-        }
-    },
-    {
-        "solver_type": "quantum",
-        "algorithm": "quantum_annealing",
-        "params": {
-            "problem_type": "tsp",
-            "use_quantum_fluctuations": True,
-            "schedule": {"schedule_type": "adaptive"},
-            "use_reverse_annealing": True,
-            "initial_state_from": "@initial_tour"
-        }
-    }
-]
-
-DEFAULT_MAXCUT_HYBRID_WORKFLOW = [
-    {
-        "solver_type": "classical",
-        "algorithm": "greedy_maxcut",
-        "params": {},
-        "output_mapping": {
-            "solution_vector": "initial_partition",
-            "optimal_value": "initial_cut_size"
-        }
-    },
-    {
-        "solver_type": "quantum",
-        "algorithm": "qaoa",
-        "params": {
-            "problem_type": "maxcut",
-            "reps": 4, # A reasonable depth for refinement
-            "optimizer": "COBYLA"
-        }
-    }
-]
-
-DEFAULT_KNAPSACK_HYBRID_WORKFLOW = [
-    {
-        "solver_type": "classical",
-        "algorithm": "greedy_knapsack",
-        "params": {},
-        "output_mapping": {
-            "solution_vector": "initial_selection"
-        }
-    },
-    {
-        "solver_type": "quantum",
-        "algorithm": "qaoa", # QAOA can be adapted for Knapsack
-        "params": {
-            "problem_type": "knapsack",
-            "reps": 4,
-            "optimizer": "SPSA" # SPSA is often good for noisy landscapes
-        }
-    }
-]
-
-# A simple factory function to get the right solver
-def solver_factory(request_data: Dict[str, Any]) -> Solver:
-    """
-    Factory function to instantiate and return the correct solver
-    based on the request data.
-    """
-    solver_type = request_data.get("solver_type", "quantum")
-    engine = request_data.get("engine", "qiskit")
-    backend = request_data.get("backend", "aer_simulator")
-
-    if solver_type == "quantum":
-        return QuantumSolver(engine=engine, backend_name=backend)
-    
-    elif solver_type == "hybrid":
-        workflow = request_data.get("workflow")
-        if not workflow:
-            # Use a default workflow if none is provided
-            problem_type = request_data["problem_type"]
-            if problem_type == "tsp":
-                workflow = DEFAULT_TSP_HYBRID_WORKFLOW
-            elif problem_type == "maxcut":
-                workflow = DEFAULT_MAXCUT_HYBRID_WORKFLOW
-            elif problem_type == "knapsack":
-                workflow = DEFAULT_KNAPSACK_HYBRID_WORKFLOW
-            else:
-                raise ValueError("Hybrid solver requires a workflow, and no default is available for this problem type.")
-        return HybridSolver(workflow)
-
-    elif solver_type == "benders":
-        if request_data["problem_type"] != "facility_location":
-            raise ValueError("Benders solver is currently only implemented for 'facility_location' problem type.")
-        return BendersSolver()
-    
-    elif solver_type == "neuromorphic":
-        return NeuromorphicSolver()
-
-    else:
-        raise ValueError(f"Invalid solver_type: '{solver_type}'. Must be 'quantum', 'hybrid', 'benders', or 'neuromorphic'.")
-
-
-# REST API Endpoints
-@app.post("/api/v1/optimize", response_model=OptimizationResponse)
-@require_vc(
-    researcher_required(level=2),  # Require level 2 researcher credential
-    compute_allowance_required(hours=1)  # Require compute allowance
-)
-async def submit_optimization(
-    request: OptimizationRequest,
-    background_tasks: BackgroundTasks,
-    req: Request
+@app.post("/api/v1/problems", response_model=Dict[str, Any])
+async def create_problem(
+    request: ProblemCreateRequest,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(lambda: "default-tenant"),  # TODO: Get from auth
+    user_id: str = Depends(lambda: "user")  # TODO: Get from auth
 ):
-    """Submit an optimization problem
-    
-    Requires:
-    - ResearcherCredential with level >= 2
-    - ComputeAllowanceCredential with hours > 1
-    """
-    job_id = str(uuid.uuid4())
-    
-    # Extract user info from verified credentials
-    user_did = None
-    if hasattr(req.state, 'verified_credentials') and req.state.verified_credentials:
-        user_did = req.state.verified_credentials[0].subject.get('id', 'unknown')
-    
-    # Store job information
-    job_info = {
-        'job_id': job_id,
-        'status': 'queued',
-        'problem_type': request.problem_type,
-        'algorithm': request.algorithm,
-        'created_at': datetime.utcnow().isoformat(),
-        'request': request.dict(),
-        'submitted_by': user_did
-    }
-    
-    await service.job_cache.put(f"job:{job_id}", job_info)
-    
-    # Process in background
-    background_tasks.add_task(
-        service._process_optimization,
-        job_id,
-        request
-    )
-    
-    # Estimate completion time
-    estimated_time = service._estimate_completion_time(request)
-    
-    return OptimizationResponse(
-        job_id=job_id,
-        status="queued",
-        created_at=job_info['created_at'],
-        estimated_completion=(
-            datetime.utcnow() + 
-            timedelta(seconds=estimated_time)
-        ).isoformat()
-    )
-
-
-@app.post("/api/v1/optimize-pipeline")
-async def optimize_pipeline(pipeline_data: Dict):
-    # Use Qiskit simulator
-    from qiskit import Aer
-    backend = Aer.get_backend('qasm_simulator')
-    # Optimization logic
-    result = {'optimized': True}
-    return result
-
-
-@app.post("/api/v1/solve", status_code=202)
-async def solve_problem(request: SolveRequest, background_tasks: BackgroundTasks):
-    """Submit a problem for solving (quantum or hybrid)"""
-    logger.info(f"Received solve request for job_id: {request.job_id}")
-
-    if request.synchronous:
-        result = await run_solver_task(request.dict())
-        return {"status": "completed", "job_id": request.job_id, "result": result}
-    else:
-        background_tasks.add_task(run_solver_task, request.dict())
-        return {"status": "processing", "job_id": request.job_id}
-
-async def run_solver_task(request_data: dict):
-    """
-    The main task for running a solver, whether quantum, classical, or hybrid.
-    Can be run in the background or awaited synchronously.
-    """
-    job_id = request_data['job_id']
+    """Create a new optimization problem"""
     try:
-        await update_job_status(job_id, "RUNNING")
+        # Publish problem created event
+        event_publisher = EventPublisher()
+        problem_id = f"problem-{datetime.utcnow().timestamp()}"
         
-        # Use the factory to get the appropriate solver
-        solver = solver_factory(request_data)
-
-        # The 'solve' method signature is now standardized
-        result = solver.solve(
-            problem_data=request_data['problem_data'],
-            # Pass other relevant params from the request as kwargs
-            algorithm_name=request_data.get('algorithm_name'),
-            algorithm_params=request_data.get('algorithm_params', {}),
-            quantum_engine=request_data.get('engine'),
-            quantum_backend=request_data.get('backend')
+        await event_publisher.publish_event(
+            {
+                "problem_id": problem_id,
+                "tenant_id": tenant_id,
+                "name": request.name,
+                "description": request.description,
+                "problem_type": request.problem_type.value,
+                "objective_function": request.objective_function,
+                "constraints": request.constraints,
+                "variables": request.variables,
+                "problem_data": {},
+                "solver_preferences": request.solver_preferences,
+                "accuracy_requirement": request.accuracy_requirement,
+                "time_limit_seconds": request.time_limit_seconds,
+                "created_by": user_id
+            },
+            "persistent://public/default/optimization-events"
         )
-
-        logger.info(f"Solver task for job_id: {job_id} completed successfully.")
-        await update_job_status(job_id, "COMPLETED", result)
-
-    except Exception as e:
-        logger.error(f"Error processing job {job_id}: {e}", exc_info=True)
-        await update_job_status(job_id, "FAILED", {"error": str(e)})
-
-async def update_job_status(job_id: str, status: str, result: Optional[Dict] = None):
-    """Update job status in cache and publish to Pulsar"""
-    try:
-        job_info = await service.job_cache.get(f"job:{job_id}")
-        if not job_info:
-            raise HTTPException(status_code=404, detail="Job not found")
-
-        job_info['status'] = status
-        job_info['updated_at'] = datetime.utcnow().isoformat()
-        if result:
-            job_info['result'] = result
-            job_info['completed_at'] = datetime.utcnow().isoformat()
-
-        await service.job_cache.put(f"job:{job_id}", job_info)
-
-        # Publish status update
-        await service.pulsar_producer.send_async(
-            JOB_STATUS_TOPIC,
-            json.dumps({"job_id": job_id, "status": status}).encode('utf-8')
-        )
-
-        if result:
-            await service.pulsar_producer.send_async(
-                RESULT_TOPIC,
-                json.dumps({"job_id": job_id, "result": result}).encode('utf-8')
-            )
-
-    except Exception as e:
-        logger.error(f"Error updating job status for {job_id}: {e}")
-
-
-@app.get("/api/v1/jobs/{job_id}", response_model=Dict)
-async def get_job_status(job_id: str):
-    """Get status of optimization job"""
-    job_info = await service.job_cache.get(f"job:{job_id}")
-    
-    if not job_info:
-        raise HTTPException(status_code=404, detail="Job not found")
-        
-    return job_info
-
-
-@app.get("/api/v1/jobs/{job_id}/result", response_model=OptimizationResult)
-async def get_optimization_result(job_id: str):
-    """Get result of completed optimization job"""
-    result = await service.result_cache.get(f"result:{job_id}")
-    
-    if not result:
-        # Check if job exists
-        job_info = await service.job_cache.get(f"job:{job_id}")
-        if not job_info:
-            raise HTTPException(status_code=404, detail="Job not found")
-        elif job_info['status'] != 'completed':
-            raise HTTPException(
-                status_code=202, 
-                detail=f"Job is {job_info['status']}"
-            )
-        else:
-            raise HTTPException(status_code=404, detail="Result not found")
-            
-    return OptimizationResult(**result)
-
-
-@app.post("/api/v1/problems/encode")
-async def encode_problem(problem_data: Dict):
-    """Encode a problem to quantum format"""
-    try:
-        problem_type = ProblemType(problem_data.get('type', 'generic'))
-        encoded = service.encoder.encode(problem_type, problem_data)
         
         return {
-            'encoding': encoded['encoding_type'],
-            'num_qubits': encoded['num_qubits'],
-            'circuit_depth': encoded.get('circuit_depth', 'variable'),
-            'hamiltonian_terms': len(encoded.get('hamiltonian', [])),
-            'metadata': encoded.get('metadata', {})
+            "problem_id": problem_id,
+            "status": "created",
+            "message": "Optimization problem created successfully"
         }
+        
     except Exception as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        logger.error(f"Error creating problem: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.get("/api/v1/algorithms")
-async def list_algorithms():
-    """List available quantum algorithms"""
-    return {
-        'algorithms': [
+@app.get("/api/v1/problems", response_model=List[Dict[str, Any]])
+async def list_problems(
+    problem_type: Optional[ProblemType] = None,
+    is_template: Optional[bool] = None,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(lambda: "default-tenant")
+):
+    """List optimization problems"""
+    try:
+        problem_repo = OptimizationProblemRepository(db)
+        
+        problems = problem_repo.search_problems(
+            tenant_id=tenant_id,
+            problem_type=problem_type,
+            is_template=is_template
+        )
+        
+        return [
             {
-                'name': 'qaoa',
-                'full_name': 'Quantum Approximate Optimization Algorithm',
-                'best_for': ['combinatorial', 'graph', 'scheduling'],
-                'parameters': {
-                    'p': 'Number of QAOA layers (1-10)',
-                    'optimizer': 'Classical optimizer (COBYLA, SPSA, etc.)'
-                }
-            },
-            {
-                'name': 'vqe',
-                'full_name': 'Variational Quantum Eigensolver',
-                'best_for': ['chemistry', 'materials', 'optimization'],
-                'parameters': {
-                    'ansatz': 'Circuit ansatz type',
-                    'depth': 'Circuit depth'
-                }
-            },
-            {
-                'name': 'amplitude_estimation',
-                'full_name': 'Quantum Amplitude Estimation',
-                'best_for': ['finance', 'monte_carlo', 'risk_analysis'],
-                'parameters': {
-                    'num_eval_qubits': 'Precision qubits',
-                    'iterations': 'Number of iterations'
-                }
-            },
-            {
-                'name': 'annealing',
-                'full_name': 'Quantum Annealing (simulated)',
-                'best_for': ['optimization', 'sampling', 'machine_learning'],
-                'parameters': {
-                    'schedule': 'Annealing schedule',
-                    'num_reads': 'Number of samples'
-                }
+                "problem_id": p.problem_id,
+                "name": p.name,
+                "description": p.description,
+                "problem_type": p.problem_type.value,
+                "num_variables": p.num_variables,
+                "num_constraints": p.num_constraints,
+                "is_template": p.is_template,
+                "created_at": p.created_at.isoformat()
             }
+            for p in problems
         ]
-    }
-
-
-@app.post("/api/v1/benchmark")
-async def benchmark_algorithms(request: BenchmarkRequest):
-    """Compare quantum vs classical algorithms"""
-    results = {}
-    
-    # Generate test problem
-    test_problem = service._generate_test_problem(
-        request.problem_type,
-        request.problem_size
-    )
-    
-    # Run each algorithm
-    for algorithm in request.algorithms:
-        start_time = time.time()
-        
-        if algorithm == "classical":
-            result = await service._run_classical_optimizer(test_problem)
-        else:
-            result = await service.optimizer.optimize(
-                test_problem,
-                algorithm=algorithm
-            )
-            
-        results[algorithm] = {
-            'execution_time': time.time() - start_time,
-            'objective_value': result.get('objective_value'),
-            'solution_quality': result.get('quality_score', 1.0),
-            'iterations': result.get('iterations', 0)
-        }
-        
-    # Calculate speedups
-    if 'classical' in results:
-        classical_time = results['classical']['execution_time']
-        for algo in results:
-            if algo != 'classical':
-                results[algo]['speedup'] = classical_time / results[algo]['execution_time']
-                
-    return {
-        'problem_type': request.problem_type,
-        'problem_size': request.problem_size,
-        'results': results
-    }
-
-
-@app.get("/api/v1/metrics")
-async def get_metrics():
-    """Get service metrics"""
-    return {
-        'total_jobs': len(service.active_jobs),
-        'active_jobs': sum(1 for j in service.active_jobs.values() if j['status'] == 'processing'),
-        'completed_jobs': sum(1 for j in service.active_jobs.values() if j['status'] == 'completed'),
-        'average_execution_time': service._calculate_avg_execution_time(),
-        'backend': service.config.backend,
-        'gpu_enabled': service.config.gpu_acceleration,
-        'circuit_cache_size': service.optimizer.get_cache_size() if service.optimizer else 0
-    }
-
-
-# gRPC API Implementation
-@service.grpc_server.add_insecure_port('[::]:50053')
-async def serve_grpc():
-    """Serve gRPC API"""
-    # Import proto definitions
-    from .proto import quantum_optimization_pb2_grpc
-    from .grpc_handlers import QuantumOptimizationServicer
-    
-    quantum_optimization_pb2_grpc.add_QuantumOptimizationServiceServicer_to_server(
-        QuantumOptimizationServicer(service),
-        service.grpc_server
-    )
-    
-    await service.grpc_server.start()
-    logger.info("gRPC server started on port 50053")
-
-
-# Health check
-@app.post("/api/v1/multi-physics/optimize")
-async def optimize_multi_physics_coupling(
-    request: MultiPhysicsOptimizationRequest,
-    background_tasks: BackgroundTasks
-):
-    """Optimize coupling parameters for multi-physics simulations"""
-    try:
-        # Create QAOA solver
-        qaoa_config = {
-            "p": request.optimization_config.get("circuit_depth", 3),
-            "optimizer": request.optimization_config.get("optimizer", "COBYLA"),
-            "shots": request.optimization_config.get("shots", 1024),
-            "backend": request.optimization_config.get("backend", "aer_simulator")
-        }
-        
-        solver = create_qaoa_solver(qaoa_config)
-        
-        # Run optimization
-        result = solver.solve_coupling_optimization(
-            domains=request.domains,
-            coupling_strengths=np.array(request.coupling_strengths),
-            convergence_data=request.convergence_history
-        )
-        
-        # Store result in Ignite
-        result_data = {
-            "simulation_id": request.simulation_id,
-            "optimal_coupling": result.optimal_bitstring,
-            "objective_value": result.optimal_value,
-            "convergence_history": result.convergence_history,
-            "execution_time": result.execution_time
-        }
-        
-        await service.result_cache.put(f"coupling_opt_{request.simulation_id}", result_data)
-        
-        # Publish optimization complete event
-        await service.pulsar_client.send(
-            RESULT_TOPIC,
-            json.dumps({
-                "event_type": "COUPLING_OPTIMIZATION_COMPLETE",
-                "simulation_id": request.simulation_id,
-                "result": result_data
-            }).encode()
-        )
-        
-        return JSONResponse({
-            "status": "success",
-            "job_id": f"coupling_opt_{request.simulation_id}",
-            "result": result_data
-        })
         
     except Exception as e:
-        logger.error(f"Error in multi-physics optimization: {e}")
+        logger.error(f"Error listing problems: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@app.post("/api/v1/resource-allocation/optimize")
-async def optimize_resource_allocation(
-    request: ResourceAllocationRequest,
-    background_tasks: BackgroundTasks
+@app.get("/api/v1/problems/{problem_id}", response_model=Dict[str, Any])
+async def get_problem(
+    problem_id: str,
+    db: Session = Depends(get_db)
 ):
-    """Optimize resource allocation for simulation domains"""
+    """Get problem details"""
     try:
-        # Create QAOA solver
-        qaoa_config = {
-            "p": request.circuit_depth,
-            "optimizer": "COBYLA",
-            "shots": 2048
+        problem_repo = OptimizationProblemRepository(db)
+        
+        problem = problem_repo.get_by_problem_id(problem_id)
+        if not problem:
+            raise HTTPException(status_code=404, detail="Problem not found")
+        
+        return {
+            "problem_id": problem.problem_id,
+            "name": problem.name,
+            "description": problem.description,
+            "problem_type": problem.problem_type.value,
+            "objective_function": problem.objective_function,
+            "constraints": problem.constraints,
+            "variables": problem.variables,
+            "characteristics": {
+                "num_variables": problem.num_variables,
+                "num_constraints": problem.num_constraints,
+                "is_convex": problem.is_convex,
+                "is_linear": problem.is_linear,
+                "sparsity": problem.sparsity
+            },
+            "solver_preferences": problem.solver_preferences,
+            "created_at": problem.created_at.isoformat()
         }
         
-        solver = create_qaoa_solver(qaoa_config)
-        
-        # Solve resource allocation
-        result = solver.solve_resource_allocation(
-            resources=request.resources,
-            demands=request.demands,
-            constraints=request.constraints
-        )
-        
-        # Decode allocation
-        allocation = solver._decode_resource_allocation(
-            result.optimal_bitstring, 
-            request.demands
-        )
-        
-        return JSONResponse({
-            "status": "success",
-            "allocation": allocation,
-            "optimal_value": result.optimal_value,
-            "execution_time": result.execution_time,
-            "quantum_metrics": {
-                "circuit_depth": result.circuit_depth,
-                "num_parameters": result.num_parameters,
-                "final_convergence": result.convergence_history[-1] if result.convergence_history else None
-            }
-        })
-        
-    except Exception as e:
-        logger.error(f"Error in resource allocation optimization: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post('/api/v1/optimize-recovery')
-async def optimize_recovery(scenario: Dict):
-    return {'strategy': 'optimal'}
-
-
-@app.get("/health")
-async def health_check():
-    """Service health check"""
-    optimizer_ready = service.optimizer is not None
-    
-    # Test quantum backend
-    backend_healthy = False
-    if optimizer_ready:
-        try:
-            test_result = await service.optimizer.test_backend()
-            backend_healthy = test_result.get('success', False)
-        except:
-            backend_healthy = False
-            
-    return {
-        'status': 'healthy' if optimizer_ready and backend_healthy else 'degraded',
-        'service': 'quantum-optimization-service',
-        'optimizer_initialized': optimizer_ready,
-        'backend_healthy': backend_healthy,
-        'active_jobs': len(service.active_jobs),
-        'timestamp': datetime.utcnow().isoformat()
-    }
-
-
-# Enhanced async optimization processing
-async def _process_optimization_request(self, request: Dict[str, Any]) -> str:
-    """Process optimization request with quantum algorithms"""
-    job_id = str(uuid.uuid4())
-    problem_type = request.get("problem_type")
-    
-    try:
-        # Select appropriate quantum algorithm
-        if problem_type == "multi_physics_coupling":
-            result = await self._optimize_multi_physics_coupling(request)
-        elif problem_type == "resource_allocation":
-            result = await self._optimize_resource_allocation(request)
-        elif problem_type == "molecular_simulation":
-            result = await self._run_vqe_optimization(request)
-        elif problem_type == "combinatorial":
-            result = await self._run_qaoa_optimization(request)
-        elif problem_type == "continuous":
-            result = await self._run_quantum_annealing(request)
-        else:
-            # Default to hybrid optimization
-            result = await self._run_hybrid_optimization(request)
-        
-        # Store result
-        await self.result_cache.put(job_id, result)
-        
-        # Publish completion event
-        await self._publish_optimization_complete(job_id, result)
-        
-        return job_id
-        
-    except Exception as e:
-        logger.error(f"Error processing optimization request: {e}")
-        await self._publish_optimization_failed(job_id, str(e))
+    except HTTPException:
         raise
+    except Exception as e:
+        logger.error(f"Error getting problem: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# Add methods to QuantumOptimizationService class
-async def _optimize_multi_physics_coupling(self, request: Dict[str, Any]) -> Dict[str, Any]:
-    """Optimize multi-physics coupling using QAOA"""
-    solver = create_qaoa_solver(request.get("qaoa_config", {}))
-    
-    result = solver.solve_coupling_optimization(
-        domains=request.get("domains"),
-        coupling_strengths=np.array(request.get("coupling_matrix")),
-        convergence_data=request.get("convergence_history")
-    )
-    
-    return {
-        "algorithm": "QAOA",
-        "optimal_coupling": result.optimal_bitstring,
-        "objective_value": result.optimal_value,
-        "quantum_metrics": {
-            "circuit_depth": result.circuit_depth,
-            "execution_time": result.execution_time
-        }
-    }
-
-
-async def _run_qaoa_optimization(self, request: Dict[str, Any]) -> Dict[str, Any]:
-    """Run QAOA for combinatorial optimization"""
-    problem_data = request.get("problem_data", {})
-    
-    # Create QAOA solver
-    solver = create_qaoa_solver(request.get("algorithm_params", {}))
-    
-    # Solve based on problem type
-    if problem_data.get("type") == "maxcut":
-        import networkx as nx
-        graph = nx.from_numpy_array(np.array(problem_data.get("adjacency_matrix")))
-        result = solver.solve_maxcut(graph)
-    else:
-        # Generic QUBO problem
-        qubo_matrix = np.array(problem_data.get("qubo_matrix"))
-        result = solver.solve_qubo(qubo_matrix)
-    
-    return {
-        "algorithm": "QAOA",
-        "optimal_solution": result.optimal_bitstring,
-        "optimal_value": result.optimal_value,
-        "convergence_history": result.convergence_history,
-        "execution_time": result.execution_time
-    }
-
-
-async def _run_hybrid_optimization(self, request: Dict[str, Any]) -> Dict[str, Any]:
-    """Run hybrid quantum-classical optimization"""
-    # Use classical optimizer for exploration
-    classical_result = await self._classical_exploration(request)
-    
-    # Refine with quantum optimization
-    quantum_config = request.get("quantum_config", {})
-    quantum_config["initial_point"] = classical_result.get("solution")
-    
-    quantum_result = await self._quantum_refinement(request, quantum_config)
-    
-    return {
-        "algorithm": "Hybrid-Quantum-Classical",
-        "classical_result": classical_result,
-        "quantum_result": quantum_result,
-        "final_solution": quantum_result.get("optimal_solution"),
-        "improvement": classical_result.get("value") - quantum_result.get("optimal_value")
-    }
-
-
-# WebSocket endpoint for real-time optimization monitoring
-@app.websocket("/ws/optimization/{job_id}")
-async def optimization_monitoring(websocket: WebSocket, job_id: str):
-    """WebSocket for monitoring optimization progress"""
-    await websocket.accept()
-    
+@app.post("/api/v1/jobs/submit", response_model=Dict[str, Any])
+async def submit_job(
+    request: JobSubmitRequest,
+    background_tasks: BackgroundTasks,
+    tenant_id: str = Depends(lambda: "default-tenant"),
+    user_id: str = Depends(lambda: "user")
+):
+    """Submit an optimization job"""
     try:
-        # Check if job exists
-        if job_id not in service.active_jobs:
-            await websocket.send_json({
-                "error": "Job not found"
-            })
-            await websocket.close()
-            return
+        # Publish job submitted event
+        event_publisher = EventPublisher()
+        job_id = f"job-{datetime.utcnow().timestamp()}"
         
-        # Send updates while job is running
-        while job_id in service.active_jobs:
-            job_status = service.active_jobs[job_id]
-            
-            # Get current convergence data if available
-            convergence_data = await service.job_cache.get(f"{job_id}_convergence")
-            
-            update = {
+        await event_publisher.publish_event(
+            {
                 "job_id": job_id,
-                "status": job_status["status"],
-                "iteration": convergence_data.get("iteration", 0) if convergence_data else 0,
-                "current_value": convergence_data.get("value") if convergence_data else None,
-                "convergence_history": convergence_data.get("history", []) if convergence_data else [],
-                "timestamp": datetime.utcnow().isoformat()
-            }
-            
-            await websocket.send_json(update)
-            await asyncio.sleep(1)  # Send updates every second
+                "tenant_id": tenant_id,
+                "user_id": user_id,
+                "problem_id": request.problem_id,
+                "solver_type": request.solver_type.value if request.solver_type else None,
+                "backend_type": request.backend_type.value,
+                "backend_config": request.backend_config,
+                "solver_params": request.solver_params,
+                "max_iterations": request.max_iterations,
+                "convergence_threshold": request.convergence_threshold,
+                "optimize_for": request.optimize_for
+            },
+            "persistent://public/default/job-events"
+        )
         
-        # Send final result
-        result = await service.result_cache.get(job_id)
-        if result:
-            await websocket.send_json({
-                "job_id": job_id,
-                "status": "completed",
-                "result": result
-            })
+        return {
+            "job_id": job_id,
+            "status": "submitted",
+            "message": "Optimization job submitted successfully"
+        }
         
     except Exception as e:
-        logger.error(f"WebSocket error: {e}")
-    finally:
-        await websocket.close()
+        logger.error(f"Error submitting job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-# Permission discovery endpoint
-@app.get("/api/v1/permissions/required")
-async def get_required_permissions(endpoint: str = "/api/v1/optimize"):
-    """Get required credentials for an endpoint"""
-    
-    permissions_map = {
-        "/api/v1/optimize": {
-            "endpoint": "/api/v1/optimize",
-            "required_credentials": [
-                {
-                    "type": "ResearcherCredential",
-                    "claims": {"level": {"$gte": 2}},
-                    "description": "Research credential with level 2 or higher"
-                },
-                {
-                    "type": "ComputeAllowanceCredential",
-                    "claims": {"compute_hours": {"$gt": 1}},
-                    "description": "Compute allowance with more than 1 hour"
-                }
-            ],
-            "optional_credentials": [
-                {
-                    "type": "TrustScoreCredential",
-                    "claims": {"trustScore": {"$gte": 0.7}},
-                    "description": "Higher trust score may provide priority processing"
-                }
-            ],
-            "credential_manifest_url": "https://platformq.com/credentials/manifests/quantum-optimization.json"
+@app.get("/api/v1/jobs/{job_id}", response_model=Dict[str, Any])
+async def get_job_status(
+    job_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get job status and results"""
+    try:
+        job_repo = OptimizationJobRepository(db)
+        
+        job = job_repo.get_by_job_id(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        response = {
+            "job_id": job.job_id,
+            "problem_id": job.problem_id,
+            "status": job.status.value,
+            "progress": job.progress,
+            "solver_type": job.solver_type.value,
+            "backend_type": job.backend_type.value,
+            "timing": {
+                "submitted_at": job.submitted_at.isoformat(),
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                "encoding_time_ms": job.encoding_time_ms,
+                "solving_time_ms": job.solving_time_ms,
+                "decoding_time_ms": job.decoding_time_ms,
+                "total_time_ms": job.total_time_ms
+            }
         }
-    }
-    
-    if endpoint not in permissions_map:
-        raise HTTPException(status_code=404, detail=f"No permission info for endpoint: {endpoint}")
-    
-    return permissions_map[endpoint]
+        
+        if job.status == JobStatus.COMPLETED:
+            response["solution"] = {
+                "variables": job.solution,
+                "objective_value": job.objective_value,
+                "solution_quality": job.solution_quality
+            }
+            response["resource_usage"] = {
+                "quantum_volume": job.quantum_volume_used,
+                "quantum_credits": job.quantum_credits_used,
+                "estimated_cost_usd": job.estimated_cost_usd
+            }
+        elif job.status == JobStatus.FAILED:
+            response["error"] = {
+                "message": job.error_message,
+                "details": job.error_details
+            }
+        
+        return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting job status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8001) 
+@app.get("/api/v1/jobs/{job_id}/iterations", response_model=List[Dict[str, Any]])
+async def get_job_iterations(
+    job_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get optimization iterations for a job"""
+    try:
+        job_repo = OptimizationJobRepository(db)
+        
+        job = job_repo.get_by_job_id(job_id)
+        if not job:
+            raise HTTPException(status_code=404, detail="Job not found")
+        
+        iterations = job.iterations
+        
+        return [
+            {
+                "iteration": i.iteration_number,
+                "timestamp": i.timestamp.isoformat(),
+                "objective_value": i.objective_value,
+                "gradient_norm": i.gradient_norm,
+                "step_size": i.step_size,
+                "improvement": i.improvement
+            }
+            for i in sorted(iterations, key=lambda x: x.iteration_number)
+        ]
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Error getting iterations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/templates", response_model=Dict[str, Any])
+async def create_template(
+    request: TemplateCreateRequest,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(lambda: "default-tenant"),
+    user_id: str = Depends(lambda: "user")
+):
+    """Create an optimization problem template"""
+    try:
+        template_repo = OptimizationTemplateRepository(db)
+        
+        template = template_repo.create({
+            "template_id": f"template-{datetime.utcnow().timestamp()}",
+            "tenant_id": tenant_id,
+            "name": request.name,
+            "description": request.description,
+            "category": request.category,
+            "problem_type": request.problem_type,
+            "template_definition": request.template_definition,
+            "parameters": request.parameters,
+            "example_data": request.example_data,
+            "recommended_solver": request.recommended_solver,
+            "is_public": request.is_public,
+            "created_by": user_id
+        })
+        
+        return {
+            "template_id": template.template_id,
+            "name": template.name,
+            "status": "created"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/templates", response_model=List[Dict[str, Any]])
+async def list_templates(
+    category: Optional[str] = None,
+    problem_type: Optional[ProblemType] = None,
+    public_only: bool = False,
+    db: Session = Depends(get_db)
+):
+    """List available templates"""
+    try:
+        template_repo = OptimizationTemplateRepository(db)
+        
+        if public_only:
+            templates = template_repo.get_public_templates(category, problem_type)
+        else:
+            templates = template_repo.query().all()  # TODO: Filter by tenant
+        
+        return [
+            {
+                "template_id": t.template_id,
+                "name": t.name,
+                "description": t.description,
+                "category": t.category,
+                "problem_type": t.problem_type.value,
+                "parameters": list(t.parameters.keys()),
+                "recommended_solver": t.recommended_solver.value if t.recommended_solver else None,
+                "usage_count": t.usage_count,
+                "average_solving_time": t.average_solving_time,
+                "success_rate": t.success_rate
+            }
+            for t in templates
+        ]
+        
+    except Exception as e:
+        logger.error(f"Error listing templates: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/problems/from-template", response_model=Dict[str, Any])
+async def create_problem_from_template(
+    template_id: str,
+    name: str,
+    variable_values: Dict[str, Any],
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(lambda: "default-tenant"),
+    user_id: str = Depends(lambda: "user")
+):
+    """Create a problem from a template"""
+    try:
+        problem_repo = OptimizationProblemRepository(db)
+        template_repo = OptimizationTemplateRepository(db)
+        
+        # Create problem from template
+        problem = problem_repo.create_from_template(
+            template_id=template_id,
+            name=name,
+            tenant_id=tenant_id,
+            user_id=user_id,
+            variable_values=variable_values
+        )
+        
+        # Increment template usage
+        template_repo.increment_usage(template_id)
+        
+        return {
+            "problem_id": problem.problem_id,
+            "name": problem.name,
+            "status": "created",
+            "from_template": template_id
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating problem from template: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/circuits", response_model=Dict[str, Any])
+async def create_circuit(
+    request: CircuitCreateRequest,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(lambda: "default-tenant"),
+    user_id: str = Depends(lambda: "user")
+):
+    """Create a quantum circuit"""
+    try:
+        circuit_repo = QuantumCircuitRepository(db)
+        
+        # Parse circuit to get properties
+        # This is a stub - in reality would analyze the circuit
+        num_qubits = 5  # Mock value
+        depth = 10  # Mock value
+        gate_count = 20  # Mock value
+        
+        circuit = circuit_repo.create({
+            "circuit_id": f"circuit-{datetime.utcnow().timestamp()}",
+            "tenant_id": tenant_id,
+            "name": request.name,
+            "description": request.description,
+            "circuit_type": request.circuit_type,
+            "qasm_code": request.qasm_code,
+            "circuit_json": request.circuit_json,
+            "num_qubits": num_qubits,
+            "depth": depth,
+            "gate_count": gate_count,
+            "is_template": request.is_template,
+            "created_by": user_id
+        })
+        
+        return {
+            "circuit_id": circuit.circuit_id,
+            "name": circuit.name,
+            "num_qubits": circuit.num_qubits,
+            "depth": circuit.depth,
+            "status": "created"
+        }
+        
+    except Exception as e:
+        logger.error(f"Error creating circuit: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/benchmarks", response_model=List[Dict[str, Any]])
+async def get_benchmarks(
+    problem_type: Optional[ProblemType] = None,
+    solver_type: Optional[SolverType] = None,
+    min_problem_size: Optional[int] = None,
+    max_problem_size: Optional[int] = None,
+    db: Session = Depends(get_db)
+):
+    """Get solver benchmark results"""
+    try:
+        benchmark_repo = SolverBenchmarkRepository(db)
+        
+        benchmarks = benchmark_repo.get_benchmarks(
+            problem_type=problem_type,
+            solver_type=solver_type,
+            min_problem_size=min_problem_size,
+            max_problem_size=max_problem_size
+        )
+        
+        return [
+            {
+                "benchmark_id": b.benchmark_id,
+                "problem_type": b.problem_type.value,
+                "problem_size": b.problem_size,
+                "solver_type": b.solver_type.value,
+                "backend_type": b.backend_type.value,
+                "solving_time_ms": b.solving_time_ms,
+                "solution_quality": b.solution_quality,
+                "quantum_volume": b.quantum_volume,
+                "estimated_cost_usd": b.estimated_cost_usd,
+                "benchmark_date": b.benchmark_date.isoformat()
+            }
+            for b in benchmarks
+        ]
+        
+    except Exception as e:
+        logger.error(f"Error getting benchmarks: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/solver-recommendation", response_model=Dict[str, Any])
+async def get_solver_recommendation(
+    problem_type: ProblemType,
+    problem_size: int,
+    optimize_for: str = "quality",
+    db: Session = Depends(get_db)
+):
+    """Get solver recommendation based on benchmarks"""
+    try:
+        benchmark_repo = SolverBenchmarkRepository(db)
+        
+        recommendation = benchmark_repo.get_best_solver(
+            problem_type=problem_type,
+            problem_size=problem_size,
+            optimize_for=optimize_for
+        )
+        
+        if not recommendation:
+            return {
+                "available": False,
+                "message": "No benchmark data available for this problem type and size"
+            }
+        
+        return {
+            "available": True,
+            "recommendation": recommendation
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting solver recommendation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/resource-allocation", response_model=Dict[str, Any])
+async def get_resource_allocation(
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(lambda: "default-tenant"),
+    user_id: str = Depends(lambda: "user")
+):
+    """Get quantum resource allocation for user"""
+    try:
+        allocation_repo = QuantumResourceAllocationRepository(db)
+        
+        allocation = allocation_repo.get_user_allocation(tenant_id, user_id)
+        
+        if not allocation:
+            return {
+                "allocated": False,
+                "message": "No quantum resource allocation found"
+            }
+        
+        return {
+            "allocated": True,
+            "allocation": {
+                "monthly_quantum_credits": allocation.monthly_quantum_credits,
+                "credits_used_this_month": allocation.credits_used_this_month,
+                "credits_remaining": allocation.monthly_quantum_credits - allocation.credits_used_this_month,
+                "daily_job_limit": allocation.daily_job_limit,
+                "jobs_today": allocation.jobs_today,
+                "max_qubits": allocation.max_qubits,
+                "max_circuit_depth": allocation.max_circuit_depth,
+                "priority_level": allocation.priority_level,
+                "is_active": allocation.is_active
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting resource allocation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/statistics", response_model=Dict[str, Any])
+async def get_service_statistics(
+    days: int = 30,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(lambda: "default-tenant")
+):
+    """Get service statistics"""
+    try:
+        job_repo = OptimizationJobRepository(db)
+        problem_repo = OptimizationProblemRepository(db)
+        
+        # Get job statistics
+        job_stats = job_repo.get_job_statistics(tenant_id, days)
+        
+        # Get problem counts
+        total_problems = problem_repo.query().filter_by(tenant_id=tenant_id).count()
+        
+        # Get active jobs
+        active_jobs = job_repo.get_active_jobs(tenant_id)
+        
+        return {
+            "period_days": days,
+            "problems": {
+                "total": total_problems
+            },
+            "jobs": job_stats,
+            "active_jobs": len(active_jobs),
+            "generated_at": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Error getting statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Health check handled by base service 

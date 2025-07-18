@@ -4,61 +4,91 @@ Compute Marketplace Service
 Sell compute time for model inference
 """
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
-from fastapi.middleware.cors import CORSMiddleware
+import logging
+from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
-import logging
+from enum import Enum
+
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from pydantic import BaseModel
 import asyncio
 import httpx
-from enum import Enum
+import uuid
+
+from platformq_shared import (
+    create_base_app,
+    ErrorCode,
+    AppException,
+    EventProcessor,
+    get_pulsar_client
+)
 from platformq_shared.event_publisher import EventPublisher
-from pulsar.schema import Record, String, Long, Double
+from platformq_shared.database import get_db
+from sqlalchemy.orm import Session
 
-class AssetUsed(Record):
-    tenant_id = String()
-    asset_id = String()
-    user_id = String()
-    usage_duration_minutes = Long()
-    usage_type = String()
-    event_timestamp = Long()
-
-from .compute_manager import ComputeManager, ComputeOffering, ComputePurchase
-from .pricing_engine import PricingEngine
-from .resource_scheduler import ResourceScheduler
+from .models import (
+    ComputeOffering,
+    ComputePurchase,
+    ResourceType,
+    OfferingStatus,
+    PurchaseStatus,
+    Priority
+)
+from .repository import (
+    ComputeOfferingRepository,
+    ComputePurchaseRepository,
+    ResourceAvailabilityRepository,
+    PricingRuleRepository
+)
+from .event_processors import ComputeMarketplaceEventProcessor
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Event processor instance
+event_processor = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    global event_processor
+    
+    # Startup
+    logger.info("Initializing Compute Marketplace Service...")
+    
+    # Initialize event processor
+    pulsar_client = get_pulsar_client()
+    event_processor = ComputeMarketplaceEventProcessor(
+        pulsar_client=pulsar_client,
+        service_name="compute-marketplace-service"
+    )
+    
+    # Start event processor
+    await event_processor.start()
+    
+    logger.info("Compute Marketplace Service initialized successfully")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Compute Marketplace Service...")
+    
+    if event_processor:
+        await event_processor.stop()
+    
+    logger.info("Compute Marketplace Service shutdown complete")
+
 # Create FastAPI app
-app = FastAPI(
+app = create_base_app(
     title="Compute Marketplace Service",
     description="Marketplace for buying and selling compute time for model inference",
-    version="1.0.0"
+    version="1.0.0",
+    lifespan=lifespan,
+    event_processors=[event_processor] if event_processor else []
 )
 
-@app.on_event("startup")
-def startup():
-    app.state.event_publisher = EventPublisher(pulsar_url='pulsar://pulsar:6650')
-    app.state.event_publisher.connect()
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-
-# Initialize components
-compute_manager = ComputeManager()
-pricing_engine = PricingEngine()
-resource_scheduler = ResourceScheduler()
-
-
+# Pydantic models for API requests/responses
 class ComputeOfferingRequest(BaseModel):
     provider_id: str
     resource_type: str  # "cpu", "gpu", "tpu"
@@ -98,31 +128,43 @@ async def root():
 @app.post("/api/v1/offerings", response_model=Dict[str, Any])
 async def create_compute_offering(
     request: ComputeOfferingRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(lambda: "default-tenant")  # TODO: Get from auth
 ):
     """Create a new compute offering"""
     try:
-        # Validate resource specifications
-        if not pricing_engine.validate_resource_specs(request.resource_type, request.resource_specs):
-            raise HTTPException(status_code=400, detail="Invalid resource specifications")
+        # Initialize repositories
+        offering_repo = ComputeOfferingRepository(db)
         
         # Create offering
-        offering = await compute_manager.create_offering(
-            provider_id=request.provider_id,
-            resource_type=request.resource_type,
-            resource_specs=request.resource_specs,
-            availability_hours=request.availability_hours,
-            min_duration=request.min_duration_minutes,
-            max_duration=request.max_duration_minutes,
-            price_per_hour=request.price_per_hour,
-            location=request.location,
-            tags=request.tags
-        )
+        offering = offering_repo.create({
+            "offering_id": str(uuid.uuid4()),
+            "tenant_id": tenant_id,
+            "provider_id": request.provider_id,
+            "resource_type": request.resource_type,
+            "resource_specs": request.resource_specs,
+            "availability_hours": request.availability_hours,
+            "min_duration_minutes": request.min_duration_minutes,
+            "max_duration_minutes": request.max_duration_minutes,
+            "price_per_hour": request.price_per_hour,
+            "location": request.location,
+            "tags": request.tags,
+            "status": OfferingStatus.ACTIVE
+        })
         
-        # Schedule resource monitoring
-        background_tasks.add_task(
-            resource_scheduler.monitor_offering,
-            offering.offering_id
+        # Publish offering created event
+        event_publisher = EventPublisher()
+        await event_publisher.publish_event(
+            {
+                "offering_id": offering.offering_id,
+                "provider_id": offering.provider_id,
+                "resource_type": offering.resource_type,
+                "availability_hours": offering.availability_hours,
+                "capacity_units": 1.0,
+                "tenant_id": tenant_id
+            },
+            "persistent://public/default/offering-events"
         )
         
         return {
@@ -139,12 +181,18 @@ async def create_compute_offering(
 @app.post("/api/v1/purchases", response_model=Dict[str, Any])
 async def purchase_compute_time(
     request: ComputePurchaseRequest,
-    background_tasks: BackgroundTasks
+    background_tasks: BackgroundTasks,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(lambda: "default-tenant")  # TODO: Get from auth
 ):
     """Purchase compute time from an offering"""
     try:
+        # Initialize repositories
+        offering_repo = ComputeOfferingRepository(db)
+        availability_repo = ResourceAvailabilityRepository(db)
+        
         # Get offering
-        offering = await compute_manager.get_offering(request.offering_id)
+        offering = offering_repo.get_by_offering_id(request.offering_id)
         if not offering:
             raise HTTPException(status_code=404, detail="Offering not found")
         
@@ -163,66 +211,40 @@ async def purchase_compute_time(
         
         # Check resource availability
         start_time = request.start_time or datetime.utcnow()
-        if not await resource_scheduler.check_availability(
+        if not availability_repo.check_availability(
             offering.offering_id,
             start_time,
             request.duration_minutes
         ):
             raise HTTPException(status_code=409, detail="Resources not available for requested time")
         
-        # Calculate price
-        price = pricing_engine.calculate_price(
-            base_price_per_hour=offering.price_per_hour,
-            duration_minutes=request.duration_minutes,
-            priority=request.priority,
-            resource_type=offering.resource_type
-        )
+        # Calculate base price (dynamic pricing will be handled by event processor)
+        base_price = offering.price_per_hour * (request.duration_minutes / 60)
         
-        # Create purchase
-        purchase = await compute_manager.create_purchase(
-            buyer_id=request.buyer_id,
-            offering=offering,
-            duration_minutes=request.duration_minutes,
-            start_time=start_time,
-            price=price,
-            model_requirements=request.model_requirements,
-            priority=request.priority
-        )
+        # Publish purchase request event
+        event_publisher = EventPublisher()
+        purchase_id = str(uuid.uuid4())
         
-        publisher = request.app.state.event_publisher
-        asset_id = request.model_requirements.get('asset_id')
-        if asset_id:
-            event = AssetUsed(
-                tenant_id='default',  # Add tenant context
-                asset_id=asset_id,
-                user_id=request.buyer_id,
-                usage_duration_minutes=request.duration_minutes,
-                usage_type='compute',
-                event_timestamp=int(datetime.utcnow().timestamp() * 1000)
-            )
-            publisher.publish(
-                topic_base='asset-usage-events',
-                tenant_id='default',
-                schema_class=AssetUsed,
-                data=event
-            )
-            logger.info(f"Published AssetUsed event for asset {asset_id}")
-        
-        # Schedule resource allocation
-        background_tasks.add_task(
-            resource_scheduler.allocate_resources,
-            purchase.purchase_id,
-            start_time
+        await event_publisher.publish_event(
+            {
+                "request_id": purchase_id,
+                "buyer_id": request.buyer_id,
+                "offering_id": request.offering_id,
+                "duration_minutes": request.duration_minutes,
+                "start_time": start_time.isoformat(),
+                "model_requirements": request.model_requirements,
+                "priority": request.priority,
+                "tenant_id": tenant_id
+            },
+            "persistent://public/default/compute-purchase-events"
         )
         
         return {
-            "purchase_id": purchase.purchase_id,
-            "offering_id": purchase.offering_id,
-            "start_time": purchase.start_time.isoformat(),
-            "end_time": purchase.end_time.isoformat(),
-            "total_price": purchase.total_price,
-            "status": purchase.status,
-            "access_credentials": await compute_manager.generate_access_credentials(purchase.purchase_id)
+            "purchase_id": purchase_id,
+            "status": "pending",
+            "estimated_price": base_price,
+            "start_time": start_time.isoformat(),
+            "message": "Purchase request submitted. You will be notified once confirmed."
         }
         
     except HTTPException:
@@ -240,33 +262,55 @@ async def search_compute_offerings(
     gpu_type: Optional[str] = None,
     max_price_per_hour: Optional[float] = None,
     location: Optional[str] = None,
-    required_duration_minutes: Optional[int] = None
+    required_duration_minutes: Optional[int] = None,
+    db: Session = Depends(get_db),
+    tenant_id: str = Depends(lambda: "default-tenant")  # TODO: Get from auth
 ):
     """Search for available compute offerings"""
     try:
-        offerings = await compute_manager.search_offerings(
-            resource_type=resource_type,
-            min_memory_gb=min_memory_gb,
-            min_vcpus=min_vcpus,
-            gpu_type=gpu_type,
-            max_price_per_hour=max_price_per_hour,
+        offering_repo = ComputeOfferingRepository(db)
+        
+        # Search offerings
+        offerings = offering_repo.search_offerings(
+            resource_type=ResourceType(resource_type) if resource_type else None,
+            max_price=max_price_per_hour,
             location=location,
-            required_duration_minutes=required_duration_minutes
+            min_duration=required_duration_minutes,
+            tenant_id=tenant_id
         )
+        
+        # Filter by resource specs if provided
+        filtered_offerings = []
+        for offering in offerings:
+            specs = offering.resource_specs
+            
+            # Check memory requirement
+            if min_memory_gb and specs.get("memory_gb", 0) < min_memory_gb:
+                continue
+                
+            # Check CPU requirement
+            if min_vcpus and specs.get("vcpus", 0) < min_vcpus:
+                continue
+                
+            # Check GPU type
+            if gpu_type and specs.get("gpu_type") != gpu_type:
+                continue
+                
+            filtered_offerings.append(offering)
         
         return [
             {
                 "offering_id": o.offering_id,
                 "provider_id": o.provider_id,
-                "resource_type": o.resource_type,
+                "resource_type": o.resource_type.value,
                 "resource_specs": o.resource_specs,
                 "price_per_hour": o.price_per_hour,
                 "location": o.location,
-                "availability": await resource_scheduler.get_availability_summary(o.offering_id),
-                "rating": o.provider_rating,
-                "total_hours_sold": o.total_hours_sold
+                "rating": o.rating,
+                "total_hours_sold": o.total_hours_sold,
+                "tags": o.tags
             }
-            for o in offerings
+            for o in filtered_offerings
         ]
         
     except Exception as e:
@@ -275,10 +319,15 @@ async def search_compute_offerings(
 
 
 @app.get("/api/v1/purchases/{purchase_id}", response_model=Dict[str, Any])
-async def get_purchase_details(purchase_id: str):
+async def get_purchase_details(
+    purchase_id: str,
+    db: Session = Depends(get_db)
+):
     """Get details of a compute purchase"""
     try:
-        purchase = await compute_manager.get_purchase(purchase_id)
+        purchase_repo = ComputePurchaseRepository(db)
+        
+        purchase = purchase_repo.get_by_purchase_id(purchase_id)
         if not purchase:
             raise HTTPException(status_code=404, detail="Purchase not found")
         
@@ -290,9 +339,11 @@ async def get_purchase_details(purchase_id: str):
             "end_time": purchase.end_time.isoformat(),
             "duration_minutes": purchase.duration_minutes,
             "total_price": purchase.total_price,
-            "status": purchase.status,
-            "resource_details": purchase.resource_details,
-            "usage_metrics": await compute_manager.get_usage_metrics(purchase_id)
+            "status": purchase.status.value,
+            "priority": purchase.priority.value,
+            "model_requirements": purchase.model_requirements,
+            "allocated_resources": purchase.allocated_resources,
+            "usage_metrics": purchase.usage_metrics
         }
         
     except HTTPException:

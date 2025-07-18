@@ -29,8 +29,7 @@ This directory contains all the microservices that make up the platformQ ecosyst
 - **[functions-service](./functions-service/)**: WebAssembly runtime for custom data transformations and automation workflows.
 
 ### Document & Storage
-- **[document-conversion-service](./document-conversion-service/)**: Converts documents between formats using LibreOffice.
-- **[storage-proxy-service](./storage-proxy-service/)**: Unified interface for MinIO object storage with multi-tenancy support.
+- **[storage-proxy-service](./storage-proxy-service/)**: Unified interface for MinIO object storage with multi-tenancy support and document conversion capabilities (PDF, DOCX, etc.).
 
 ### Trust & Verification
 - **[verifiable-credential-service](./verifiable-credential-service/)**: Issues and verifies W3C Verifiable Credentials with blockchain anchoring.

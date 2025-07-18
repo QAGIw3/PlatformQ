@@ -1,29 +1,48 @@
 """
-Federated Learning Coordinator Service
+Federated Learning Service
 
-This service orchestrates privacy-preserving federated learning sessions
-across multiple tenants with verifiable credential-based access control.
+Privacy-preserving federated learning with DAO governance.
 """
 
-import asyncio
-import json
-import logging
-import time
-import uuid
-from datetime import datetime, timedelta
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends, HTTPException, Header, Query
 from typing import Dict, Any, List, Optional
+from datetime import datetime
+import logging
+import asyncio
+import uuid
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Header, Query
-from fastapi.middleware.cors import CORSMiddleware
-from sqlalchemy.orm import Session
-import httpx
-
-from platformq_shared.jwt import get_current_tenant_and_user
+from platformq_shared import (
+    create_base_app,
+    EventProcessor,
+    ServiceClients,
+    add_error_handlers
+)
 from platformq_shared.config import ConfigLoader
 from platformq_shared.event_publisher import EventPublisher
 
-from .models import FederatedLearningSession, DAOProposal, DAOVote, VotingDelegation
-from .database import get_db
+from .api.deps import (
+    get_current_tenant_and_user,
+    get_db_session,
+    get_event_publisher,
+    get_api_key_crud,
+    get_user_crud,
+    get_password_verifier
+)
+from .repository import (
+    FLSessionRepository,
+    ParticipantRepository,
+    ModelUpdateRepository,
+    AggregatedModelRepository,
+    DAOProposalRepository,
+    DAOVoteRepository
+)
+from .event_processors import (
+    FLSessionProcessor,
+    ModelAggregationProcessor,
+    DAOGovernanceProcessor,
+    PrivacyMonitoringProcessor
+)
 from .orchestrator import FederatedLearningOrchestrator
 from .participant_service import ParticipantService
 from .aggregation_service import AggregationService
@@ -31,78 +50,206 @@ from .privacy_engine import PrivacyEngine
 from .dao.federated_dao_governance import (
     FederatedLearningDAO,
     ProposalType,
-    VoteType,
-    FLGovernanceToken,
-    FLDAOContract
+    VoteType
 )
-
-from pyignite import Client as IgniteClient
-import hashlib
 
 logger = logging.getLogger(__name__)
 
-# Initialize base app
-app = FastAPI()
+# Service components
+session_processor = None
+aggregation_processor = None
+dao_processor = None
+privacy_processor = None
+orchestrator = None
+participant_service = None
+aggregation_service = None
+privacy_engine = None
+fl_dao = None
+service_clients = None
 
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    global session_processor, aggregation_processor, dao_processor, privacy_processor
+    global orchestrator, participant_service, aggregation_service, privacy_engine, fl_dao, service_clients
+    
+    # Startup
+    logger.info("Starting Federated Learning Service...")
+    
+    # Initialize configuration
+    config_loader = ConfigLoader()
+    settings = config_loader.load_settings()
+    
+    # Initialize service clients
+    service_clients = ServiceClients(base_timeout=30.0, max_retries=3)
+    app.state.service_clients = service_clients
+    
+    # Initialize repositories
+    app.state.session_repo = FLSessionRepository(
+        get_db_session,
+        event_publisher=app.state.event_publisher
+    )
+    app.state.participant_repo = ParticipantRepository(get_db_session)
+    app.state.model_update_repo = ModelUpdateRepository(get_db_session)
+    app.state.aggregated_model_repo = AggregatedModelRepository(
+        get_db_session,
+        event_publisher=app.state.event_publisher
+    )
+    app.state.proposal_repo = DAOProposalRepository(
+        get_db_session,
+        event_publisher=app.state.event_publisher
+    )
+    app.state.vote_repo = DAOVoteRepository(
+        get_db_session,
+        event_publisher=app.state.event_publisher
+    )
+    
+    # Initialize core services
+    orchestrator = FederatedLearningOrchestrator(
+        session_repo=app.state.session_repo,
+        participant_repo=app.state.participant_repo,
+        ignite_config={
+            'host': settings.get('ignite_host', 'ignite'),
+            'port': int(settings.get('ignite_port', 10800))
+        }
+    )
+    await orchestrator.initialize()
+    app.state.orchestrator = orchestrator
+    
+    participant_service = ParticipantService(
+        participant_repo=app.state.participant_repo,
+        vc_service_url=settings.get('vc_service_url', 'http://verifiable-credential-service:8000')
+    )
+    await participant_service.initialize()
+    app.state.participant_service = participant_service
+    
+    aggregation_service = AggregationService(
+        model_update_repo=app.state.model_update_repo,
+        aggregated_model_repo=app.state.aggregated_model_repo
+    )
+    app.state.aggregation_service = aggregation_service
+    
+    privacy_engine = PrivacyEngine(
+        epsilon=float(settings.get('default_privacy_epsilon', 1.0)),
+        delta=float(settings.get('default_privacy_delta', 1e-5))
+    )
+    app.state.privacy_engine = privacy_engine
+    
+    # Initialize DAO if enabled
+    if settings.get('dao_enabled', 'false').lower() == 'true':
+        fl_dao = FederatedLearningDAO(
+            contract_address=settings.get('fl_dao_contract_address'),
+            token_address=settings.get('fl_token_address'),
+            web3_provider=settings.get('web3_provider_url')
+        )
+        await fl_dao.initialize()
+        app.state.fl_dao = fl_dao
+    
+    # Initialize event processors
+    session_processor = FLSessionProcessor(
+        service_name="fl-service",
+        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
+        session_repo=app.state.session_repo,
+        participant_repo=app.state.participant_repo,
+        orchestrator=orchestrator,
+        service_clients=service_clients
+    )
+    
+    aggregation_processor = ModelAggregationProcessor(
+        service_name="fl-aggregation",
+        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
+        model_update_repo=app.state.model_update_repo,
+        aggregated_model_repo=app.state.aggregated_model_repo,
+        session_repo=app.state.session_repo,
+        aggregation_service=aggregation_service,
+        privacy_engine=privacy_engine
+    )
+    
+    if fl_dao:
+        dao_processor = DAOGovernanceProcessor(
+            service_name="fl-dao",
+            pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
+            proposal_repo=app.state.proposal_repo,
+            vote_repo=app.state.vote_repo,
+            fl_dao=fl_dao,
+            service_clients=service_clients
+        )
+    
+    privacy_processor = PrivacyMonitoringProcessor(
+        service_name="fl-privacy",
+        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
+        privacy_engine=privacy_engine,
+        service_clients=service_clients
+    )
+    
+    # Start event processors
+    processors = [session_processor, aggregation_processor, privacy_processor]
+    if dao_processor:
+        processors.append(dao_processor)
+        
+    await asyncio.gather(*[p.start() for p in processors])
+    
+    logger.info("Federated Learning Service initialized successfully")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Federated Learning Service...")
+    
+    # Stop event processors
+    await asyncio.gather(*[p.stop() for p in processors if p])
+    
+    # Cleanup resources
+    if orchestrator:
+        await orchestrator.cleanup()
+    if participant_service:
+        await participant_service.cleanup()
+    if fl_dao:
+        await fl_dao.cleanup()
+        
+    logger.info("Federated Learning Service shutdown complete")
+
+
+# Create app with enhanced patterns
+app = create_base_app(
+    service_name="federated-learning-service",
+    db_session_dependency=get_db_session,
+    api_key_crud_dependency=get_api_key_crud,
+    user_crud_dependency=get_user_crud,
+    password_verifier_dependency=get_password_verifier,
+    event_processors=[
+        session_processor, aggregation_processor, 
+        dao_processor, privacy_processor
+    ] if all([session_processor, aggregation_processor, privacy_processor]) else []
 )
 
-# Global state managers
-event_publisher = EventPublisher(pulsar_url=settings.pulsar_url)
-ignite_client = IgniteClient()
-http_client = httpx.AsyncClient()
+# Set lifespan
+app.router.lifespan_context = lifespan
 
-session_service = SessionService(ignite_client, event_publisher)
-participant_service = ParticipantService(ignite_client, http_client)
-aggregation_service = AggregationService(ignite_client, event_publisher)
-
-# Initialize DAO governance if enabled
-config_loader = ConfigLoader()
-fl_dao = None
-
-if config_loader.get_setting("DAO_GOVERNANCE_ENABLED", "false").lower() == "true":
-    fl_dao = FederatedLearningDAO(
-        web3_provider_url=config_loader.get_setting("WEB3_PROVIDER_URL", "http://localhost:8545"),
-        dao_contract_address=config_loader.get_setting("FL_DAO_CONTRACT_ADDRESS", ""),
-        dao_contract_abi=FLDAOContract.CONTRACT_ABI,
-        token_contract_address=config_loader.get_setting("FL_TOKEN_CONTRACT_ADDRESS", ""),
-        token_contract_abi=FLGovernanceToken.CONTRACT_ABI
-    )
+# Service root endpoint
+@app.get("/")
+def read_root():
+    return {
+        "service": "federated-learning-service",
+        "version": "2.0",
+        "features": [
+            "federated-learning",
+            "differential-privacy",
+            "homomorphic-encryption",
+            "secure-aggregation",
+            "dao-governance",
+            "verifiable-credentials",
+            "event-driven"
+        ]
+    }
 
 
-@app.on_event("startup")
-async def startup_event():
-    """Initialize services on startup"""
-    event_publisher.connect()
-    ignite_client.connect([(node.split(":")[0], int(node.split(":")[1])) 
-                           for node in settings.ignite_nodes])
-    logger.info("Federated Learning Coordinator initialized")
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """Cleanup on shutdown"""
-    if event_publisher:
-        event_publisher.close()
-    if ignite_client:
-        ignite_client.close()
-    await http_client.aclose()
-
-
-# API Endpoints
-app.include_router(api_router, prefix="/api/v1")
-
-
-# Health check
+# Health check with feature status
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
-    return {
+    health = {
         "status": "healthy",
         "service": "federated-learning-service",
         "timestamp": datetime.utcnow().isoformat(),
@@ -110,20 +257,231 @@ async def health_check():
             "homomorphic_encryption": True,
             "differential_privacy": True,
             "secure_aggregation": True,
-            "zero_knowledge_proofs": True
+            "zero_knowledge_proofs": True,
+            "dao_governance": fl_dao is not None
         }
     }
+    
+    # Check component health
+    if hasattr(app.state, "orchestrator"):
+        health["components"] = {
+            "orchestrator": "active" if app.state.orchestrator.is_running else "inactive"
+        }
+        
+    return health
 
-@app.post('/api/v1/optimize-dag')
-async def optimize_dag(dag_data: Dict):
-    # Privacy-preserving tuning
-    # Mask sensitive params
-    for key in dag_data:
-        if 'private' in key:
-            dag_data[key] = hashlib.sha256(dag_data[key].encode()).hexdigest()
-    return dag_data
+
+# API Endpoints using new patterns
+@app.post("/api/v1/sessions")
+async def create_fl_session(
+    session_name: str,
+    model_type: str,
+    min_participants: int = 3,
+    max_participants: int = 10,
+    total_rounds: int = 10,
+    learning_rate: float = 0.01,
+    privacy_config: Optional[Dict[str, Any]] = None,
+    context: dict = Depends(get_current_tenant_and_user),
+    publisher: EventPublisher = Depends(get_event_publisher)
+):
+    """Create a new federated learning session"""
+    
+    # Validate model type
+    supported_models = ["linear_regression", "logistic_regression", "neural_network", "random_forest"]
+    if model_type not in supported_models:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Unsupported model type. Supported: {supported_models}"
+        )
+        
+    # Publish session request event
+    publisher.publish_event(
+        topic=f"persistent://platformq/{context['tenant_id']}/fl-session-request-events",
+        event={
+            "session_name": session_name,
+            "model_type": model_type,
+            "min_participants": min_participants,
+            "max_participants": max_participants,
+            "total_rounds": total_rounds,
+            "learning_rate": learning_rate,
+            "privacy_config": privacy_config or {
+                "differential_privacy": True,
+                "epsilon": 1.0,
+                "homomorphic_encryption": False,
+                "secure_aggregation": True
+            },
+            "created_by": context["user"]["id"],
+            "tenant_id": context["tenant_id"],
+            "requested_at": datetime.utcnow().isoformat()
+        }
+    )
+    
+    return {
+        "status": "session_requested",
+        "message": "Federated learning session creation requested"
+    }
 
 
+@app.get("/api/v1/sessions")
+async def list_sessions(
+    status: Optional[str] = None,
+    limit: int = 100,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """List federated learning sessions"""
+    
+    session_repo = app.state.session_repo
+    sessions = session_repo.list_sessions(
+        tenant_id=context["tenant_id"],
+        status=status,
+        limit=limit
+    )
+    
+    return {
+        "sessions": sessions,
+        "total": len(sessions)
+    }
+
+
+@app.get("/api/v1/sessions/{session_id}")
+async def get_session(
+    session_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get federated learning session details"""
+    
+    session_repo = app.state.session_repo
+    session = session_repo.get_session(session_id)
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    # Check access
+    if session["tenant_id"] != context["tenant_id"] and "admin" not in context["user"].get("roles", []):
+        raise HTTPException(status_code=403, detail="Access denied")
+        
+    # Get participants
+    participant_repo = app.state.participant_repo
+    participants = participant_repo.get_session_participants(session_id)
+    
+    # Get latest model if available
+    aggregated_model_repo = app.state.aggregated_model_repo
+    latest_model = aggregated_model_repo.get_latest_model(session_id)
+    
+    return {
+        "session": session,
+        "participants": participants,
+        "latest_model": latest_model
+    }
+
+
+@app.post("/api/v1/sessions/{session_id}/join")
+async def join_session(
+    session_id: str,
+    public_key: str,
+    compute_resources: Dict[str, Any],
+    data_samples: int,
+    context: dict = Depends(get_current_tenant_and_user),
+    publisher: EventPublisher = Depends(get_event_publisher)
+):
+    """Join a federated learning session as participant"""
+    
+    # Verify session exists and is accepting participants
+    session_repo = app.state.session_repo
+    session = session_repo.get_session(session_id)
+    
+    if not session:
+        raise HTTPException(status_code=404, detail="Session not found")
+        
+    if session["status"] not in ["pending", "active"]:
+        raise HTTPException(
+            status_code=400,
+            detail="Session not accepting participants"
+        )
+        
+    # Get trust score
+    trust_score = await app.state.participant_service.get_trust_score(
+        context["user"]["id"]
+    )
+    
+    if trust_score < 0.5:
+        raise HTTPException(
+            status_code=403,
+            detail="Insufficient trust score to participate"
+        )
+        
+    # Publish participant joined event
+    publisher.publish_event(
+        topic=f"persistent://platformq/{context['tenant_id']}/participant-joined-events",
+        event={
+            "session_id": session_id,
+            "participant_id": context["user"]["id"],
+            "participant_name": context["user"].get("username", "Unknown"),
+            "public_key": public_key,
+            "compute_resources": compute_resources,
+            "data_samples": data_samples,
+            "trust_score": trust_score,
+            "joined_at": datetime.utcnow().isoformat()
+        }
+    )
+    
+    return {
+        "status": "join_requested",
+        "message": "Join request submitted"
+    }
+
+
+@app.post("/api/v1/sessions/{session_id}/submit-update")
+async def submit_model_update(
+    session_id: str,
+    round_number: int,
+    encrypted_gradients: str,  # Base64 encoded
+    local_loss: float,
+    local_accuracy: float,
+    num_samples: int,
+    computation_time: float,
+    noise_scale: Optional[float] = None,
+    clipping_threshold: Optional[float] = None,
+    context: dict = Depends(get_current_tenant_and_user),
+    publisher: EventPublisher = Depends(get_event_publisher)
+):
+    """Submit model update for current round"""
+    
+    # Verify participant is registered
+    participant_repo = app.state.participant_repo
+    participants = participant_repo.get_session_participants(session_id)
+    
+    if not any(p["participant_id"] == context["user"]["id"] for p in participants):
+        raise HTTPException(
+            status_code=403,
+            detail="Not a registered participant"
+        )
+        
+    # Publish model update event
+    publisher.publish_event(
+        topic=f"persistent://platformq/{context['tenant_id']}/model-update-submitted-events",
+        event={
+            "session_id": session_id,
+            "round_number": round_number,
+            "participant_id": context["user"]["id"],
+            "encrypted_gradients": encrypted_gradients,
+            "local_loss": local_loss,
+            "local_accuracy": local_accuracy,
+            "num_samples": num_samples,
+            "computation_time": computation_time,
+            "noise_scale": noise_scale,
+            "clipping_threshold": clipping_threshold,
+            "submitted_at": datetime.utcnow().isoformat()
+        }
+    )
+    
+    return {
+        "status": "update_submitted",
+        "message": "Model update submitted successfully"
+    }
+
+
+# DAO Governance Endpoints
 @app.post("/api/v1/dao/proposals")
 async def create_dao_proposal(
     proposal_type: ProposalType,
@@ -132,403 +490,122 @@ async def create_dao_proposal(
     parameters: Dict[str, Any],
     proposer_address: str,
     private_key: str = Header(..., description="Blockchain private key"),
-    current_user: dict = Depends(get_current_tenant_and_user),
-    db: Session = Depends(get_db)
+    context: dict = Depends(get_current_tenant_and_user),
+    publisher: EventPublisher = Depends(get_event_publisher)
 ):
-    """
-    Create a new DAO proposal for federated learning governance
-    """
+    """Create a new DAO proposal for federated learning governance"""
+    
     if not fl_dao:
         raise HTTPException(
             status_code=503,
             detail="DAO governance not enabled"
         )
         
-    try:
-        # Validate proposal parameters based on type
-        if proposal_type == ProposalType.CREATE_FL_SESSION:
-            required_params = ["model_type", "min_participants", "max_participants", "rounds", "learning_rate"]
-            if not all(param in parameters for param in required_params):
-                raise HTTPException(
-                    status_code=400,
-                    detail=f"Missing required parameters for FL session proposal: {required_params}"
-                )
-                
-        # Create proposal
-        result = await fl_dao.create_proposal(
-            proposal_type=proposal_type,
-            title=title,
-            description=description,
-            parameters=parameters,
-            proposer_address=proposer_address,
-            private_key=private_key
-        )
-        
-        if result["success"]:
-            # Store proposal in database
-            proposal_record = DAOProposal(
-                id=result["proposal_id"],
-                proposal_type=proposal_type.value,
-                title=title,
-                description=description,
-                parameters=json.dumps(parameters),
-                proposer=proposer_address,
-                created_by=current_user["id"],
-                voting_deadline=result["voting_deadline"],
-                execution_deadline=result["execution_deadline"],
-                tx_hash=result["tx_hash"],
-                created_at=datetime.utcnow()
-            )
-            
-            db.add(proposal_record)
-            db.commit()
-            
-            # Publish event
-            await event_publisher.publish(
-                "FL_DAO_PROPOSAL_CREATED",
-                {
-                    "proposal_id": result["proposal_id"],
-                    "proposal_type": proposal_type.value,
-                    "title": title,
-                    "proposer": proposer_address,
-                    "voting_deadline": result["voting_deadline"]
-                }
-            )
-            
-            return result
-        else:
+    # Validate proposal parameters based on type
+    if proposal_type == ProposalType.CREATE_FL_SESSION:
+        required_params = ["model_type", "min_participants", "max_participants", "rounds", "learning_rate"]
+        if not all(param in parameters for param in required_params):
             raise HTTPException(
                 status_code=400,
-                detail=result.get("error", "Failed to create proposal")
+                detail=f"Missing required parameters: {required_params}"
             )
             
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error creating DAO proposal: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/v1/dao/proposals/{proposal_id}/vote")
-async def cast_vote_on_proposal(
-    proposal_id: str,
-    vote: VoteType,
-    voter_address: str,
-    delegation: Optional[str] = None,
-    private_key: str = Header(..., description="Blockchain private key"),
-    current_user: dict = Depends(get_current_tenant_and_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Cast vote on a DAO proposal
-    """
-    if not fl_dao:
-        raise HTTPException(
-            status_code=503,
-            detail="DAO governance not enabled"
-        )
-        
-    try:
-        # Cast vote
-        result = await fl_dao.cast_vote(
-            proposal_id=proposal_id,
-            vote=vote,
-            voter_address=voter_address,
-            private_key=private_key,
-            delegation=delegation
-        )
-        
-        if result["success"]:
-            # Store vote record
-            vote_record = DAOVote(
-                id=str(uuid.uuid4()),
-                proposal_id=proposal_id,
-                voter=voter_address,
-                vote=vote.value,
-                voting_power=result["voting_power"],
-                tx_hash=result["tx_hash"],
-                created_by=current_user["id"],
-                created_at=datetime.utcnow()
-            )
-            
-            db.add(vote_record)
-            db.commit()
-            
-            # Publish event
-            await event_publisher.publish(
-                "FL_DAO_VOTE_CAST",
-                {
-                    "proposal_id": proposal_id,
-                    "voter": voter_address,
-                    "vote": vote.value,
-                    "voting_power": result["voting_power"]
-                }
-            )
-            
-            return result
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=result.get("error", "Failed to cast vote")
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error casting vote: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/v1/dao/proposals/{proposal_id}/execute")
-async def execute_dao_proposal(
-    proposal_id: str,
-    executor_address: str,
-    private_key: str = Header(..., description="Blockchain private key"),
-    current_user: dict = Depends(get_current_tenant_and_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Execute an approved DAO proposal
-    """
-    if not fl_dao:
-        raise HTTPException(
-            status_code=503,
-            detail="DAO governance not enabled"
-        )
-        
-    try:
-        # Execute proposal
-        result = await fl_dao.execute_proposal(
-            proposal_id=proposal_id,
-            executor_address=executor_address,
-            private_key=private_key
-        )
-        
-        if result["success"]:
-            # Update proposal status
-            proposal = db.query(DAOProposal).filter(
-                DAOProposal.id == proposal_id
-            ).first()
-            
-            if proposal:
-                proposal.executed = True
-                proposal.executed_by = executor_address
-                proposal.execution_tx_hash = result.get("execution_tx_hash")
-                proposal.executed_at = datetime.utcnow()
-                
-                # If FL session was created, link it
-                if result.get("action") == "create_fl_session" and result.get("session_id"):
-                    proposal.fl_session_id = result["session_id"]
-                    
-                db.commit()
-                
-            # Publish event
-            await event_publisher.publish(
-                "FL_DAO_PROPOSAL_EXECUTED",
-                {
-                    "proposal_id": proposal_id,
-                    "executor": executor_address,
-                    "action": result.get("action"),
-                    "result": result
-                }
-            )
-            
-            return result
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=result.get("error", "Failed to execute proposal")
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error executing proposal: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.get("/api/v1/dao/proposals/{proposal_id}/status")
-async def get_proposal_status(
-    proposal_id: str,
-    current_user: dict = Depends(get_current_tenant_and_user)
-):
-    """
-    Get current status of a DAO proposal
-    """
-    if not fl_dao:
-        raise HTTPException(
-            status_code=503,
-            detail="DAO governance not enabled"
-        )
-        
-    try:
-        status = await fl_dao.get_proposal_status(proposal_id)
-        
-        if not status["found"]:
-            raise HTTPException(
-                status_code=404,
-                detail="Proposal not found"
-            )
-            
-        return status
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting proposal status: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@app.post("/api/v1/dao/delegate")
-async def delegate_voting_power(
-    delegator: str,
-    delegate: str,
-    private_key: str = Header(..., description="Blockchain private key"),
-    current_user: dict = Depends(get_current_tenant_and_user),
-    db: Session = Depends(get_db)
-):
-    """
-    Delegate voting power to another address
-    """
-    if not fl_dao:
-        raise HTTPException(
-            status_code=503,
-            detail="DAO governance not enabled"
-        )
-        
-    try:
-        result = await fl_dao.delegate_voting_power(
-            delegator=delegator,
-            delegate=delegate,
-            private_key=private_key
-        )
-        
-        if result["success"]:
-            # Store delegation record
-            delegation_record = VotingDelegation(
-                id=str(uuid.uuid4()),
-                delegator=delegator,
-                delegate=delegate,
-                tx_hash=result["tx_hash"],
-                created_by=current_user["id"],
-                created_at=datetime.utcnow()
-            )
-            
-            db.add(delegation_record)
-            db.commit()
-            
-            return result
-        else:
-            raise HTTPException(
-                status_code=400,
-                detail=result.get("error", "Failed to delegate voting power")
-            )
-            
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error delegating voting power: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Publish proposal event
+    publisher.publish_event(
+        topic=f"persistent://platformq/{context['tenant_id']}/dao-proposal-submitted-events",
+        event={
+            "proposal_type": proposal_type.value,
+            "title": title,
+            "description": description,
+            "parameters": parameters,
+            "proposer_address": proposer_address,
+            "private_key": private_key,
+            "tenant_id": context["tenant_id"],
+            "submitted_at": datetime.utcnow().isoformat()
+        }
+    )
+    
+    return {
+        "status": "proposal_submitted",
+        "message": "DAO proposal submitted"
+    }
 
 
 @app.get("/api/v1/dao/proposals")
-async def list_dao_proposals(
-    status: Optional[str] = Query(None, description="Filter by status"),
-    proposer: Optional[str] = Query(None, description="Filter by proposer"),
-    skip: int = 0,
-    limit: int = 20,
-    current_user: dict = Depends(get_current_tenant_and_user),
-    db: Session = Depends(get_db)
+async def list_proposals(
+    status: Optional[str] = "active",
+    context: dict = Depends(get_current_tenant_and_user)
 ):
-    """
-    List DAO proposals with filters
-    """
-    try:
-        query = db.query(DAOProposal)
-        
-        if status:
-            if status == "active":
-                query = query.filter(
-                    DAOProposal.voting_deadline > datetime.utcnow(),
-                    DAOProposal.executed == False
-                )
-            elif status == "executed":
-                query = query.filter(DAOProposal.executed == True)
-            elif status == "expired":
-                query = query.filter(
-                    DAOProposal.voting_deadline < datetime.utcnow(),
-                    DAOProposal.executed == False
-                )
-                
-        if proposer:
-            query = query.filter(DAOProposal.proposer == proposer)
-            
-        total = query.count()
-        proposals = query.offset(skip).limit(limit).all()
-        
-        # Get voting results for each proposal
-        results = []
-        for proposal in proposals:
-            votes = db.query(DAOVote).filter(
-                DAOVote.proposal_id == proposal.id
-            ).all()
-            
-            voting_results = {
-                "for": sum(v.voting_power for v in votes if v.vote == "for"),
-                "against": sum(v.voting_power for v in votes if v.vote == "against"),
-                "abstain": sum(v.voting_power for v in votes if v.vote == "abstain")
-            }
-            
-            results.append({
-                "proposal": {
-                    "id": proposal.id,
-                    "type": proposal.proposal_type,
-                    "title": proposal.title,
-                    "description": proposal.description,
-                    "proposer": proposal.proposer,
-                    "created_at": proposal.created_at.isoformat(),
-                    "voting_deadline": proposal.voting_deadline.isoformat(),
-                    "executed": proposal.executed
-                },
-                "voting_results": voting_results
-            })
-            
-        return {
-            "total": total,
-            "proposals": results
-        }
-        
-    except Exception as e:
-        logger.error(f"Error listing proposals: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# Integrate DAO governance with FL session creation
-async def create_fl_session_dao_governed(session_config: Dict[str, Any]) -> str:
-    """Create FL session through DAO governance"""
-    # This would be called by the DAO execution
-    session_id = str(uuid.uuid4())
+    """List DAO proposals"""
     
-    # Create session with DAO-approved parameters
-    session = FederatedLearningSession(
-        id=session_id,
-        model_type=session_config["model_type"],
-        min_participants=session_config["min_participants"],
-        max_participants=session_config["max_participants"],
-        rounds=session_config["rounds"],
-        learning_rate=session_config["learning_rate"],
-        privacy_budget=session_config.get("privacy_budget", 1.0),
-        reward_pool=session_config.get("reward_pool", 0),
-        dao_governed=True,
-        created_at=datetime.utcnow()
+    proposal_repo = app.state.proposal_repo
+    proposals = proposal_repo.get_active_proposals(
+        tenant_id=context["tenant_id"] if status == "active" else None
     )
     
-    # Store and initialize session
-    # ... session initialization logic ...
+    return {
+        "proposals": proposals,
+        "total": len(proposals)
+    }
+
+
+@app.post("/api/v1/dao/proposals/{proposal_id}/vote")
+async def vote_on_proposal(
+    proposal_id: str,
+    vote_type: VoteType,
+    voter_address: str,
+    private_key: str = Header(..., description="Blockchain private key"),
+    context: dict = Depends(get_current_tenant_and_user),
+    publisher: EventPublisher = Depends(get_event_publisher)
+):
+    """Vote on a DAO proposal"""
     
-    return session_id
+    if not fl_dao:
+        raise HTTPException(
+            status_code=503,
+            detail="DAO governance not enabled"
+        )
+        
+    # Publish vote event
+    publisher.publish_event(
+        topic=f"persistent://platformq/{context['tenant_id']}/dao-vote-submitted-events",
+        event={
+            "proposal_id": proposal_id,
+            "vote_type": vote_type.value,
+            "voter_address": voter_address,
+            "private_key": private_key,
+            "voted_at": datetime.utcnow().isoformat()
+        }
+    )
+    
+    return {
+        "status": "vote_submitted",
+        "message": "Vote submitted successfully"
+    }
 
 
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+@app.get("/api/v1/dao/proposals/{proposal_id}/votes")
+async def get_proposal_votes(
+    proposal_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get vote summary for a proposal"""
+    
+    vote_repo = app.state.vote_repo
+    votes = vote_repo.get_proposal_votes(proposal_id)
+    
+    return votes
+
+
+# Privacy optimization endpoint (legacy)
+@app.post('/api/v1/optimize-dag')
+async def optimize_dag(dag_data: Dict):
+    """Privacy-preserving DAG optimization"""
+    import hashlib
+    
+    # Mask sensitive parameters
+    for key in dag_data:
+        if 'private' in key:
+            dag_data[key] = hashlib.sha256(dag_data[key].encode()).hexdigest()
+            
+    return dag_data 

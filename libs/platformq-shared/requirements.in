@@ -1,0 +1,14 @@
+asyncpg
+pyignite>=0.6.1
+alembic
+passlib[bcrypt]
+python-multipart
+prometheus-client
+opentelemetry-api
+opentelemetry-sdk
+opentelemetry-instrumentation-fastapi
+opentelemetry-exporter-jaeger
+# Configuration management dependencies
+hvac  # HashiCorp Vault client
+pyyaml
+watchdog  # File system monitoring for hot-reload 

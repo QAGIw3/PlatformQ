@@ -1,15 +1,11 @@
-# Base dependencies
--r ../../requirements/base.in
+# Base requirements
+-c ../../requirements/base.txt
 
-# Additional dependencies for SeaTunnel service
-sqlalchemy==2.0.23
-httpx==0.25.2
-pyyaml==6.0.1
-kubernetes==28.1.0
-croniter==2.0.1  # For cron schedule parsing
-pyignite==0.6.1  # For Apache Ignite integration
-prometheus-client==0.19.0  # For metrics export 
--e ../../libs/platformq-shared
--e ../../libs/platformq-events
-fastapi
-uvicorn 
+# SeaTunnel specific dependencies
+kubernetes>=28.1.0  # Kubernetes client
+httpx>=0.24.0  # Async HTTP client
+pyyaml>=6.0  # YAML configuration
+avro-python3>=1.10.0  # Avro schema support
+pyignite>=0.6.0  # Apache Ignite client for metrics
+croniter>=1.4.0  # Cron expression parsing
+jinja2>=3.1.0  # Template engine for pipeline generation 

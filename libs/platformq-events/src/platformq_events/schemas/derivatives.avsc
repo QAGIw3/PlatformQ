@@ -1,0 +1,232 @@
+[
+    {
+        "namespace": "platformq.derivatives.events",
+        "type": "record",
+        "name": "MarketCreatedEvent",
+        "fields": [
+            {"name": "event_id", "type": "string"},
+            {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+            {"name": "market_id", "type": "string"},
+            {"name": "underlying_asset", "type": "string"},
+            {"name": "market_type", "type": {"type": "enum", "name": "MarketType", "symbols": ["PERPETUAL", "FUTURE", "OPTION", "PREDICTION", "EXOTIC"]}},
+            {"name": "creator_id", "type": "string"},
+            {"name": "oracle_config", "type": {"type": "array", "items": "string"}},
+            {"name": "risk_parameters", "type": {
+                "type": "record",
+                "name": "RiskParameters",
+                "fields": [
+                    {"name": "max_leverage", "type": "int"},
+                    {"name": "initial_margin", "type": "string"},
+                    {"name": "maintenance_margin", "type": "string"},
+                    {"name": "max_position_size", "type": "string"},
+                    {"name": "tick_size", "type": "string"}
+                ]
+            }},
+            {"name": "contract_address", "type": ["null", "string"], "default": null},
+            {"name": "metadata", "type": {"type": "map", "values": "string"}}
+        ]
+    },
+    {
+        "namespace": "platformq.derivatives.events",
+        "type": "record",
+        "name": "OrderPlacedEvent",
+        "fields": [
+            {"name": "event_id", "type": "string"},
+            {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+            {"name": "order_id", "type": "string"},
+            {"name": "market_id", "type": "string"},
+            {"name": "user_id", "type": "string"},
+            {"name": "side", "type": {"type": "enum", "name": "OrderSide", "symbols": ["BUY", "SELL"]}},
+            {"name": "order_type", "type": {"type": "enum", "name": "OrderType", "symbols": ["MARKET", "LIMIT", "STOP", "STOP_LIMIT", "TRAILING_STOP"]}},
+            {"name": "size", "type": "string"},
+            {"name": "price", "type": ["null", "string"], "default": null},
+            {"name": "stop_price", "type": ["null", "string"], "default": null},
+            {"name": "leverage", "type": "int"},
+            {"name": "time_in_force", "type": {"type": "enum", "name": "TimeInForce", "symbols": ["GTC", "IOC", "FOK", "GTD"]}},
+            {"name": "post_only", "type": "boolean", "default": false},
+            {"name": "reduce_only", "type": "boolean", "default": false},
+            {"name": "client_order_id", "type": ["null", "string"], "default": null}
+        ]
+    },
+    {
+        "namespace": "platformq.derivatives.events",
+        "type": "record",
+        "name": "TradeExecutedEvent",
+        "fields": [
+            {"name": "event_id", "type": "string"},
+            {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+            {"name": "trade_id", "type": "string"},
+            {"name": "market_id", "type": "string"},
+            {"name": "maker_order_id", "type": "string"},
+            {"name": "taker_order_id", "type": "string"},
+            {"name": "maker_user_id", "type": "string"},
+            {"name": "taker_user_id", "type": "string"},
+            {"name": "price", "type": "string"},
+            {"name": "size", "type": "string"},
+            {"name": "side", "type": "platformq.derivatives.events.OrderSide"},
+            {"name": "maker_fee", "type": "string"},
+            {"name": "taker_fee", "type": "string"},
+            {"name": "maker_fee_currency", "type": "string"},
+            {"name": "taker_fee_currency", "type": "string"},
+            {"name": "settlement_status", "type": {"type": "enum", "name": "SettlementStatus", "symbols": ["PENDING", "SETTLED", "FAILED"]}}
+        ]
+    },
+    {
+        "namespace": "platformq.derivatives.events",
+        "type": "record",
+        "name": "PositionOpenedEvent",
+        "fields": [
+            {"name": "event_id", "type": "string"},
+            {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+            {"name": "position_id", "type": "string"},
+            {"name": "user_id", "type": "string"},
+            {"name": "market_id", "type": "string"},
+            {"name": "side", "type": {"type": "enum", "name": "PositionSide", "symbols": ["LONG", "SHORT"]}},
+            {"name": "size", "type": "string"},
+            {"name": "entry_price", "type": "string"},
+            {"name": "leverage", "type": "int"},
+            {"name": "margin", "type": "string"},
+            {"name": "collateral_composition", "type": {
+                "type": "array",
+                "items": {
+                    "type": "record",
+                    "name": "CollateralItem",
+                    "fields": [
+                        {"name": "asset", "type": "string"},
+                        {"name": "amount", "type": "string"},
+                        {"name": "value_usd", "type": "string"}
+                    ]
+                }
+            }},
+            {"name": "liquidation_price", "type": "string"},
+            {"name": "initial_health_factor", "type": "string"}
+        ]
+    },
+    {
+        "namespace": "platformq.derivatives.events",
+        "type": "record",
+        "name": "PositionUpdatedEvent",
+        "fields": [
+            {"name": "event_id", "type": "string"},
+            {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+            {"name": "position_id", "type": "string"},
+            {"name": "update_type", "type": {"type": "enum", "name": "UpdateType", "symbols": ["SIZE_INCREASE", "SIZE_DECREASE", "MARGIN_ADD", "MARGIN_REMOVE", "STOP_LOSS_SET", "TAKE_PROFIT_SET"]}},
+            {"name": "old_size", "type": "string"},
+            {"name": "new_size", "type": "string"},
+            {"name": "old_margin", "type": "string"},
+            {"name": "new_margin", "type": "string"},
+            {"name": "realized_pnl", "type": ["null", "string"], "default": null},
+            {"name": "new_entry_price", "type": "string"},
+            {"name": "new_liquidation_price", "type": "string"},
+            {"name": "new_health_factor", "type": "string"}
+        ]
+    },
+    {
+        "namespace": "platformq.derivatives.events",
+        "type": "record",
+        "name": "LiquidationEvent",
+        "fields": [
+            {"name": "event_id", "type": "string"},
+            {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+            {"name": "liquidation_id", "type": "string"},
+            {"name": "position_id", "type": "string"},
+            {"name": "user_id", "type": "string"},
+            {"name": "market_id", "type": "string"},
+            {"name": "liquidation_type", "type": {"type": "enum", "name": "LiquidationType", "symbols": ["PARTIAL", "FULL"]}},
+            {"name": "liquidated_size", "type": "string"},
+            {"name": "remaining_size", "type": "string"},
+            {"name": "liquidation_price", "type": "string"},
+            {"name": "mark_price", "type": "string"},
+            {"name": "liquidator_id", "type": ["null", "string"], "default": null},
+            {"name": "liquidator_bonus", "type": "string"},
+            {"name": "insurance_fund_loss", "type": ["null", "string"], "default": null},
+            {"name": "final_health_factor", "type": "string"}
+        ]
+    },
+    {
+        "namespace": "platformq.derivatives.events",
+        "type": "record",
+        "name": "FundingPaymentEvent",
+        "fields": [
+            {"name": "event_id", "type": "string"},
+            {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+            {"name": "market_id", "type": "string"},
+            {"name": "funding_rate", "type": "string"},
+            {"name": "mark_price", "type": "string"},
+            {"name": "index_price", "type": "string"},
+            {"name": "open_interest_long", "type": "string"},
+            {"name": "open_interest_short", "type": "string"},
+            {"name": "total_funding_paid", "type": "string"},
+            {"name": "total_funding_received", "type": "string"},
+            {"name": "next_funding_time", "type": "long", "logicalType": "timestamp-millis"}
+        ]
+    },
+    {
+        "namespace": "platformq.derivatives.events",
+        "type": "record",
+        "name": "CollateralDepositEvent",
+        "fields": [
+            {"name": "event_id", "type": "string"},
+            {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+            {"name": "user_id", "type": "string"},
+            {"name": "asset", "type": "string"},
+            {"name": "amount", "type": "string"},
+            {"name": "value_usd", "type": "string"},
+            {"name": "tier", "type": {"type": "enum", "name": "CollateralTier", "symbols": ["STABLE", "BLUE_CHIP", "PLATFORM", "DIGITAL_ASSET", "REPUTATION"]}},
+            {"name": "new_total_collateral", "type": "string"},
+            {"name": "new_borrowing_power", "type": "string"},
+            {"name": "tx_hash", "type": ["null", "string"], "default": null}
+        ]
+    },
+    {
+        "namespace": "platformq.derivatives.events",
+        "type": "record",
+        "name": "InsurancePoolEvent",
+        "fields": [
+            {"name": "event_id", "type": "string"},
+            {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+            {"name": "pool_tier", "type": {"type": "enum", "name": "PoolTier", "symbols": ["STABLE", "BALANCED", "AGGRESSIVE"]}},
+            {"name": "event_type", "type": {"type": "enum", "name": "PoolEventType", "symbols": ["STAKE", "UNSTAKE", "LOSS_COVERED", "REWARD_CLAIMED"]}},
+            {"name": "user_id", "type": ["null", "string"], "default": null},
+            {"name": "amount", "type": "string"},
+            {"name": "pool_balance_before", "type": "string"},
+            {"name": "pool_balance_after", "type": "string"},
+            {"name": "apy", "type": ["null", "string"], "default": null},
+            {"name": "utilization_rate", "type": ["null", "string"], "default": null}
+        ]
+    },
+    {
+        "namespace": "platformq.derivatives.events",
+        "type": "record",
+        "name": "MarketProposalEvent",
+        "fields": [
+            {"name": "event_id", "type": "string"},
+            {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+            {"name": "proposal_id", "type": "string"},
+            {"name": "proposer_id", "type": "string"},
+            {"name": "event_type", "type": {"type": "enum", "name": "ProposalEventType", "symbols": ["CREATED", "REVIEW_COMPLETED", "VOTING_STARTED", "VOTING_ENDED", "APPROVED", "REJECTED", "IMPLEMENTED"]}},
+            {"name": "market_spec", "type": ["null", {"type": "map", "values": "string"}], "default": null},
+            {"name": "votes_for", "type": ["null", "string"], "default": null},
+            {"name": "votes_against", "type": ["null", "string"], "default": null},
+            {"name": "votes_abstain", "type": ["null", "string"], "default": null},
+            {"name": "approval_rate", "type": ["null", "string"], "default": null},
+            {"name": "implementation_date", "type": ["null", "long"], "default": null, "logicalType": "timestamp-millis"}
+        ]
+    },
+    {
+        "namespace": "platformq.derivatives.events",
+        "type": "record",
+        "name": "RiskAlertEvent",
+        "fields": [
+            {"name": "event_id", "type": "string"},
+            {"name": "timestamp", "type": "long", "logicalType": "timestamp-millis"},
+            {"name": "alert_type", "type": {"type": "enum", "name": "AlertType", "symbols": ["HIGH_VOLATILITY", "LOW_LIQUIDITY", "ANOMALY_DETECTED", "CORRELATION_SPIKE", "CIRCUIT_BREAKER_TRIGGERED"]}},
+            {"name": "severity", "type": {"type": "enum", "name": "Severity", "symbols": ["INFO", "WARNING", "CRITICAL"]}},
+            {"name": "market_id", "type": ["null", "string"], "default": null},
+            {"name": "user_id", "type": ["null", "string"], "default": null},
+            {"name": "message", "type": "string"},
+            {"name": "metrics", "type": {"type": "map", "values": "string"}},
+            {"name": "recommended_actions", "type": {"type": "array", "items": "string"}}
+        ]
+    }
+] 

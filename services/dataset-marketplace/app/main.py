@@ -4,36 +4,90 @@ Dataset Marketplace Service
 Specialized marketplace for training data sales
 """
 
-from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File
-from fastapi.middleware.cors import CORSMiddleware
+import logging
+from contextlib import asynccontextmanager
 from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
-import logging
-from pydantic import BaseModel
-import asyncio
-import httpx
-from enum import Enum
 import hashlib
 import json
+import uuid
+
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File
+from pydantic import BaseModel
+from sqlalchemy.orm import Session
+import asyncio
+import httpx
+
+from platformq_shared import (
+    create_base_app,
+    ErrorCode,
+    AppException,
+    EventProcessor,
+    get_pulsar_client
+)
+from platformq_shared.event_publisher import EventPublisher
+from platformq_shared.database import get_db
+
+from .models import (
+    DatasetListing,
+    DatasetPurchase,
+    DatasetType,
+    LicenseType,
+    DatasetStatus,
+    PurchaseStatus
+)
+from .repository import (
+    DatasetListingRepository,
+    DatasetPurchaseRepository,
+    DatasetReviewRepository,
+    DatasetAnalyticsRepository,
+    DatasetQualityCheckRepository
+)
+from .event_processors import DatasetMarketplaceEventProcessor
 
 # Setup logging
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Event processor instance
+event_processor = None
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    global event_processor
+    
+    # Startup
+    logger.info("Initializing Dataset Marketplace Service...")
+    
+    # Initialize event processor
+    pulsar_client = get_pulsar_client()
+    event_processor = DatasetMarketplaceEventProcessor(
+        pulsar_client=pulsar_client,
+        service_name="dataset-marketplace-service"
+    )
+    
+    # Start event processor
+    await event_processor.start()
+    
+    logger.info("Dataset Marketplace Service initialized successfully")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Dataset Marketplace Service...")
+    
+    if event_processor:
+        await event_processor.stop()
+    
+    logger.info("Dataset Marketplace Service shutdown complete")
+
 # Create FastAPI app
-app = FastAPI(
+app = create_base_app(
     title="Dataset Marketplace Service",
     description="Marketplace for buying and selling training datasets",
-    version="1.0.0"
-)
-
-# Add CORS middleware
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+    version="1.0.0",
+    lifespan=lifespan,
+    event_processors=[event_processor] if event_processor else []
 )
 
 

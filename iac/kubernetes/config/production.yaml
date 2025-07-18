@@ -1,0 +1,65 @@
+# Production environment configuration overrides
+# These values override the base configuration when ENVIRONMENT=production
+
+# API Configuration
+api:
+  cors:
+    origins:
+      - "https://platformq.io"
+      - "https://app.platformq.io"
+      - "https://api.platformq.io"
+
+# Database Configuration
+database:
+  pool_size: 50
+  max_overflow: 100
+  ssl_mode: "require"
+
+# Pulsar Configuration
+pulsar:
+  tls_enabled: true
+  auth_enabled: true
+  num_io_threads: 8
+  num_listener_threads: 8
+
+# Rate Limiting
+rate_limiting:
+  default_requests: 1000
+  default_period: 60
+
+# Monitoring
+monitoring:
+  log_level: "WARNING"
+  detailed_metrics: true
+  performance_tracking: true
+
+# Security
+security:
+  jwt_expiration_minutes: 480  # 8 hours
+  password_min_length: 12
+  enforce_2fa: true
+  session_timeout_minutes: 60
+
+# Caching
+caching:
+  default_ttl: 3600  # 1 hour
+  max_entries: 100000
+  ignite_distributed_cache: true  # Use Ignite for distributed caching
+
+# Performance
+performance:
+  worker_processes: 4
+  worker_connections: 1024
+  keepalive_timeout: 65
+  request_timeout: 30
+
+# Feature Flags (production specific)
+feature_flags:
+  global:
+    distributed_tracing: true
+    advanced_analytics: true
+    ml_predictions: true
+    blockchain_integration: true
+    federated_learning: true
+    debug_mode: false
+    maintenance_mode: false 

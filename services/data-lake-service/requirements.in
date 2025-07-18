@@ -17,4 +17,6 @@ great-expectations
 pydeequ
 asyncio-mqtt
 boto3
-findspark 
+findspark
+pyignite
+sqlalchemy 

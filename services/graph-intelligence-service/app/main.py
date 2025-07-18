@@ -1,56 +1,89 @@
-from platformq.shared.base_service import create_base_app
-from fastapi import Depends, HTTPException, BackgroundTasks, Request
+"""
+Graph Intelligence Service
+
+JanusGraph-based knowledge graph and intelligence platform.
+"""
+
+from contextlib import asynccontextmanager
+from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
 from gremlin_python.structure.graph import Graph
 from gremlin_python.driver.driver_remote_connection import DriverRemoteConnection
-from .api import endpoints
-from .api.deps import (
-    get_db_session, 
-    get_api_key_crud_placeholder, 
-    get_user_crud_placeholder, 
-    get_password_verifier_placeholder,
-    get_current_tenant_and_user
-)
-from .api.endpoints import graph_api
 import logging
-import os
-import httpx
 import asyncio
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
-import threading
-import time
 
-# Assuming the generate_grpc.sh script has been run
-from .grpc_generated import graph_intelligence_pb2, graph_intelligence_pb2_grpc
-from fastapi import FastAPI
-from .messaging.pulsar_consumer import start_consumer, stop_consumer
-from .simulation_lineage import SimulationLineageTracker
-from .core.config import settings
-from .db.janusgraph_connector import JanusGraphConnector
-from .services.graph_processor import GraphProcessor
-from .messaging.data_lake_consumer import DataLakeConsumer
-from .messaging.activity_consumer import ActivityConsumer
-from .messaging.digital_asset_consumer import DigitalAssetConsumer
+from platformq_shared import (
+    create_base_app,
+    EventProcessor,
+    ServiceClients,
+    add_error_handlers
+)
+from platformq_shared.config import ConfigLoader
+
+from .api import endpoints
+from .api.endpoints import graph_api
+from .api.deps import (
+    get_db_session, 
+    get_api_key_crud, 
+    get_user_crud, 
+    get_password_verifier,
+    get_current_tenant_and_user
+)
+from .repository import (
+    GraphNodeRepository,
+    GraphEdgeRepository,
+    GraphAnalyticsRepository
+)
+from .event_processors import (
+    GraphUpdateProcessor,
+    LineageProcessor,
+    TrustNetworkProcessor,
+    GraphQueryProcessor
+)
 from .db.janusgraph import JanusGraph
 from .db.schema_manager import SchemaManager
-from contextlib import asynccontextmanager
+from .services.graph_processor import GraphProcessor
+from .services.lineage_tracker import LineageTracker
+from .services.trust_network import TrustNetworkManager
 
-# Global instances
-graph_connector: Optional[JanusGraphConnector] = None
-graph_processor: Optional[GraphProcessor] = None
-data_lake_consumer: Optional[DataLakeConsumer] = None
-activity_consumer: Optional[ActivityConsumer] = None
-digital_asset_consumer: Optional[DigitalAssetConsumer] = None
-consumer_tasks: List[asyncio.Task] = []
+# gRPC imports
+from .grpc_generated import graph_intelligence_pb2, graph_intelligence_pb2_grpc
+
+logger = logging.getLogger(__name__)
+
+# Service components
+graph_update_processor = None
+lineage_processor = None
+trust_processor = None
+query_processor = None
+graph_processor = None
+lineage_tracker = None
+trust_manager = None
+service_clients = None
+gremlin_url = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global graph_connector, graph_processor, data_lake_consumer, activity_consumer, digital_asset_consumer, consumer_tasks
+    global graph_update_processor, lineage_processor, trust_processor, query_processor
+    global graph_processor, lineage_tracker, trust_manager, service_clients, gremlin_url
     
     # Startup
-    logger.info("Initializing Graph Intelligence Service...")
-
+    logger.info("Starting Graph Intelligence Service...")
+    
+    # Initialize configuration
+    config_loader = ConfigLoader()
+    settings = config_loader.load_settings()
+    
+    # Initialize service clients
+    service_clients = ServiceClients(base_timeout=30.0, max_retries=3)
+    app.state.service_clients = service_clients
+    
+    # Initialize JanusGraph connection
+    gremlin_url = settings.get("gremlin_server", "ws://janusgraph:8182/gremlin")
+    
     # Initialize and create schema
     janus_graph = JanusGraph()
     schema_manager = SchemaManager(janus_graph)
@@ -59,559 +92,430 @@ async def lifespan(app: FastAPI):
         # Wait for critical indexes to be ready
         schema_manager.wait_for_index_status('by_asset_id')
         schema_manager.wait_for_index_status('by_user_id')
+        logger.info("Graph schema initialized")
     except Exception as e:
         logger.error(f"Could not initialize graph schema: {e}")
-        # Decide if the application should fail to start
-        # For now, we will log the error and continue
+        # Continue anyway - schema might already exist
     
-    graph_connector = JanusGraphConnector(
-        gremlin_server=settings.GREMLIN_SERVER,
-        graph_name=settings.GRAPH_NAME
+    # Initialize repositories
+    app.state.node_repo = GraphNodeRepository(
+        gremlin_url,
+        event_publisher=app.state.event_publisher
     )
-    graph_processor = GraphProcessor(graph_connector)
+    app.state.edge_repo = GraphEdgeRepository(
+        gremlin_url,
+        event_publisher=app.state.event_publisher
+    )
+    app.state.analytics_repo = GraphAnalyticsRepository(
+        gremlin_url,
+        event_publisher=app.state.event_publisher
+    )
     
-    data_lake_consumer = DataLakeConsumer(graph_processor)
-    activity_consumer = ActivityConsumer()
-    digital_asset_consumer = DigitalAssetConsumer()
+    # Initialize services
+    graph_processor = GraphProcessor(gremlin_url)
+    app.state.graph_processor = graph_processor
     
-    await activity_consumer.start()
-    await digital_asset_consumer.start()
+    lineage_tracker = LineageTracker(
+        app.state.node_repo,
+        app.state.edge_repo
+    )
+    app.state.lineage_tracker = lineage_tracker
     
-    consumer_tasks.append(asyncio.create_task(data_lake_consumer.consume_messages()))
-    consumer_tasks.append(asyncio.create_task(activity_consumer.consume_messages()))
-    consumer_tasks.append(asyncio.create_task(digital_asset_consumer.consume_messages()))
+    trust_manager = TrustNetworkManager(
+        app.state.edge_repo,
+        vc_service_url=settings.get("vc_service_url", "http://verifiable-credential-service:8000")
+    )
+    await trust_manager.initialize()
+    app.state.trust_manager = trust_manager
+    
+    # Initialize event processors
+    graph_update_processor = GraphUpdateProcessor(
+        service_name="graph-intelligence-service",
+        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
+        node_repo=app.state.node_repo,
+        edge_repo=app.state.edge_repo,
+        analytics_repo=app.state.analytics_repo,
+        graph_processor=graph_processor
+    )
+    
+    lineage_processor = LineageProcessor(
+        service_name="graph-intelligence-lineage",
+        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
+        node_repo=app.state.node_repo,
+        edge_repo=app.state.edge_repo,
+        lineage_tracker=lineage_tracker
+    )
+    
+    trust_processor = TrustNetworkProcessor(
+        service_name="graph-intelligence-trust",
+        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
+        edge_repo=app.state.edge_repo,
+        trust_manager=trust_manager,
+        service_clients=service_clients
+    )
+    
+    query_processor = GraphQueryProcessor(
+        service_name="graph-intelligence-query",
+        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
+        analytics_repo=app.state.analytics_repo,
+        graph_processor=graph_processor
+    )
+    
+    # Start event processors
+    await asyncio.gather(
+        graph_update_processor.start(),
+        lineage_processor.start(),
+        trust_processor.start(),
+        query_processor.start()
+    )
+    
+    # Start trust network sync
+    app.state.trust_sync_task = asyncio.create_task(
+        trust_manager.sync_trust_network()
+    )
     
     logger.info("Graph Intelligence Service initialized successfully")
+    
     yield
+    
     # Shutdown
     logger.info("Shutting down Graph Intelligence Service...")
-    for task in consumer_tasks:
-        task.cancel()
     
-    if data_lake_consumer:
-        data_lake_consumer.close()
-    if activity_consumer:
-        await activity_consumer.close()
-    if digital_asset_consumer:
-        await digital_asset_consumer.close()
-    if graph_connector:
-        graph_connector.close()
+    # Cancel trust sync
+    if hasattr(app.state, "trust_sync_task"):
+        app.state.trust_sync_task.cancel()
+        
+    # Stop event processors
+    await asyncio.gather(
+        graph_update_processor.stop() if graph_update_processor else asyncio.sleep(0),
+        lineage_processor.stop() if lineage_processor else asyncio.sleep(0),
+        trust_processor.stop() if trust_processor else asyncio.sleep(0),
+        query_processor.stop() if query_processor else asyncio.sleep(0)
+    )
+    
+    # Cleanup resources
+    if trust_manager:
+        await trust_manager.cleanup()
+        
     logger.info("Graph Intelligence Service shutdown complete")
 
-app = FastAPI(
-    title="PlatformQ Graph Intelligence Service",
-    description="Service for graph-based intelligence and data discovery.",
-    version="1.0.0",
-    lifespan=lifespan,
-)
 
-logger = logging.getLogger(__name__)
-
+# gRPC Service implementation
 class GraphIntelligenceServiceServicer(graph_intelligence_pb2_grpc.GraphIntelligenceServiceServicer):
     async def GetCommunityInsights(self, request, context):
+        """gRPC endpoint for community insights"""
         logging.info(f"gRPC: Received GetCommunityInsights request for tenant: {request.tenant_id}")
-        g = Graph().traversal().withRemote(DriverRemoteConnection(settings.gremlin_server_url, 'g'))
         
-        # Enhanced with trust data
-        community_data = g.V().has('tenant_id', request.tenant_id) \
-                           .group().by('community').by('name').toList()
-
-        # Transform the Gremlin output into the protobuf message format
+        # Use analytics repository
+        analytics_repo = context.app.state.analytics_repo
+        communities = analytics_repo.find_communities(
+            tenant_id=request.tenant_id,
+            algorithm="label_propagation"
+        )
+        
+        # Transform to protobuf format
         response = graph_intelligence_pb2.GetCommunityInsightsResponse()
-        for comm in community_data:
-            for comm_id, user_list in comm.items():
-                community_proto = response.communities.add()
-                community_proto.community_id = str(comm_id)
-                community_proto.user_ids.extend(user_list)
+        for comm in communities:
+            community_proto = response.communities.add()
+            community_proto.community_id = comm["community_id"]
+            community_proto.user_ids.extend(comm["members"])
         
         return response
 
+
+# Create app with enhanced patterns
 app = create_base_app(
     service_name="graph-intelligence-service",
     db_session_dependency=get_db_session,
-    api_key_crud_dependency=get_api_key_crud_placeholder,
-    user_crud_dependency=get_user_crud_placeholder,
-    password_verifier_dependency=get_password_verifier_placeholder,
-    # --- gRPC Configuration ---
+    api_key_crud_dependency=get_api_key_crud,
+    user_crud_dependency=get_user_crud,
+    password_verifier_dependency=get_password_verifier,
+    event_processors=[
+        graph_update_processor, lineage_processor,
+        trust_processor, query_processor
+    ] if all([graph_update_processor, lineage_processor, trust_processor, query_processor]) else [],
+    # gRPC Configuration
     grpc_servicer=GraphIntelligenceServiceServicer(),
     grpc_add_servicer_func=graph_intelligence_pb2_grpc.add_GraphIntelligenceServiceServicer_to_server,
     grpc_port=50052
 )
 
-# Trust Network Synchronization
-class TrustNetworkSync:
-    """Synchronizes trust network data from VC service to JanusGraph"""
-    
-    def __init__(self, gremlin_url: str, vc_service_url: str):
-        self.gremlin_url = gremlin_url
-        self.vc_service_url = vc_service_url
-        self.g = None
-        self.running = False
-        self.sync_interval = 300  # 5 minutes
-        
-    def connect(self):
-        """Connect to JanusGraph"""
-        self.g = Graph().traversal().withRemote(
-            DriverRemoteConnection(self.gremlin_url, 'g')
-        )
-        
-    def sync_trust_data(self):
-        """Fetch trust network data and update graph"""
-        try:
-            # Fetch trust network stats
-            with httpx.Client() as client:
-                response = client.get(f"{self.vc_service_url}/api/v1/trust/network/stats")
-                if response.status_code == 200:
-                    stats = response.json()
-                    logger.info(f"Trust network stats: {stats}")
-                    
-            # TODO: Fetch individual entities and relationships
-            # This would require pagination through all entities
-            
-        except Exception as e:
-            logger.error(f"Error syncing trust data: {e}")
-            
-    def update_entity_in_graph(self, entity_id: str, trust_score: float, trust_level: str):
-        """Update or create entity node with trust data"""
-        try:
-            # Check if entity exists
-            existing = self.g.V().has('entity_id', entity_id).toList()
-            
-            if existing:
-                # Update existing node
-                self.g.V().has('entity_id', entity_id) \
-                    .property('trust_score', trust_score) \
-                    .property('trust_level', trust_level) \
-                    .property('last_updated', datetime.utcnow().isoformat()) \
-                    .iterate()
-            else:
-                # Create new node
-                self.g.addV('TrustEntity') \
-                    .property('entity_id', entity_id) \
-                    .property('trust_score', trust_score) \
-                    .property('trust_level', trust_level) \
-                    .property('created_at', datetime.utcnow().isoformat()) \
-                    .property('last_updated', datetime.utcnow().isoformat()) \
-                    .iterate()
-                    
-        except Exception as e:
-            logger.error(f"Error updating entity {entity_id} in graph: {e}")
-            
-    def update_trust_relationship(self, from_entity: str, to_entity: str, trust_value: float):
-        """Update or create trust edge between entities"""
-        try:
-            # Ensure both entities exist
-            for entity_id in [from_entity, to_entity]:
-                if not self.g.V().has('entity_id', entity_id).hasNext():
-                    self.g.addV('TrustEntity').property('entity_id', entity_id).iterate()
-            
-            # Check if edge exists
-            existing_edge = self.g.V().has('entity_id', from_entity) \
-                .outE('TRUSTS').where(__.inV().has('entity_id', to_entity)) \
-                .toList()
-                
-            if existing_edge:
-                # Update existing edge
-                self.g.E(existing_edge[0].id) \
-                    .property('trust_value', trust_value) \
-                    .property('last_updated', datetime.utcnow().isoformat()) \
-                    .iterate()
-            else:
-                # Create new edge
-                self.g.V().has('entity_id', from_entity).as_('from') \
-                    .V().has('entity_id', to_entity).as_('to') \
-                    .addE('TRUSTS').from_('from').to('to') \
-                    .property('trust_value', trust_value) \
-                    .property('created_at', datetime.utcnow().isoformat()) \
-                    .iterate()
-                    
-        except Exception as e:
-            logger.error(f"Error updating trust relationship {from_entity} -> {to_entity}: {e}")
-            
-    def run_sync_loop(self):
-        """Run continuous synchronization"""
-        self.running = True
-        while self.running:
-            try:
-                self.sync_trust_data()
-                time.sleep(self.sync_interval)
-            except Exception as e:
-                logger.error(f"Sync loop error: {e}")
-                time.sleep(60)  # Wait before retry
-                
-    def stop(self):
-        """Stop the sync loop"""
-        self.running = False
-
-def get_trust_sync(request: Request) -> TrustNetworkSync:
-    return request.app.state.trust_sync
-
-# Initialize simulation lineage tracker
-@app.on_event("startup")
-async def extended_startup():
-    """Initialize simulation lineage tracker"""
-    app.state.simulation_lineage = SimulationLineageTracker()
-    await app.state.simulation_lineage.initialize_schema()
-    logger.info("Simulation lineage tracker initialized")
-
-@app.on_event("startup")
-async def startup_event():
-    logging.basicConfig(level=logging.INFO)
-    logging.info("Starting up graph-intelligence-service...")
-    
-    # Start trust network sync
-    trust_sync = TrustNetworkSync(
-        gremlin_url=settings.gremlin_server_url,
-        vc_service_url=settings.vc_service_url,
-    )
-    trust_sync.connect()
-    sync_thread = threading.Thread(target=trust_sync.run_sync_loop, daemon=True)
-    sync_thread.start()
-    app.state.trust_sync = trust_sync
-    # start_consumer() # This line is removed as per the new_code, as the consumer is now managed by lifespan
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    logging.info("Shutting down graph-intelligence-service...")
-    if hasattr(app.state, 'trust_sync'):
-        app.state.trust_sync.stop()
-    # stop_consumer() # This line is removed as per the new_code, as the consumer is now managed by lifespan
+# Set lifespan
+app.router.lifespan_context = lifespan
 
 # Include service-specific routers
-app.include_router(endpoints.router, prefix="/api/v1", tags=["graph-intelligence-service"])
-app.include_router(graph_api.router, prefix="/api/v1/graph", tags=["graph-api"])
+app.include_router(graph_api.router, prefix="/api/v1/graph", tags=["graph"])
+app.include_router(endpoints.router, prefix="/api/v1", tags=["graph-intelligence"])
 
-# Service-specific root endpoint
+# Service root endpoint
 @app.get("/")
 def read_root():
-    return {"message": "graph-intelligence-service is running"}
+    return {
+        "service": "graph-intelligence-service",
+        "version": "2.0",
+        "features": [
+            "janusgraph",
+            "knowledge-graph",
+            "data-lineage",
+            "trust-network",
+            "community-detection",
+            "graph-analytics",
+            "event-driven",
+            "grpc-support"
+        ]
+    }
 
-@app.get("/health")
-async def health_check():
-    """Health check endpoint"""
+
+# Health check with graph connectivity
+@app.get("/health/detailed")
+async def detailed_health_check():
+    """Detailed health check including graph connectivity"""
+    health = {
+        "status": "healthy",
+        "checks": {}
+    }
+    
+    # Check JanusGraph connectivity
     try:
-        # Check JanusGraph connection
-        if graph_connector:
-            graph_status = "connected" if graph_connector.g else "disconnected"
-        else:
-            graph_status = "not initialized"
-        
-        # Check Pulsar consumers
-        consumer_status = {
-            "data_lake": "active" if data_lake_consumer else "inactive",
-            "activity": "active" if activity_consumer else "inactive",
-            "digital_asset": "active" if digital_asset_consumer else "inactive"
-        }
-        
-        return {
-            "status": "healthy",
-            "graph_database": graph_status,
-            "consumers": consumer_status,
-            "timestamp": datetime.utcnow().isoformat()
+        g = Graph().traversal().withRemote(DriverRemoteConnection(gremlin_url, 'g'))
+        node_count = g.V().count().next()
+        health["checks"]["janusgraph"] = {
+            "status": "connected",
+            "node_count": node_count
         }
     except Exception as e:
-        return {
-            "status": "unhealthy",
-            "error": str(e),
-            "timestamp": datetime.utcnow().isoformat()
+        health["status"] = "unhealthy"
+        health["checks"]["janusgraph"] = {
+            "status": "down",
+            "error": str(e)
         }
-
-@app.get("/api/v1/insights/{insight_type}")
-def get_graph_insight(
-    insight_type: str,
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    tenant_id = str(context["tenant_id"])
-    g = Graph().traversal().withRemote(DriverRemoteConnection(settings.gremlin_server_url, 'g'))
-    
-    if insight_type == "community-detection":
-        # This logic is now handled by the gRPC endpoint.
-        # This REST endpoint could be deprecated or kept for administrative purposes.
-        # For now, we'll return a message pointing to the new method.
-        return {"message": "Community detection is now performed via the gRPC GetCommunityInsights method."}
-    
-    elif insight_type == "centrality":
-        # This query finds the most 'central' documents by calculating their
-        # in-degree (how many users have edited them).
-        centrality = g.V().has('tenant_id', tenant_id).hasLabel('Document') \
-                          .order().by(__.inE('EDITED').count(), decr) \
-                          .limit(10).valueMap('name', 'path').toList()
-        return {"insight": "centrality", "data": centrality}
         
-    else:
-        raise HTTPException(status_code=404, detail="Insight type not found")
-
-# New Trust-Enhanced Endpoints
-@app.get("/api/v1/insights/trust-clusters")
-async def get_trust_clusters(
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Identify clusters of high-trust entities"""
-    g = Graph().traversal().withRemote(DriverRemoteConnection(settings.gremlin_server_url, 'g'))
-    
-    # Find clusters of entities with high mutual trust
-    clusters = g.V().has('trust_score', __.gte(0.7)) \
-        .group().by().by(
-            __.both('TRUSTS').has('trust_score', __.gte(0.7)).values('entity_id').fold()
-        ).toList()
-    
-    # Format results
-    trust_clusters = []
-    for cluster_data in clusters:
-        for entity, connected in cluster_data.items():
-            if len(connected) >= 2:  # At least 3 entities in cluster
-                trust_clusters.append({
-                    "core_entity": entity.get('entity_id', 'unknown'),
-                    "cluster_members": connected,
-                    "cluster_size": len(connected) + 1,
-                    "avg_trust_score": entity.get('trust_score', 0)
-                })
-    
-    return {
-        "tenant_id": context["tenant_id"],
-        "cluster_count": len(trust_clusters),
-        "clusters": trust_clusters
-    }
-
-@app.get("/api/v1/insights/trust-paths")
-async def find_trust_paths(
-    from_entity: str,
-    to_entity: str,
-    max_depth: int = 6,
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Find trust paths between two entities"""
-    g = Graph().traversal().withRemote(DriverRemoteConnection(settings.gremlin_server_url, 'g'))
-    
-    # Find paths with trust scores
-    paths = g.V().has('entity_id', from_entity) \
-        .repeat(
-            __.outE('TRUSTS').has('trust_value', __.gte(0.1)).inV()
-        ).until(
-            __.has('entity_id', to_entity).or_().loops().is_(max_depth)
-        ).has('entity_id', to_entity) \
-        .path().by('entity_id').by('trust_value') \
-        .toList()
-    
-    # Calculate cumulative trust for each path
-    trust_paths = []
-    for path in paths:
-        entities = [p for i, p in enumerate(path) if i % 2 == 0]
-        trust_values = [p for i, p in enumerate(path) if i % 2 == 1]
+    # Check trust network sync
+    if hasattr(app.state, "trust_manager"):
+        health["checks"]["trust_network"] = {
+            "status": "active" if app.state.trust_manager.is_syncing else "inactive",
+            "last_sync": app.state.trust_manager.last_sync_time
+        }
         
-        # Calculate path trust (product of edge trusts)
-        path_trust = 1.0
-        for tv in trust_values:
-            path_trust *= tv
-            
-        trust_paths.append({
-            "path": entities,
-            "trust_values": trust_values,
-            "path_trust": path_trust,
-            "path_length": len(entities)
-        })
-    
-    # Sort by trust score
-    trust_paths.sort(key=lambda x: x['path_trust'], reverse=True)
-    
-    return {
-        "from_entity": from_entity,
-        "to_entity": to_entity,
-        "paths_found": len(trust_paths),
-        "trust_paths": trust_paths[:5]  # Top 5 paths
-    }
+    return health
 
-@app.post("/api/v1/graph/ingest-trust-event")
-async def ingest_trust_event(
-    event_type: str,
-    entity_id: str,
-    trust_delta: float,
-    metadata: Dict[str, Any] = {},
-    background_tasks: BackgroundTasks = BackgroundTasks(),
-):
-    """Ingest a trust-affecting event into the graph"""
-    
-    def update_graph():
-        g = Graph().traversal().withRemote(DriverRemoteConnection(settings.gremlin_server_url, 'g'))
-        
-        # Create event node
-        g.addV('TrustEvent') \
-            .property('event_type', event_type) \
-            .property('entity_id', entity_id) \
-            .property('trust_delta', trust_delta) \
-            .property('timestamp', datetime.utcnow().isoformat()) \
-            .property('metadata', str(metadata)) \
-            .iterate()
-            
-        # Update entity trust score
-        current_score = g.V().has('entity_id', entity_id) \
-            .values('trust_score').next()
-        new_score = max(0.0, min(1.0, current_score + trust_delta))
-        
-        g.V().has('entity_id', entity_id) \
-            .property('trust_score', new_score) \
-            .iterate()
-    
-    background_tasks.add_task(update_graph)
-    
-    return {
-        "status": "accepted",
-        "event_type": event_type,
-        "entity_id": entity_id,
-        "trust_impact": trust_delta
-    }
 
-# Add simulation lineage endpoints after existing endpoints
-
-@app.post("/api/v1/simulations/{simulation_id}/lineage/track-creation")
-async def track_simulation_creation(
-    simulation_id: str,
-    name: str,
-    created_by: str,
-    metadata: Dict[str, Any] = {},
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Track new simulation creation in the graph"""
-    await app.state.simulation_lineage.track_simulation_created(
-        simulation_id, name, created_by, metadata
-    )
-    return {"status": "tracked", "simulation_id": simulation_id}
-
-@app.post("/api/v1/simulations/{simulation_id}/lineage/session-started")
-async def track_session_started(
-    simulation_id: str,
-    session_id: str,
-    user_id: str,
-    initial_parameters: Dict[str, Any],
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Track new collaboration session start"""
-    await app.state.simulation_lineage.track_session_started(
-        session_id, simulation_id, user_id, initial_parameters
-    )
-    return {"status": "tracked", "session_id": session_id}
-
-@app.post("/api/v1/simulations/lineage/operation")
-async def track_simulation_operation(
-    session_id: str,
-    operation_id: str,
-    operation_type: str,
-    user_id: str,
-    target_type: str,
-    target_id: str,
-    operation_data: Dict[str, Any],
-    parent_operations: List[str] = [],
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Track a simulation operation"""
-    await app.state.simulation_lineage.track_operation(
-        session_id, operation_id, operation_type, user_id,
-        target_type, target_id, operation_data, parent_operations
-    )
-    return {"status": "tracked", "operation_id": operation_id}
-
-@app.get("/api/v1/simulations/{simulation_id}/lineage")
-async def get_simulation_lineage(
-    simulation_id: str,
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Get complete lineage graph for a simulation"""
-    lineage = await app.state.simulation_lineage.get_simulation_lineage(simulation_id)
-    return lineage
-
-@app.get("/api/v1/simulations/lineage/parameter-history")
-async def get_parameter_history(
-    session_id: str,
-    parameter_name: str,
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Get parameter evolution history"""
-    history = await app.state.simulation_lineage.get_parameter_history(
-        session_id, parameter_name
-    )
-    return {"parameter": parameter_name, "history": history}
-
-@app.post("/api/v1/simulations/lineage/result")
-async def track_simulation_result(
-    session_id: str,
-    result_id: str,
-    metric_type: str,
-    value: float,
-    contributing_params: List[str],
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Track simulation result with provenance"""
-    await app.state.simulation_lineage.track_result(
-        session_id, result_id, metric_type, value, contributing_params
-    )
-    return {"status": "tracked", "result_id": result_id}
-
-@app.get("/api/v1/simulations/lineage/parameter-influence")
-async def find_parameter_influence(
-    session_id: str,
-    parameter_name: str,
-    result_metric: str,
-    context: dict = Depends(get_current_tenant_and_user),
-):
-    """Find how a parameter influenced a specific result"""
-    paths = await app.state.simulation_lineage.find_parameter_influence(
-        session_id, parameter_name, result_metric
-    )
-    return {
-        "parameter": parameter_name,
-        "result_metric": result_metric,
-        "influence_paths": paths
-    }
-
-@app.post("/api/v1/kyc/verify")
-async def verify_kyc(
-    user_id: str,
-    blockchain_address: str,
+# API Endpoints using new patterns
+@app.post("/api/v1/graph/nodes")
+async def create_node(
+    node_type: str,
+    properties: Dict[str, Any],
     context: dict = Depends(get_current_tenant_and_user)
 ):
-    """Verify user KYC status for marketplace transactions"""
-    try:
-        # Query JanusGraph for user KYC data
-        query = """
-        g.V().has('user_id', user_id)
-              .has('tenant_id', tenant_id)
-              .out('has_kyc')
-              .values('status', 'verified_at', 'level')
-        """
+    """Create a new node in the graph"""
+    tenant_id = context["tenant_id"]
+    
+    node_repo = app.state.node_repo
+    node = node_repo.create_node(
+        node_type=node_type,
+        properties=properties,
+        tenant_id=tenant_id
+    )
+    
+    return {
+        "node_id": node["node_id"],
+        "type": node_type,
+        "created": True
+    }
+
+
+@app.get("/api/v1/graph/nodes/{node_id}")
+async def get_node(
+    node_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get node by ID"""
+    tenant_id = context["tenant_id"]
+    
+    node_repo = app.state.node_repo
+    node = node_repo.get_node(node_id, tenant_id)
+    
+    if not node:
+        raise HTTPException(status_code=404, detail="Node not found")
         
-        results = await graph_service.execute_query(
-            query,
-            {"user_id": user_id, "tenant_id": context["tenant_id"]}
-        )
-        
-        if not results:
-            return {
-                "verified": False,
-                "reason": "No KYC record found",
-                "required_level": "basic"
-            }
-        
-        kyc_status = results[0].get("status")
-        kyc_level = results[0].get("level", "basic")
-        verified_at = results[0].get("verified_at")
-        
-        # Check if KYC is valid (not expired - 1 year validity)
-        if verified_at:
-            verified_date = datetime.fromisoformat(verified_at)
-            if datetime.utcnow() - verified_date > timedelta(days=365):
-                return {
-                    "verified": False,
-                    "reason": "KYC expired",
-                    "required_level": kyc_level
-                }
-        
-        return {
-            "verified": kyc_status == "verified",
-            "level": kyc_level,
-            "verified_at": verified_at,
-            "blockchain_address_verified": blockchain_address == results[0].get("blockchain_address")
-        }
-        
-    except Exception as e:
-        logger.error(f"KYC verification failed: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    return node
+
+
+@app.post("/api/v1/graph/edges")
+async def create_edge(
+    from_node_id: str,
+    to_node_id: str,
+    edge_type: str,
+    properties: Optional[Dict[str, Any]] = None,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Create edge between nodes"""
+    tenant_id = context["tenant_id"]
+    
+    edge_repo = app.state.edge_repo
+    edge = edge_repo.create_edge(
+        from_node_id=from_node_id,
+        to_node_id=to_node_id,
+        edge_type=edge_type,
+        properties=properties or {},
+        tenant_id=tenant_id
+    )
+    
+    return {
+        "edge_id": edge["edge_id"],
+        "type": edge_type,
+        "created": True
+    }
+
+
+@app.get("/api/v1/graph/nodes/{node_id}/neighbors")
+async def get_node_neighbors(
+    node_id: str,
+    hops: int = 1,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get node neighborhood"""
+    tenant_id = context["tenant_id"]
+    
+    analytics_repo = app.state.analytics_repo
+    neighborhood = analytics_repo.get_node_neighborhood(
+        node_id=node_id,
+        tenant_id=tenant_id,
+        hops=hops
+    )
+    
+    return neighborhood
+
+
+@app.post("/api/v1/graph/analytics/communities")
+async def detect_communities(
+    algorithm: str = "label_propagation",
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Detect communities in the graph"""
+    tenant_id = context["tenant_id"]
+    
+    analytics_repo = app.state.analytics_repo
+    communities = analytics_repo.find_communities(
+        tenant_id=tenant_id,
+        algorithm=algorithm
+    )
+    
+    return {
+        "communities": communities,
+        "algorithm": algorithm,
+        "total": len(communities)
+    }
+
+
+@app.post("/api/v1/graph/analytics/paths")
+async def find_paths(
+    from_node_id: str,
+    to_node_id: str,
+    max_depth: int = 5,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Find paths between two nodes"""
+    tenant_id = context["tenant_id"]
+    
+    analytics_repo = app.state.analytics_repo
+    paths = analytics_repo.find_paths(
+        from_node_id=from_node_id,
+        to_node_id=to_node_id,
+        tenant_id=tenant_id,
+        max_depth=max_depth
+    )
+    
+    return {
+        "paths": paths,
+        "count": len(paths)
+    }
+
+
+@app.post("/api/v1/graph/analytics/centrality")
+async def calculate_centrality(
+    centrality_type: str = "degree",
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Calculate node centrality scores"""
+    tenant_id = context["tenant_id"]
+    
+    analytics_repo = app.state.analytics_repo
+    scores = analytics_repo.calculate_centrality(
+        tenant_id=tenant_id,
+        centrality_type=centrality_type
+    )
+    
+    # Get top nodes
+    sorted_scores = sorted(scores.items(), key=lambda x: x[1], reverse=True)
+    
+    return {
+        "centrality_type": centrality_type,
+        "top_nodes": sorted_scores[:10],
+        "total_nodes": len(scores)
+    }
+
+
+@app.get("/api/v1/graph/lineage/{asset_id}")
+async def get_asset_lineage(
+    asset_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get full lineage for an asset"""
+    tenant_id = context["tenant_id"]
+    
+    lineage_tracker = app.state.lineage_tracker
+    lineage = await lineage_tracker.get_full_lineage(
+        asset_id=asset_id,
+        tenant_id=tenant_id
+    )
+    
+    return {
+        "asset_id": asset_id,
+        "lineage": lineage
+    }
+
+
+# Trust network endpoints
+@app.get("/api/v1/trust/scores/{entity_id}")
+async def get_trust_score(
+    entity_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get trust score for an entity"""
+    tenant_id = context["tenant_id"]
+    
+    trust_manager = app.state.trust_manager
+    score = await trust_manager.get_trust_score(
+        entity_id=entity_id,
+        tenant_id=tenant_id
+    )
+    
+    return {
+        "entity_id": entity_id,
+        "trust_score": score
+    }
+
+
+@app.get("/api/v1/trust/network")
+async def get_trust_network(
+    min_score: float = 0.0,
+    limit: int = 100,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get trust network for tenant"""
+    tenant_id = context["tenant_id"]
+    
+    edge_repo = app.state.edge_repo
+    
+    # Get all trust edges
+    g = Graph().traversal().withRemote(DriverRemoteConnection(gremlin_url, 'g'))
+    trust_edges = g.E().hasLabel('has_trust_score').has('tenant_id', tenant_id) \
+                      .has('score', P.gte(min_score)) \
+                      .limit(limit) \
+                      .elementMap().toList()
+                      
+    return {
+        "trust_network": [dict(e) for e in trust_edges],
+        "count": len(trust_edges)
+    }

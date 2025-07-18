@@ -2,11 +2,26 @@ import datetime
 import time
 from typing import List
 from uuid import UUID
+import logging
 
 import httpx
 from cassandra.cluster import Session
 from fastapi import APIRouter, Depends, HTTPException, Request, status, Response
+
+from platformq_shared import (
+    ServiceClients,
+    NotFoundError,
+    ValidationError,
+    ConflictError,
+    add_error_handlers
+)
 from platformq_shared.event_publisher import EventPublisher
+from platformq_events import (
+    UserCreatedEvent,
+    UserUpdatedEvent,
+    UserDeletedEvent,
+    TenantCreatedEvent
+)
 
 from ..api.deps import (
     get_current_user_from_trusted_header,
@@ -60,7 +75,15 @@ from jose.constants import ALGORITHMS
 from platformq_shared.jwt import create_access_token
 from ..core.config import settings
 
+logger = logging.getLogger(__name__)
+
 router = APIRouter()
+
+# Service clients for inter-service communication
+service_clients = ServiceClients(
+    base_timeout=30.0,
+    max_retries=3
+)
 
 # ==============================================================================
 # Tenant & User Management Endpoints
@@ -68,118 +91,116 @@ router = APIRouter()
 # These are the core administrative endpoints for managing the platform's tenants and users.
 
 
-@router.post("/tenants", response_model=Tenant, status_code=201, tags=["Tenants"])
-async def create_tenant_endpoint(
-    tenant_in: TenantCreate,
+@router.post("/tenants", response_model=Tenant, status_code=status.HTTP_201_CREATED, tags=["Tenants"])
+async def create_tenant(
+    tenant: TenantCreate,
+    current_user: dict = Depends(get_current_user_from_trusted_header),
     tenant_repo: TenantRepository = Depends(get_tenant_repository),
-    user_repo: UserRepository = Depends(get_user_repository),
-    role_repo: RoleRepository = Depends(get_role_repository),
-    subscription_repo: SubscriptionRepository = Depends(get_subscription_repository),
-    audit_repo: AuditRepository = Depends(get_audit_repository),
-    publisher: EventPublisher = Depends(get_event_publisher)
+    event_publisher: EventPublisher = Depends(lambda: router.app.state.event_publisher),
 ):
-    """
-    Public endpoint to create a new tenant. This is the first step for a new 
-    organization to join the platform. It creates the tenant and then calls the
-    provisioning service to set up all necessary resources.
-    """
-    new_tenant = tenant_repo.create_tenant(name=tenant_in.name)
-    
-    async with httpx.AsyncClient() as client:
+    """Create a new tenant and trigger provisioning"""
+    try:
+        # Create tenant
+        created_tenant = tenant_repo.create(tenant)
+        
+        # Publish tenant created event
+        event = TenantCreatedEvent(
+            tenant_id=str(created_tenant.id),
+            tenant_name=created_tenant.name,
+            tier=created_tenant.tier,
+            created_at=created_tenant.created_at.isoformat()
+        )
+        
+        await event_publisher.publish_event(
+            topic=f"persistent://platformq/global/tenant-created-events",
+            event=event
+        )
+        
+        # Trigger provisioning via provisioning service
         try:
-            response = await client.post(
-                f"{settings.provisioning_service_url}/provision",
-                json={"tenant_id": str(new_tenant['id']), "tenant_name": new_tenant['name']},
-                timeout=30.0
+            await service_clients.post(
+                "provisioning-service",
+                "/api/v1/provision",
+                json={
+                    "tenant_id": str(created_tenant.id),
+                    "tenant_name": created_tenant.name,
+                    "tier": created_tenant.tier
+                }
             )
-            response.raise_for_status()
-        except httpx.HTTPError as e:
-            # If provisioning fails, we should ideally roll back the tenant creation.
-            # For now, we'll just log the error and raise an exception.
-            print(f"Failed to provision tenant {new_tenant['id']}: {e}")
-            raise HTTPException(
-                status_code=500,
-                detail=f"Failed to provision tenant: {str(e)}"
-            )
-
-    user_service = UserService(user_repo)
-    
-    # Create the first admin user for this new tenant
-    admin_user_in = UserCreate(email=tenant_in.admin_email, full_name=tenant_in.admin_full_name, did=tenant_in.admin_did)
-    new_user = user_service.create_full_user(tenant_id=new_tenant['id'], user_in=admin_user_in)
-    role_repo.assign_role_to_user(tenant_id=new_tenant['id'], user_id=new_user.id, role='admin')
-    
-    # Assign a default 'free' subscription tier
-    sub_create = SubscriptionCreate(user_id=new_user.id, tier="free")
-    subscription_repo.create_subscription_for_user(subscription=sub_create)
-
-    # Create audit log
-    audit_repo.create_audit_log(
-        user_id=new_user.id,
-        event_type="USER_CREATED",
-        details=f"User created with email {new_user.email}",
-    )
-
-    # Publish user created event using the schema class
-    publisher.publish(
-        topic_base='user-events',
-        tenant_id=str(new_tenant['id']),
-        schema_class=UserCreatedEvent,
-        data=UserCreatedEvent(
-            tenant_id=str(new_tenant['id']),
-            user_id=str(new_user.id),
-            email=new_user.email,
-            full_name=new_user.full_name,
-        )
-    )
-    return new_tenant
-
-
-@router.post("/users/", response_model=User, status_code=201)
-def create_user_endpoint(
-    user: UserCreate,
-    user_repo: UserRepository = Depends(get_user_repository),
-    publisher: EventPublisher = Depends(get_event_publisher),
-):
-    """
-    Create a new user, with a default role and subscription.
-    """
-    db_user = user_repo.get_by_email(email=user.email)
-    if db_user:
+        except Exception as e:
+            logger.error(f"Failed to trigger provisioning for tenant {created_tenant.id}: {e}")
+            # Don't fail tenant creation if provisioning fails
+            
+        logger.info(f"Created tenant {created_tenant.id}")
+        
+        return created_tenant
+        
+    except Exception as e:
+        logger.error(f"Error creating tenant: {e}")
         raise HTTPException(
-            status_code=400,
-            detail="Email already registered",
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
         )
 
-    new_user = user_repo.add(user=user, tenant_id=user.tenant_id)
 
-    # Assign a default 'member' role
-    role_repo.assign_role_to_user(user_id=new_user.id, role="member")
-
-    # Assign a default 'free' subscription tier
-    sub_create = SubscriptionCreate(user_id=new_user.id, tier="free")
-    subscription_repo.create_subscription_for_user(subscription=sub_create)
-
-    # Create audit log
-    audit_repo.create_audit_log(
-        user_id=new_user.id,
-        event_type="USER_CREATED",
-        details=f"User created with email {new_user.email}",
-    )
-
-    # Publish user created event
-    publisher.publish(
-        topic="user-events",
-        schema_path="schemas/user_created.avsc",
-        data={
-            "user_id": str(new_user.id),
-            "email": new_user.email,
-            "full_name": new_user.full_name,
-            "event_timestamp": int(time.time() * 1000),
-        },
-    )
-
-    return new_user
+@router.post("/users", response_model=User, status_code=status.HTTP_201_CREATED)
+async def create_user(
+    user: UserCreate,
+    tenant_id: UUID,
+    current_user: dict = Depends(get_current_user_from_trusted_header),
+    user_repo: UserRepository = Depends(get_user_repository),
+    tenant_repo: TenantRepository = Depends(get_tenant_repository),
+    event_publisher: EventPublisher = Depends(lambda: router.app.state.event_publisher),
+):
+    """Create a new user with improved error handling and event publishing"""
+    try:
+        # Validate tenant exists
+        tenant = tenant_repo.get(tenant_id)
+        if not tenant:
+            raise NotFoundError(f"Tenant {tenant_id} not found")
+            
+        # Check if user already exists
+        existing_user = user_repo.get_by_email(user.email)
+        if existing_user:
+            raise ConflictError(f"User with email {user.email} already exists")
+            
+        # Create the user
+        created_user = user_repo.add(user, tenant_id)
+        
+        # Publish user created event
+        event = UserCreatedEvent(
+            user_id=str(created_user.id),
+            email=created_user.email,
+            tenant_id=str(tenant_id),
+            full_name=created_user.full_name,
+            created_at=created_user.created_at.isoformat()
+        )
+        
+        await event_publisher.publish_event(
+            topic=f"persistent://platformq/{tenant_id}/user-created-events",
+            event=event
+        )
+        
+        logger.info(f"Created user {created_user.id} for tenant {tenant_id}")
+        
+        return User(
+            id=created_user.id,
+            email=created_user.email,
+            full_name=created_user.full_name,
+            created_at=created_user.created_at,
+            updated_at=created_user.updated_at,
+            did=created_user.did,
+            wallet_address=created_user.wallet_address
+        )
+        
+    except (NotFoundError, ConflictError):
+        raise
+    except Exception as e:
+        logger.error(f"Error creating user: {e}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail="Internal server error"
+        )
 
 
 @router.get("/users/me", response_model=User, tags=["Users"])

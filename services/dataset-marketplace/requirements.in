@@ -1,0 +1,9 @@
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+fastapi
+uvicorn[standard]
+pydantic
+sqlalchemy
+asyncpg
+httpx
+pulsar-client 

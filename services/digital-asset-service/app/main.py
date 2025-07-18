@@ -1,36 +1,58 @@
-from platformq_shared.base_service import create_base_app
-from .api.endpoints import digital_assets, processing_rules, marketplace
-from .postgres_db import get_db_session
-from . import crud
-from . import postgres_db
-from platformq_shared.event_publisher import EventPublisher
-from .core.config import settings
-import threading
-import pulsar
-from pulsar.schema import AvroSchema
-from platformq_shared.events import FunctionExecutionCompleted
-import uuid
-import logging
-from .messaging.vc_consumer import asset_vc_consumer
-from .core.config import settings
-from .db.session import SessionLocal, engine
-from .repository import AssetRepository
-from .messaging.data_lake_consumer import DataLakeAssetConsumer
-import asyncio
-from typing import Optional, Dict
-from fastapi import FastAPI
+"""
+Digital Asset Service
+
+Core engine for managing all digital assets within PlatformQ.
+Enhanced with event-driven architecture and standardized patterns.
+"""
+
 from contextlib import asynccontextmanager
+from fastapi import FastAPI
+import logging
+import asyncio
+from typing import Optional
+
+from platformq_shared import (
+    create_base_app,
+    EventProcessor,
+    event_handler,
+    ProcessingResult,
+    ProcessingStatus,
+    add_error_handlers
+)
+from platformq_events import (
+    FunctionExecutionCompletedEvent,
+    AssetCreatedEvent,
+    AssetUpdatedEvent,
+    AssetProcessingCompletedEvent,
+    DataLakeAssetCreatedEvent,
+    AssetVCIssuedEvent
+)
+
+from .api.endpoints import digital_assets, processing_rules, marketplace
+from .postgres_db import get_db_session, Base, engine
+from .repository import AssetRepository
+from .event_processors import (
+    AssetEventProcessor,
+    FunctionResultProcessor,
+    DataLakeAssetProcessor,
+    VCAssetProcessor
+)
+from .core.config import settings
 
 logger = logging.getLogger(__name__)
 
 # Create all tables in the database if they don't exist
-# In a real production app, this would be handled by Alembic migrations.
-postgres_db.Base.metadata.create_all(bind=postgres_db.engine)
+# In production, use Alembic migrations instead
+Base.metadata.create_all(bind=engine)
 
-# The database tables are now managed by Alembic migrations.
-# No need for Base.metadata.create_all(bind=engine) here anymore.
+# Event processors
+asset_event_processor = None
+function_result_processor = None
+data_lake_processor = None
+vc_processor = None
 
-# TODO: Create real CRUD functions and a real password verifier.
+
+# Placeholder dependencies - replace with real implementations
 def get_api_key_crud_placeholder():
     return None
 
@@ -40,111 +62,96 @@ def get_user_crud_placeholder():
 def get_password_verifier_placeholder():
     return None
 
-def result_consumer_loop(app):
-    logger.info("Starting consumer for function execution results...")
-    
-    pulsar_url = settings.pulsar_url
-
-    client = pulsar.Client(pulsar_url)
-    consumer = client.subscribe(
-        topic_pattern="persistent://platformq/.*/function-execution-completed-events",
-        subscription_name="digital-asset-service-results-sub",
-        schema=AvroSchema(FunctionExecutionCompleted)
-    )
-    
-    db_session = next(get_db_session())
-
-    while True:
-        try:
-            msg = consumer.receive(timeout_millis=1000)
-            if msg is None: continue
-            
-            event = msg.value()
-            if event.status == "SUCCESS" and (event.payload is not None or event.results):
-                logger.info(f"Received successful execution result for asset {event.asset_id}. Updating metadata.")
-                # If payload and payload_schema_version are present, use them for update
-                if event.payload is not None and event.payload_schema_version is not None:
-                    crud.crud_digital_asset.update_asset_metadata(
-                        db=db_session,
-                        asset_id=uuid.UUID(event.asset_id),
-                        new_metadata=None, # No generic metadata update
-                        payload_schema_version=event.payload_schema_version,
-                        payload=event.payload
-                    )
-                elif event.results is not None: # Fallback for old events or generic metadata
-                    crud.crud_digital_asset.update_asset_metadata(
-                        db=db_session,
-                        asset_id=uuid.UUID(event.asset_id),
-                        new_metadata=event.results
-                    )
-            elif event.status == "FAILURE":
-                logger.error(f"Received failure event for asset {event.asset_id}: {event.error_message}")
-
-            consumer.acknowledge(msg)
-        except Exception as e:
-            logger.error(f"Error in result consumer loop: {e}")
-            if 'consumer' in locals() and msg:
-                consumer.negative_acknowledge(msg)
-
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global asset_repository, data_lake_consumer, consumer_task
+    global asset_event_processor, function_result_processor, data_lake_processor, vc_processor
     
     # Startup
-    logger.info("Initializing Digital Asset Service...")
+    logger.info("Starting Digital Asset Service with enhanced patterns...")
     
-    # In a real app, you'd use a dependency injection system
-    # to provide the db session to the repository.
-    db_session_factory = SessionLocal
-    asset_repository = AssetRepository(db_session_factory)
+    # Initialize repository
+    app.state.asset_repository = AssetRepository(get_db_session)
     
-    data_lake_consumer = DataLakeAssetConsumer(asset_repository)
-    await data_lake_consumer.start()
+    # Initialize event processors
+    pulsar_url = settings.pulsar_url
     
-    consumer_task = asyncio.create_task(data_lake_consumer.consume_messages())
+    # Main asset event processor
+    asset_event_processor = AssetEventProcessor(
+        service_name="digital-asset-service",
+        pulsar_url=pulsar_url,
+        asset_repository=app.state.asset_repository,
+        event_publisher=app.state.event_publisher
+    )
+    
+    # Function execution result processor
+    function_result_processor = FunctionResultProcessor(
+        service_name="digital-asset-service-functions",
+        pulsar_url=pulsar_url,
+        asset_repository=app.state.asset_repository
+    )
+    
+    # Data lake asset processor
+    data_lake_processor = DataLakeAssetProcessor(
+        service_name="digital-asset-service-datalake",
+        pulsar_url=pulsar_url,
+        asset_repository=app.state.asset_repository,
+        event_publisher=app.state.event_publisher
+    )
+    
+    # Verifiable credential processor
+    vc_processor = VCAssetProcessor(
+        service_name="digital-asset-service-vc",
+        pulsar_url=pulsar_url,
+        asset_repository=app.state.asset_repository
+    )
+    
+    # Start all processors
+    await asyncio.gather(
+        asset_event_processor.start(),
+        function_result_processor.start(),
+        data_lake_processor.start(),
+        vc_processor.start()
+    )
     
     logger.info("Digital Asset Service initialized successfully")
+    
     yield
+    
     # Shutdown
     logger.info("Shutting down Digital Asset Service...")
-    if consumer_task:
-        consumer_task.cancel()
-    if data_lake_consumer:
-        await data_lake_consumer.close()
+    
+    # Stop all processors
+    await asyncio.gather(
+        asset_event_processor.stop() if asset_event_processor else None,
+        function_result_processor.stop() if function_result_processor else None,
+        data_lake_processor.stop() if data_lake_processor else None,
+        vc_processor.stop() if vc_processor else None
+    )
+    
     logger.info("Digital Asset Service shutdown complete")
 
 
-app = FastAPI(
-    title="PlatformQ Digital Asset Service",
-    description="Service for managing digital assets in the PlatformQ ecosystem.",
-    version="1.0.0",
-    lifespan=lifespan
+# Create app with enhanced patterns
+app = create_base_app(
+    service_name="digital-asset-service",
+    db_session_dependency=get_db_session,
+    api_key_crud_dependency=get_api_key_crud_placeholder,
+    user_crud_dependency=get_user_crud_placeholder,
+    password_verifier_dependency=get_password_verifier_placeholder,
+    event_processors=[
+        asset_event_processor,
+        function_result_processor,
+        data_lake_processor,
+        vc_processor
+    ] if all([asset_event_processor, function_result_processor, data_lake_processor, vc_processor]) else []
 )
 
-@app.on_event("startup")
-def startup_event():
-    pulsar_url = settings.pulsar_url
-    publisher = EventPublisher(pulsar_url=pulsar_url)
-    publisher.connect()
-    app.state.event_publisher = publisher
-    
-    # Start the background consumer
-    thread = threading.Thread(target=result_consumer_loop, args=(app,), daemon=True)
-    thread.start()
-    
-    # Start the VC consumer
-    asset_vc_consumer.start()
+# Set lifespan
+app.router.lifespan_context = lifespan
 
-@app.on_event("shutdown")
-def shutdown_event():
-    if app.state.event_publisher:
-        app.state.event_publisher.close()
-    
-    # Stop the VC consumer
-    asset_vc_consumer.stop()
-
+# Include service-specific routers
 app.include_router(digital_assets.router, prefix="/api/v1", tags=["digital-assets"])
 app.include_router(processing_rules.router, prefix="/api/v1", tags=["processing-rules"])
 app.include_router(marketplace.router, prefix="/api/v1", tags=["marketplace"])
@@ -153,17 +160,30 @@ app.include_router(marketplace.router, prefix="/api/v1", tags=["marketplace"])
 try:
     from .api.endpoints import cad_collaboration
     app.include_router(cad_collaboration.router, prefix="/api/v1", tags=["cad-collaboration"])
+    logger.info("CAD collaboration endpoints loaded")
 except ImportError:
     logger.warning("CAD collaboration endpoints not available")
 
+# Import and include unified data endpoints
+try:
+    from .api.endpoints import digital_assets_unified
+    app.include_router(digital_assets_unified.router, prefix="/api/v1", tags=["unified-data"])
+    logger.info("Unified data endpoints loaded")
+except ImportError:
+    logger.warning("Unified data endpoints not available")
+
+# Service root endpoint
 @app.get("/")
 def read_root():
-    return {"message": "digital-asset-service is running"}
-
-event_publisher = EventPublisher('pulsar://localhost:6650')
-
-def publish_event(topic: str, data: Dict):
-    event_publisher.publish(topic, data)
-
-async def automate_lifecycle(asset_id: str):
-    publish_event('asset_lifecycle', {'asset_id': asset_id})
+    return {
+        "service": "digital-asset-service",
+        "version": "2.0",
+        "features": [
+            "asset-management",
+            "marketplace",
+            "processing-rules",
+            "event-driven",
+            "cad-collaboration",
+            "unified-data"
+        ]
+    }

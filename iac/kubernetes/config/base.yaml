@@ -1,0 +1,87 @@
+# Base configuration for PlatformQ services
+# This file contains default values that apply to all services and environments
+
+# API Configuration
+api:
+  prefix: "/api/v1"
+  version: "1.0.0"
+  cors:
+    enabled: true
+    origins:
+      - "*"
+    methods:
+      - "GET"
+      - "POST"
+      - "PUT"
+      - "DELETE"
+      - "OPTIONS"
+    headers:
+      - "Content-Type"
+      - "Authorization"
+
+# Database Configuration
+database:
+  pool_size: 10
+  max_overflow: 20
+  pool_pre_ping: true
+  pool_recycle: 3600
+  echo: false
+
+# Pulsar Configuration
+pulsar:
+  connection_timeout: 30
+  operation_timeout: 30
+  num_io_threads: 4
+  num_listener_threads: 4
+  stats_interval_seconds: 60
+
+# Ignite Configuration
+ignite:
+  client_timeout: 10000
+  cache_sync_enabled: true
+  binary_configuration:
+    compact_footer: true
+
+# MinIO Configuration
+minio:
+  bucket_prefix: "platformq"
+  default_expiry: 604800  # 7 days
+  multipart_threshold: 104857600  # 100MB
+
+# Rate Limiting
+rate_limiting:
+  enabled: true
+  default_requests: 100
+  default_period: 60
+  burst_multiplier: 2
+
+# Monitoring
+monitoring:
+  metrics_enabled: true
+  tracing_enabled: true
+  log_level: "INFO"
+  health_check_interval: 30
+
+# Security
+security:
+  jwt_algorithm: "HS256"
+  jwt_expiration_minutes: 1440  # 24 hours
+  password_min_length: 8
+  max_login_attempts: 5
+  lockout_duration_minutes: 30
+
+# Caching
+caching:
+  default_ttl: 300  # 5 minutes
+  max_entries: 10000
+  eviction_policy: "LRU"
+  backend: "ignite"  # Using Ignite for distributed caching
+
+# Feature Flags (global defaults)
+feature_flags:
+  global:
+    distributed_tracing: true
+    advanced_analytics: false
+    ml_predictions: false
+    blockchain_integration: true
+    federated_learning: false 

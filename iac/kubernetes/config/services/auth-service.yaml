@@ -1,0 +1,114 @@
+# Auth Service specific configuration
+# These values apply only to the auth-service
+
+# Service Configuration
+service:
+  name: "auth-service"
+  description: "Authentication and authorization service"
+  version: "1.0.0"
+
+# Authentication Settings
+auth:
+  # Token settings
+  access_token_expire_minutes: 30
+  refresh_token_expire_days: 30
+  
+  # Password policy
+  password:
+    min_length: 10
+    require_uppercase: true
+    require_lowercase: true
+    require_numbers: true
+    require_special_chars: true
+    history_count: 5  # Prevent reuse of last N passwords
+    max_age_days: 90
+  
+  # Multi-factor authentication
+  mfa:
+    enabled: true
+    issuer: "PlatformQ"
+    window: 1  # Number of time steps to check
+    digits: 6
+  
+  # OAuth providers
+  oauth:
+    github:
+      enabled: true
+      scopes: ["user:email", "read:user"]
+    google:
+      enabled: true
+      scopes: ["openid", "email", "profile"]
+    microsoft:
+      enabled: false
+      scopes: ["openid", "email", "profile"]
+
+# Session Management
+session:
+  idle_timeout_minutes: 30
+  absolute_timeout_hours: 12
+  renewal_threshold_minutes: 5
+  max_concurrent_sessions: 5
+
+# Security Settings
+security:
+  # Brute force protection
+  login_attempts:
+    max_attempts: 5
+    lockout_duration_minutes: 30
+    reset_after_minutes: 60
+  
+  # IP whitelist/blacklist
+  ip_filtering:
+    enabled: false
+    whitelist_mode: false  # If true, only whitelist IPs allowed
+    whitelist: []
+    blacklist: []
+  
+  # CORS specific to auth endpoints
+  cors:
+    allowed_origins:
+      - "https://platformq.io"
+      - "https://app.platformq.io"
+    allowed_headers:
+      - "Content-Type"
+      - "Authorization"
+      - "X-Requested-With"
+
+# Cache Configuration
+cache:
+  user_cache_ttl: 300  # 5 minutes
+  session_cache_ttl: 3600  # 1 hour
+  permission_cache_ttl: 600  # 10 minutes
+
+# Rate Limiting (auth-specific)
+rate_limits:
+  login:
+    requests: 10
+    period: 300  # 5 minutes
+  register:
+    requests: 5
+    period: 3600  # 1 hour
+  password_reset:
+    requests: 3
+    period: 3600  # 1 hour
+  token_refresh:
+    requests: 20
+    period: 300  # 5 minutes
+
+# Audit Configuration
+audit:
+  enabled: true
+  log_successful_logins: true
+  log_failed_logins: true
+  log_permission_changes: true
+  log_password_changes: true
+  retention_days: 90
+
+# Feature Flags (auth-specific)
+feature_flags:
+  auth-service:
+    biometric_auth: false
+    passwordless_login: false
+    risk_based_auth: true
+    device_fingerprinting: true
+    geo_blocking: false 

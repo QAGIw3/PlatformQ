@@ -1,5 +1,5 @@
 from fastapi import FastAPI
-from typing import Callable
+from typing import Callable, Optional, List
 import logging
 import logging.config
 import socket
@@ -21,6 +21,8 @@ from .db import CassandraSessionManager
 from .event_publisher import EventPublisher
 from . import security as shared_security
 from .config import get_settings, Settings
+from .error_handling import add_error_handlers, ErrorMiddleware
+from .event_framework import EventProcessor
 
 logger = logging.getLogger(__name__)
 
@@ -56,43 +58,41 @@ def setup_structured_logging():
     }
     logging.config.dictConfig(config)
 
-
 def setup_observability(app: FastAPI, service_name: str, otel_endpoint: str, instrument_grpc: bool = False):
     """
-    Configures OpenTelemetry for the application.
-    This function sets up a "TracerProvider" which manages the lifecycle of traces.
-    It exports these traces in OTLP format to our OpenTelemetry Collector.
-    Finally, it auto-instruments the FastAPI application to trace all incoming requests,
-    and optionally instruments the gRPC server.
+    Set up distributed tracing using OpenTelemetry.
+    This allows us to trace requests across all microservices, visualize
+    the entire request flow, and pinpoint performance bottlenecks.
     """
-    resource = Resource(attributes={
-        "service.name": service_name
+    resource = Resource.create({
+        "service.name": service_name,
+        "service.instance.id": socket.gethostname(),
     })
-    
-    # Set up tracing
-    provider = TracerProvider(resource=resource)
-    processor = BatchSpanProcessor(OTLPSpanExporter(endpoint=otel_endpoint, insecure=True))
-    provider.add_span_processor(processor)
-    trace.set_tracer_provider(provider)
-    
-    # Instrument FastAPI
+
+    trace.set_tracer_provider(TracerProvider(resource=resource))
+    tracer_provider = trace.get_tracer_provider()
+
+    # Configure the OTLP exporter, pointing to our Jaeger or OTLP collector.
+    otlp_exporter = OTLPSpanExporter(endpoint=otel_endpoint, insecure=True)
+    span_processor = BatchSpanProcessor(otlp_exporter)
+    tracer_provider.add_span_processor(span_processor)
+
+    # Automatically instrument the FastAPI app.
     FastAPIInstrumentor.instrument_app(app)
 
-    # Instrument gRPC server if enabled
+    # Optionally instrument gRPC if the service uses it.
     if instrument_grpc:
-        grpc_server_instrumentor = GrpcInstrumentorServer()
-        grpc_server_instrumentor.instrument()
-        logger.info("gRPC server instrumentation enabled.")
+        GrpcInstrumentorServer().instrument()
 
-
-async def _serve_grpc(servicer: object, add_servicer_func: Callable, port: int):
-    """Helper to start a gRPC server."""
-    server = grpc.aio.server(futures.ThreadPoolExecutor(max_workers=10))
-    add_servicer_func(servicer, server)
-    server.add_insecure_port(f'[::]:{port}')
-    logger.info(f"Starting gRPC server on port {port}...")
-    await server.start()
-    await server.wait_for_termination()
+def get_kubernetes_token():
+    """
+    Read the Kubernetes service account token if running in a pod.
+    This is used for in-cluster authentication to other services.
+    """
+    if os.path.exists(KUBE_SA_TOKEN_PATH):
+        with open(KUBE_SA_TOKEN_PATH, 'r') as f:
+            return f.read().strip()
+    return None
 
 
 def create_base_app(
@@ -104,6 +104,10 @@ def create_base_app(
     grpc_servicer: object = None,
     grpc_add_servicer_func: Callable = None,
     grpc_port: int = 50051,
+    event_processors: Optional[List[EventProcessor]] = None,
+    enable_error_handlers: bool = True,
+    enable_cors: bool = True,
+    cors_origins: List[str] = ["*"],
 ) -> FastAPI:
     """
     Factory function to create a standardized, production-ready FastAPI application.
@@ -117,6 +121,8 @@ def create_base_app(
     - Centralized Configuration from Consul & Vault
     - Database & Event Publisher connections
     - Standardized Security Dependency wiring
+    - Error handling framework
+    - Event processors
     """
     
     # --- Step 1: Load All External Configuration ---
@@ -125,7 +131,25 @@ def create_base_app(
     # --- Step 2: Setup Core Application Concerns ---
     has_grpc = grpc_servicer and grpc_add_servicer_func
     setup_structured_logging()
-    app = FastAPI(title=service_name)
+    app = FastAPI(title=service_name, version="1.0.0")
+    
+    # --- Step 3: Add Middleware ---
+    if enable_cors:
+        from fastapi.middleware.cors import CORSMiddleware
+        app.add_middleware(
+            CORSMiddleware,
+            allow_origins=cors_origins,
+            allow_credentials=True,
+            allow_methods=["*"],
+            allow_headers=["*"],
+        )
+    
+    # Add error handling middleware
+    if enable_error_handlers:
+        app.add_middleware(ErrorMiddleware, service_name=service_name)
+        add_error_handlers(app, service_name)
+    
+    # --- Step 4: Setup Observability ---
     setup_observability(
         app, 
         service_name, 
@@ -133,7 +157,7 @@ def create_base_app(
         instrument_grpc=has_grpc
     )
 
-    # --- Step 3: Wire up Shared Security Dependencies ---
+    # --- Step 5: Wire up Shared Security Dependencies ---
     # This is a critical step for our "trusted subsystem" model.
     # We use FastAPI's dependency_overrides to "inject" the concrete,
     # service-specific CRUD functions into the generic, shared security
@@ -144,48 +168,133 @@ def create_base_app(
     app.dependency_overrides[shared_security.get_user_crud_dependency] = user_crud_dependency
     app.dependency_overrides[shared_security.get_password_verifier_dependency] = password_verifier_dependency
 
-    # --- Step 4: Manage Lifecycle Events ---
+    # --- Step 6: Initialize Core Components ---
+    # Database connection (Cassandra)
+    cassandra_manager = CassandraSessionManager(
+        contact_points=settings.cassandra_contact_points.split(','),
+        keyspace=settings.cassandra_keyspace
+    )
+    app.state.cassandra_manager = cassandra_manager
+
+    # Event publisher (Pulsar)
+    event_publisher = EventPublisher(pulsar_url=settings.pulsar_url)
+    event_publisher.connect()
+    app.state.event_publisher = event_publisher
+    
+    # Store event processors
+    app.state.event_processors = event_processors or []
+
+    # --- Step 7: Define Application Lifecycle Handlers ---
     @app.on_event("startup")
-    def on_startup():
+    async def startup():
         """
-        Handles application startup logic: service registration and connection pooling.
+        This runs when the application starts.
+        Connect to external systems and start background tasks.
         """
-        # --- Initialize Connection Pools ---
-        # We store the managers in the app.state to make them available
-        # throughout the application's lifecycle, e.g., in dependencies.
-        db_manager = CassandraSessionManager(
-            hosts=settings.cassandra_hosts,
-            port=settings.cassandra_port,
-            user=settings.cassandra_user,
-            password=settings.cassandra_password
-        )
-        db_manager.connect()
-        app.state.db_manager = db_manager
+        logger.info(f"{service_name} is starting up")
+        
+        # Connect to Cassandra
+        cassandra_manager.connect()
+        logger.info("Connected to Cassandra")
 
-        publisher = EventPublisher(pulsar_url=settings.pulsar_url)
-        publisher.connect()
-        app.state.event_publisher = publisher
-
-        # --- Start gRPC Server (if configured) ---
+        # Optional: Start gRPC server in a background thread
         if has_grpc:
-            logger.info("gRPC servicer configured, starting gRPC server.")
-            asyncio.create_task(_serve_grpc(
-                servicer=grpc_servicer,
-                add_servicer_func=grpc_add_servicer_func,
-                port=grpc_port
-            ))
+            def run_grpc_server():
+                server = grpc.server(futures.ThreadPoolExecutor(max_workers=10))
+                grpc_add_servicer_func(grpc_servicer, server)
+                server.add_insecure_port(f'[::]:{grpc_port}')
+                server.start()
+                logger.info(f"gRPC server started on port {grpc_port}")
+                server.wait_for_termination()
+
+            import threading
+            grpc_thread = threading.Thread(target=run_grpc_server, daemon=True)
+            grpc_thread.start()
+            app.state.grpc_thread = grpc_thread
+            
+        # Start event processors
+        for processor in app.state.event_processors:
+            await processor.start()
+            logger.info(f"Started event processor: {processor.__class__.__name__}")
 
     @app.on_event("shutdown")
-    def on_shutdown():
+    async def shutdown():
         """
-        Handles graceful shutdown: deregistering from Consul and closing connections.
+        This runs when the application shuts down.
+        Gracefully disconnect from external systems.
         """
-        app.state.db_manager.close()
-        app.state.event_publisher.close()
+        logger.info(f"{service_name} is shutting down")
         
-    @app.get("/health")
-    def health_check():
-        """A simple health check endpoint used by Consul and Kubernetes."""
-        return {"status": "ok"}
+        # Stop event processors
+        for processor in app.state.event_processors:
+            await processor.stop()
+            logger.info(f"Stopped event processor: {processor.__class__.__name__}")
 
+        # Disconnect from Cassandra
+        cassandra_manager.disconnect()
+        logger.info("Disconnected from Cassandra")
+
+        # Disconnect from Pulsar
+        event_publisher.disconnect()
+        logger.info("Disconnected from Pulsar")
+        
+        # Close all service clients
+        from .service_client import close_all_clients
+        await close_all_clients()
+        logger.info("Closed all service clients")
+
+    # --- Step 8: Add Common Endpoints ---
+    @app.get("/health")
+    async def health():
+        """
+        Standard health check endpoint for Kubernetes liveness probes.
+        """
+        return {"status": "healthy", "service": service_name}
+
+    @app.get("/ready")
+    async def ready():
+        """
+        Standard readiness check endpoint for Kubernetes readiness probes.
+        Checks if all dependencies are available.
+        """
+        checks = {"service": service_name, "status": "ready"}
+        
+        # Check Cassandra
+        try:
+            session = cassandra_manager.get_session()
+            session.execute("SELECT now() FROM system.local")
+            checks["cassandra"] = "ready"
+        except Exception as e:
+            checks["cassandra"] = f"not ready: {str(e)}"
+            checks["status"] = "not ready"
+            
+        # Check Pulsar
+        try:
+            # Simple check - verify client is created
+            if event_publisher.client:
+                checks["pulsar"] = "ready"
+            else:
+                checks["pulsar"] = "not ready: client not initialized"
+                checks["status"] = "not ready"
+        except Exception as e:
+            checks["pulsar"] = f"not ready: {str(e)}"
+            checks["status"] = "not ready"
+            
+        return checks
+        
+    @app.get("/metrics")
+    async def metrics():
+        """
+        Prometheus metrics endpoint.
+        """
+        # This would typically use prometheus_client to expose metrics
+        # For now, return basic metrics
+        return {
+            "service": service_name,
+            "uptime_seconds": 0,  # Would track actual uptime
+            "request_count": 0,   # Would track actual requests
+            "error_count": 0      # Would track actual errors
+        }
+
+    logger.info(f"{service_name} app created successfully")
     return app

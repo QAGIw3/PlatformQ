@@ -1,0 +1,19 @@
+{
+    "service_name": "example-service",
+    "service_slug": "{{ cookiecutter.service_name.lower().replace(' ', '-').replace('_', '-') }}",
+    "service_description": "A new PlatformQ microservice",
+    "service_port": "8000",
+    "author_name": "PlatformQ Team",
+    "author_email": "team@platformq.io",
+    "database_type": ["postgresql", "cassandra", "both", "none"],
+    "use_event_processing": true,
+    "use_kafka": false,
+    "use_pulsar": true,
+    "use_ignite_cache": true,
+    "use_elasticsearch": false,
+    "use_milvus": false,
+    "use_blockchain": false,
+    "include_websocket": false,
+    "include_grpc": false,
+    "python_version": "3.11"
+} 

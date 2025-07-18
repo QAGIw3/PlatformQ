@@ -1,3 +1,8 @@
+"""
+Digital Assets API Endpoints
+
+Enhanced with standardized patterns for error handling and service communication.
+"""
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Header, Query
 from sqlalchemy.orm import Session
@@ -7,6 +12,22 @@ import hashlib
 import json
 import logging
 import uuid
+
+from platformq_shared import (
+    ServiceClients,
+    NotFoundError,
+    ValidationError,
+    ConflictError,
+    add_error_handlers
+)
+from platformq_shared.event_publisher import EventPublisher
+from platformq_shared.config import ConfigLoader
+from platformq_events import (
+    AssetCreatedEvent,
+    AssetUpdatedEvent,
+    AssetDeletedEvent,
+    AssetLineageEvent
+)
 
 from ...database import get_db
 from ...models import DigitalAsset, AssetLineage, ProvenanceCertificate
@@ -18,23 +39,21 @@ from ...config import settings
 from ...policy_client import policy_client
 from ...blockchain.asset_lineage_anchor import (
     BlockchainLineageAnchor,
-    AssetLineageEvent,
+    AssetLineageEvent as BlockchainLineageEvent,
     LineageEventType,
     LineageSmartContract
 )
-from platformq_shared.config import ConfigLoader
-from platformq_shared.event_publisher import EventPublisher
+from ...repository import AssetRepository
 
 logger = logging.getLogger(__name__)
 
-# Initialize event publisher
-event_publisher = EventPublisher('pulsar://pulsar:6650')
-event_publisher.connect()
+# Service clients for inter-service communication
+service_clients = ServiceClients(
+    base_timeout=30.0,
+    max_retries=3
+)
 
-async def publish_event(event_type: str, data: dict):
-    """Publish event to Pulsar"""
-    await event_publisher.publish_event(event_type, data)
-
+# Storage proxy service URL
 STORAGE_PROXY_URL = "http://storage-proxy-service:8000"
 
 router = APIRouter()
@@ -51,44 +70,75 @@ if config_loader.get_setting("BLOCKCHAIN_ENABLED", "false").lower() == "true":
         ipfs_api_url=config_loader.get_setting("IPFS_API_URL", "/dns/ipfs/tcp/5001")
     )
 
+
 @router.post("/internal/digital-assets/{cid}/migrate", status_code=204)
 async def migrate_digital_asset_storage(
     cid: str,
-    repo: DigitalAssetRepository = Depends(get_digital_asset_repository),
+    repo: AssetRepository = Depends(get_asset_repository),
     service_token: dict = Depends(require_service_token),
+    event_publisher: EventPublisher = Depends(get_event_publisher)
 ):
-    db_asset = repo.get(cid=cid)
-    if not db_asset:
-        raise HTTPException(status_code=404, detail="Asset not found")
-
-    if not db_asset.raw_data_uri:
-        raise HTTPException(status_code=400, detail="Asset has no data to migrate.")
-
+    """Migrate asset storage to new backend with improved error handling"""
     try:
-        async with httpx.AsyncClient() as client:
-            download_url = f"{STORAGE_PROXY_URL}/download/{db_asset.raw_data_uri}"
-            response = await client.get(download_url)
-            response.raise_for_status()
-            file_content = response.content
+        # Get asset
+        db_asset = repo.get_by_cid(cid)
+        if not db_asset:
+            raise NotFoundError(f"Asset with CID {cid} not found")
 
-            files = {'file': (db_asset.asset_name, file_content, 'application/octet-stream')}
-            headers = { "X-Authenticated-Userid": str(db_asset.owner_id) }
-            
-            upload_url = f"{STORAGE_PROXY_URL}/upload"
-            upload_response = await client.post(upload_url, files=files, headers=headers)
-            upload_response.raise_for_status()
-            
-            upload_data = upload_response.json()
-            new_identifier = upload_data["identifier"]
+        if not db_asset.raw_data_uri:
+            raise ValidationError("Asset has no data to migrate")
 
-            repo.update_asset_storage_uri(
-                cid=cid, new_uri=new_identifier
-            )
-            
-    except httpx.RequestError as e:
-        raise HTTPException(status_code=503, detail=f"Failed to communicate with storage proxy: {e}")
-    except httpx.HTTPStatusError as e:
-        raise HTTPException(status_code=e.response.status_code, detail=f"Error during storage migration: {e.response.text}")
+        # Download from old storage
+        download_response = await service_clients.get(
+            "storage-proxy-service",
+            f"/download/{db_asset.raw_data_uri}"
+        )
+        
+        file_content = download_response.content
+
+        # Upload to new storage
+        files = {'file': (db_asset.asset_name, file_content, 'application/octet-stream')}
+        headers = {"X-Authenticated-Userid": str(db_asset.owner_id)}
+        
+        upload_response = await service_clients.post(
+            "storage-proxy-service",
+            "/upload",
+            files=files,
+            headers=headers
+        )
+        
+        new_identifier = upload_response["identifier"]
+
+        # Update asset storage reference
+        repo.update_asset_storage_uri(
+            cid=cid, 
+            new_uri=new_identifier
+        )
+        
+        # Publish migration event
+        migration_event = AssetUpdatedEvent(
+            asset_id=str(db_asset.id),
+            updated_fields=["storage_uri"],
+            old_uri=db_asset.raw_data_uri,
+            new_uri=new_identifier,
+            updated_at=datetime.utcnow().isoformat()
+        )
+        
+        await event_publisher.publish_event(
+            topic=f"persistent://platformq/{db_asset.tenant_id}/asset-storage-migrated-events",
+            event=migration_event
+        )
+        
+        logger.info(f"Successfully migrated storage for asset {cid}")
+        
+    except (NotFoundError, ValidationError):
+        raise
+    except Exception as e:
+        logger.error(f"Failed to migrate asset storage: {e}")
+        raise HTTPException(
+            status_code=503,
+            detail="Storage migration service temporarily unavailable"
+        )
 
 # High-value asset thresholds by type
 HIGH_VALUE_THRESHOLDS = {

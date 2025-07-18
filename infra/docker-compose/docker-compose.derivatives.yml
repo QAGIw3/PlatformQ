@@ -1,0 +1,336 @@
+version: '3.8'
+
+services:
+  # Derivatives Engine Service
+  derivatives-engine:
+    build:
+      context: ../../services/derivatives-engine-service
+      dockerfile: Dockerfile
+    environment:
+      - ORACLE_SERVICE_URL=http://oracle-aggregator:8000
+      - INSURANCE_POOL_URL=http://insurance-pool:8000
+      - GRAPH_INTELLIGENCE_URL=http://graph-intelligence:8000
+      - NEUROMORPHIC_URL=http://neuromorphic:8000
+      - IGNITE_URL=ignite:10800
+      - PULSAR_URL=pulsar://pulsar:6650
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/derivatives
+    ports:
+      - "8100:8000"
+    depends_on:
+      - postgres
+      - ignite
+      - pulsar
+    volumes:
+      - derivatives-data:/app/data
+    deploy:
+      resources:
+        limits:
+          cpus: '2'
+          memory: 4G
+        reservations:
+          cpus: '1'
+          memory: 2G
+
+  # Oracle Aggregator Service
+  oracle-aggregator:
+    build:
+      context: ../../services/oracle-aggregator-service
+      dockerfile: Dockerfile
+    environment:
+      - CHAINLINK_NODE_URL=${CHAINLINK_NODE_URL}
+      - BAND_PROTOCOL_URL=${BAND_PROTOCOL_URL}
+      - IGNITE_URL=ignite:10800
+      - PULSAR_URL=pulsar://pulsar:6650
+    ports:
+      - "8101:8000"
+    depends_on:
+      - ignite
+      - pulsar
+
+  # Insurance Pool Service
+  insurance-pool:
+    build:
+      context: ../../services/insurance-pool-service
+      dockerfile: Dockerfile
+    environment:
+      - IGNITE_URL=ignite:10800
+      - PULSAR_URL=pulsar://pulsar:6650
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/insurance
+    ports:
+      - "8102:8000"
+    depends_on:
+      - postgres
+      - ignite
+      - pulsar
+
+  # Risk Engine Service
+  risk-engine:
+    build:
+      context: ../../services/risk-engine-service
+      dockerfile: Dockerfile
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow-server:5000
+      - ORACLE_SERVICE_URL=http://oracle-aggregator:8000
+      - NEUROMORPHIC_URL=http://neuromorphic:8000
+      - IGNITE_URL=ignite:10800
+      - PULSAR_URL=pulsar://pulsar:6650
+    ports:
+      - "8103:8000"
+    depends_on:
+      - mlflow-server
+      - ignite
+      - pulsar
+
+  # Apache Flink for Real-time Analytics
+  flink-jobmanager:
+    image: flink:1.17-scala_2.12-java11
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+      - ../../processing/flink:/opt/flink/jobs
+
+  flink-taskmanager:
+    image: flink:1.17-scala_2.12-java11
+    depends_on:
+      - flink-jobmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+    command: taskmanager
+    scale: 3
+    volumes:
+      - flink-checkpoints:/opt/flink/checkpoints
+
+  # Apache Spark for ML Training
+  spark-master:
+    image: bitnami/spark:3.4
+    environment:
+      - SPARK_MODE=master
+      - SPARK_RPC_AUTHENTICATION_ENABLED=no
+      - SPARK_RPC_ENCRYPTION_ENABLED=no
+      - SPARK_LOCAL_STORAGE_ENCRYPTION_ENABLED=no
+      - SPARK_SSL_ENABLED=no
+    ports:
+      - "8080:8080"
+      - "7077:7077"
+    volumes:
+      - ../../processing/spark:/opt/spark-apps
+
+  spark-worker:
+    image: bitnami/spark:3.4
+    environment:
+      - SPARK_MODE=worker
+      - SPARK_MASTER_URL=spark://spark-master:7077
+      - SPARK_WORKER_MEMORY=4G
+      - SPARK_WORKER_CORES=2
+    depends_on:
+      - spark-master
+    scale: 3
+    volumes:
+      - ../../processing/spark:/opt/spark-apps
+
+  # Apache Ignite for In-Memory Computing
+  ignite:
+    image: apacheignite/ignite:2.15.0
+    environment:
+      - IGNITE_QUIET=false
+      - JVM_OPTS=-Xms2g -Xmx4g -server
+    ports:
+      - "10800:10800"
+      - "11211:11211"
+      - "49112:49112"
+    volumes:
+      - ignite-persistence:/persistence
+      - ../../infra/ignite:/opt/ignite/config
+    command: /opt/ignite/bin/ignite.sh /opt/ignite/config/ignite-config.xml
+
+  # Apache Pulsar for Event Streaming
+  pulsar:
+    image: apachepulsar/pulsar:3.1.0
+    command: bin/pulsar standalone
+    ports:
+      - "6650:6650"
+      - "8090:8080"
+    volumes:
+      - pulsar-data:/pulsar/data
+      - pulsar-conf:/pulsar/conf
+    environment:
+      - PULSAR_MEM=-Xms2g -Xmx2g
+
+  # MinIO for Object Storage
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=password123
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+
+  # MLflow for Model Management
+  mlflow-server:
+    image: ghcr.io/mlflow/mlflow:v2.8.0
+    ports:
+      - "5000:5000"
+    environment:
+      - BACKEND_STORE_URI=postgresql://postgres:password@postgres:5432/mlflow
+      - DEFAULT_ARTIFACT_ROOT=s3://mlflow-artifacts
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=password123
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+    depends_on:
+      - postgres
+      - minio
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://postgres:password@postgres:5432/mlflow
+      --default-artifact-root s3://mlflow-artifacts
+      --host 0.0.0.0
+
+  # PostgreSQL Database
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=password
+      - POSTGRES_MULTIPLE_DATABASES=derivatives,insurance,mlflow
+    ports:
+      - "5432:5432"
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+      - ./init-multiple-databases.sh:/docker-entrypoint-initdb.d/init-multiple-databases.sh
+
+  # Cassandra for Time-Series Data
+  cassandra:
+    image: cassandra:4.1
+    environment:
+      - CASSANDRA_CLUSTER_NAME=derivatives-cluster
+      - CASSANDRA_DC=dc1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+    ports:
+      - "9042:9042"
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+
+  # JanusGraph for Graph Data
+  janusgraph:
+    image: janusgraph/janusgraph:1.0.0
+    environment:
+      - JAVA_OPTIONS=-Xms2g -Xmx4g
+      - janusgraph.storage.backend=cassandra
+      - janusgraph.storage.hostname=cassandra
+      - janusgraph.index.search.backend=elasticsearch
+      - janusgraph.index.search.hostname=elasticsearch
+    ports:
+      - "8182:8182"
+    depends_on:
+      - cassandra
+      - elasticsearch
+
+  # Elasticsearch for Search and Analytics
+  elasticsearch:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.0
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - ES_JAVA_OPTS=-Xms2g -Xmx2g
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+
+  # Apache SeaTunnel for Data Integration
+  seatunnel:
+    build:
+      context: ../../services/seatunnel-service
+      dockerfile: Dockerfile
+    environment:
+      - PULSAR_URL=pulsar://pulsar:6650
+      - CASSANDRA_HOST=cassandra
+      - ELASTICSEARCH_HOST=elasticsearch:9200
+      - IGNITE_HOST=ignite:10800
+    depends_on:
+      - pulsar
+      - cassandra
+      - elasticsearch
+      - ignite
+
+  # Derivatives Frontend
+  derivatives-frontend:
+    build:
+      context: ../../frontend
+      dockerfile: Dockerfile
+      args:
+        - REACT_APP_API_URL=http://localhost:8100
+        - REACT_APP_WS_URL=ws://localhost:8100
+    ports:
+      - "3001:80"
+    depends_on:
+      - derivatives-engine
+
+  # Monitoring Stack
+  prometheus:
+    image: prom/prometheus:v2.47.0
+    ports:
+      - "9090:9090"
+    volumes:
+      - ./prometheus.yml:/etc/prometheus/prometheus.yml
+      - prometheus-data:/prometheus
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+
+  grafana:
+    image: grafana/grafana:10.2.0
+    ports:
+      - "3000:3000"
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../../observability/grafana-dashboards:/etc/grafana/provisioning/dashboards
+    depends_on:
+      - prometheus
+
+  # Kong API Gateway for Derivatives
+  kong-derivatives:
+    image: kong:3.4
+    environment:
+      - KONG_DATABASE=off
+      - KONG_DECLARATIVE_CONFIG=/kong/declarative/kong.yml
+      - KONG_PROXY_ACCESS_LOG=/dev/stdout
+      - KONG_ADMIN_ACCESS_LOG=/dev/stdout
+      - KONG_PROXY_ERROR_LOG=/dev/stderr
+      - KONG_ADMIN_ERROR_LOG=/dev/stderr
+      - KONG_ADMIN_LISTEN=0.0.0.0:8001
+    ports:
+      - "8000:8000"  # Proxy
+      - "8001:8001"  # Admin API
+    volumes:
+      - ../../iac/kubernetes/kong/derivatives-routes.yml:/kong/declarative/kong.yml
+
+volumes:
+  derivatives-data:
+  postgres-data:
+  cassandra-data:
+  elasticsearch-data:
+  ignite-persistence:
+  pulsar-data:
+  pulsar-conf:
+  minio-data:
+  flink-checkpoints:
+  prometheus-data:
+  grafana-data:
+
+networks:
+  default:
+    name: derivatives-network
+    driver: bridge 
