@@ -127,8 +127,8 @@ class DatasetMarketplaceEventProcessor(EventProcessor):
         
         if not self.trust_engine:
             logger.warning("Trust engine not available for quality assessment")
-            return
-        
+                return
+            
         # Register assessment in knowledge graph
         await self.trust_engine.graph_intelligence.register_quality_assessment(
             assessment_id=assessment_id,
@@ -169,8 +169,8 @@ class DatasetMarketplaceEventProcessor(EventProcessor):
         
         if not self.trust_engine:
             logger.warning("Trust engine not available for access request")
-            return
-        
+                return
+            
         # Evaluate access based on trust scores
         access_decision = await self.trust_engine.evaluate_access_request(
             dataset_id=dataset_id,

@@ -1,0 +1,103 @@
+replicaCount: 2
+
+image:
+  repository: platformq/dataset-marketplace
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/websocket-services: "dataset-marketplace"
+  hosts:
+    - host: marketplace.platformq.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: marketplace-tls
+      hosts:
+        - marketplace.platformq.local
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+env:
+  - name: DATABASE_URL
+    valueFrom:
+      secretKeyRef:
+        name: dataset-marketplace-secrets
+        key: database-url
+  - name: PULSAR_URL
+    value: "pulsar://pulsar-broker:6650"
+  - name: IGNITE_NODES
+    value: "ignite-node1:10800,ignite-node2:10800"
+  - name: ELASTICSEARCH_URL
+    value: "http://elasticsearch:9200"
+  - name: GRAPH_INTELLIGENCE_URL
+    value: "http://graph-intelligence-service:8000"
+  - name: MLOPS_SERVICE_URL
+    value: "http://mlops-service:8000"
+  - name: DIGITAL_ASSET_SERVICE_URL
+    value: "http://digital-asset-service:8000"
+  - name: MINIO_ENDPOINT
+    value: "minio:9000"
+  - name: CASSANDRA_HOSTS
+    value: "cassandra-0.cassandra,cassandra-1.cassandra"
+  - name: JANUSGRAPH_URL
+    value: "ws://janusgraph:8182/gremlin"
+  - name: SEATUNNEL_API_URL
+    value: "http://seatunnel-api:8080"
+  - name: LOG_LEVEL
+    value: "INFO"
+
+postgresql:
+  enabled: true
+  auth:
+    database: "dataset_marketplace"
+    username: "marketplace_user"
+  primary:
+    persistence:
+      enabled: true
+      size: 10Gi
+
+redis:
+  enabled: false  # Using Ignite instead
+
+monitoring:
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+    path: /metrics
+
+flinkJob:
+  enabled: true
+  name: data-quality-monitoring
+  image: platformq/data-quality-monitoring-job:latest
+  parallelism: 4
+  jobManagerMemory: 2048m
+  taskManagerMemory: 4096m
+  numberOfTaskSlots: 2 

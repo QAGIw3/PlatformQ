@@ -15,9 +15,11 @@ import asyncio
 
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, UploadFile, File, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import Response
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 import httpx
+from enum import Enum
 
 from platformq_shared import (
     create_base_app,
@@ -28,6 +30,7 @@ from platformq_shared import (
 )
 from platformq_shared.event_publisher import EventPublisher
 from platformq_shared.database import get_db
+from platformq_shared.auth import verify_token
 
 from .models import (
     DatasetListing,
@@ -50,7 +53,7 @@ from .repository import (
 from .event_processors import DatasetMarketplaceEventProcessor
 
 # Import trust-weighted components
-from .engines.trust_weighted_data_engine import TrustWeightedDataEngine
+from .engines.trust_weighted_data_engine import TrustWeightedDataEngine, AccessLevel
 from .api import trust_weighted_data
 from .integrations import (
     GraphIntelligenceClient,
@@ -67,6 +70,7 @@ from .integrations import (
 from .integrations.seatunnel_quality_integration import SeaTunnelQualityIntegration
 from .integrations.graph_intelligence_integration import GraphIntelligenceIntegration
 from .monitoring import PrometheusMetrics
+from .deps import get_current_user
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -201,21 +205,278 @@ app.add_middleware(
 app.include_router(trust_weighted_data.router)
 
 
-class DatasetType(Enum):
-    IMAGE = "image"
-    TEXT = "text"
-    AUDIO = "audio"
-    VIDEO = "video"
-    TABULAR = "tabular"
-    MULTIMODAL = "multimodal"
-    SYNTHETIC = "synthetic"
+# Basic dataset marketplace endpoints
+@app.post("/api/v1/datasets")
+async def create_dataset_listing(
+    listing: DatasetListingRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Create a new dataset listing"""
+    repo = DatasetListingRepository(db)
+    
+    dataset = repo.create({
+        "listing_id": str(uuid.uuid4()),
+        "tenant_id": current_user.get("tenant_id"),
+        "seller_id": current_user.get("user_id"),
+        "name": listing.name,
+        "description": listing.description,
+        "dataset_type": listing.dataset_type.value,
+        "size_bytes": int(listing.size_mb * 1024 * 1024),
+        "num_samples": listing.num_samples,
+        "tags": listing.tags,
+        "metadata": listing.metadata,
+        "price": listing.price,
+        "license_type": listing.license_type.value,
+        "status": DatasetStatus.DRAFT
+    })
+    
+    # Register in federated knowledge graph
+    if graph_intelligence:
+        await graph_intelligence.register_dataset_node(
+            dataset_id=dataset.listing_id,
+            dataset_info={
+                "name": dataset.name,
+                "dataset_type": dataset.dataset_type,
+                "size_bytes": dataset.size_bytes,
+                "num_samples": dataset.num_samples,
+                "quality_score": 0.0  # Will be updated after assessment
+            },
+            creator_id=current_user.get("user_id")
+        )
+    
+    # Trigger quality assessment
+    if trust_engine:
+        await pulsar_publisher.publish_dataset_upload({
+            "dataset_id": dataset.listing_id,
+            "data_uri": listing.sample_data_url,
+            "format": listing.metadata.get("format", "unknown"),
+            "schema_info": listing.metadata.get("schema"),
+            "timestamp": datetime.utcnow().isoformat()
+        })
+    
+    return dataset
 
 
-class LicenseType(Enum):
-    ACADEMIC = "academic"
-    COMMERCIAL = "commercial"
-    NON_COMMERCIAL = "non_commercial"
-    CUSTOM = "custom"
+@app.get("/api/v1/datasets")
+async def list_datasets(
+    dataset_type: Optional[DatasetType] = None,
+    min_quality: Optional[float] = None,
+    max_price: Optional[float] = None,
+    limit: int = 20,
+    offset: int = 0,
+    db: Session = Depends(get_db)
+):
+    """List available datasets with filtering"""
+    repo = DatasetListingRepository(db)
+    
+    filters = {}
+    if dataset_type:
+        filters["dataset_type"] = dataset_type
+    if max_price:
+        filters["price__lte"] = max_price
+    
+    datasets = repo.list(filters=filters, limit=limit, offset=offset)
+    
+    # Enhance with quality scores if available
+    if trust_engine:
+        for dataset in datasets:
+            quality = await ignite_cache.get("quality_assessments", dataset.listing_id)
+            if quality:
+                dataset.quality_score = quality.get("trust_adjusted_score", 0.0)
+    
+    # Filter by minimum quality if specified
+    if min_quality:
+        datasets = [d for d in datasets if getattr(d, "quality_score", 0.0) >= min_quality]
+    
+    return datasets
+
+
+@app.get("/api/v1/datasets/{dataset_id}")
+async def get_dataset_details(
+    dataset_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get detailed information about a dataset"""
+    repo = DatasetListingRepository(db)
+    dataset = repo.get_by_listing_id(dataset_id)
+    
+    if not dataset:
+        raise HTTPException(status_code=404, detail="Dataset not found")
+    
+    # Get quality assessment
+    if trust_engine:
+        quality = await ignite_cache.get("quality_assessments", dataset_id)
+        if quality:
+            dataset.quality_assessment = quality
+    
+    # Get trust chain
+    if graph_intelligence:
+        trust_chain = await graph_intelligence.get_dataset_trust_chain(dataset_id)
+        dataset.trust_chain = trust_chain
+    
+    return dataset
+
+
+@app.post("/api/v1/datasets/{dataset_id}/purchase")
+async def purchase_dataset(
+    dataset_id: str,
+    request: DatasetPurchaseRequest,
+    current_user: dict = Depends(get_current_user),
+    db: Session = Depends(get_db)
+):
+    """Purchase access to a dataset"""
+    # Evaluate access request
+    if trust_engine:
+        access_decision = await trust_engine.evaluate_access_request(
+            dataset_id=dataset_id,
+            user_id=current_user.get("user_id"),
+            requested_level=AccessLevel.FULL,
+            purpose=request.intended_use
+        )
+        
+        if not access_decision.get("granted"):
+            raise HTTPException(
+                status_code=403,
+                detail=access_decision.get("reason", "Access denied")
+            )
+    
+    # Calculate pricing
+    if trust_engine:
+        pricing = await trust_engine.calculate_dynamic_pricing(
+            dataset_id=dataset_id,
+            user_id=current_user.get("user_id"),
+            access_level=AccessLevel.FULL
+        )
+    else:
+        pricing = {"final_price": "100.00"}
+    
+    # Create purchase record
+    purchase_repo = DatasetPurchaseRepository(db)
+    purchase = purchase_repo.create({
+        "purchase_id": str(uuid.uuid4()),
+        "tenant_id": current_user.get("tenant_id"),
+        "buyer_id": current_user.get("user_id"),
+        "listing_id": dataset_id,
+        "price": float(pricing["final_price"]),
+        "total_amount": float(pricing["final_price"]),
+        "status": PurchaseStatus.COMPLETED
+    })
+    
+    # Grant access
+    if trust_engine:
+        grant = await trust_engine.grant_data_access(
+            dataset_id=dataset_id,
+            user_id=current_user.get("user_id"),
+            access_level=AccessLevel.FULL,
+            duration_days=request.duration_days or 365
+        )
+        
+        purchase.access_token = grant["access_token"]
+        purchase_repo.update(purchase.id, {"access_token": grant["access_token"]})
+    
+    # Record metrics
+    if metrics:
+        metrics.record_revenue(float(pricing["final_price"]))
+        metrics.record_access_request(AccessLevel.FULL.value, True)
+    
+    return {
+        "purchase_id": purchase.purchase_id,
+        "access_token": purchase.access_token,
+        "price_paid": pricing["final_price"],
+        "expires_at": grant.get("expires_at") if trust_engine else None
+    }
+
+
+@app.get("/api/v1/datasets/{dataset_id}/quality")
+async def get_dataset_quality(
+    dataset_id: str,
+    db: Session = Depends(get_db)
+):
+    """Get quality assessment for a dataset"""
+    if not trust_engine:
+        raise HTTPException(status_code=503, detail="Quality assessment not available")
+    
+    # Get from cache
+    quality = await ignite_cache.get("quality_assessments", dataset_id)
+    if not quality:
+        raise HTTPException(status_code=404, detail="Quality assessment not found")
+    
+    return quality
+
+
+@app.get("/api/v1/recommendations")
+async def get_recommendations(
+    dataset_type: Optional[str] = None,
+    min_trust: float = 0.5,
+    current_user: dict = Depends(get_current_user)
+):
+    """Get personalized dataset recommendations"""
+    if not graph_intelligence:
+        raise HTTPException(status_code=503, detail="Recommendations not available")
+    
+    recommendations = await graph_intelligence.get_trust_weighted_recommendations(
+        user_id=current_user.get("user_id"),
+        dataset_type=dataset_type,
+        min_trust=min_trust
+    )
+    
+    return recommendations
+
+
+# WebSocket endpoint for real-time quality updates
+@app.websocket("/ws/quality-updates/{dataset_id}")
+async def websocket_quality_updates(websocket: WebSocket, dataset_id: str):
+    """WebSocket for real-time quality assessment updates"""
+    await websocket.accept()
+    
+    try:
+        while True:
+            # Send quality updates
+            quality = await ignite_cache.get("quality_assessments", dataset_id)
+            if quality:
+                await websocket.send_json({
+                    "type": "quality_update",
+                    "dataset_id": dataset_id,
+                    "quality": quality
+                })
+            
+            await asyncio.sleep(5)  # Update every 5 seconds
+            
+    except WebSocketDisconnect:
+        logger.info(f"WebSocket disconnected for dataset {dataset_id}")
+
+
+# Health check
+@app.get("/health")
+async def health_check():
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "dataset-marketplace",
+        "version": "1.0.0",
+        "components": {
+            "trust_engine": trust_engine is not None,
+            "graph_intelligence": graph_intelligence is not None,
+            "ignite_cache": ignite_cache is not None,
+            "pulsar": pulsar_publisher is not None
+        }
+    }
+
+
+# Metrics endpoint
+@app.get("/metrics")
+async def get_metrics():
+    """Prometheus metrics endpoint"""
+    if metrics:
+        return Response(
+            content=metrics.generate_metrics(),
+            media_type="text/plain"
+        )
+    return Response(content="", media_type="text/plain")
+
+
+# DatasetType and LicenseType are imported from models.py
 
 
 class DatasetListingRequest(BaseModel):

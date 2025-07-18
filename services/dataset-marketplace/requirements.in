@@ -1,9 +1,70 @@
+# Local libraries
 -e ../../libs/platformq-shared
 -e ../../libs/platformq-events
-fastapi
-uvicorn[standard]
-pydantic
-sqlalchemy
-asyncpg
-httpx
-pulsar-client 
+
+# Base dependencies
+fastapi>=0.104.0
+uvicorn[standard]>=0.24.0
+pydantic>=2.4.0
+python-multipart>=0.0.6
+
+# Database
+sqlalchemy>=2.0.0
+alembic>=1.12.0
+asyncpg>=0.28.0
+
+# Caching and messaging
+pyignite>=0.6.1
+pulsar-client>=3.3.0
+redis>=5.0.0  # For session management
+
+# Data processing
+pyspark>=3.5.0
+pandas>=2.1.0
+numpy>=1.25.0
+pyarrow>=13.0.0
+
+# Search and analytics
+elasticsearch>=8.10.0
+elasticsearch-async>=6.2.0
+
+# Graph database clients
+gremlinpython>=3.7.0
+cassandra-driver>=3.28.0
+
+# Object storage
+minio>=7.1.0
+
+# Machine learning
+scikit-learn>=1.3.0
+xgboost>=2.0.0
+
+# HTTP client
+httpx>=0.25.0
+
+# Authentication
+python-jose[cryptography]>=3.3.0
+passlib[bcrypt]>=1.7.4
+
+# Monitoring
+prometheus-client>=0.18.0
+
+# Avro schemas
+fastavro>=1.8.0
+
+# Configuration
+python-dotenv>=1.0.0
+
+# Logging
+structlog>=23.2.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-cov>=4.1.0
+
+# Development
+black>=23.10.0
+isort>=5.12.0
+mypy>=1.6.0
+pylint>=3.0.0 

@@ -42,10 +42,10 @@ class SeaTunnelQualityIntegration:
     async def start_quality_pipelines(self):
         """Start all quality-related data pipelines"""
         logger.info("Starting quality monitoring pipelines...")
-        
+            
         # Quality metrics aggregation pipeline
         await self._create_quality_metrics_pipeline()
-        
+            
         # Trust score synchronization pipeline
         await self._create_trust_sync_pipeline()
         
@@ -95,11 +95,11 @@ class SeaTunnelQualityIntegration:
                                 ELSE 'excellent'
                             END as quality_tier
                         FROM aggregated
-                    """
+            """
                 }
             ],
             "sink": [
-                {
+            {
                     "type": "ignite",
                     "cache": "quality_metrics",
                     "key_field": "dataset_id"
@@ -191,7 +191,7 @@ class SeaTunnelQualityIntegration:
                             }
                         ],
                         "edges": [
-                            {
+                {
                                 "label": "created_by",
                                 "from": "Dataset",
                                 "to": "User",
@@ -202,14 +202,14 @@ class SeaTunnelQualityIntegration:
                                 "from": "Dataset",
                                 "to": "QualityCheck",
                                 "properties": ["confidence", "method"]
-                            },
-                            {
+                },
+                {
                                 "label": "derived_from",
                                 "from": "Dataset",
                                 "to": "Dataset",
                                 "properties": ["transformation", "confidence"]
-                            }
-                        ]
+                        }
+                    ]
                     }
                 }
             ],
@@ -242,11 +242,11 @@ class SeaTunnelQualityIntegration:
                 {
                     "type": "filter",
                     "condition": "overall_quality_score < 0.5 OR trust_adjusted_score < 0.3"
-                },
+            },
                 {
                     "type": "sql",
                     "query": """
-                        SELECT 
+                    SELECT 
                             dataset_id,
                             overall_quality_score,
                             trust_adjusted_score,
@@ -267,7 +267,7 @@ class SeaTunnelQualityIntegration:
                     "type": "elasticsearch",
                     "index": "quality-alerts",
                     "id_field": "dataset_id"
-                }
+            }
             ]
         }
         

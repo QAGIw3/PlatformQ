@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 from decimal import Decimal
 import logging
 
-from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard, partner_capacity, capacity_coordinator, risk_intelligence, asset_compute_nexus
+from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard, partner_capacity, capacity_coordinator, risk_intelligence, asset_compute_nexus, compute_spot
 from app.engines.matching_engine import MatchingEngine
 from app.engines.funding_engine import FundingEngine
 from app.engines.settlement_engine import SettlementEngine
@@ -14,6 +14,7 @@ from app.engines.compute_futures_engine import ComputeFuturesEngine
 from app.engines.partner_capacity_manager import PartnerCapacityManager
 from app.engines.wholesale_arbitrage_engine import WholesaleArbitrageEngine
 from app.engines.cross_service_capacity_coordinator import CrossServiceCapacityCoordinator
+from app.engines.compute_spot_market import ComputeSpotMarket
 from app.collateral.multi_tier_engine import MultiTierCollateralEngine
 from app.liquidation.partial_liquidator import PartialLiquidationEngine
 from app.fees.dynamic_fee_engine import DynamicFeeEngine
@@ -45,6 +46,7 @@ compute_futures_engine: Optional[ComputeFuturesEngine] = None
 partner_capacity_manager: Optional[PartnerCapacityManager] = None
 wholesale_arbitrage_engine: Optional[WholesaleArbitrageEngine] = None
 cross_service_coordinator: Optional[CrossServiceCapacityCoordinator] = None
+compute_spot_market: Optional[ComputeSpotMarket] = None
 collateral_engine: Optional[MultiTierCollateralEngine] = None
 liquidation_engine: Optional[PartialLiquidationEngine] = None
 fee_engine: Optional[DynamicFeeEngine] = None
@@ -149,6 +151,19 @@ async def lifespan(app: FastAPI):
         compute_futures_engine
     )
     
+    # Compute spot market
+    global compute_spot_market
+    compute_spot_market = ComputeSpotMarket(
+        ignite,
+        pulsar,
+        oracle_client,
+        partner_capacity_manager,
+        cross_service_coordinator
+    )
+    
+    # Set spot market instance in API module
+    compute_spot.set_spot_market(compute_spot_market)
+    
     # Governance
     market_dao = MarketCreationDAO(
         graph_client,
@@ -193,6 +208,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(compute_futures_engine.start())
     asyncio.create_task(wholesale_arbitrage_engine.start())
     asyncio.create_task(cross_service_coordinator.start())
+    asyncio.create_task(compute_spot_market.start())
     
     # Setup data pipelines with SeaTunnel
     await setup_data_pipelines(seatunnel_client)
@@ -211,6 +227,7 @@ async def lifespan(app: FastAPI):
     await compute_futures_engine.stop()
     await wholesale_arbitrage_engine.stop()
     await cross_service_coordinator.stop()
+    await compute_spot_market.stop()
     
     # Close connections
     await ignite.close()
@@ -318,6 +335,7 @@ app.include_router(liquidity.router)  # Already has prefix in router definition
 app.include_router(options.router)  # Already has prefix in router definition
 app.include_router(market_makers.router)  # Already has prefix in router definition
 app.include_router(compute_futures.router)  # Compute futures trading
+app.include_router(compute_spot.router)  # Compute spot market
 app.include_router(variance_swaps.router)  # Variance swaps trading
 app.include_router(structured_products.router)  # Structured products
 app.include_router(risk_limits.router)  # Risk limits management
