@@ -37,6 +37,14 @@ from .utils import (
 )
 
 from .connection_pool import ConnectionPool
+from .adapter_factory import AdapterFactory
+from .adapters import (
+    BaseAdapter,
+    EVMAdapter,
+    SolanaAdapter,
+    CosmosAdapter,
+    PolkadotAdapter
+)
 
 __all__ = [
     # Types
@@ -67,8 +75,16 @@ __all__ = [
     "estimate_gas_price",
     "format_wei",
     
-    # Connection Pool
-    "ConnectionPool"
+    # Connection Pool & Factory
+    "ConnectionPool",
+    "AdapterFactory",
+    
+    # Adapters
+    "BaseAdapter",
+    "EVMAdapter",
+    "SolanaAdapter",
+    "CosmosAdapter",
+    "PolkadotAdapter"
 ]
 
 __version__ = "1.0.0" 

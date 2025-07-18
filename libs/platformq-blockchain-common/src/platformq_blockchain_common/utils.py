@@ -64,7 +64,7 @@ def calculate_tx_cost(gas_used: int, gas_price: int) -> int:
 
 def encode_function_data(function_name: str, params: list, abi: list) -> bytes:
     """Encode function call data (simplified version)"""
-    # In production, use eth_abi or web3.py for proper encoding
+    #  TODO In production, use eth_abi or web3.py for proper encoding
     from eth_abi import encode_abi
     from eth_utils import function_signature_to_4byte_selector
     
@@ -87,7 +87,7 @@ def encode_function_data(function_name: str, params: list, abi: list) -> bytes:
 
 def decode_event_data(event_data: dict, abi: list) -> dict:
     """Decode event data using ABI"""
-    # Simplified version - in production use proper decoding
+    # TODO  Simplified version - in production use proper decoding
     return event_data
 
 

@@ -124,7 +124,7 @@ class ConnectionPool:
                 return conn_info
                 
             # Wait for a connection to become available
-            # In production, implement proper waiting queue
+            # TODO In production, implement proper waiting queue
             raise RuntimeError(f"No available connections for {chain_type}")
             
     async def _release_connection(self, chain_type: ChainType, conn_info: ConnectionInfo):
@@ -138,7 +138,7 @@ class ConnectionPool:
         config = self._configs[chain_type]
         
         # Import adapter dynamically based on chain type
-        # In production, use a factory pattern
+        # TODO In production, use a factory pattern
         adapter = await self._create_adapter(chain_type, config)
         
         try:
@@ -161,17 +161,9 @@ class ConnectionPool:
         
     async def _create_adapter(self, chain_type: ChainType, config: ChainConfig) -> IBlockchainAdapter:
         """Create adapter instance based on chain type"""
-        # This is a simplified version - in production, use proper factory
-        # and dynamic imports
-        if chain_type in [ChainType.ETHEREUM, ChainType.POLYGON, 
-                         ChainType.ARBITRUM, ChainType.OPTIMISM]:
-            from platformq_blockchain_common.adapters import EVMAdapter
-            return EVMAdapter(config)
-        elif chain_type == ChainType.SOLANA:
-            from platformq_blockchain_common.adapters import SolanaAdapter
-            return SolanaAdapter(config)
-        else:
-            raise ValueError(f"Unsupported chain type: {chain_type}")
+        from .adapter_factory import AdapterFactory
+        
+        return AdapterFactory.create_adapter(config)
             
     async def _health_check_loop(self):
         """Periodic health check for all connections"""

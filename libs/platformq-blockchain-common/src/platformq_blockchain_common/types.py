@@ -19,6 +19,7 @@ class ChainType(Enum):
     BSC = "bsc"
     SOLANA = "solana"
     COSMOS = "cosmos"
+    POLKADOT = "polkadot"
     NEAR = "near"
     HYPERLEDGER = "hyperledger"
     

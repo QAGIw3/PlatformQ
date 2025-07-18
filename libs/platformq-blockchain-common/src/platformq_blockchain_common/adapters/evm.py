@@ -79,7 +79,7 @@ class EVMAdapter(BaseAdapter):
             return Decimal(str(balance_wei)) / Decimal(10 ** self.config.decimals)
         else:
             # ERC20 token balance
-            # Simplified - in production, use proper ERC20 ABI
+            # TODO Simplified - in production, use proper ERC20 ABI
             raise NotImplementedError("Token balance not implemented yet")
             
     async def send_transaction(self, transaction: Transaction) -> TransactionResult:
@@ -109,7 +109,7 @@ class EVMAdapter(BaseAdapter):
         tx_dict['gas'] = transaction.gas_limit or await self.w3.eth.estimate_gas(tx_dict)
         
         # Sign and send
-        # Note: In production, use secure key management
+        # TODO Note: In production, use secure key management
         if 'private_key' in transaction.metadata:
             signed_tx = self.w3.eth.account.sign_transaction(tx_dict, transaction.metadata['private_key'])
             tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
@@ -197,7 +197,7 @@ class EVMAdapter(BaseAdapter):
             'nonce': self.w3.eth.get_transaction_count(contract.metadata.get('deployer_address'))
         })
         
-        # Sign and send (simplified - use secure key management in production)
+        # TODO Sign and send (simplified - use secure key management in production)
         if 'private_key' in contract.metadata:
             signed_tx = self.w3.eth.account.sign_transaction(tx_dict, contract.metadata['private_key'])
             tx_hash = self.w3.eth.send_raw_transaction(signed_tx.rawTransaction)
