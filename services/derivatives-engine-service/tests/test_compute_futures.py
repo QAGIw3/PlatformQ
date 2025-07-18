@@ -39,7 +39,7 @@ async def compute_futures_engine():
 async def test_day_ahead_market_clearing(compute_futures_engine):
     """Test day-ahead market clearing mechanism"""
     delivery_date = datetime.utcnow() + timedelta(days=1)
-    dam = compute_futures_engine.get_or_create_day_ahead_market(
+    dam = await compute_futures_engine.get_day_ahead_market(
         delivery_date=delivery_date,
         resource_type="gpu"
     )
