@@ -565,11 +565,13 @@ class ComputeFuturesEngine:
         self,
         ignite: IgniteCache,
         pulsar: PulsarEventPublisher,
-        oracle: OracleAggregatorClient
+        oracle: OracleAggregatorClient,
+        partner_capacity_manager=None
     ):
         self.ignite = ignite
         self.pulsar = pulsar
         self.oracle = oracle
+        self.partner_capacity_manager = partner_capacity_manager
         
         self.day_ahead_markets: Dict[str, DayAheadMarket] = {}
         self.capacity_auction = CapacityAuction()
@@ -767,26 +769,50 @@ class ComputeFuturesEngine:
             }
         )
         
-        # Call provisioning service API
-        try:
-            response = await self.http_client.post(
-                "/api/v1/compute/provision",
-                json={
-                    "settlement_id": settlement_id,
-                    "resource_type": resource_type,
-                    "quantity": str(quantity),
-                    "duration_hours": duration_hours,
-                    "start_time": delivery_start.isoformat(),
-                    "provider_id": provider_id,
-                    "buyer_id": buyer_id
-                }
+        # First try to allocate from partner capacity if available
+        allocated = False
+        if self.partner_capacity_manager:
+            allocation = await self.partner_capacity_manager.allocate_from_inventory(
+                resource_type,
+                "us-east-1",  # TODO: Get region from settlement
+                quantity
             )
             
-            if response.status_code == 200:
+            if allocation:
+                # Use partner capacity
                 settlement.provisioning_status = "provisioned"
+                settlement.provider_id = allocation["provider"].value
                 await self._store_settlement(settlement)
-            else:
-                logger.error(f"Provisioning failed: {response.text}")
+                allocated = True
+                
+                logger.info(f"Allocated from partner {allocation['provider'].value} at ${allocation['wholesale_price']}/unit")
+        
+        # If not allocated from partners, try regular provisioning
+        if not allocated:
+            # Call provisioning service API
+            try:
+                response = await self.http_client.post(
+                    "/api/v1/compute/provision",
+                    json={
+                        "settlement_id": settlement_id,
+                        "resource_type": resource_type,
+                        "quantity": str(quantity),
+                        "duration_hours": duration_hours,
+                        "start_time": delivery_start.isoformat(),
+                        "provider_id": provider_id,
+                        "buyer_id": buyer_id
+                    }
+                )
+                
+                if response.status_code == 200:
+                    settlement.provisioning_status = "provisioned"
+                    await self._store_settlement(settlement)
+                else:
+                    logger.error(f"Provisioning failed with status {response.status_code}")
+                    await self._handle_provisioning_failure(settlement)
+                    
+            except Exception as e:
+                logger.error(f"Error calling provisioning service: {e}")
                 await self._handle_provisioning_failure(settlement)
                 
         except Exception as e:
@@ -806,6 +832,9 @@ class ComputeFuturesEngine:
         failover_providers = self.failover_providers.get(
             settlement.resource_type, []
         )
+        
+        # Debug: log the order of providers
+        logger.info(f"Failover providers for {settlement.resource_type}: {failover_providers}")
         
         for provider_id in failover_providers:
             if provider_id != settlement.provider_id:
