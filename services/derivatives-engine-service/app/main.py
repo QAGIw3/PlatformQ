@@ -6,11 +6,13 @@ from typing import Dict, List, Optional
 from decimal import Decimal
 import logging
 
-from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard
+from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard, partner_capacity
 from app.engines.matching_engine import MatchingEngine
 from app.engines.funding_engine import FundingEngine
 from app.engines.settlement_engine import SettlementEngine
 from app.engines.compute_futures_engine import ComputeFuturesEngine
+from app.engines.partner_capacity_manager import PartnerCapacityManager
+from app.engines.wholesale_arbitrage_engine import WholesaleArbitrageEngine
 from app.collateral.multi_tier_engine import MultiTierCollateralEngine
 from app.liquidation.partial_liquidator import PartialLiquidationEngine
 from app.fees.dynamic_fee_engine import DynamicFeeEngine
@@ -37,6 +39,8 @@ matching_engine: Optional[MatchingEngine] = None
 funding_engine: Optional[FundingEngine] = None
 settlement_engine: Optional[SettlementEngine] = None
 compute_futures_engine: Optional[ComputeFuturesEngine] = None
+partner_capacity_manager: Optional[PartnerCapacityManager] = None
+wholesale_arbitrage_engine: Optional[WholesaleArbitrageEngine] = None
 collateral_engine: Optional[MultiTierCollateralEngine] = None
 liquidation_engine: Optional[PartialLiquidationEngine] = None
 fee_engine: Optional[DynamicFeeEngine] = None
@@ -68,6 +72,7 @@ async def lifespan(app: FastAPI):
     
     # Initialize engines
     global matching_engine, funding_engine, settlement_engine, compute_futures_engine
+    global partner_capacity_manager, wholesale_arbitrage_engine
     global collateral_engine, liquidation_engine, fee_engine
     global market_dao, websocket_manager, metrics
     
@@ -106,11 +111,28 @@ async def lifespan(app: FastAPI):
         pulsar
     )
     
-    # Compute futures engine
-    compute_futures_engine = ComputeFuturesEngine(
+    # Partner capacity management
+    partner_capacity_manager = PartnerCapacityManager(
         ignite,
         pulsar,
         oracle_client
+    )
+    
+    # Compute futures engine with partner capacity support
+    compute_futures_engine = ComputeFuturesEngine(
+        ignite,
+        pulsar,
+        oracle_client,
+        partner_capacity_manager
+    )
+    
+    # Wholesale arbitrage engine
+    wholesale_arbitrage_engine = WholesaleArbitrageEngine(
+        ignite,
+        pulsar,
+        oracle_client,
+        partner_capacity_manager,
+        compute_futures_engine
     )
     
     # Governance
@@ -132,7 +154,9 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(funding_engine.start_funding_calculation_loop())
     asyncio.create_task(liquidation_engine.start_monitoring_loop())
     asyncio.create_task(websocket_manager.start_broadcasting())
+    asyncio.create_task(partner_capacity_manager.start())
     asyncio.create_task(compute_futures_engine.start())
+    asyncio.create_task(wholesale_arbitrage_engine.start())
     
     # Setup data pipelines with SeaTunnel
     await setup_data_pipelines(seatunnel_client)
@@ -147,6 +171,9 @@ async def lifespan(app: FastAPI):
     # Stop background tasks
     await matching_engine.stop()
     await funding_engine.stop()
+    await partner_capacity_manager.stop()
+    await compute_futures_engine.stop()
+    await wholesale_arbitrage_engine.stop()
     
     # Close connections
     await ignite.close()
@@ -258,6 +285,7 @@ app.include_router(variance_swaps.router)  # Variance swaps trading
 app.include_router(structured_products.router)  # Structured products
 app.include_router(risk_limits.router)  # Risk limits management
 app.include_router(monitoring_dashboard.router)  # Monitoring dashboard
+app.include_router(partner_capacity.router)  # Partner capacity management
 
 # Health check
 @app.get("/health")

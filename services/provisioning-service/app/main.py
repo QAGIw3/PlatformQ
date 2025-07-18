@@ -48,6 +48,12 @@ from .event_processors import (
     ResourceCleanupProcessor,
     UserProvisioningProcessor
 )
+from .compute_provisioning import (
+    ComputeProvisioningManager,
+    ComputeProvisioningRequest,
+    ComputeResourceType,
+    ProvisioningStatus
+)
 from .dynamic_provisioning import (
     ResourceMonitor,
     ScalingEngine,
@@ -75,13 +81,14 @@ resource_monitor = None
 scaling_engine = None
 tenant_manager = None
 service_clients = None
+compute_provisioning_manager = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global tenant_processor, scaling_processor, quota_processor, cleanup_processor, user_processor
-    global resource_monitor, scaling_engine, tenant_manager, service_clients
+    global resource_monitor, scaling_engine, tenant_manager, service_clients, compute_provisioning_manager
     
     # Startup
     logger.info("Starting Provisioning Service...")
@@ -140,6 +147,14 @@ async def lifespan(app: FastAPI):
     )
     await tenant_manager.initialize()
     app.state.tenant_manager = tenant_manager
+    
+    # Initialize compute provisioning manager
+    compute_provisioning_manager = ComputeProvisioningManager(
+        derivatives_engine_url=settings.get('derivatives_engine_url', 'http://derivatives-engine-service:8000'),
+        ignite_client=get_ignite_client(),
+        pulsar_publisher=app.state.event_publisher
+    )
+    app.state.compute_provisioning_manager = compute_provisioning_manager
     
     # Initialize event processors
     tenant_processor = TenantProvisioningProcessor(
@@ -227,6 +242,8 @@ async def lifespan(app: FastAPI):
         await scaling_engine.cleanup()
     if tenant_manager:
         await tenant_manager.cleanup()
+    if compute_provisioning_manager:
+        await compute_provisioning_manager.close()
         
     logger.info("Provisioning Service shutdown complete")
 
@@ -312,6 +329,101 @@ async def provision_tenant_manual(
         "tenant_id": request.tenant_id,
         "message": "Tenant provisioning has been initiated"
     }
+
+
+@app.post("/api/v1/compute/provision")
+async def provision_compute_resources(
+    request: ComputeProvisioningRequest,
+    context: dict = Depends(get_current_tenant_and_user),
+    publisher: EventPublisher = Depends(get_event_publisher)
+):
+    """Provision compute resources"""
+    
+    # Use tenant from context
+    request.tenant_id = context["tenant_id"]
+    
+    # Get compute provisioning manager
+    compute_manager = app.state.compute_provisioning_manager
+    if not compute_manager:
+        raise HTTPException(status_code=503, detail="Compute provisioning not available")
+    
+    # Provision resources
+    result = await compute_manager.provision_compute(request)
+    
+    if result.status == ProvisioningStatus.FAILED:
+        raise HTTPException(status_code=400, detail=result.message or "Provisioning failed")
+    
+    return {
+        "request_id": result.request_id,
+        "allocation_id": result.allocation_id,
+        "status": result.status.value,
+        "provider": result.provider,
+        "access_details": result.access_details,
+        "cost": str(result.cost) if result.cost else None
+    }
+
+
+@app.get("/api/v1/compute/provision/{request_id}")
+async def get_compute_provision_status(
+    request_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get status of compute provisioning request"""
+    
+    compute_manager = app.state.compute_provisioning_manager
+    if not compute_manager:
+        raise HTTPException(status_code=503, detail="Compute provisioning not available")
+    
+    status = await compute_manager.get_provisioning_status(request_id)
+    
+    if status.get("status") == "not_found":
+        raise HTTPException(status_code=404, detail="Provisioning request not found")
+    
+    return status
+
+
+@app.delete("/api/v1/compute/provision/{request_id}")
+async def terminate_compute_provision(
+    request_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Terminate provisioned compute resources"""
+    
+    compute_manager = app.state.compute_provisioning_manager
+    if not compute_manager:
+        raise HTTPException(status_code=503, detail="Compute provisioning not available")
+    
+    success = await compute_manager.terminate_provision(request_id)
+    
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to terminate provision")
+    
+    return {
+        "status": "terminated",
+        "request_id": request_id
+    }
+
+
+@app.get("/api/v1/compute/capacity")
+async def get_available_compute_capacity(
+    resource_type: str,
+    region: Optional[str] = None,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get available compute capacity"""
+    
+    compute_manager = app.state.compute_provisioning_manager
+    if not compute_manager:
+        raise HTTPException(status_code=503, detail="Compute provisioning not available")
+    
+    try:
+        resource_type_enum = ComputeResourceType(resource_type)
+    except ValueError:
+        raise HTTPException(status_code=400, detail=f"Invalid resource type: {resource_type}")
+    
+    capacity = await compute_manager.get_available_capacity(resource_type_enum, region)
+    
+    return capacity
 
 
 @app.get("/api/v1/tenants/{tenant_id}/provisioning-status")
