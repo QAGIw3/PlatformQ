@@ -5,6 +5,7 @@ import asyncio
 from typing import Dict, List, Optional
 from decimal import Decimal
 import logging
+from datetime import datetime
 
 from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard, partner_capacity, capacity_coordinator, risk_intelligence, asset_compute_nexus, compute_spot, compute_options, burst_compute, compute_stablecoin
 from app.engines.matching_engine import MatchingEngine
@@ -33,9 +34,10 @@ from app.integrations import (
     NeuromorphicServiceClient,
     VerifiableCredentialClient,
     PulsarEventPublisher,
-    IgniteCache,
     SeaTunnelClient
 )
+from app.integrations.ignite_optimized import get_optimized_cache
+from app.database.connection_pool import get_db_pool
 from app.integrations.graph_intelligence_integration import GraphIntelligenceIntegration
 from app.integrations.asset_compute_nexus import AssetComputeNexus
 from app.websocket.market_data import MarketDataWebSocket
@@ -75,9 +77,13 @@ async def lifespan(app: FastAPI):
     # Startup
     logger.info("Starting Derivatives Engine Service...")
     
-    # Initialize clients
-    ignite = IgniteCache()
-    await ignite.connect()
+    # Initialize optimized cache first
+    logger.info("Initializing optimized cache...")
+    ignite = await get_optimized_cache()
+    
+    # Initialize database pools
+    logger.info("Initializing database connection pools...")
+    db_pool = await get_db_pool()
     
     pulsar = PulsarEventPublisher()
     await pulsar.connect()
@@ -439,6 +445,105 @@ app.include_router(partner_capacity.router)  # Partner capacity management
 app.include_router(capacity_coordinator.router)  # Cross-service capacity coordination
 app.include_router(risk_intelligence.router)  # Risk intelligence with graph integration
 app.include_router(asset_compute_nexus.router)  # Asset-compute-model nexus
+
+# Add performance monitoring endpoints
+from fastapi import APIRouter
+
+performance_router = APIRouter(prefix="/api/v1/performance", tags=["performance"])
+
+@performance_router.get("/cache/stats")
+async def get_cache_performance():
+    """Get cache performance statistics"""
+    cache = await get_optimized_cache()
+    return await cache.get_cache_stats()
+
+@performance_router.get("/database/stats")  
+async def get_database_performance():
+    """Get database connection pool statistics"""
+    db_pool = await get_db_pool()
+    stats = db_pool.get_stats()
+    
+    # Convert stats to JSON-serializable format
+    return {
+        db_name: {
+            "total_connections": stats.total_connections,
+            "active_connections": stats.active_connections,
+            "idle_connections": stats.idle_connections,
+            "total_queries": stats.total_queries,
+            "failed_queries": stats.failed_queries,
+            "avg_query_time_ms": stats.avg_query_time * 1000,
+            "error_rate": stats.failed_queries / stats.total_queries if stats.total_queries > 0 else 0
+        }
+        for db_name, stats in stats.items()
+    }
+
+@performance_router.get("/system/metrics")
+async def get_system_metrics():
+    """Get overall system performance metrics"""
+    import psutil
+    import gc
+    
+    # Get cache stats
+    cache = await get_optimized_cache()
+    cache_stats = await cache.get_cache_stats()
+    
+    # Get database stats
+    db_pool = await get_db_pool()
+    db_stats = db_pool.get_stats()
+    
+    # System metrics
+    process = psutil.Process()
+    
+    return {
+        "system": {
+            "cpu_percent": process.cpu_percent(interval=0.1),
+            "memory_mb": process.memory_info().rss / 1024 / 1024,
+            "threads": process.num_threads(),
+            "open_files": len(process.open_files()),
+            "gc_stats": gc.get_stats()
+        },
+        "cache": cache_stats["performance_summary"],
+        "database": {
+            name: {
+                "queries_per_second": stats.total_queries / max((datetime.utcnow() - stats.created_at).total_seconds(), 1),
+                "avg_query_time_ms": stats.avg_query_time * 1000,
+                "connection_usage": stats.active_connections / stats.total_connections if stats.total_connections > 0 else 0
+            }
+            for name, stats in db_stats.items()
+        },
+        "derivatives_engine": {
+            "active_markets": len(matching_engine.markets) if 'matching_engine' in globals() else 0,
+            "active_settlements": len(settlement_engine.settlements) if 'settlement_engine' in globals() else 0,
+            "options_open_interest": sum(
+                compute_options_engine.open_interest.values()
+            ) if 'compute_options_engine' in globals() else 0
+        }
+    }
+
+@performance_router.post("/cache/optimize/{cache_name}")
+async def optimize_cache(cache_name: str):
+    """Trigger cache optimization for specific cache"""
+    cache = await get_optimized_cache()
+    
+    # Clear old entries
+    await cache.clear_cache(cache_name)
+    
+    # Warm up cache if applicable
+    if cache_name == "market_data":
+        async def warmup_market_data():
+            # Load frequently accessed market data
+            return {}
+        await cache.warmup_cache(cache_name, warmup_market_data)
+    
+    return {"status": "optimized", "cache": cache_name}
+
+@performance_router.get("/query/analyze")
+async def analyze_query(sql: str, cache_name: str = "default"):
+    """Analyze SQL query performance"""
+    cache = await get_optimized_cache()
+    return await cache.optimize_query(sql, cache_name)
+
+app.include_router(performance_router)
 
 # Health check
 @app.get("/health")
