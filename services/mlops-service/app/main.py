@@ -30,6 +30,12 @@ from .auto_retrainer import AutomatedRetrainer, RetrainingTrigger
 from .model_versioning_marketplace import ModelVersioningMarketplace
 from .retraining_consumer import RetrainingConsumer
 from .graph_intelligence_integration import MLOpsGraphIntelligence
+from .compute_provisioning import (
+    MLOpsComputeProvisioner,
+    ComputeRequirement,
+    ComputeRequirementType,
+    ResourceProcurementStrategy
+)
 import pulsar
 
 logger = logging.getLogger(__name__)
@@ -52,6 +58,8 @@ PULSAR_URL = os.getenv("PULSAR_URL", "pulsar://pulsar:6650")
 FUNCTIONS_SERVICE_URL = os.getenv("FUNCTIONS_SERVICE_URL", "http://functions-service:80")
 WORKFLOW_SERVICE_URL = os.getenv("WORKFLOW_SERVICE_URL", "http://workflow-service:80")
 DIGITAL_ASSET_SERVICE_URL = os.getenv("DIGITAL_ASSET_SERVICE_URL", "http://digital-asset-service:80")
+DERIVATIVES_ENGINE_URL = os.getenv("DERIVATIVES_ENGINE_URL", "http://derivatives-engine-service:8000")
+PROVISIONING_SERVICE_URL = os.getenv("PROVISIONING_SERVICE_URL", "http://provisioning-service:8000")
 
 # Initialize MLflow
 mlflow.set_tracking_uri(MLFLOW_TRACKING_URI)
@@ -69,6 +77,7 @@ performance_tracker = ModelPerformanceTracker()
 auto_retrainer = AutomatedRetrainer()
 version_marketplace = ModelVersioningMarketplace()
 retraining_consumer = None
+compute_provisioner = None
 
 
 # Pydantic models
@@ -143,11 +152,32 @@ class AdoptionPredictionRequest(BaseModel):
     target_audience: List[str] = Field(..., description="List of target user IDs")
 
 
+class TrainingComputeRequest(BaseModel):
+    """Request for compute provisioning"""
+    model_name: str = Field(..., description="Model requiring compute")
+    requirement_type: str = Field("training", description="Type of compute requirement")
+    gpu_hours: float = Field(..., description="GPU hours needed")
+    gpu_type: str = Field("NVIDIA_A100", description="GPU type required")
+    cpu_cores: int = Field(16, description="CPU cores needed")
+    memory_gb: int = Field(64, description="Memory in GB")
+    storage_gb: int = Field(100, description="Storage in GB")
+    duration_hours: float = Field(24, description="Duration in hours")
+    deadline: Optional[str] = Field(None, description="Deadline for completion")
+    budget_limit: Optional[float] = Field(None, description="Budget limit in USD")
+    priority: str = Field("normal", description="Priority: low, normal, high, critical")
+
+
+class TrainingScheduleOptimizationRequest(BaseModel):
+    """Request to optimize training schedule"""
+    jobs: List[Dict[str, Any]] = Field(..., description="List of training jobs to optimize")
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
     global feedback_loop_manager, ab_test_manager, model_registry_manager
     global deployment_manager, monitoring_config_manager, model_marketplace_manager, retraining_consumer
+    global compute_provisioner
     
     # Connect event publisher
     event_publisher.connect()
@@ -170,6 +200,13 @@ async def startup_event():
     # Initialize graph intelligence for model quality assessment
     graph_intelligence = MLOpsGraphIntelligence(
         graph_service_url="http://graph-intelligence-service:8000"
+    )
+    
+    # Initialize compute provisioner
+    compute_provisioner = MLOpsComputeProvisioner(
+        derivatives_engine_url=DERIVATIVES_ENGINE_URL,
+        provisioning_url=PROVISIONING_SERVICE_URL,
+        event_publisher=event_publisher
     )
     
     feedback_loop_manager = FeedbackLoopManager(
@@ -1177,6 +1214,179 @@ async def predict_model_adoption(
     except Exception as e:
         logger.error(f"Failed to predict model adoption: {e}")
         raise HTTPException(status_code=500, detail=str(e))
+
+
+# Compute Provisioning Endpoints
+
+@app.post("/api/v1/models/training-requirements", response_model=Dict[str, Any])
+async def get_training_requirements(
+    model_name: str,
+    training_type: str = "full",
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get compute requirements for model training"""
+    try:
+        # This would normally analyze the model and dataset to estimate requirements
+        # For now, return estimated requirements based on model type
+        requirements = {
+            "model_name": model_name,
+            "training_type": training_type,
+            "estimated_gpu_hours": 48.0,
+            "recommended_gpu_type": "NVIDIA_A100",
+            "estimated_cost_range": {
+                "min": 500.0,
+                "max": 2400.0
+            },
+            "resource_requirements": {
+                "gpu_count": 1,
+                "gpu_type": "NVIDIA_A100",
+                "cpu_cores": 16,
+                "memory_gb": 64,
+                "storage_gb": 200
+            },
+            "optimization_suggestions": [
+                "Consider using mixed precision training",
+                "Enable gradient checkpointing for memory efficiency",
+                "Use data parallelism for faster training"
+            ]
+        }
+        
+        return requirements
+        
+    except Exception as e:
+        logger.error(f"Failed to get training requirements: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/compute/provision", response_model=Dict[str, Any])
+async def provision_compute(
+    request: TrainingComputeRequest,
+    context: dict = Depends(get_current_tenant_and_user),
+    background_tasks: BackgroundTasks = BackgroundTasks()
+):
+    """Provision compute resources for model training"""
+    tenant_id = context["tenant_id"]
+    user_id = context["user_id"]
+    
+    try:
+        # Create compute requirement
+        requirement = ComputeRequirement(
+            requirement_type=getattr(ComputeRequirementType, request.requirement_type.upper()),
+            gpu_hours=request.gpu_hours,
+            gpu_type=request.gpu_type,
+            cpu_cores=request.cpu_cores,
+            memory_gb=request.memory_gb,
+            storage_gb=request.storage_gb,
+            duration_hours=request.duration_hours,
+            deadline=datetime.fromisoformat(request.deadline) if request.deadline else None,
+            budget_limit=Decimal(str(request.budget_limit)) if request.budget_limit else None,
+            priority=request.priority
+        )
+        
+        # Provision compute
+        result = await compute_provisioner.provision_training_compute(
+            model_name=request.model_name,
+            requirement=requirement,
+            tenant_id=tenant_id,
+            user_id=user_id
+        )
+        
+        if not result.success:
+            raise HTTPException(
+                status_code=400,
+                detail="Failed to provision compute resources"
+            )
+            
+        return {
+            "success": result.success,
+            "strategy_used": result.strategy_used.value,
+            "total_cost": float(result.total_cost),
+            "resources_allocated": result.resources_allocated,
+            "contracts": {
+                "futures": result.futures_contracts,
+                "options": result.options_contracts,
+                "spot_orders": result.spot_orders
+            },
+            "estimated_savings": float(result.estimated_savings),
+            "hedging_coverage": result.hedging_coverage,
+            "access_details": result.access_details
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to provision compute: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/compute/costs/{model_name}", response_model=Dict[str, Any])
+async def get_compute_costs(
+    model_name: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Monitor compute costs for a model"""
+    tenant_id = context["tenant_id"]
+    
+    try:
+        costs = await compute_provisioner.monitor_costs(
+            model_name=model_name,
+            tenant_id=tenant_id
+        )
+        
+        return costs
+        
+    except Exception as e:
+        logger.error(f"Failed to get compute costs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/compute/optimize-schedule", response_model=List[Dict[str, Any]])
+async def optimize_training_schedule(
+    request: TrainingScheduleOptimizationRequest,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Optimize training schedule based on market conditions"""
+    tenant_id = context["tenant_id"]
+    
+    try:
+        optimized_schedule = await compute_provisioner.optimize_training_schedule(
+            training_jobs=request.jobs,
+            tenant_id=tenant_id
+        )
+        
+        return optimized_schedule
+        
+    except Exception as e:
+        logger.error(f"Failed to optimize schedule: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/compute/reservation-confirmed")
+async def confirm_compute_reservation(
+    order_id: str,
+    status: str,
+    access_details: Optional[Dict[str, Any]] = None,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Callback from provisioning service when compute is ready"""
+    try:
+        # Notify the model training system that compute is ready
+        if status == "ready" and access_details:
+            # Trigger model training with provided access details
+            event_publisher.publish_event(
+                topic=f"persistent://platformq/{context['tenant_id']}/compute-ready-events",
+                event={
+                    "order_id": order_id,
+                    "status": status,
+                    "access_details": access_details,
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+            )
+            
+        return {"message": "Reservation confirmed", "order_id": order_id}
+        
+    except Exception as e:
+        logger.error(f"Failed to confirm reservation: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
 
 # Helper functions
 def get_current_tenant_and_user():

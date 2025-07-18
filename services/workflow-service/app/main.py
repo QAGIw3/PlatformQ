@@ -36,6 +36,7 @@ from platformq_events import (
 )
 
 from .api import endpoints
+from .api import compute_endpoints
 from .api.deps import get_db_session, get_api_key_crud, get_user_crud, get_password_verifier
 from .repository import WorkflowRepository, TaskRepository, ResourceAuthorizationRepository
 from .event_processors import WorkflowEventProcessor, AssetWorkflowProcessor
@@ -47,6 +48,12 @@ from .verifiable_credentials.workflow_credentials import (
     CredentialType,
     VerifiablePresentation
 )
+from .compute_orchestration import (
+    WorkflowComputeOrchestrator,
+    WorkflowResourceEstimate,
+    WorkflowResourceType,
+    TaskResourceProfile
+)
 
 logger = logging.getLogger(__name__)
 
@@ -57,13 +64,14 @@ airflow_bridge = None
 credential_manager = None
 credential_verifier = None
 service_clients = None
+compute_orchestrator = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global workflow_event_processor, asset_workflow_processor, airflow_bridge
-    global credential_manager, credential_verifier, service_clients
+    global credential_manager, credential_verifier, service_clients, compute_orchestrator
     
     # Startup
     logger.info("Starting Workflow Service...")
@@ -105,6 +113,14 @@ async def lifespan(app: FastAPI):
         vc_service_url=settings.get("vc_service_url", "http://verifiable-credential-service:8000")
     )
     app.state.credential_verifier = credential_verifier
+    
+    # Initialize compute orchestrator
+    compute_orchestrator = WorkflowComputeOrchestrator(
+        derivatives_engine_url=settings.get("derivatives_engine_url", "http://derivatives-engine-service:8000"),
+        airflow_api_url=settings.get("airflow_url", "http://airflow-webserver:8080"),
+        event_publisher=app.state.event_publisher
+    )
+    app.state.compute_orchestrator = compute_orchestrator
     
     # Initialize event processors
     workflow_event_processor = WorkflowEventProcessor(
@@ -168,6 +184,7 @@ app.router.lifespan_context = lifespan
 
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["workflows"])
+app.include_router(compute_endpoints.router, prefix="/api/v1", tags=["workflow-compute"])
 
 # Service root endpoint
 @app.get("/")

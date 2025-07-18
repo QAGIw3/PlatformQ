@@ -27,6 +27,7 @@ from platformq_events import SimulationStartedEvent, SimulationRunCompleted, Sim
 from .api import endpoints
 from .api.endpoints import multi_physics_ws
 from .api import collaboration_intelligence
+from .api import compute_allocation_endpoints
 from .api.deps import (
     get_current_tenant_and_user,
     get_db_session,
@@ -51,6 +52,12 @@ from .collaboration import SimulationCollaborationManager
 from .ignite_manager import SimulationIgniteManager
 from .graph_intelligence_integration import SimulationGraphIntelligence
 from .federated_ml_integration import SimulationMLOrchestrator
+from .compute_allocation import (
+    SimulationComputeAllocator,
+    SimulationResourceRequirements,
+    SimulationType,
+    ResourceIntensity
+)
 
 logger = logging.getLogger(__name__)
 
@@ -63,6 +70,7 @@ ignite_manager = None
 ml_orchestrator = None
 collab_manager = None
 service_clients = None
+compute_allocator = None
 
 
 @asynccontextmanager
@@ -70,6 +78,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global simulation_processor, federated_processor, physics_processor, collab_processor
     global ignite_manager, ml_orchestrator, collab_manager, service_clients, graph_intelligence
+    global compute_allocator
     
     # Startup
     logger.info("Starting Simulation Service...")
@@ -116,6 +125,14 @@ async def lifespan(app: FastAPI):
     # Initialize collaboration manager
     collab_manager = SimulationCollaborationManager()
     app.state.collab_manager = collab_manager
+    
+    # Initialize compute allocator
+    compute_allocator = SimulationComputeAllocator(
+        derivatives_engine_url=settings.get("derivatives_engine_url", "http://derivatives-engine-service:8000"),
+        ignite_cache=ignite_manager,
+        event_publisher=app.state.event_publisher
+    )
+    app.state.compute_allocator = compute_allocator
     
     # Initialize graph intelligence
     graph_intelligence = SimulationGraphIntelligence(
@@ -214,6 +231,7 @@ app.include_router(
     tags=["multi-physics-ws"]
 )
 app.include_router(collaboration_intelligence.router)
+app.include_router(compute_allocation_endpoints.router, prefix="/api/v1", tags=["compute-allocation"])
 
 # Service root endpoint
 @app.get("/")

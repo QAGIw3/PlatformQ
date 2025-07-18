@@ -24,6 +24,7 @@ from app.engines.options_amm import OptionsAMM, AMMConfig
 from app.engines.pricing import BlackScholesEngine, Greeks
 from app.engines.compute_spot_market import ComputeSpotMarket
 from app.engines.compute_futures_engine import ComputeFuturesEngine
+from app.engines.margin_engine import MarginEngine, CollateralType
 
 logger = logging.getLogger(__name__)
 
@@ -125,7 +126,8 @@ class ComputeOptionsEngine:
         spot_market: ComputeSpotMarket,
         futures_engine: ComputeFuturesEngine,
         pricing_engine: BlackScholesEngine,
-        options_amm: OptionsAMM
+        options_amm: OptionsAMM,
+        margin_engine: Optional[MarginEngine] = None
     ):
         self.ignite = ignite
         self.pulsar = pulsar
@@ -134,6 +136,7 @@ class ComputeOptionsEngine:
         self.futures_engine = futures_engine
         self.pricing_engine = pricing_engine
         self.options_amm = options_amm
+        self.margin_engine = margin_engine
         
         # Options registry
         self.options: Dict[str, ComputeOption] = {}
@@ -370,7 +373,44 @@ class ComputeOptionsEngine:
         trade_value = abs(trade_quantity * execution_price)
         
         # Check user margin/collateral
-        # TODO: Implement margin check
+        if self.margin_engine:
+            # Calculate margin requirement
+            spot_price = Decimal(price_data["spot_price"])
+            volatility = Decimal(price_data["volatility"])
+            
+            # For options, use notional value
+            notional_value = option.contract_size * spot_price * quantity
+            
+            margin_req = await self.margin_engine.calculate_margin_requirement(
+                user_id=user_id,
+                position_type="options",
+                position_value=notional_value,
+                underlying_price=spot_price,
+                volatility=volatility,
+                position_details={
+                    "option_id": option_id,
+                    "strike": option.strike_price,
+                    "expiry": option.expiry,
+                    "type": option.option_type.value,
+                    "quantity": quantity,
+                    "side": side
+                }
+            )
+            
+            # Check sufficiency
+            is_sufficient, margin_details = await self.margin_engine.check_margin_sufficiency(
+                user_id, margin_req.total_required, "options"
+            )
+            
+            if not is_sufficient:
+                return {
+                    "success": False,
+                    "reason": "Insufficient margin",
+                    "required_margin": str(margin_req.total_required),
+                    "available_margin": margin_details["available_margin"],
+                    "shortfall": margin_details["shortfall"],
+                    "margin_details": margin_details
+                }
         
         # Create or update position
         position_id = f"{user_id}_{option_id}"

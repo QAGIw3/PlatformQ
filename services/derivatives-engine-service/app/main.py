@@ -19,7 +19,9 @@ from app.engines.compute_options_engine import ComputeOptionsEngine
 from app.engines.burst_compute_derivatives import BurstComputeEngine
 from app.engines.compute_stablecoin import ComputeStablecoinEngine
 from app.engines.pricing import BlackScholesEngine
+from app.engines.volatility_surface import VolatilitySurfaceEngine
 from app.engines.options_amm import OptionsAMM, AMMConfig
+from app.engines.margin_engine import MarginEngine
 from app.collateral.multi_tier_engine import MultiTierCollateralEngine
 from app.liquidation.partial_liquidator import PartialLiquidationEngine
 from app.fees.dynamic_fee_engine import DynamicFeeEngine
@@ -176,7 +178,19 @@ async def lifespan(app: FastAPI):
     
     # Create pricing engines for options
     pricing_engine = BlackScholesEngine()
-    vol_surface_engine = None  # TODO: Add volatility surface engine
+    vol_surface_engine = VolatilitySurfaceEngine()
+    
+    # Start volatility surface engine
+    await vol_surface_engine.start()
+    
+    # Create margin engine
+    margin_engine = MarginEngine(
+        graph_intelligence_client=graph_intelligence_client,
+        oracle_client=oracle_client,
+        ignite_cache=ignite,
+        pulsar_publisher=pulsar
+    )
+    await margin_engine.start()
     
     # Create options AMM
     options_amm_config = AMMConfig()
@@ -197,7 +211,8 @@ async def lifespan(app: FastAPI):
         compute_spot_market,
         compute_futures_engine,
         pricing_engine,
-        options_amm
+        options_amm,
+        margin_engine
     )
     
     # Set options engine instance in API module

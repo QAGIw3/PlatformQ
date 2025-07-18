@@ -23,6 +23,7 @@ from platformq_shared.config import ConfigLoader
 
 from .api import endpoints
 from .api.endpoints import graph_api
+from .api import compute_market_endpoints
 from .api.deps import (
     get_db_session, 
     get_api_key_crud, 
@@ -46,6 +47,13 @@ from .db.schema_manager import SchemaManager
 from .services.graph_processor import GraphProcessor
 from .services.lineage_tracker import LineageTracker
 from .services.trust_network import TrustNetworkManager
+from .compute_market_insights import (
+    ComputeMarketIntelligence,
+    MarketParticipant,
+    MarketRelationship,
+    MarketInsight,
+    MarketParticipantType
+)
 
 # gRPC imports
 from .grpc_generated import graph_intelligence_pb2, graph_intelligence_pb2_grpc
@@ -62,13 +70,15 @@ lineage_tracker = None
 trust_manager = None
 service_clients = None
 gremlin_url = None
+compute_market_intelligence = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global graph_update_processor, lineage_processor, trust_processor, query_processor
-    global graph_processor, lineage_tracker, trust_manager, service_clients, gremlin_url
+    global graph_processor, lineage_tracker, trust_manager, service_clients
+    global compute_market_intelligence, gremlin_url
     
     # Startup
     logger.info("Starting Graph Intelligence Service...")
@@ -127,6 +137,14 @@ async def lifespan(app: FastAPI):
     )
     await trust_manager.initialize()
     app.state.trust_manager = trust_manager
+    
+    # Initialize compute market intelligence
+    compute_market_intelligence = ComputeMarketIntelligence(
+        janusgraph_client=graph_processor,  # Using graph_processor as the client
+        derivatives_engine_url=settings.get("derivatives_engine_url", "http://derivatives-engine-service:8000"),
+        event_publisher=app.state.event_publisher
+    )
+    app.state.compute_market_intelligence = compute_market_intelligence
     
     # Initialize event processors
     graph_update_processor = GraphUpdateProcessor(
@@ -246,6 +264,7 @@ app.router.lifespan_context = lifespan
 # Include service-specific routers
 app.include_router(graph_api.router, prefix="/api/v1/graph", tags=["graph"])
 app.include_router(endpoints.router, prefix="/api/v1", tags=["graph-intelligence"])
+app.include_router(compute_market_endpoints.router, prefix="/api/v1", tags=["compute-market-intelligence"])
 
 # Service root endpoint
 @app.get("/")
