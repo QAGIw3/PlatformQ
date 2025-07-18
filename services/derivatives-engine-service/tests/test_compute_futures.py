@@ -3,9 +3,11 @@ Tests for Compute Futures functionality
 """
 
 import pytest
+import pytest_asyncio
 import asyncio
 from decimal import Decimal
 from datetime import datetime, timedelta
+from unittest.mock import Mock, AsyncMock
 
 from app.engines.compute_futures_engine import (
     ComputeFuturesEngine,
@@ -17,7 +19,7 @@ from app.engines.compute_futures_engine import (
 from app.integrations import IgniteCache, PulsarEventPublisher, OracleAggregatorClient
 
 
-@pytest.fixture
+@pytest_asyncio.fixture
 async def compute_futures_engine():
     """Create test compute futures engine"""
     ignite = IgniteCache()
@@ -36,13 +38,16 @@ async def compute_futures_engine():
 @pytest.mark.asyncio
 async def test_day_ahead_market_clearing(compute_futures_engine):
     """Test day-ahead market clearing mechanism"""
-    dam = compute_futures_engine.day_ahead_market
+    delivery_date = datetime.utcnow() + timedelta(days=1)
+    dam = compute_futures_engine.get_or_create_day_ahead_market(
+        delivery_date=delivery_date,
+        resource_type="gpu"
+    )
     
     # Submit bids
     bid1 = await dam.submit_bid(
         user_id="buyer1",
         hour=14,  # 2 PM
-        resource_type="gpu",
         quantity=Decimal("100"),  # 100 GPU hours
         max_price=Decimal("50")  # $50/hour max
     )
@@ -50,7 +55,6 @@ async def test_day_ahead_market_clearing(compute_futures_engine):
     bid2 = await dam.submit_bid(
         user_id="buyer2",
         hour=14,
-        resource_type="gpu",
         quantity=Decimal("50"),
         max_price=Decimal("45")
     )
@@ -59,27 +63,30 @@ async def test_day_ahead_market_clearing(compute_futures_engine):
     offer1 = await dam.submit_offer(
         provider_id="provider1",
         hour=14,
-        resource_type="gpu",
         quantity=Decimal("80"),
-        min_price=Decimal("40")
+        min_price=Decimal("40"),
+        ramp_rate=Decimal("10"),
+        location_zone="us-east-1"
     )
     
     offer2 = await dam.submit_offer(
         provider_id="provider2",
         hour=14,
-        resource_type="gpu",
         quantity=Decimal("70"),
-        min_price=Decimal("42")
+        min_price=Decimal("42"),
+        ramp_rate=Decimal("15"),
+        location_zone="us-west-2"
     )
     
     # Run market clearing
-    result = await dam.clear_market("gpu", 14)
+    results = await dam.clear_market()
+    result = results[14]  # Get result for hour 14
     
-    assert result.clearing_price > Decimal("40")
-    assert result.clearing_price <= Decimal("50")
-    assert result.cleared_quantity == Decimal("150")  # All supply cleared
-    assert len(result.matched_bids) == 2
-    assert len(result.matched_offers) == 2
+    assert result["clearing_price"] > Decimal("40")
+    assert result["clearing_price"] <= Decimal("50")
+    assert result["cleared_quantity"] == Decimal("150")  # All supply cleared
+    assert result["accepted_bids"] == 2
+    assert result["accepted_offers"] == 2
 
 
 @pytest.mark.asyncio

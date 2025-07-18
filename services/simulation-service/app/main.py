@@ -26,6 +26,7 @@ from platformq_events import SimulationStartedEvent, SimulationRunCompleted, Sim
 
 from .api import endpoints
 from .api.endpoints import multi_physics_ws
+from .api import collaboration_intelligence
 from .api.deps import (
     get_current_tenant_and_user,
     get_db_session,
@@ -48,6 +49,7 @@ from .event_processors import (
 )
 from .collaboration import SimulationCollaborationManager
 from .ignite_manager import SimulationIgniteManager
+from .graph_intelligence_integration import SimulationGraphIntelligence
 from .federated_ml_integration import SimulationMLOrchestrator
 
 logger = logging.getLogger(__name__)
@@ -67,7 +69,7 @@ service_clients = None
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global simulation_processor, federated_processor, physics_processor, collab_processor
-    global ignite_manager, ml_orchestrator, collab_manager, service_clients
+    global ignite_manager, ml_orchestrator, collab_manager, service_clients, graph_intelligence
     
     # Startup
     logger.info("Starting Simulation Service...")
@@ -114,6 +116,12 @@ async def lifespan(app: FastAPI):
     # Initialize collaboration manager
     collab_manager = SimulationCollaborationManager()
     app.state.collab_manager = collab_manager
+    
+    # Initialize graph intelligence
+    graph_intelligence = SimulationGraphIntelligence(
+        graph_service_url=settings.get("graph_intelligence_url", "http://graph-intelligence-service:8000")
+    )
+    app.state.graph_intelligence = graph_intelligence
     
     # Initialize event processors
     simulation_processor = SimulationLifecycleProcessor(
@@ -205,6 +213,7 @@ app.include_router(
     prefix="/api/v1/multi-physics", 
     tags=["multi-physics-ws"]
 )
+app.include_router(collaboration_intelligence.router)
 
 # Service root endpoint
 @app.get("/")

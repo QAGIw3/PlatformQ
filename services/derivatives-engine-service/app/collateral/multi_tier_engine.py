@@ -13,10 +13,11 @@ class MultiTierCollateralEngine:
     Most advantageous approach: Multi-tier with progressive benefits
     """
     
-    def __init__(self, ignite_client, graph_client, oracle_client):
+    def __init__(self, ignite_client, graph_client, oracle_client, graph_intelligence=None):
         self.ignite = ignite_client
         self.graph = graph_client
         self.oracle = oracle_client
+        self.graph_intelligence = graph_intelligence
         
         # Tier definitions (most advantageous configuration)
         self.tiers = {
@@ -125,8 +126,47 @@ class MultiTierCollateralEngine:
         """
         Calculate unsecured credit based on platform reputation
         Revolutionary: Top users can trade with minimal collateral
+        Enhanced with Graph Intelligence risk assessment
         """
-        # Get multi-dimensional reputation scores
+        # Use Graph Intelligence for comprehensive risk assessment if available
+        if self.graph_intelligence:
+            try:
+                # Get risk assessment
+                risk_assessment = await self.graph_intelligence.assess_counterparty_risk(
+                    trader_id=user_id,
+                    transaction_type="collateral_credit"
+                )
+                
+                # Low risk users get more credit
+                if risk_assessment.risk_score < 30:  # Very low risk
+                    base_credit = Decimal("50000")  # $50k unsecured
+                elif risk_assessment.risk_score < 50:  # Low risk
+                    base_credit = Decimal("20000")  # $20k unsecured
+                elif risk_assessment.risk_score < 70:  # Medium risk
+                    base_credit = Decimal("5000")   # $5k unsecured
+                else:
+                    base_credit = Decimal("0")      # High risk, no credit
+                
+                # Adjust by trust score components
+                trust_score = risk_assessment.trust_score
+                multiplier = (
+                    trust_score.reliability / 100 * Decimal("0.3") +
+                    trust_score.competence / 100 * Decimal("0.2") +
+                    trust_score.integrity / 100 * Decimal("0.3") +
+                    trust_score.collaboration / 100 * Decimal("0.2")
+                )
+                
+                # Apply network effects
+                if risk_assessment.network_centrality > 0.7:
+                    multiplier *= Decimal("1.2")  # 20% bonus for well-connected users
+                
+                return base_credit * multiplier
+                
+            except Exception as e:
+                # Fallback to basic reputation if graph intelligence fails
+                pass
+        
+        # Fallback: Get multi-dimensional reputation scores
         reputation = await self.graph.get_user_reputation(user_id)
         
         if not reputation:

@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 from decimal import Decimal
 import logging
 
-from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard, partner_capacity, capacity_coordinator
+from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard, partner_capacity, capacity_coordinator, risk_intelligence
 from app.engines.matching_engine import MatchingEngine
 from app.engines.funding_engine import FundingEngine
 from app.engines.settlement_engine import SettlementEngine
@@ -28,6 +28,7 @@ from app.integrations import (
     IgniteCache,
     SeaTunnelClient
 )
+from app.integrations.graph_intelligence_integration import GraphIntelligenceIntegration
 from app.websocket.market_data import MarketDataWebSocket
 from app.monitoring import PrometheusMetrics
 
@@ -49,6 +50,7 @@ fee_engine: Optional[DynamicFeeEngine] = None
 market_dao: Optional[MarketCreationDAO] = None
 websocket_manager: Optional[MarketDataWebSocket] = None
 metrics: Optional[PrometheusMetrics] = None
+graph_intelligence: Optional[GraphIntelligenceIntegration] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -76,10 +78,10 @@ async def lifespan(app: FastAPI):
     global matching_engine, funding_engine, settlement_engine, compute_futures_engine
     global partner_capacity_manager, wholesale_arbitrage_engine, cross_service_coordinator
     global collateral_engine, liquidation_engine, fee_engine
-    global market_dao, websocket_manager, metrics
+    global market_dao, websocket_manager, metrics, graph_intelligence
     
     # Collateral and risk engines
-    collateral_engine = MultiTierCollateralEngine(ignite, graph_client, oracle_client)
+    collateral_engine = MultiTierCollateralEngine(ignite, graph_client, oracle_client, None)
     fee_engine = DynamicFeeEngine(graph_client, ignite)
     
     # Insurance pool integration
@@ -158,6 +160,16 @@ async def lifespan(app: FastAPI):
     
     # Prometheus metrics
     metrics = PrometheusMetrics()
+    
+    # Initialize graph intelligence integration
+    graph_intelligence = GraphIntelligenceIntegration(
+        graph_service_url="http://graph-intelligence-service:8000",
+        ignite_cache=ignite,
+        pulsar_publisher=pulsar
+    )
+    
+    # Set graph intelligence on collateral engine for risk-adjusted margins
+    collateral_engine.graph_intelligence = graph_intelligence
     
     # Start background tasks
     asyncio.create_task(matching_engine.start())
@@ -299,6 +311,7 @@ app.include_router(risk_limits.router)  # Risk limits management
 app.include_router(monitoring_dashboard.router)  # Monitoring dashboard
 app.include_router(partner_capacity.router)  # Partner capacity management
 app.include_router(capacity_coordinator.router)  # Cross-service capacity coordination
+app.include_router(risk_intelligence.router)  # Risk intelligence with graph integration
 
 # Health check
 @app.get("/health")

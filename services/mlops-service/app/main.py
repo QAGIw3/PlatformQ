@@ -29,6 +29,7 @@ from .performance_tracker import ModelPerformanceTracker
 from .auto_retrainer import AutomatedRetrainer, RetrainingTrigger
 from .model_versioning_marketplace import ModelVersioningMarketplace
 from .retraining_consumer import RetrainingConsumer
+from .graph_intelligence_integration import MLOpsGraphIntelligence
 import pulsar
 
 logger = logging.getLogger(__name__)
@@ -130,6 +131,18 @@ class ModelReviewRequest(BaseModel):
     verified_purchase: bool = Field(False, description="Whether this is from a verified purchase")
 
 
+class ModelQualityRequest(BaseModel):
+    """Request for model quality prediction"""
+    model_metadata: Dict[str, Any] = Field(..., description="Model metadata including type, complexity, etc.")
+    creator_id: Optional[str] = Field(None, description="Model creator ID")
+
+
+class AdoptionPredictionRequest(BaseModel):
+    """Request for model adoption prediction"""
+    creator_id: Optional[str] = Field(None, description="Model creator ID")
+    target_audience: List[str] = Field(..., description="List of target user IDs")
+
+
 @app.on_event("startup")
 async def startup_event():
     """Initialize services on startup"""
@@ -152,6 +165,11 @@ async def startup_event():
     model_marketplace_manager = ModelMarketplaceManager(
         digital_asset_service_url=DIGITAL_ASSET_SERVICE_URL,
         blockchain_service_url="http://blockchain-event-bridge:80"
+    )
+    
+    # Initialize graph intelligence for model quality assessment
+    graph_intelligence = MLOpsGraphIntelligence(
+        graph_service_url="http://graph-intelligence-service:8000"
     )
     
     feedback_loop_manager = FeedbackLoopManager(
@@ -1027,6 +1045,137 @@ async def get_marketplace_model_performance(
         
     except Exception as e:
         logger.error(f"Error getting marketplace analytics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Graph Intelligence Endpoints
+
+@app.get("/api/v1/creator-profile/{creator_id}", response_model=Dict[str, Any])
+async def get_creator_profile(
+    creator_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get comprehensive profile of a model creator using graph intelligence"""
+    try:
+        profile = await graph_intelligence.get_model_creator_profile(creator_id)
+        
+        return {
+            "creator_id": profile.creator_id,
+            "overall_reputation": profile.overall_reputation,
+            "model_quality_score": profile.model_quality_score,
+            "collaboration_score": profile.collaboration_score,
+            "innovation_score": profile.innovation_score,
+            "reliability_score": profile.reliability_score,
+            "total_models": profile.total_models,
+            "successful_models": profile.successful_models,
+            "average_model_performance": profile.average_model_performance,
+            "specializations": profile.specializations,
+            "trust_network_size": profile.trust_network_size,
+            "last_updated": profile.last_updated.isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get creator profile: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/models/predict-quality", response_model=Dict[str, Any])
+async def predict_model_quality(
+    request: ModelQualityRequest,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Predict model quality before deployment using graph intelligence"""
+    creator_id = context.get("user_id", request.creator_id)
+    
+    try:
+        prediction = await graph_intelligence.predict_model_quality(
+            model_metadata=request.model_metadata,
+            creator_id=creator_id
+        )
+        
+        return {
+            "model_id": prediction.model_id,
+            "predicted_accuracy": prediction.predicted_accuracy,
+            "predicted_reliability": prediction.predicted_reliability,
+            "predicted_adoption_rate": prediction.predicted_adoption_rate,
+            "confidence": prediction.confidence,
+            "risk_factors": prediction.risk_factors,
+            "recommendations": prediction.recommendations
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to predict model quality: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/collaboration/recommendations", response_model=List[Dict[str, Any]])
+async def get_collaboration_recommendations(
+    project_type: str,
+    limit: int = 5,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Get collaboration recommendations for model development"""
+    creator_id = context["user_id"]
+    
+    try:
+        recommendations = await graph_intelligence.get_collaboration_recommendations(
+            creator_id=creator_id,
+            project_type=project_type,
+            limit=limit
+        )
+        
+        return [
+            {
+                "collaborator_id": rec.collaborator_id,
+                "collaboration_score": rec.collaboration_score,
+                "complementary_skills": rec.complementary_skills,
+                "past_success_rate": rec.past_success_rate,
+                "recommended_projects": rec.recommended_projects
+            }
+            for rec in recommendations
+        ]
+        
+    except Exception as e:
+        logger.error(f"Failed to get collaboration recommendations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/models/{model_id}/lineage-trust", response_model=Dict[str, Any])
+async def analyze_model_lineage_trust(
+    model_id: str,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Analyze trust in model lineage using graph intelligence"""
+    try:
+        lineage_analysis = await graph_intelligence.analyze_model_lineage(model_id)
+        
+        return lineage_analysis
+        
+    except Exception as e:
+        logger.error(f"Failed to analyze model lineage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/models/{model_id}/adoption-prediction", response_model=Dict[str, Any])
+async def predict_model_adoption(
+    model_id: str,
+    request: AdoptionPredictionRequest,
+    context: dict = Depends(get_current_tenant_and_user)
+):
+    """Predict model adoption rates using graph intelligence"""
+    creator_id = context.get("user_id", request.creator_id)
+    
+    try:
+        adoption_prediction = await graph_intelligence.get_model_adoption_prediction(
+            model_id=model_id,
+            creator_id=creator_id,
+            target_audience=request.target_audience
+        )
+        
+        return adoption_prediction
+        
+    except Exception as e:
+        logger.error(f"Failed to predict model adoption: {e}")
         raise HTTPException(status_code=500, detail=str(e))
 
 # Helper functions

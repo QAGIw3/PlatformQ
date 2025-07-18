@@ -22,6 +22,16 @@ logger = logging.getLogger(__name__)
 
 
 @dataclass
+class MarketClearingResult:
+    """Result of market clearing process"""
+    clearing_price: Decimal
+    total_quantity_cleared: Decimal
+    matched_bids: List['ComputeBid']
+    matched_offers: List['ComputeOffer']
+    clearing_time: datetime = field(default_factory=datetime.utcnow)
+
+
+@dataclass
 class ComputeBid:
     """Bid for compute resources"""
     bid_id: str
