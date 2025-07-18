@@ -14,10 +14,9 @@ import logging
 
 from app.api import kyc, aml, jurisdiction, reporting, monitoring
 from app.kyc.kyc_engine import KYCEngine
-from app.aml.aml_engine import AMLEngine
+from app.aml import AMLEngine, RiskAssessmentEngine, TransactionMonitor
 from app.jurisdiction.jurisdiction_engine import JurisdictionEngine
 from app.reporting.reporting_engine import ReportingEngine
-from app.monitoring.transaction_monitor import TransactionMonitor
 from app.integration import (
     IgniteCache,
     PulsarEventPublisher,

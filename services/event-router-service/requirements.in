@@ -1,0 +1,56 @@
+# Base dependencies
+-r ../../requirements/base.in
+
+# Shared libraries
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+
+# API Framework
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+
+# Event processing with Apache Pulsar
+pulsar-client[avro]
+aiopulsar
+
+# Event streaming with Apache Flink
+pyflink  # Apache Flink Python API
+
+# Schema registry and serialization
+confluent-kafka  # For schema registry support
+fastavro
+jsonschema
+
+# Message transformation
+jinja2  # For template-based transformations
+jsonpath-ng  # For JSONPath expressions
+pyjq  # For jq-based transformations
+
+# Caching with Ignite
+pyignite[async]
+
+# Event store
+motor  # MongoDB async driver for event store
+
+# Monitoring and observability
+prometheus-client
+opentelemetry-instrumentation-fastapi
+opentelemetry-instrumentation-pulsar
+
+# Performance
+orjson  # Fast JSON serialization
+uvloop  # Fast event loop
+aiocache  # Async caching abstractions
+
+# Routing and rules engine
+py-expression-eval  # For expression evaluation
+durable-rules  # Rules engine
+
+# Development
+pytest
+pytest-asyncio
+pytest-mock
+black
+ruff 

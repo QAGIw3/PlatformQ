@@ -1,0 +1,23 @@
+# Core dependencies
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+
+# Blockchain dependencies
+platformq-blockchain-common
+
+# Caching and state management
+pyignite[async]
+
+# Messaging
+pulsar-client
+
+# Date/time handling
+python-dateutil
+
+# Logging
+structlog
+
+# API documentation
+python-multipart 

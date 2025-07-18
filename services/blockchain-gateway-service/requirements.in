@@ -1,0 +1,89 @@
+# Base dependencies
+-r ../../requirements/base.in
+
+# Blockchain common library
+-e ../../libs/platformq-blockchain-common
+
+# Infrastructure
+pyignite[async]>=0.5.2
+pulsar-client>=3.0.0
+
+# Web3 and blockchain
+web3>=6.5.0
+eth-account>=0.9.0
+eth-utils>=2.1.0
+
+# API
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+
+# Async support
+asyncio>=3.4.3
+aiohttp>=3.8.0
+
+# Shared libraries
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+-e ../../libs/platformq-event-framework
+
+# API Framework
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+
+# Blockchain libraries
+web3>=6.5.0  # Ethereum/EVM chains
+eth-account>=0.9.0
+eth-utils>=2.2.0
+hexbytes>=0.3.0
+
+# Multi-chain support
+py-substrate-interface>=1.7.0  # Substrate/Polkadot
+cosmpy>=0.9.0  # Cosmos SDK chains
+solana>=0.30.0  # Solana
+algosdk>=2.3.0  # Algorand
+tronpy>=0.4.0  # Tron
+
+# Smart contract tools
+eth-abi>=4.1.0
+vyper>=0.3.9
+slither-analyzer>=0.9.0  # Security analysis
+mythril>=0.23.0  # Security analysis
+
+# Transaction management
+eth-gas-station>=0.1.0
+flashbots>=1.1.0  # MEV protection
+
+# Event indexing
+web3-ethereum-defi>=0.23.0
+
+# IPFS integration
+ipfshttpclient>=0.8.0
+py-cid>=0.3.0
+
+# Caching with Ignite
+pyignite[async]
+
+# Message queue
+aiopulsar
+
+# Database for transaction history
+motor  # MongoDB async driver
+
+# Monitoring
+prometheus-client
+opentelemetry-instrumentation-fastapi
+
+# Performance
+orjson  # Fast JSON serialization
+aiocache  # Async caching
+asyncio-throttle  # Rate limiting
+
+# Development
+pytest
+pytest-asyncio
+pytest-mock
+black
+ruff 

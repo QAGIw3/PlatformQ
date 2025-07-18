@@ -1,54 +1,112 @@
-from shared_lib.base_service import create_base_app
-from .api import endpoints
-from .api.deps import (
-    get_db_session, 
-    get_api_key_crud_placeholder, 
-    get_user_crud_placeholder, 
-    get_password_verifier_placeholder
-)
+"""
+{service_name} Service
+
+This is a template service showcasing best practices with the new consolidated infrastructure:
+- Uses Unified Data Gateway for all database operations
+- Uses Event Router Service for event routing
+- Uses Event Framework for standardized event processing
+"""
+
 import logging
+from contextlib import asynccontextmanager
+from typing import Optional
 
-# --- gRPC Server Setup (Example) ---
-# To enable gRPC for this service:
-# 1. Uncomment the gRPC dependencies in `requirements.txt`.
-# 2. Add your .proto file to `libs/shared/protos`.
-# 3. Run the gRPC generation script: `bash services/__SERVICE_NAME__/scripts/generate_grpc.sh`.
-# 4. Implement your servicer logic in a class (e.g., `YourServiceServicer`).
-# 5. Pass an instance of your servicer class and the `add_..._to_server` function 
-#    to the `create_base_app` factory below.
-#
-# Example:
-#
-# from .grpc_generated import your_service_pb2_grpc
-#
-# class YourServiceServicer(your_service_pb2_grpc.YourServiceServicer):
-#      def YourMethod(self, request, context):
-#          return your_service_pb2.YourResponse(reply="Hello, " + request.name)
-#
-# app = create_base_app(
-#     ...,
-#     grpc_servicer=YourServiceServicer(),
-#     grpc_add_servicer_func=your_service_pb2_grpc.add_YourServiceServicer_to_server,
-#     grpc_port=50051  # Use a unique port for each service
-# )
+from fastapi import FastAPI
+from platformq_shared import create_base_app, ConfigLoader
 
-app = create_base_app(
-    service_name="__SERVICE_NAME__",
-    db_session_dependency=get_db_session,
-    api_key_crud_dependency=get_api_key_crud_placeholder,
-    user_crud_dependency=get_user_crud_placeholder,
-    password_verifier_dependency=get_password_verifier_placeholder,
+# Import from the new event framework
+from platformq_event_framework import (
+    BaseEventProcessor,
+    EventProcessingResult,
+    EventProcessingStatus,
+    EventContext,
+    event_handler,
+    EventMetrics
 )
 
-# Include service-specific routers
-app.include_router(endpoints.router, prefix="/api/v1", tags=["__SERVICE_NAME__"])
+from .api import endpoints
+from .core.config import settings
+from .event_handlers import ServiceEventHandler
+from .database import get_db_client
 
-@app.on_event("startup")
-async def startup_event():
-    logging.basicConfig(level=logging.INFO)
-    logging.info("Starting up __SERVICE_NAME__...")
+logger = logging.getLogger(__name__)
 
-# Service-specific root endpoint
+# Global instances
+event_handler: Optional[ServiceEventHandler] = None
+db_client = None
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    global event_handler, db_client
+    
+    # Startup
+    logger.info("Starting {service_name} Service...")
+    
+    # Initialize configuration
+    config_loader = ConfigLoader()
+    config = config_loader.load_settings()
+    
+    # Initialize database client (uses Unified Data Gateway)
+    db_client = await get_db_client()
+    app.state.db_client = db_client
+    
+    # Initialize event handler with the new framework
+    event_handler = ServiceEventHandler(
+        service_name="{service_name}-service",
+        pulsar_url=config.get("pulsar_url", "pulsar://pulsar:6650"),
+        metrics=EventMetrics("{service_name}-service")
+    )
+    await event_handler.initialize()
+    
+    # Register event handlers using the new patterns
+    event_handler.register_handler(
+        topic_pattern="persistent://platformq/.*/{service_name}-events",
+        handler=event_handler.handle_event,
+        subscription_name="{service_name}-service-sub"
+    )
+    
+    # Start event processing
+    await event_handler.start()
+    
+    logger.info("{service_name} Service initialized successfully")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down {service_name} Service...")
+    
+    # Stop event handler
+    if event_handler:
+        await event_handler.stop()
+        
+    # Close database client
+    if db_client:
+        await db_client.close()
+    
+    logger.info("{service_name} Service shutdown complete")
+
+
+# Create app
+app = create_base_app(
+    service_name="{service_name}-service",
+    lifespan=lifespan
+)
+
+# Include routers
+app.include_router(endpoints.router, prefix="/api/v1", tags=["{service_name}"])
+
+# Root endpoint
 @app.get("/")
-def read_root():
-    return {"message": "__SERVICE_NAME__ is running"}
+async def root():
+    return {
+        "service": "{service_name}-service",
+        "version": "1.0.0",
+        "status": "operational",
+        "infrastructure": {
+            "database": "unified-data-gateway",
+            "events": "event-router-service",
+            "framework": "platformq-event-framework"
+        }
+    }
