@@ -6,6 +6,7 @@ from typing import Dict, Any, Optional, List
 from decimal import Decimal
 import asyncio
 import logging
+from .blockchain_bridge import BlockchainEventBridgeClient
 
 logger = logging.getLogger(__name__)
 
@@ -160,5 +161,6 @@ __all__ = [
     "PulsarEventPublisher",
     "IgniteCache",
     "SeaTunnelClient",
-    "InsurancePoolClient"
+    "InsurancePoolClient",
+    'BlockchainEventBridgeClient',
 ] 

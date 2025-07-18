@@ -6,7 +6,7 @@ from typing import Dict, List, Optional
 from decimal import Decimal
 import logging
 
-from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard, partner_capacity, capacity_coordinator, risk_intelligence, asset_compute_nexus, compute_spot
+from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard, partner_capacity, capacity_coordinator, risk_intelligence, asset_compute_nexus, compute_spot, compute_options, burst_compute, compute_stablecoin
 from app.engines.matching_engine import MatchingEngine
 from app.engines.funding_engine import FundingEngine
 from app.engines.settlement_engine import SettlementEngine
@@ -15,6 +15,11 @@ from app.engines.partner_capacity_manager import PartnerCapacityManager
 from app.engines.wholesale_arbitrage_engine import WholesaleArbitrageEngine
 from app.engines.cross_service_capacity_coordinator import CrossServiceCapacityCoordinator
 from app.engines.compute_spot_market import ComputeSpotMarket
+from app.engines.compute_options_engine import ComputeOptionsEngine
+from app.engines.burst_compute_derivatives import BurstComputeEngine
+from app.engines.compute_stablecoin import ComputeStablecoinEngine
+from app.engines.pricing import BlackScholesEngine
+from app.engines.options_amm import OptionsAMM, AMMConfig
 from app.collateral.multi_tier_engine import MultiTierCollateralEngine
 from app.liquidation.partial_liquidator import PartialLiquidationEngine
 from app.fees.dynamic_fee_engine import DynamicFeeEngine
@@ -47,6 +52,9 @@ partner_capacity_manager: Optional[PartnerCapacityManager] = None
 wholesale_arbitrage_engine: Optional[WholesaleArbitrageEngine] = None
 cross_service_coordinator: Optional[CrossServiceCapacityCoordinator] = None
 compute_spot_market: Optional[ComputeSpotMarket] = None
+compute_options_engine: Optional[ComputeOptionsEngine] = None
+burst_compute_engine: Optional[BurstComputeEngine] = None
+compute_stablecoin_engine: Optional[ComputeStablecoinEngine] = None
 collateral_engine: Optional[MultiTierCollateralEngine] = None
 liquidation_engine: Optional[PartialLiquidationEngine] = None
 fee_engine: Optional[DynamicFeeEngine] = None
@@ -55,6 +63,7 @@ websocket_manager: Optional[MarketDataWebSocket] = None
 metrics: Optional[PrometheusMetrics] = None
 graph_intelligence: Optional[GraphIntelligenceIntegration] = None
 asset_compute_nexus: Optional[AssetComputeNexus] = None
+options_amm: Optional[OptionsAMM] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -83,6 +92,7 @@ async def lifespan(app: FastAPI):
     global partner_capacity_manager, wholesale_arbitrage_engine, cross_service_coordinator
     global collateral_engine, liquidation_engine, fee_engine
     global market_dao, websocket_manager, metrics, graph_intelligence, asset_compute_nexus
+    global options_amm
     
     # Collateral and risk engines
     collateral_engine = MultiTierCollateralEngine(ignite, graph_client, oracle_client, None, None)
@@ -164,6 +174,65 @@ async def lifespan(app: FastAPI):
     # Set spot market instance in API module
     compute_spot.set_spot_market(compute_spot_market)
     
+    # Create pricing engines for options
+    pricing_engine = BlackScholesEngine()
+    vol_surface_engine = None  # TODO: Add volatility surface engine
+    
+    # Create options AMM
+    options_amm_config = AMMConfig()
+    options_amm = OptionsAMM(
+        options_amm_config,
+        pricing_engine,
+        vol_surface_engine,
+        ignite,
+        pulsar
+    )
+    
+    # Compute options engine
+    global compute_options_engine
+    compute_options_engine = ComputeOptionsEngine(
+        ignite,
+        pulsar,
+        oracle_client,
+        compute_spot_market,
+        compute_futures_engine,
+        pricing_engine,
+        options_amm
+    )
+    
+    # Set options engine instance in API module
+    compute_options.set_options_engine(compute_options_engine)
+    
+    # Burst compute engine
+    global burst_compute_engine
+    burst_compute_engine = BurstComputeEngine(
+        ignite,
+        pulsar,
+        oracle_client,
+        compute_spot_market,
+        compute_futures_engine,
+        partner_capacity_manager
+    )
+    
+    # Set burst engine instance in API module
+    burst_compute.set_burst_engine(burst_compute_engine)
+    
+    # Compute stablecoin engine
+    global compute_stablecoin_engine
+    from app.integrations import BlockchainEventBridgeClient
+    blockchain_bridge = BlockchainEventBridgeClient()
+    compute_stablecoin_engine = ComputeStablecoinEngine(
+        ignite,
+        pulsar,
+        oracle_client,
+        blockchain_bridge,
+        compute_spot_market,
+        collateral_engine
+    )
+    
+    # Set stablecoin engine instance in API module
+    compute_stablecoin.set_stablecoin_engine(compute_stablecoin_engine)
+    
     # Governance
     market_dao = MarketCreationDAO(
         graph_client,
@@ -209,6 +278,10 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(wholesale_arbitrage_engine.start())
     asyncio.create_task(cross_service_coordinator.start())
     asyncio.create_task(compute_spot_market.start())
+    asyncio.create_task(compute_options_engine.start())
+    asyncio.create_task(options_amm.start())
+    asyncio.create_task(burst_compute_engine.start())
+    asyncio.create_task(compute_stablecoin_engine.start())
     
     # Setup data pipelines with SeaTunnel
     await setup_data_pipelines(seatunnel_client)
@@ -228,6 +301,10 @@ async def lifespan(app: FastAPI):
     await wholesale_arbitrage_engine.stop()
     await cross_service_coordinator.stop()
     await compute_spot_market.stop()
+    await compute_options_engine.stop()
+    await options_amm.stop()
+    await burst_compute_engine.stop()
+    await compute_stablecoin_engine.stop()
     
     # Close connections
     await ignite.close()
@@ -336,6 +413,9 @@ app.include_router(options.router)  # Already has prefix in router definition
 app.include_router(market_makers.router)  # Already has prefix in router definition
 app.include_router(compute_futures.router)  # Compute futures trading
 app.include_router(compute_spot.router)  # Compute spot market
+app.include_router(compute_options.router)  # Compute options
+app.include_router(burst_compute.router)  # Burst compute derivatives
+app.include_router(compute_stablecoin.router)  # Compute-backed stablecoins
 app.include_router(variance_swaps.router)  # Variance swaps trading
 app.include_router(structured_products.router)  # Structured products
 app.include_router(risk_limits.router)  # Risk limits management
