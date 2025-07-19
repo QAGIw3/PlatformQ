@@ -15,7 +15,6 @@ from contextlib import asynccontextmanager
 from typing import Optional, Dict, Any, List
 from datetime import datetime
 import asyncio
-import networkx as nx
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 
@@ -47,22 +46,16 @@ from .lake.transformation_engine import TransformationEngine
 
 # Governance
 from .governance.data_catalog import DataCatalogManager
-from .governance.policy_manager import DataPolicyManager
-from .governance.compliance_checker import ComplianceChecker
 
 # Quality
 from .quality.profiler import DataQualityProfiler
-from .quality.validator import DataQualityValidator
-from .quality.anomaly_detector import AnomalyDetector
 
 # Lineage
 from .lineage.lineage_tracker import DataLineageTracker
-from .lineage.impact_analyzer import ImpactAnalyzer
 
 # Pipelines
-from .pipelines.seatunnel_manager import SeaTunnelManager
-from .pipelines.pipeline_orchestrator import PipelineOrchestrator
-from .pipelines.pipeline_generator import IntelligentPipelineGenerator
+from .pipelines.seatunnel_manager import SeaTunnelPipelineManager
+from .pipelines.pipeline_coordinator import PipelineCoordinator
 
 # Event handlers
 from .event_handlers import DataPlatformEventHandler
@@ -86,14 +79,15 @@ connection_manager: Optional[UnifiedConnectionManager] = None
 query_router: Optional[QueryRouter] = None
 cache_manager: Optional[DataCacheManager] = None
 federated_engine: Optional[FederatedQueryEngine] = None
+trino_client: Optional[TrinoQueryExecutor] = None
 lake_manager: Optional[MedallionLakeManager] = None
+ingestion_engine: Optional[DataIngestionEngine] = None
+transformation_engine: Optional[TransformationEngine] = None
 catalog_manager: Optional[DataCatalogManager] = None
-policy_manager: Optional[DataPolicyManager] = None
-compliance_checker: Optional[ComplianceChecker] = None
 quality_profiler: Optional[DataQualityProfiler] = None
 lineage_tracker: Optional[DataLineageTracker] = None
-seatunnel_manager: Optional[SeaTunnelManager] = None
-pipeline_orchestrator: Optional[PipelineOrchestrator] = None
+seatunnel_manager: Optional[SeaTunnelPipelineManager] = None
+pipeline_coordinator: Optional[PipelineCoordinator] = None
 scheduler: AsyncIOScheduler = AsyncIOScheduler()
 event_handler: Optional[DataPlatformEventHandler] = None
 
@@ -101,10 +95,10 @@ event_handler: Optional[DataPlatformEventHandler] = None
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global connection_manager, query_router, cache_manager, federated_engine
-    global lake_manager, catalog_manager, policy_manager, compliance_checker
-    global quality_profiler, lineage_tracker, seatunnel_manager, pipeline_orchestrator
-    global event_handler
+    global connection_manager, query_router, cache_manager, federated_engine, trino_client
+    global lake_manager, ingestion_engine, transformation_engine
+    global catalog_manager, quality_profiler, lineage_tracker
+    global seatunnel_manager, pipeline_coordinator, event_handler
     
     # Startup
     logger.info("Starting Data Platform Service...")
@@ -119,12 +113,8 @@ async def lifespan(app: FastAPI):
     app.state.connection_manager = connection_manager
     
     # Initialize cache manager (Ignite-based)
-    cache_manager = DataCacheManager(
-        ignite_host=config.get("ignite_host", "ignite"),
-        ignite_port=int(config.get("ignite_port", 10800)),
-        cache_ttl=int(config.get("cache_ttl", 300))
-    )
-    await cache_manager.connect()
+    cache_manager = DataCacheManager()
+    await cache_manager.initialize()
     app.state.cache_manager = cache_manager
     
     # Initialize query router
@@ -134,10 +124,20 @@ async def lifespan(app: FastAPI):
     )
     app.state.query_router = query_router
     
+    # Initialize Trino client
+    trino_client = TrinoQueryExecutor(
+        host=settings.trino_host,
+        port=settings.trino_port,
+        user=settings.trino_user,
+        catalog=settings.trino_catalog,
+        schema=settings.trino_schema
+    )
+    app.state.trino_client = trino_client
+    
     # Initialize federated query engine (Trino)
     federated_engine = FederatedQueryEngine(
-        trino_host=config.get("trino_host", "trino-coordinator"),
-        trino_port=int(config.get("trino_port", 8080)),
+        trino_host=settings.trino_host,
+        trino_port=settings.trino_port,
         cache_manager=cache_manager,
         query_router=query_router
     )
@@ -146,83 +146,89 @@ async def lifespan(app: FastAPI):
     
     # Initialize medallion lake manager
     lake_manager = MedallionLakeManager(
-        spark_master=config.get("spark_master", "spark://spark-master:7077"),
-        minio_endpoint=config.get("minio_endpoint", "minio:9000"),
-        minio_access_key=config.get("minio_access_key"),
-        minio_secret_key=config.get("minio_secret_key")
+        spark_master=settings.spark_master,
+        minio_endpoint=settings.minio_endpoint,
+        minio_access_key=settings.minio_access_key,
+        minio_secret_key=settings.minio_secret_key
     )
     await lake_manager.initialize()
     app.state.lake_manager = lake_manager
     
+    # Initialize ingestion engine
+    ingestion_engine = DataIngestionEngine(
+        lake_manager=lake_manager,
+        pulsar_url=settings.pulsar_url
+    )
+    await ingestion_engine.initialize()
+    app.state.ingestion_engine = ingestion_engine
+    
+    # Initialize transformation engine
+    transformation_engine = TransformationEngine(
+        lake_manager=lake_manager
+    )
+    app.state.transformation_engine = transformation_engine
+    
     # Initialize data catalog
     catalog_manager = DataCatalogManager(
         connection_manager=connection_manager,
-        atlas_url=config.get("atlas_url"),  # Optional Apache Atlas
-        enable_auto_discovery=config.get("enable_auto_discovery", True)
+        atlas_url=settings.atlas_url,
+        enable_auto_discovery=settings.enable_auto_discovery
     )
     await catalog_manager.initialize()
     app.state.catalog_manager = catalog_manager
     
-    # Initialize policy manager
-    policy_manager = DataPolicyManager(
-        ranger_url=config.get("ranger_url"),  # Optional Apache Ranger
-        enable_dynamic_policies=config.get("enable_dynamic_policies", True)
-    )
-    await policy_manager.initialize()
-    app.state.policy_manager = policy_manager
-    
-    # Initialize compliance checker
-    compliance_checker = ComplianceChecker(
-        policy_manager=policy_manager,
-        supported_regulations=["GDPR", "CCPA", "HIPAA", "SOX", "PCI-DSS"]
-    )
-    await compliance_checker.initialize()
-    app.state.compliance_checker = compliance_checker
-    
     # Initialize data quality profiler
     quality_profiler = DataQualityProfiler(
-        spark_session=lake_manager.spark_session,
-        enable_ml_profiling=config.get("enable_ml_profiling", True)
+        spark_session=lake_manager.spark,
+        cache_manager=cache_manager
     )
     await quality_profiler.initialize()
     app.state.quality_profiler = quality_profiler
     
     # Initialize lineage tracker
     lineage_tracker = DataLineageTracker(
-        graph_backend="networkx",  # or JanusGraph for large scale
-        enable_real_time_tracking=True
+        janusgraph_host=settings.janusgraph_host,
+        janusgraph_port=settings.janusgraph_port,
+        elasticsearch_client=connection_manager.get_elasticsearch_client(),
+        cache_manager=cache_manager
     )
     await lineage_tracker.initialize()
     app.state.lineage_tracker = lineage_tracker
     
     # Initialize SeaTunnel manager
-    seatunnel_manager = SeaTunnelManager(
-        seatunnel_home=config.get("seatunnel_home", "/opt/seatunnel"),
-        kubernetes_namespace=config.get("k8s_namespace", "data-pipelines")
-    )
-    await seatunnel_manager.initialize()
-    app.state.seatunnel_manager = seatunnel_manager
-    
-    # Initialize pipeline orchestrator
-    pipeline_orchestrator = PipelineOrchestrator(
-        seatunnel_manager=seatunnel_manager,
-        lake_manager=lake_manager,
-        quality_profiler=quality_profiler,
+    seatunnel_manager = SeaTunnelPipelineManager(
+        seatunnel_api_url=settings.seatunnel_api_url,
+        connection_manager=connection_manager,
         lineage_tracker=lineage_tracker
     )
-    await pipeline_orchestrator.initialize()
-    app.state.pipeline_orchestrator = pipeline_orchestrator
+    app.state.seatunnel_manager = seatunnel_manager
+    
+    # Initialize pipeline coordinator
+    pipeline_coordinator = PipelineCoordinator(
+        ingestion_engine=ingestion_engine,
+        transformation_engine=transformation_engine,
+        quality_profiler=quality_profiler,
+        seatunnel_manager=seatunnel_manager,
+        lineage_tracker=lineage_tracker,
+        cache_manager=cache_manager
+    )
+    app.state.pipeline_coordinator = pipeline_coordinator
     
     # Initialize event handler
     event_handler = DataPlatformEventHandler(
         service_name="data-platform-service",
-        pulsar_url=config.get("pulsar_url", "pulsar://pulsar:6650"),
+        pulsar_url=settings.pulsar_url,
         federated_engine=federated_engine,
         lake_manager=lake_manager,
-        pipeline_orchestrator=pipeline_orchestrator,
-        catalog_manager=catalog_manager
+        ingestion_engine=ingestion_engine,
+        transformation_engine=transformation_engine,
+        pipeline_coordinator=pipeline_coordinator,
+        catalog_manager=catalog_manager,
+        quality_profiler=quality_profiler,
+        lineage_tracker=lineage_tracker
     )
     await event_handler.initialize()
+    app.state.event_handler = event_handler
     
     # Register event handlers
     event_handler.register_handler(
@@ -243,17 +249,23 @@ async def lifespan(app: FastAPI):
         subscription_name="data-platform-quality-sub"
     )
     
+    event_handler.register_handler(
+        topic_pattern="persistent://platformq/.*/federated-query-requests",
+        handler=event_handler.handle_federated_query,
+        subscription_name="data-platform-query-sub"
+    )
+    
     # Schedule periodic tasks
     scheduler.add_job(
-        quality_profiler.run_scheduled_profiling,
-        CronTrigger(hour=2, minute=0),  # Daily at 2 AM
-        id="daily_quality_profiling"
+        catalog_manager.health_check,
+        CronTrigger(minute="*/5"),  # Every 5 minutes
+        id="catalog_health_check"
     )
     
     scheduler.add_job(
-        compliance_checker.run_compliance_scan,
-        CronTrigger(day_of_week="sun", hour=3, minute=0),  # Weekly on Sunday
-        id="weekly_compliance_scan"
+        quality_profiler.get_statistics,
+        CronTrigger(hour="*/1"),  # Every hour
+        id="quality_statistics"
     )
     
     scheduler.add_job(
@@ -262,12 +274,17 @@ async def lifespan(app: FastAPI):
         id="daily_delta_optimization"
     )
     
+    scheduler.add_job(
+        lineage_tracker.cleanup_old_lineage,
+        CronTrigger(day_of_week="sun", hour=3, minute=0),  # Weekly on Sunday
+        id="weekly_lineage_cleanup"
+    )
+    
     # Start background tasks
     await event_handler.start()
     scheduler.start()
     asyncio.create_task(connection_manager.health_check_loop())
-    asyncio.create_task(cache_manager.cleanup_expired_entries())
-    asyncio.create_task(lineage_tracker.process_lineage_events())
+    asyncio.create_task(cache_manager.cleanup_expired_loop())
     
     logger.info("Data Platform Service initialized successfully")
     
@@ -283,8 +300,8 @@ async def lifespan(app: FastAPI):
     if event_handler:
         await event_handler.stop()
         
-    if pipeline_orchestrator:
-        await pipeline_orchestrator.shutdown()
+    if pipeline_coordinator:
+        await pipeline_coordinator.shutdown()
         
     if seatunnel_manager:
         await seatunnel_manager.shutdown()
@@ -293,22 +310,27 @@ async def lifespan(app: FastAPI):
         await lineage_tracker.shutdown()
         
     if quality_profiler:
-        await quality_profiler.shutdown()
-        
-    if compliance_checker:
-        await compliance_checker.shutdown()
-        
-    if policy_manager:
-        await policy_manager.shutdown()
+        # No shutdown method needed
+        pass
         
     if catalog_manager:
         await catalog_manager.shutdown()
+        
+    if transformation_engine:
+        # No shutdown method needed
+        pass
+        
+    if ingestion_engine:
+        await ingestion_engine.shutdown()
         
     if lake_manager:
         await lake_manager.shutdown()
         
     if federated_engine:
         await federated_engine.shutdown()
+        
+    if trino_client:
+        await trino_client.close()
         
     if cache_manager:
         await cache_manager.close()
@@ -367,27 +389,28 @@ async def root():
             },
             "governance": {
                 "catalog": True,
-                "policies": True,
-                "compliance": ["GDPR", "CCPA", "HIPAA", "SOX", "PCI-DSS"],
+                "auto_discovery": True,
+                "business_glossary": True,
                 "classification": True
             },
             "quality": {
                 "profiling": True,
-                "validation": True,
                 "anomaly_detection": True,
-                "ml_powered": True
+                "ml_powered": True,
+                "quality_dimensions": ["completeness", "accuracy", "consistency", "validity", "uniqueness", "timeliness"]
             },
             "lineage": {
                 "tracking": True,
                 "impact_analysis": True,
                 "visualization": True,
-                "real_time": True
+                "real_time": True,
+                "column_level": True
             },
             "pipelines": {
                 "engine": "apache-seatunnel",
-                "connectors": "100+",
-                "modes": ["batch", "streaming", "cdc"],
-                "auto_generation": True
+                "connectors": ["jdbc", "kafka", "pulsar", "elasticsearch", "mongodb", "s3"],
+                "modes": ["batch", "streaming", "cdc", "incremental"],
+                "orchestration": True
             }
         }
     }
@@ -432,10 +455,25 @@ async def health_check():
     # Check cache
     if cache_manager:
         try:
-            await cache_manager.health_check()
-            health_status["components"]["cache"] = "healthy"
+            cache_status = await cache_manager.get_statistics()
+            health_status["components"]["cache"] = {
+                "status": "healthy",
+                "statistics": cache_status
+            }
         except Exception as e:
             health_status["components"]["cache"] = f"unhealthy: {str(e)}"
+            health_status["status"] = "degraded"
+    
+    # Check lineage tracker
+    if lineage_tracker:
+        try:
+            lineage_stats = await lineage_tracker.get_statistics()
+            health_status["components"]["lineage"] = {
+                "status": "healthy",
+                "statistics": lineage_stats
+            }
+        except Exception as e:
+            health_status["components"]["lineage"] = f"unhealthy: {str(e)}"
             health_status["status"] = "degraded"
     
     return health_status
@@ -451,6 +489,7 @@ async def data_platform_dashboard():
         "data_lake": {},
         "governance": {},
         "quality": {},
+        "lineage": {},
         "pipelines": {}
     }
     
@@ -463,19 +502,48 @@ async def data_platform_dashboard():
         dashboard_data["data_lake"] = await lake_manager.get_lake_statistics()
     
     # Governance metrics
-    if catalog_manager and policy_manager:
+    if catalog_manager:
         dashboard_data["governance"] = {
-            "total_assets": await catalog_manager.get_asset_count(),
-            "active_policies": await policy_manager.get_policy_count(),
-            "compliance_score": await compliance_checker.get_overall_score()
+            "catalog_statistics": await catalog_manager.get_catalog_statistics(),
+            "total_assets": await catalog_manager.get_asset_count()
         }
     
     # Quality metrics
     if quality_profiler:
-        dashboard_data["quality"] = await quality_profiler.get_quality_summary()
+        dashboard_data["quality"] = quality_profiler.get_statistics()
+    
+    # Lineage metrics
+    if lineage_tracker:
+        dashboard_data["lineage"] = await lineage_tracker.get_statistics()
     
     # Pipeline metrics
-    if pipeline_orchestrator:
-        dashboard_data["pipelines"] = await pipeline_orchestrator.get_pipeline_metrics()
+    if pipeline_coordinator:
+        dashboard_data["pipelines"] = pipeline_coordinator.get_statistics()
     
-    return dashboard_data 
+    # Cache metrics
+    if cache_manager:
+        dashboard_data["cache"] = await cache_manager.get_statistics()
+    
+    return dashboard_data
+
+
+# Service status endpoint
+@app.get("/api/v1/status")
+async def service_status():
+    """Get detailed service status"""
+    return {
+        "service": "data-platform-service",
+        "version": "2.0.0",
+        "uptime": datetime.utcnow().isoformat(),
+        "configuration": {
+            "trino_enabled": federated_engine is not None,
+            "spark_enabled": lake_manager is not None,
+            "cache_enabled": cache_manager is not None,
+            "lineage_enabled": lineage_tracker is not None,
+            "auto_discovery_enabled": catalog_manager is not None and settings.enable_auto_discovery
+        },
+        "active_connections": {
+            "databases": len(connection_manager.connections) if connection_manager else 0
+        },
+        "scheduled_jobs": scheduler.get_jobs() if scheduler else []
+    } 

@@ -10,37 +10,132 @@ This directory contains all the microservices that make up the platformQ ecosyst
 ### Digital Asset Management
 - **[digital-asset-service](./digital-asset-service/)**: Central service for managing all digital assets including 3D models, documents, images, and metadata from various tools.
 
-### Data Platform
-- **[data-platform-service](./data-platform-service/)**: Comprehensive data management platform consolidating:
-  - Federated query execution (Apache Trino)
-  - Medallion architecture data lake (Bronze/Silver/Gold)
-  - Data governance, quality, and compliance
-  - ETL/ELT pipeline orchestration (SeaTunnel)
-  - Connection pooling and caching
-- **[connector-service](./connector-service/)**: Plugin-based data ingestion framework supporting file processors, API connectors, and webhook handlers.
+### Data Platform (Consolidated)
+- **[data-platform-service](./data-platform-service/)**: Comprehensive data management platform providing:
+  
+  **Query & Federation**
+  - Federated query execution across multiple data sources (Apache Trino)
+  - SQL interface for unified data access
+  - Query optimization and caching
+  - Schema discovery and exploration
+  
+  **Data Catalog**
+  - Centralized metadata management
+  - Asset discovery and search (Elasticsearch)
+  - Column-level metadata and statistics
+  - Data lineage tracking (JanusGraph)
+  - Tagging and classification
+  
+  **Data Governance**
+  - Policy-based access control
+  - GDPR, CCPA, HIPAA compliance frameworks
+  - Data privacy controls (masking, encryption, tokenization)
+  - Access request workflows
+  - Audit logging and compliance reporting
+  
+  **Data Quality**
+  - Automated data profiling
+  - Quality rule definition and monitoring
+  - Anomaly detection
+  - Data validation pipelines
+  - Quality score tracking
+  
+  **Data Lake Management**
+  - Medallion architecture (Bronze/Silver/Gold)
+  - MinIO-based object storage
+  - Data ingestion and transformation
+  - Compaction and optimization
+  - Retention policies
+  
+  **Pipeline Orchestration**
+  - ETL/ELT pipeline management (Apache SeaTunnel)
+  - Connector library for various data sources
+  - Real-time and batch processing
+  - Pipeline monitoring and metrics
+  - Visual pipeline builder
+  
+  **Administration**
+  - System health monitoring
+  - Resource quota management
+  - User and permission management
+  - Backup and recovery
+  - Performance tuning recommendations
 
-### Machine Learning Platform
-- **[unified-ml-platform-service](./unified-ml-platform-service/)**: Unified ML platform consolidating:
-  - Model training, serving, and lifecycle management
-  - MLOps and model marketplace
-  - Federated learning capabilities
-  - Neuromorphic computing
-  - Feature store and model registry
+### Machine Learning Platform (Consolidated)
+- **[unified-ml-platform-service](./unified-ml-platform-service/)**: Unified ML platform providing:
+  
+  **Model Registry & Lifecycle**
+  - Centralized model storage and versioning (MLflow)
+  - Model artifact management
+  - Model promotion workflows (dev→staging→production)
+  - Model comparison and evaluation
+  - Dependency tracking
+  
+  **Training & Experimentation**
+  - Distributed training orchestration (Apache Spark)
+  - Hyperparameter optimization
+  - AutoML capabilities
+  - Experiment tracking and comparison
+  - Resource allocation and scheduling
+  
+  **Model Serving**
+  - Real-time inference endpoints (Knative/Seldon)
+  - Batch prediction jobs
+  - Multi-model serving
+  - A/B testing framework
+  - Auto-scaling based on load
+  - Model monitoring and drift detection
+  
+  **Federated Learning**
+  - Privacy-preserving distributed training
+  - Multiple aggregation strategies (FedAvg, FedProx, SCAFFOLD)
+  - Differential privacy support
+  - Secure aggregation protocols
+  - Participant management
+  
+  **Neuromorphic Computing**
+  - Spiking neural network support
+  - Event-driven processing
+  - Hardware acceleration integration
+  - Energy-efficient inference
+  - Real-time anomaly detection
+  
+  **Feature Store**
+  - Feature definition and management
+  - Online/offline feature serving
+  - Feature versioning and lineage
+  - Materialization pipelines
+  - Feature validation and monitoring
+  - Time-travel queries
+  
+  **Model Marketplace**
+  - Model listing and discovery
+  - Usage-based pricing
+  - Model reviews and ratings
+  - Revenue sharing
+  - License management
+  
+  **ML Monitoring**
+  - Model performance tracking
+  - Data drift detection
+  - Prediction monitoring
+  - Alert management
+  - Custom metrics and dashboards
 
 ### Search & Analytics
 - **[search-service](./search-service/)**: Elasticsearch-powered unified search across all platform data with full-text search, facets, and autocomplete.
-- **[analytics-service](./analytics-service/)**: Unified analytics platform with batch processing (Trino), real-time analytics (Druid/Ignite), ML operations, and cross-service monitoring.
+- **[analytics-service](./analytics-service/)**: Real-time analytics platform with stream processing (Apache Flink), time-series analysis, and cross-service monitoring.
 
 ### Advanced Processing
-- **[graph-intelligence-service](./graph-intelligence-service/)**: JanusGraph-powered service for relationship discovery and graph analytics.
+- **[graph-intelligence-service](./graph-intelligence-service/)**: JanusGraph-powered service for relationship discovery, community detection, and graph analytics.
 - **[simulation-service](./simulation-service/)**: Agent-based simulation engine for complex system modeling.
 - **[functions-service](./functions-service/)**: WebAssembly runtime for custom data transformations and automation workflows.
 
-### Document & Storage
-- **[storage-service](./storage-service/)**: Enhanced storage platform providing object storage (MinIO/S3), document conversion, preview generation, and license-based access control.
+### Storage
+- **[storage-proxy-service](./storage-proxy-service/)**: Unified storage abstraction providing object storage (MinIO), CDN integration, and access control.
 
 ### Trading & Markets
-- **[trading-platform-service](./trading-platform-service/)**: Unified trading platform combining social trading, copy trading, prediction markets, and advanced order matching.
+- **[trading-platform-service](./trading-platform-service/)**: Unified trading platform combining social trading, copy trading, and order matching.
 - **[derivatives-engine-service](./derivatives-engine-service/)**: Advanced derivatives trading with compute futures, options, and structured products.
 
 ### Blockchain & Trust
@@ -50,13 +145,25 @@ This directory contains all the microservices that make up the platformQ ecosyst
 - **[defi-protocol-service](./defi-protocol-service/)**: DeFi protocols including lending, liquidity pools, and yield farming.
 
 ### Workflow & Governance
-- **[workflow-service](./workflow-service/)**: Airflow-based workflow orchestration for complex data pipelines and project orchestration.
-- **[governance-service](./governance-service/)**: Unified governance system with DAO management, proposals, multi-chain support, and advanced voting strategies.
+- **[workflow-service](./workflow-service/)**: Apache Airflow-based workflow orchestration for complex data pipelines.
+- **[governance-service](./governance-service/)**: DAO management with proposals, voting, and treasury management.
 - **[provisioning-service](./provisioning-service/)**: Automated tenant provisioning and resource allocation.
 
-### Specialized Services
+### Collaboration
 - **[cad-collaboration-service](./cad-collaboration-service/)**: Real-time collaborative CAD editing with CRDT-based conflict resolution.
-- **[quantum-optimization-service](./quantum-optimization-service/)**: Quantum-inspired algorithms for complex optimization problems.
+
+### Specialized Computing
+- **[quantum-optimization-service](./quantum-optimization-service/)**: Quantum-inspired algorithms for optimization problems.
+
+### Event Routing
+- **[event-router-service](./event-router-service/)**: Central event routing and transformation hub for the platform.
+
+### Data Integration
+- **[seatunnel-service](./seatunnel-service/)**: Apache SeaTunnel integration for data synchronization and ETL pipelines.
+- **[connector-service](./connector-service/)**: Plugin-based data ingestion framework.
+
+## Infrastructure Services
+- **[mlflow-server](./mlflow-server/)**: MLflow server for ML experiment tracking and model registry (used by unified-ml-platform-service).
 
 ## Service Architecture Patterns
 
@@ -90,6 +197,8 @@ All services implement:
 - MinIO for object storage
 - Apache Ignite for in-memory computing
 - JanusGraph for graph data
+- Elasticsearch for search and analytics
+- Milvus for vector embeddings
 
 ## Development Guidelines
 
@@ -175,7 +284,7 @@ Services are packaged as Docker containers and deployed to Kubernetes:
 
 ### Data Protection
 - Encryption at rest and in transit
-- Secrets management with Kubernetes Secrets
+- Secrets management with HashiCorp Vault
 - GDPR compliance features
 - Audit logging for all data access
 
@@ -184,23 +293,23 @@ Services are packaged as Docker containers and deployed to Kubernetes:
 The platform includes several shared libraries to promote code reuse:
 
 ### Core Libraries
-- **[platformq-shared](../libs/platformq-shared/)**: Base service utilities, event processing, resilience patterns
-- **[platformq-events](../libs/platformq-events/)**: Shared event schemas for inter-service communication
+- **[platformq-shared](../libs/platformq-shared/)**: Base service utilities including logging, caching (Ignite), error handling, and resilience patterns
+- **[platformq-events](../libs/platformq-events/)**: Shared event schemas and publishers for inter-service communication
 - **[platformq-blockchain-common](../libs/platformq-blockchain-common/)**: Blockchain types, interfaces, and adapters
-- **[platformq-unified-data](../libs/platformq-unified-data/)**: Unified data access patterns
+- **[platformq-unified-data](../libs/platformq-unified-data/)**: Unified data access patterns and models
 
 ### Feature Libraries
-- **[platformq-notifications](../libs/platformq-notifications/)**: Multi-channel notification capabilities (replaces notification-service)
-- **[platformq-event-framework](../libs/platformq-event-framework/)**: Advanced event processing framework
+- **[platformq-event-framework](../libs/platformq-event-framework/)**: Advanced event processing framework with routing and transformation
 
 ## Best Practices
 
 1. **API Design**: Follow REST conventions and use OpenAPI specification
-2. **Error Handling**: Use consistent error codes and messages
+2. **Error Handling**: Use consistent error codes and messages across services
 3. **Validation**: Validate all inputs using Pydantic models
 4. **Documentation**: Keep README and API docs up to date
 5. **Testing**: Maintain >80% code coverage
 6. **Performance**: Profile and optimize critical paths
 7. **Security**: Follow OWASP guidelines
 8. **Deployment**: Use GitOps for configuration management
-9. **Consolidation**: Prefer shared libraries over duplicate service functionality 
+9. **Consolidation**: Prefer service consolidation and shared libraries over duplicate functionality
+10. **Event-Driven**: Use events for loose coupling between services 
