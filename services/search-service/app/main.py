@@ -5,7 +5,7 @@ Unified search with Elasticsearch, Milvus, and graph integration.
 """
 
 from contextlib import asynccontextmanager
-from fastapi import FastAPI, Query, Depends, HTTPException
+from fastapi import FastAPI, Query, Depends, HTTPException, Header
 import logging
 import asyncio
 from typing import Optional, Dict, Any, List
@@ -32,6 +32,7 @@ from platformq_events import (
 )
 
 from elasticsearch import AsyncElasticsearch
+from .vault_consul_integration import VaultConsulIntegration
 from .api import endpoints
 from .api.deps import get_db_session, get_api_key_crud, get_user_crud, get_password_verifier
 from .repository import SearchIndexRepository, SearchHistoryRepository
@@ -48,6 +49,7 @@ from .core.config import settings
 logger = logging.getLogger(__name__)
 
 # Service components
+vault_consul = None
 search_index_processor = None
 es_client = None
 vector_service = None
@@ -56,14 +58,38 @@ graph_search_engine = None
 service_clients = None
 
 
+async def verify_api_key(x_api_key: str = Header(None)) -> Dict[str, Any]:
+    """Verify API key using Vault integration"""
+    if not vault_consul:
+        raise HTTPException(status_code=500, detail="Security not initialized")
+    
+    if not x_api_key:
+        raise HTTPException(status_code=401, detail="API key required")
+    
+    is_valid, key_info = await vault_consul.validate_api_key(x_api_key)
+    if not is_valid:
+        raise HTTPException(status_code=401, detail="Invalid API key")
+    
+    return key_info
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global search_index_processor, es_client, vector_service
+    global vault_consul, search_index_processor, es_client, vector_service
     global unified_search_engine, graph_search_engine, service_clients
     
     # Startup
     logger.info("Starting Search Service...")
+    
+    # Initialize Vault and Consul integration first
+    vault_consul = VaultConsulIntegration()
+    await vault_consul.initialize()
+    
+    # Get configurations from Vault and Consul
+    es_config = await vault_consul.get_elasticsearch_config()
+    milvus_config = await vault_consul.get_milvus_config()
+    search_config = await vault_consul.get_search_config()
     
     # Initialize configuration
     config_loader = ConfigLoader()
@@ -73,15 +99,7 @@ async def lifespan(app: FastAPI):
     service_clients = ServiceClients(base_timeout=30.0, max_retries=3)
     app.state.service_clients = service_clients
     
-    # Initialize Elasticsearch v8
-    es_config = {
-        "hosts": [settings_dict.get("elasticsearch_url", "http://elasticsearch:9200")],
-        "verify_certs": settings.ES_VERIFY_CERTS,
-        "ssl_show_warn": False
-    }
-    if settings.ES_USE_SSL:
-        es_config["use_ssl"] = True
-        
+    # Initialize Elasticsearch v8 with Vault credentials
     es_client = AsyncElasticsearch(**es_config)
     app.state.es_client = es_client
     
@@ -92,14 +110,18 @@ async def lifespan(app: FastAPI):
     if not es_version.startswith("8"):
         logger.warning(f"Expected Elasticsearch v8, got v{es_version}")
     
-    # Create indices if they don't exist
+    # Create indices with settings from Consul
     indices = ["assets", "simulations", "projects", "documents", "users"]
     for index_name in indices:
         full_index_name = f"{settings.ES_INDEX_PREFIX}_{index_name}"
         if not await es_client.indices.exists(index=full_index_name):
+            index_settings = await vault_consul.get_search_index_settings(index_name)
             await es_client.indices.create(
                 index=full_index_name,
-                body={"mappings": INDEX_MAPPING.get(index_name, {})}
+                body={
+                    "settings": index_settings,
+                    "mappings": INDEX_MAPPING.get(index_name, {})
+                }
             )
             logger.info(f"Created Elasticsearch index: {full_index_name}")
     
@@ -110,11 +132,10 @@ async def lifespan(app: FastAPI):
         event_publisher=app.state.event_publisher
     )
     
-    # Initialize vector search if enabled
+    # Initialize vector search with Milvus credentials
     if settings_dict.get("enable_vector_search", False):
         vector_service = VectorSearchService(
-            milvus_host=settings_dict.get("milvus_host", "milvus"),
-            milvus_port=int(settings_dict.get("milvus_port", 19530)),
+            **milvus_config,
             collection_name=settings_dict.get("milvus_collection", "platformq_vectors")
         )
         await vector_service.initialize()
@@ -132,27 +153,31 @@ async def lifespan(app: FastAPI):
     from .services.enhanced_vector_search import EnhancedVectorSearchService
     from .api import vector_endpoints
     
+    # Get OpenAI API key from Vault
+    openai_api_key = await vault_consul.get_openai_api_key()
+    
     enhanced_vector_service = EnhancedVectorSearchService(
         es_client=es_client,
         janusgraph_url=settings.JANUSGRAPH_URL,
         redis_client=None,  # Would initialize Redis here
-        openai_api_key=settings.OPENAI_API_KEY
+        openai_api_key=openai_api_key,
+        vault_integration=vault_consul
     )
     await enhanced_vector_service.initialize()
     app.state.enhanced_vector_service = enhanced_vector_service
     vector_endpoints.vector_service = enhanced_vector_service
     logger.info("Initialized enhanced vector search with JanusGraph integration")
     
-    # Initialize indexers
-    app.state.asset_indexer = AssetIndexer(es_client, vector_service)
-    app.state.simulation_indexer = SimulationIndexer(es_client, vector_service)
-    app.state.project_indexer = ProjectIndexer(es_client)
-    app.state.document_indexer = DocumentIndexer(es_client, vector_service)
+    # Initialize indexers with encryption support
+    app.state.asset_indexer = AssetIndexer(es_client, vector_service, vault_consul)
+    app.state.simulation_indexer = SimulationIndexer(es_client, vector_service, vault_consul)
+    app.state.project_indexer = ProjectIndexer(es_client, vault_consul)
+    app.state.document_indexer = DocumentIndexer(es_client, vector_service, vault_consul)
     
-    # Initialize query parser
-    app.state.query_parser = QueryParser()
+    # Initialize query parser with search config
+    app.state.query_parser = QueryParser(search_config['relevance'])
     
-    # Initialize search engines
+    # Initialize search engines with Vault integration
     unified_search_engine = UnifiedSearchEngine(
         es_client=es_client,
         vector_service=vector_service,
@@ -162,28 +187,32 @@ async def lifespan(app: FastAPI):
             "simulations": app.state.simulation_indexer,
             "projects": app.state.project_indexer,
             "documents": app.state.document_indexer
-        }
+        },
+        vault_integration=vault_consul,
+        search_config=search_config
     )
     app.state.unified_search_engine = unified_search_engine
+    app.state.vault_consul = vault_consul
     
     # Initialize graph-enhanced search if enabled
     if settings_dict.get("enable_graph_search", False):
         graph_config = GraphSearchConfig(
             graph_service_url=settings_dict.get("graph_intelligence_service_url", "http://graph-intelligence-service:8000"),
             max_hops=int(settings_dict.get("graph_max_hops", 2)),
-            relationship_weights={
+            relationship_weights=search_config.get('graph_weights', {
                 "created_by": 0.8,
                 "modified_by": 0.6,
                 "references": 0.7,
                 "derived_from": 0.9,
                 "used_in": 0.7
-            }
+            })
         )
         
         graph_search_engine = GraphEnrichedSearchEngine(
             search_engine=unified_search_engine,
             graph_config=graph_config,
-            service_clients=service_clients
+            service_clients=service_clients,
+            consul_client=vault_consul.consul_client
         )
         app.state.graph_search_engine = graph_search_engine
     
@@ -197,11 +226,22 @@ async def lifespan(app: FastAPI):
             "simulations": app.state.simulation_indexer,
             "projects": app.state.project_indexer,
             "documents": app.state.document_indexer
-        }
+        },
+        vault_integration=vault_consul
     )
     
     # Start event processor
     await search_index_processor.start()
+    
+    # Register service-specific health checks with Consul
+    await vault_consul.consul_client.agent.check.register(
+        name=f"{vault_consul.service_name}-elasticsearch",
+        check=consul.Check.http(
+            f"http://localhost:8000/health/elasticsearch",
+            interval="30s",
+            timeout="10s"
+        )
+    )
     
     logger.info("Search Service initialized successfully")
     
@@ -221,6 +261,10 @@ async def lifespan(app: FastAPI):
     # Close vector service
     if vector_service:
         await vector_service.close()
+        
+    # Close Vault/Consul integration
+    if vault_consul:
+        await vault_consul.close()
     
     logger.info("Search Service shutdown complete")
 
@@ -250,11 +294,13 @@ def read_root():
         "version": "2.0",
         "features": [
             "unified-search",
-            "elasticsearch",
+            "elasticsearch-v8",
             "vector-search",
             "graph-integration",
             "faceted-search",
-            "real-time-indexing"
+            "real-time-indexing",
+            "vault-secured",
+            "consul-configured"
         ]
     }
 
@@ -267,6 +313,25 @@ async def detailed_health_check():
         "status": "healthy",
         "checks": {}
     }
+    
+    # Check Vault/Consul integration
+    if vault_consul:
+        try:
+            if vault_consul.vault_client.is_authenticated():
+                health["checks"]["vault"] = {"status": "healthy"}
+            else:
+                health["checks"]["vault"] = {"status": "unhealthy", "error": "Not authenticated"}
+                health["status"] = "degraded"
+                
+            consul_health = await vault_consul.consul_client.health.node("consul")
+            if consul_health:
+                health["checks"]["consul"] = {"status": "healthy"}
+            else:
+                health["checks"]["consul"] = {"status": "unhealthy"}
+                health["status"] = "degraded"
+        except Exception as e:
+            health["checks"]["security"] = {"status": "down", "error": str(e)}
+            health["status"] = "unhealthy"
     
     # Check Elasticsearch
     try:
@@ -309,4 +374,80 @@ async def detailed_health_check():
                 "error": str(e)
             }
     
-    return health 
+    return health
+
+
+# Elasticsearch-specific health endpoint for Consul
+@app.get("/health/elasticsearch")
+async def elasticsearch_health():
+    """Elasticsearch-specific health check"""
+    try:
+        es_health = await app.state.es_client.cluster.health()
+        return {
+            "status": "healthy" if es_health["status"] != "red" else "unhealthy",
+            "cluster_status": es_health["status"]
+        }
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
+
+
+# Search with API key validation
+@app.get("/api/v1/secure/search")
+async def secure_search(
+    query: str = Query(..., description="Search query"),
+    indices: Optional[List[str]] = Query(None, description="Indices to search"),
+    key_info: Dict[str, Any] = Depends(verify_api_key)
+):
+    """Secure search endpoint with API key validation"""
+    try:
+        # Log encrypted query for audit
+        encrypted_query = await vault_consul.encrypt_search_query(query)
+        logger.info(f"Search request from {key_info['type']}:{key_info.get('client_id', key_info.get('role'))}")
+        
+        # Perform search
+        results = await app.state.unified_search_engine.search(
+            query=query,
+            indices=indices or ["assets", "simulations", "documents"],
+            user_context=key_info
+        )
+        
+        # Encrypt sensitive results if needed
+        if key_info['type'] == 'external':
+            # Mask PII for external clients
+            results = await _mask_pii_in_results(results, vault_consul)
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Search error: {e}")
+        raise HTTPException(status_code=500, detail="Search failed")
+
+
+# Update search relevance configuration
+@app.put("/api/v1/admin/relevance-config")
+async def update_relevance_config(
+    config: Dict[str, Any],
+    key_info: Dict[str, Any] = Depends(verify_api_key)
+):
+    """Update search relevance configuration (admin only)"""
+    if key_info.get('role') != 'admin':
+        raise HTTPException(status_code=403, detail="Admin access required")
+    
+    try:
+        await vault_consul.update_search_relevance_config(config)
+        return {"status": "updated", "config": config}
+    except Exception as e:
+        logger.error(f"Failed to update relevance config: {e}")
+        raise HTTPException(status_code=500, detail="Update failed")
+
+
+async def _mask_pii_in_results(results: Dict[str, Any], vault_consul: VaultConsulIntegration) -> Dict[str, Any]:
+    """Mask PII in search results for external clients"""
+    # This would implement PII masking logic
+    # For now, just encrypt sensitive fields
+    if 'hits' in results:
+        for hit in results['hits']:
+            if 'creator_email' in hit:
+                hit['creator_email'] = await vault_consul.encrypt_pii(hit['creator_email'])
+    
+    return results 

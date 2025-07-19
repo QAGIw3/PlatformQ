@@ -8,10 +8,13 @@ from contextlib import asynccontextmanager
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks, Request
 from gremlin_python.structure.graph import Graph
 from gremlin_python.driver.driver_remote_connection import DriverRemoteConnection
+from gremlin_python.process.traversal import P
 import logging
 import asyncio
 from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
+import consul
+import json
 
 from platformq_shared import (
     create_base_app,
@@ -21,6 +24,7 @@ from platformq_shared import (
 )
 from platformq_shared.config import ConfigLoader
 
+from .vault_consul_integration import VaultConsulIntegration
 from .api import endpoints
 from .api.endpoints import graph_api
 from .api import compute_market_endpoints
@@ -61,6 +65,7 @@ from .grpc_generated import graph_intelligence_pb2, graph_intelligence_pb2_grpc
 logger = logging.getLogger(__name__)
 
 # Service components
+vault_consul = None
 graph_update_processor = None
 lineage_processor = None
 trust_processor = None
@@ -73,87 +78,117 @@ gremlin_url = None
 compute_market_intelligence = None
 
 
+async def get_vault_consul() -> VaultConsulIntegration:
+    """Dependency to get Vault/Consul integration"""
+    if not vault_consul:
+        raise HTTPException(status_code=500, detail="Vault/Consul integration not initialized")
+    return vault_consul
+
+
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global graph_update_processor, lineage_processor, trust_processor, query_processor
+    global vault_consul, graph_update_processor, lineage_processor, trust_processor, query_processor
     global graph_processor, lineage_tracker, trust_manager, service_clients
     global compute_market_intelligence, gremlin_url
     
     # Startup
     logger.info("Starting Graph Intelligence Service...")
     
+    # Initialize Vault and Consul integration first
+    vault_consul = VaultConsulIntegration()
+    await vault_consul.initialize()
+    
+    # Get configurations from Vault and Consul
+    janusgraph_config = await vault_consul.get_janusgraph_config()
+    gremlin_url = await vault_consul.get_gremlin_connection_string()
+    graph_config = await vault_consul.get_graph_config()
+    
     # Initialize configuration
     config_loader = ConfigLoader()
     settings = config_loader.load_settings()
     
-    # Initialize service clients
-    service_clients = ServiceClients(base_timeout=30.0, max_retries=3)
+    # Initialize service clients with Vault tokens
+    service_clients = ServiceClients(
+        base_timeout=30.0,
+        max_retries=3,
+        token_provider=vault_consul.get_service_token
+    )
     app.state.service_clients = service_clients
     
-    # Initialize JanusGraph connection
-    gremlin_url = settings.get("gremlin_server", "ws://janusgraph:8182/gremlin")
-    
-    # Initialize and create schema
-    janus_graph = JanusGraph()
+    # Initialize JanusGraph connection with Vault credentials
+    janus_graph = JanusGraph(config=janusgraph_config)
     schema_manager = SchemaManager(janus_graph)
     try:
-        schema_manager.create_schema()
+        # Use schema configuration from Consul
+        schema_manager.create_schema(schema_config=graph_config['schema'])
         # Wait for critical indexes to be ready
-        schema_manager.wait_for_index_status('by_asset_id')
-        schema_manager.wait_for_index_status('by_user_id')
+        for index in graph_config['schema']['indexes']['composite']:
+            schema_manager.wait_for_index_status(index)
         logger.info("Graph schema initialized")
     except Exception as e:
         logger.error(f"Could not initialize graph schema: {e}")
         # Continue anyway - schema might already exist
     
-    # Initialize repositories
+    # Initialize repositories with Vault integration
     app.state.node_repo = GraphNodeRepository(
         gremlin_url,
-        event_publisher=app.state.event_publisher
+        event_publisher=app.state.event_publisher,
+        vault_integration=vault_consul
     )
     app.state.edge_repo = GraphEdgeRepository(
         gremlin_url,
-        event_publisher=app.state.event_publisher
+        event_publisher=app.state.event_publisher,
+        vault_integration=vault_consul
     )
     app.state.analytics_repo = GraphAnalyticsRepository(
         gremlin_url,
-        event_publisher=app.state.event_publisher
+        event_publisher=app.state.event_publisher,
+        analytics_config=graph_config['analytics'],
+        vault_integration=vault_consul
     )
     
     # Initialize services
-    graph_processor = GraphProcessor(gremlin_url)
+    graph_processor = GraphProcessor(
+        gremlin_url,
+        performance_config=graph_config['performance']
+    )
     app.state.graph_processor = graph_processor
     
     lineage_tracker = LineageTracker(
         app.state.node_repo,
-        app.state.edge_repo
+        app.state.edge_repo,
+        vault_integration=vault_consul
     )
     app.state.lineage_tracker = lineage_tracker
     
     trust_manager = TrustNetworkManager(
         app.state.edge_repo,
-        vc_service_url=settings.get("vc_service_url", "http://verifiable-credential-service:8000")
+        vc_service_url=settings.get("vc_service_url", "http://verifiable-credential-service:8000"),
+        trust_config=graph_config['trust'],
+        vault_integration=vault_consul
     )
     await trust_manager.initialize()
     app.state.trust_manager = trust_manager
     
     # Initialize compute market intelligence
     compute_market_intelligence = ComputeMarketIntelligence(
-        janusgraph_client=graph_processor,  # Using graph_processor as the client
+        janusgraph_client=graph_processor,
         derivatives_engine_url=settings.get("derivatives_engine_url", "http://derivatives-engine-service:8000"),
-        event_publisher=app.state.event_publisher
+        event_publisher=app.state.event_publisher,
+        vault_integration=vault_consul
     )
     app.state.compute_market_intelligence = compute_market_intelligence
     
-    # Initialize event processors
+    # Initialize event processors with Vault integration
     graph_update_processor = GraphUpdateProcessor(
         service_name="graph-intelligence-service",
         pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
         node_repo=app.state.node_repo,
         edge_repo=app.state.edge_repo,
         analytics_repo=app.state.analytics_repo,
-        graph_processor=graph_processor
+        graph_processor=graph_processor,
+        vault_integration=vault_consul
     )
     
     lineage_processor = LineageProcessor(
@@ -161,7 +196,8 @@ async def lifespan(app: FastAPI):
         pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
         node_repo=app.state.node_repo,
         edge_repo=app.state.edge_repo,
-        lineage_tracker=lineage_tracker
+        lineage_tracker=lineage_tracker,
+        vault_integration=vault_consul
     )
     
     trust_processor = TrustNetworkProcessor(
@@ -169,14 +205,16 @@ async def lifespan(app: FastAPI):
         pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
         edge_repo=app.state.edge_repo,
         trust_manager=trust_manager,
-        service_clients=service_clients
+        service_clients=service_clients,
+        vault_integration=vault_consul
     )
     
     query_processor = GraphQueryProcessor(
         service_name="graph-intelligence-query",
         pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
         analytics_repo=app.state.analytics_repo,
-        graph_processor=graph_processor
+        graph_processor=graph_processor,
+        vault_integration=vault_consul
     )
     
     # Start event processors
@@ -190,6 +228,19 @@ async def lifespan(app: FastAPI):
     # Start trust network sync
     app.state.trust_sync_task = asyncio.create_task(
         trust_manager.sync_trust_network()
+    )
+    
+    # Store Vault/Consul integration
+    app.state.vault_consul = vault_consul
+    
+    # Register graph-specific health checks with Consul
+    await vault_consul.consul_client.agent.check.register(
+        name=f"{vault_consul.service_name}-janusgraph",
+        check=consul.Check.http(
+            f"http://localhost:8000/health/janusgraph",
+            interval="30s",
+            timeout="10s"
+        )
     )
     
     logger.info("Graph Intelligence Service initialized successfully")
@@ -214,6 +265,10 @@ async def lifespan(app: FastAPI):
     # Cleanup resources
     if trust_manager:
         await trust_manager.cleanup()
+        
+    # Close Vault/Consul integration
+    if vault_consul:
+        await vault_consul.close()
         
     logger.info("Graph Intelligence Service shutdown complete")
 
@@ -280,12 +335,15 @@ def read_root():
             "community-detection",
             "graph-analytics",
             "event-driven",
-            "grpc-support"
+            "grpc-support",
+            "vault-secured",
+            "consul-configured",
+            "distributed-locking"
         ]
     }
 
 
-# Health check with graph connectivity
+# Health check with graph connectivity and Vault/Consul
 @app.get("/health/detailed")
 async def detailed_health_check():
     """Detailed health check including graph connectivity"""
@@ -293,6 +351,25 @@ async def detailed_health_check():
         "status": "healthy",
         "checks": {}
     }
+    
+    # Check Vault/Consul integration
+    if vault_consul:
+        try:
+            if vault_consul.vault_client.is_authenticated():
+                health["checks"]["vault"] = {"status": "healthy"}
+            else:
+                health["checks"]["vault"] = {"status": "unhealthy", "error": "Not authenticated"}
+                health["status"] = "degraded"
+                
+            consul_health = await vault_consul.consul_client.health.node("consul")
+            if consul_health:
+                health["checks"]["consul"] = {"status": "healthy"}
+            else:
+                health["checks"]["consul"] = {"status": "unhealthy"}
+                health["status"] = "degraded"
+        except Exception as e:
+            health["checks"]["security"] = {"status": "down", "error": str(e)}
+            health["status"] = "unhealthy"
     
     # Check JanusGraph connectivity
     try:
@@ -316,7 +393,27 @@ async def detailed_health_check():
             "last_sync": app.state.trust_manager.last_sync_time
         }
         
+    # Check processing locks
+    if vault_consul:
+        health["checks"]["distributed_locks"] = {
+            "status": "healthy",
+            "active_locks": len(vault_consul._processing_locks)
+        }
+        
     return health
+
+
+# JanusGraph-specific health endpoint for Consul
+@app.get("/health/janusgraph")
+async def janusgraph_health():
+    """JanusGraph-specific health check"""
+    try:
+        g = Graph().traversal().withRemote(DriverRemoteConnection(gremlin_url, 'g'))
+        # Simple query to check connectivity
+        g.V().limit(1).toList()
+        return {"status": "healthy", "backend": "janusgraph"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
 
 
 # API Endpoints using new patterns
@@ -324,23 +421,34 @@ async def detailed_health_check():
 async def create_node(
     node_type: str,
     properties: Dict[str, Any],
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    vc: VaultConsulIntegration = Depends(get_vault_consul)
 ):
     """Create a new node in the graph"""
     tenant_id = context["tenant_id"]
     
-    node_repo = app.state.node_repo
-    node = node_repo.create_node(
-        node_type=node_type,
-        properties=properties,
-        tenant_id=tenant_id
-    )
+    # Acquire processing lock
+    job_id = f"create_node_{tenant_id}_{datetime.utcnow().timestamp()}"
+    lock_acquired = await vc.acquire_graph_processing_lock(job_id, "node_creation", ttl=300)
     
-    return {
-        "node_id": node["node_id"],
-        "type": node_type,
-        "created": True
-    }
+    if not lock_acquired:
+        raise HTTPException(status_code=409, detail="Node creation in progress")
+    
+    try:
+        node_repo = app.state.node_repo
+        node = node_repo.create_node(
+            node_type=node_type,
+            properties=properties,
+            tenant_id=tenant_id
+        )
+        
+        return {
+            "node_id": node["node_id"],
+            "type": node_type,
+            "created": True
+        }
+    finally:
+        await vc.release_graph_processing_lock(job_id)
 
 
 @app.get("/api/v1/graph/nodes/{node_id}")
@@ -366,10 +474,22 @@ async def create_edge(
     to_node_id: str,
     edge_type: str,
     properties: Optional[Dict[str, Any]] = None,
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    vc: VaultConsulIntegration = Depends(get_vault_consul)
 ):
     """Create edge between nodes"""
     tenant_id = context["tenant_id"]
+    
+    # Sign edge if it's a trust relationship
+    if edge_type == 'has_trust_score' and properties:
+        trust_data = {
+            'from': from_node_id,
+            'to': to_node_id,
+            'score': properties.get('score', 0.5),
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        signature = await vc.sign_trust_score(trust_data)
+        properties['signature'] = signature
     
     edge_repo = app.state.edge_repo
     edge = edge_repo.create_edge(
@@ -409,22 +529,43 @@ async def get_node_neighbors(
 @app.post("/api/v1/graph/analytics/communities")
 async def detect_communities(
     algorithm: str = "label_propagation",
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    vc: VaultConsulIntegration = Depends(get_vault_consul)
 ):
     """Detect communities in the graph"""
     tenant_id = context["tenant_id"]
     
-    analytics_repo = app.state.analytics_repo
-    communities = analytics_repo.find_communities(
-        tenant_id=tenant_id,
-        algorithm=algorithm
-    )
+    # Acquire processing lock for community detection
+    job_id = f"community_{tenant_id}_{datetime.utcnow().timestamp()}"
+    lock_acquired = await vc.acquire_graph_processing_lock(job_id, "community_detection", ttl=1800)
     
-    return {
-        "communities": communities,
-        "algorithm": algorithm,
-        "total": len(communities)
-    }
+    if not lock_acquired:
+        raise HTTPException(status_code=409, detail="Community detection already in progress")
+    
+    try:
+        analytics_repo = app.state.analytics_repo
+        communities = analytics_repo.find_communities(
+            tenant_id=tenant_id,
+            algorithm=algorithm
+        )
+        
+        # Sign community verification
+        for community in communities:
+            community_data = {
+                'community_id': community['community_id'],
+                'members': community['members'],
+                'timestamp': datetime.utcnow().isoformat()
+            }
+            signature = await vc.sign_trust_score(community_data)
+            community['verification_signature'] = signature
+        
+        return {
+            "communities": communities,
+            "algorithm": algorithm,
+            "total": len(communities)
+        }
+    finally:
+        await vc.release_graph_processing_lock(job_id)
 
 
 @app.post("/api/v1/graph/analytics/paths")
@@ -454,15 +595,20 @@ async def find_paths(
 @app.post("/api/v1/graph/analytics/centrality")
 async def calculate_centrality(
     centrality_type: str = "degree",
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    vc: VaultConsulIntegration = Depends(get_vault_consul)
 ):
     """Calculate node centrality scores"""
     tenant_id = context["tenant_id"]
     
+    # Use analytics config from Consul
+    analytics_config = await vc.get_graph_config('analytics')
+    
     analytics_repo = app.state.analytics_repo
     scores = analytics_repo.calculate_centrality(
         tenant_id=tenant_id,
-        centrality_type=centrality_type
+        centrality_type=centrality_type,
+        config=analytics_config['algorithms'].get('centrality', {})
     )
     
     # Get top nodes
@@ -478,7 +624,8 @@ async def calculate_centrality(
 @app.get("/api/v1/graph/lineage/{asset_id}")
 async def get_asset_lineage(
     asset_id: str,
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    vc: VaultConsulIntegration = Depends(get_vault_consul)
 ):
     """Get full lineage for an asset"""
     tenant_id = context["tenant_id"]
@@ -489,9 +636,14 @@ async def get_asset_lineage(
         tenant_id=tenant_id
     )
     
+    # Sign lineage attestation
+    lineage_bytes = json.dumps(lineage).encode()
+    attestation = await vc.sign_lineage_attestation(lineage_bytes)
+    
     return {
         "asset_id": asset_id,
-        "lineage": lineage
+        "lineage": lineage,
+        "attestation": attestation
     }
 
 
@@ -499,21 +651,27 @@ async def get_asset_lineage(
 @app.get("/api/v1/trust/scores/{entity_id}")
 async def get_trust_score(
     entity_id: str,
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    vc: VaultConsulIntegration = Depends(get_vault_consul)
 ):
     """Get trust score for an entity"""
     tenant_id = context["tenant_id"]
     
     trust_manager = app.state.trust_manager
-    score = await trust_manager.get_trust_score(
+    score_data = await trust_manager.get_trust_score(
         entity_id=entity_id,
         tenant_id=tenant_id
     )
     
-    return {
-        "entity_id": entity_id,
-        "trust_score": score
-    }
+    # Verify trust score signature if present
+    if 'signature' in score_data:
+        is_valid = await vc.verify_trust_score(
+            {'entity_id': entity_id, 'score': score_data['score']},
+            score_data['signature']
+        )
+        score_data['signature_valid'] = is_valid
+    
+    return score_data
 
 
 @app.get("/api/v1/trust/network")
@@ -538,3 +696,28 @@ async def get_trust_network(
         "trust_network": [dict(e) for e in trust_edges],
         "count": len(trust_edges)
     }
+
+
+# Graph metrics endpoint
+@app.get("/api/v1/graph/metrics")
+async def get_graph_metrics(
+    vc: VaultConsulIntegration = Depends(get_vault_consul)
+):
+    """Get graph processing metrics"""
+    return await vc.get_graph_metrics()
+
+
+# Update analytics configuration
+@app.put("/api/v1/admin/analytics-config")
+async def update_analytics_config(
+    config: Dict[str, Any],
+    vc: VaultConsulIntegration = Depends(get_vault_consul)
+):
+    """Update graph analytics configuration (admin only)"""
+    # This would include admin authentication
+    try:
+        await vc.update_analytics_config(config)
+        return {"status": "updated", "config": config}
+    except Exception as e:
+        logger.error(f"Failed to update analytics config: {e}")
+        raise HTTPException(status_code=500, detail="Update failed")

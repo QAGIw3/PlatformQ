@@ -1,189 +1,633 @@
 """
-Digital Asset Service
-
-Core engine for managing all digital assets within PlatformQ.
-Enhanced with event-driven architecture and standardized patterns.
+Digital Asset Service with Vault & Consul Integration
 """
 
+from fastapi import FastAPI, Depends, HTTPException, Request, UploadFile, File, Form
+from fastapi.responses import StreamingResponse
 from contextlib import asynccontextmanager
-from fastapi import FastAPI
-import logging
 import asyncio
-from typing import Optional
+from typing import Dict, Any, Optional, List
+from datetime import datetime
+import logging
+import os
+import hashlib
+import mimetypes
+from pathlib import Path
 
-from platformq_shared import (
-    create_base_app,
-    EventProcessor,
-    event_handler,
-    ProcessingResult,
-    ProcessingStatus,
-    add_error_handlers
-)
-from platformq_events import (
-    FunctionExecutionCompletedEvent,
-    AssetCreatedEvent,
-    AssetUpdatedEvent,
-    AssetProcessingCompletedEvent,
-    DataLakeAssetCreatedEvent,
-    AssetVCIssuedEvent
-)
+from platformq_shared.vault.vault_client import VaultClient
+from platformq_shared.consul.consul_client import ConsulClient
+from platformq_shared.middleware.security_middleware import SecurityMiddleware
 
-from .api.endpoints import digital_assets, processing_rules, marketplace
-from .postgres_db import get_db_session, Base, engine
-from .repository import AssetRepository
-from .event_processors import (
-    AssetEventProcessor,
-    FunctionResultProcessor,
-    DataLakeAssetProcessor,
-    VCAssetProcessor
+from .vault_consul_integration import (
+    DigitalAssetVaultIntegration,
+    DigitalAssetConsulIntegration,
+    StorageConfig,
+    ProcessingConfig,
+    AssetStorageProvider,
+    AssetType
 )
-from .core.config import settings
+from .models import Asset, AssetMetadata, AssetUploadResponse, AssetSearchQuery
+from .storage import StorageManager
+from .processing import AssetProcessor
 
+# Configure logging
+logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Create all tables in the database if they don't exist
-# In production, use Alembic migrations instead
-Base.metadata.create_all(bind=engine)
 
-# Event processors
-asset_event_processor = None
-function_result_processor = None
-data_lake_processor = None
-vc_processor = None
-
-
-# Placeholder dependencies - replace with real implementations
-def get_api_key_crud_placeholder():
-    return None
-
-def get_user_crud_placeholder():
-    return None
-
-def get_password_verifier_placeholder():
-    return None
-
-
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
-    global asset_event_processor, function_result_processor, data_lake_processor, vc_processor
+class DigitalAssetService:
+    """Digital Asset Service with Vault & Consul Integration"""
     
-    # Startup
-    logger.info("Starting Digital Asset Service with enhanced patterns...")
-    
-    # Initialize repository
-    app.state.asset_repository = AssetRepository(get_db_session)
-    
-    # Initialize event processors
-    pulsar_url = settings.pulsar_url
-    
-    # Main asset event processor
-    asset_event_processor = AssetEventProcessor(
-        service_name="digital-asset-service",
-        pulsar_url=pulsar_url,
-        asset_repository=app.state.asset_repository,
-        event_publisher=app.state.event_publisher
-    )
-    
-    # Function execution result processor
-    function_result_processor = FunctionResultProcessor(
-        service_name="digital-asset-service-functions",
-        pulsar_url=pulsar_url,
-        asset_repository=app.state.asset_repository
-    )
-    
-    # Data lake asset processor
-    data_lake_processor = DataLakeAssetProcessor(
-        service_name="digital-asset-service-datalake",
-        pulsar_url=pulsar_url,
-        asset_repository=app.state.asset_repository,
-        event_publisher=app.state.event_publisher
-    )
-    
-    # Verifiable credential processor
-    vc_processor = VCAssetProcessor(
-        service_name="digital-asset-service-vc",
-        pulsar_url=pulsar_url,
-        asset_repository=app.state.asset_repository
-    )
-    
-    # Start all processors
-    await asyncio.gather(
-        asset_event_processor.start(),
-        function_result_processor.start(),
-        data_lake_processor.start(),
-        vc_processor.start()
-    )
-    
-    logger.info("Digital Asset Service initialized successfully")
-    
-    yield
-    
-    # Shutdown
-    logger.info("Shutting down Digital Asset Service...")
-    
-    # Stop all processors
-    await asyncio.gather(
-        asset_event_processor.stop() if asset_event_processor else None,
-        function_result_processor.stop() if function_result_processor else None,
-        data_lake_processor.stop() if data_lake_processor else None,
-        vc_processor.stop() if vc_processor else None
-    )
-    
-    logger.info("Digital Asset Service shutdown complete")
+    def __init__(self):
+        self.app = FastAPI(title="Digital Asset Service", version="2.0.0")
+        self.vault_integration: Optional[DigitalAssetVaultIntegration] = None
+        self.consul_integration: Optional[DigitalAssetConsulIntegration] = None
+        self.storage_manager: Optional[StorageManager] = None
+        self.asset_processor: Optional[AssetProcessor] = None
+        
+    @asynccontextmanager
+    async def lifespan(self, app: FastAPI):
+        """Application lifespan management"""
+        # Startup
+        await self.startup()
+        yield
+        # Shutdown
+        await self.shutdown()
+        
+    async def startup(self):
+        """Service startup procedure"""
+        logger.info("Starting Digital Asset Service with Vault & Consul integration")
+        
+        try:
+            # Initialize Vault client
+            vault_client = VaultClient(
+                vault_addr=os.getenv("VAULT_ADDR", "http://vault:8200"),
+                role_id=os.getenv("VAULT_ROLE_ID"),
+                secret_id=os.getenv("VAULT_SECRET_ID")
+            )
+            await vault_client.initialize()
+            
+            # Initialize Consul client
+            consul_client = ConsulClient(
+                host=os.getenv("CONSUL_HOST", "consul"),
+                port=int(os.getenv("CONSUL_PORT", "8500"))
+            )
+            
+            # Initialize integrations
+            self.vault_integration = DigitalAssetVaultIntegration(vault_client)
+            await self.vault_integration.initialize()
+            
+            self.consul_integration = DigitalAssetConsulIntegration(consul_client)
+            await self.consul_integration.initialize()
+            
+            # Initialize storage manager
+            storage_config = await self.consul_integration.get_storage_config()
+            self.storage_manager = StorageManager(
+                vault_integration=self.vault_integration,
+                storage_config=storage_config
+            )
+            await self.storage_manager.initialize()
+            
+            # Initialize asset processor
+            processing_config = await self.consul_integration.get_processing_config()
+            self.asset_processor = AssetProcessor(
+                vault_integration=self.vault_integration,
+                processing_config=processing_config
+            )
+            await self.asset_processor.initialize()
+            
+            # Set up routes
+            self._setup_routes()
+            
+            # Add security middleware
+            security_middleware = SecurityMiddleware(
+                vault_client=vault_client,
+                consul_client=consul_client,
+                service_name="digital-asset-service"
+            )
+            self.app.add_middleware(security_middleware)
+            
+            # Start background tasks
+            asyncio.create_task(self._health_check_loop())
+            asyncio.create_task(self._process_pending_assets())
+            asyncio.create_task(self._cleanup_expired_assets())
+            
+            logger.info("Digital Asset Service started successfully")
+            
+        except Exception as e:
+            logger.error(f"Failed to start Digital Asset Service: {e}")
+            raise
+            
+    async def shutdown(self):
+        """Service shutdown procedure"""
+        logger.info("Shutting down Digital Asset Service")
+        
+        # Cancel background tasks
+        for task in asyncio.all_tasks():
+            if task.get_name() in ["health_check", "asset_processor", "cleanup"]:
+                task.cancel()
+                
+        # Close storage connections
+        if self.storage_manager:
+            await self.storage_manager.close()
+            
+        # Deregister from Consul
+        if self.consul_integration:
+            await self.consul_integration.consul.deregister_service()
+            
+        logger.info("Digital Asset Service shutdown complete")
+        
+    def _setup_routes(self):
+        """Set up API routes"""
+        
+        @self.app.get("/health")
+        async def health_check():
+            """Health check endpoint"""
+            try:
+                # Check Vault connectivity
+                vault_healthy = await self._check_vault_health()
+                
+                # Check Consul connectivity
+                consul_healthy = await self._check_consul_health()
+                
+                # Check storage health
+                storage_health = await self._check_storage_health()
+                
+                overall_status = "healthy"
+                if not all([vault_healthy, consul_healthy]):
+                    overall_status = "unhealthy"
+                elif not all(storage_health.values()):
+                    overall_status = "degraded"
+                    
+                health_data = {
+                    "status": overall_status,
+                    "service": "digital-asset-service",
+                    "checks": {
+                        "vault": "healthy" if vault_healthy else "unhealthy",
+                        "consul": "healthy" if consul_healthy else "unhealthy",
+                        "storage": storage_health
+                    },
+                    "timestamp": datetime.utcnow().isoformat()
+                }
+                
+                if overall_status == "unhealthy":
+                    raise HTTPException(status_code=503, detail=health_data)
+                    
+                return health_data
+                
+            except Exception as e:
+                logger.error(f"Health check failed: {e}")
+                raise HTTPException(status_code=503, detail="Service unhealthy")
+                
+        @self.app.post("/api/v1/assets", response_model=AssetUploadResponse)
+        async def upload_asset(
+            file: UploadFile = File(...),
+            name: Optional[str] = Form(None),
+            tags: Optional[List[str]] = Form([]),
+            encrypt: bool = Form(True),
+            request: Request = None
+        ):
+            """Upload a digital asset"""
+            # Get storage config
+            storage_config = await self.consul_integration.get_storage_config()
+            
+            # Validate file size
+            file_size = 0
+            content = await file.read()
+            file_size = len(content)
+            
+            if file_size > storage_config.max_file_size_mb * 1024 * 1024:
+                raise HTTPException(400, f"File size exceeds limit of {storage_config.max_file_size_mb}MB")
+                
+            # Validate mime type
+            mime_type = file.content_type or mimetypes.guess_type(file.filename)[0]
+            if storage_config.allowed_mime_types and mime_type not in storage_config.allowed_mime_types:
+                raise HTTPException(400, f"File type {mime_type} not allowed")
+                
+            # Generate asset ID
+            asset_id = hashlib.sha256(
+                f"{file.filename}-{datetime.utcnow().isoformat()}".encode()
+            ).hexdigest()[:16]
+            
+            # Calculate file hash
+            file_hash = hashlib.sha256(content).hexdigest()
+            
+            # Check for duplicates
+            existing = await self._check_duplicate_asset(file_hash)
+            if existing:
+                return AssetUploadResponse(
+                    asset_id=existing["id"],
+                    message="Asset already exists",
+                    duplicate=True
+                )
+                
+            # Encrypt if requested
+            if encrypt and storage_config.encryption_enabled:
+                content = await self.vault_integration.encrypt_asset_data(content, asset_id)
+                
+            # Upload to storage
+            storage_path = await self.storage_manager.upload_asset(
+                asset_id=asset_id,
+                content=content,
+                filename=file.filename,
+                mime_type=mime_type,
+                provider=storage_config.primary_provider
+            )
+            
+            # Create metadata
+            metadata = {
+                "name": name or file.filename,
+                "original_filename": file.filename,
+                "mime_type": mime_type,
+                "size_bytes": file_size,
+                "hash": file_hash,
+                "storage_provider": storage_config.primary_provider.value,
+                "storage_path": storage_path,
+                "encryption_enabled": encrypt and storage_config.encryption_enabled,
+                "created_at": datetime.utcnow().isoformat(),
+                "created_by": request.state.user_id if hasattr(request.state, "user_id") else "anonymous",
+                "tags": tags,
+                "processing_status": "pending"
+            }
+            
+            # Sign metadata
+            metadata["metadata_signature"] = await self.vault_integration.sign_asset_metadata(
+                metadata, asset_id
+            )
+            
+            # Register asset
+            await self.consul_integration.register_asset(asset_id, metadata)
+            
+            # Update metrics
+            asset_type = self._determine_asset_type(mime_type)
+            await self.consul_integration.update_storage_metrics(
+                asset_type.value,
+                file_size,
+                storage_config.primary_provider.value,
+                "add"
+            )
+            
+            # Queue for processing
+            if await self.consul_integration.acquire_processing_slot(asset_id):
+                asyncio.create_task(self._process_asset(asset_id))
+                
+            return AssetUploadResponse(
+                asset_id=asset_id,
+                name=metadata["name"],
+                size_bytes=file_size,
+                mime_type=mime_type,
+                storage_provider=storage_config.primary_provider.value,
+                encryption_enabled=metadata["encryption_enabled"],
+                processing_status="queued"
+            )
+            
+        @self.app.get("/api/v1/assets/{asset_id}")
+        async def get_asset_metadata(asset_id: str):
+            """Get asset metadata"""
+            metadata = await self.consul_integration.get_asset_metadata(asset_id)
+            
+            if not metadata:
+                raise HTTPException(404, f"Asset {asset_id} not found")
+                
+            # Verify metadata signature
+            signature = metadata.get("metadata_signature")
+            if signature:
+                metadata_copy = metadata.copy()
+                del metadata_copy["metadata_signature"]
+                
+                valid = await self.vault_integration.verify_asset_metadata(
+                    metadata_copy, signature, asset_id
+                )
+                
+                if not valid:
+                    logger.error(f"Invalid metadata signature for asset {asset_id}")
+                    raise HTTPException(500, "Asset metadata integrity check failed")
+                    
+            return metadata
+            
+        @self.app.get("/api/v1/assets/{asset_id}/download")
+        async def download_asset(asset_id: str):
+            """Download asset content"""
+            # Get metadata
+            metadata = await self.consul_integration.get_asset_metadata(asset_id)
+            if not metadata:
+                raise HTTPException(404, f"Asset {asset_id} not found")
+                
+            # Get content from storage
+            content = await self.storage_manager.download_asset(
+                asset_id=asset_id,
+                storage_path=metadata["storage_path"],
+                provider=AssetStorageProvider(metadata["storage_provider"])
+            )
+            
+            # Decrypt if encrypted
+            if metadata.get("encryption_enabled"):
+                content = await self.vault_integration.decrypt_asset_data(content, asset_id)
+                
+            # Return as streaming response
+            return StreamingResponse(
+                io.BytesIO(content),
+                media_type=metadata["mime_type"],
+                headers={
+                    "Content-Disposition": f'attachment; filename="{metadata["name"]}"',
+                    "Content-Length": str(len(content))
+                }
+            )
+            
+        @self.app.get("/api/v1/assets/{asset_id}/thumbnail/{size}")
+        async def get_asset_thumbnail(asset_id: str, size: str = "medium"):
+            """Get asset thumbnail"""
+            # Get metadata
+            metadata = await self.consul_integration.get_asset_metadata(asset_id)
+            if not metadata:
+                raise HTTPException(404, f"Asset {asset_id} not found")
+                
+            # Check if thumbnails exist
+            thumbnails = metadata.get("thumbnails", {})
+            if size not in thumbnails:
+                raise HTTPException(404, f"Thumbnail size {size} not available")
+                
+            # Get thumbnail from storage
+            thumbnail_path = thumbnails[size]["path"]
+            content = await self.storage_manager.download_asset(
+                asset_id=f"{asset_id}-thumb-{size}",
+                storage_path=thumbnail_path,
+                provider=AssetStorageProvider(metadata["storage_provider"])
+            )
+            
+            return StreamingResponse(
+                io.BytesIO(content),
+                media_type="image/jpeg",
+                headers={
+                    "Content-Length": str(len(content)),
+                    "Cache-Control": "public, max-age=86400"  # 24 hour cache
+                }
+            )
+            
+        @self.app.post("/api/v1/assets/search")
+        async def search_assets(query: AssetSearchQuery):
+            """Search for assets"""
+            results = []
+            
+            # Simple search implementation
+            for asset_id, metadata in self.consul_integration._asset_registry.items():
+                # Filter by tags
+                if query.tags:
+                    if not any(tag in metadata.get("tags", []) for tag in query.tags):
+                        continue
+                        
+                # Filter by mime type
+                if query.mime_types:
+                    if metadata.get("mime_type") not in query.mime_types:
+                        continue
+                        
+                # Filter by date range
+                if query.created_after:
+                    created_at = datetime.fromisoformat(metadata.get("created_at", ""))
+                    if created_at < query.created_after:
+                        continue
+                        
+                if query.created_before:
+                    created_at = datetime.fromisoformat(metadata.get("created_at", ""))
+                    if created_at > query.created_before:
+                        continue
+                        
+                # Text search in name
+                if query.text:
+                    if query.text.lower() not in metadata.get("name", "").lower():
+                        continue
+                        
+                results.append(Asset(
+                    id=asset_id,
+                    name=metadata["name"],
+                    mime_type=metadata["mime_type"],
+                    size_bytes=metadata["size_bytes"],
+                    created_at=datetime.fromisoformat(metadata["created_at"]),
+                    tags=metadata.get("tags", []),
+                    processing_status=metadata.get("processing_status", "unknown")
+                ))
+                
+                # Limit results
+                if len(results) >= query.limit:
+                    break
+                    
+            return {"assets": results, "total": len(results)}
+            
+        @self.app.delete("/api/v1/assets/{asset_id}")
+        async def delete_asset(asset_id: str):
+            """Delete an asset"""
+            # Get metadata
+            metadata = await self.consul_integration.get_asset_metadata(asset_id)
+            if not metadata:
+                raise HTTPException(404, f"Asset {asset_id} not found")
+                
+            # Delete from storage
+            await self.storage_manager.delete_asset(
+                asset_id=asset_id,
+                storage_path=metadata["storage_path"],
+                provider=AssetStorageProvider(metadata["storage_provider"])
+            )
+            
+            # Update metrics
+            asset_type = self._determine_asset_type(metadata["mime_type"])
+            await self.consul_integration.update_storage_metrics(
+                asset_type.value,
+                metadata["size_bytes"],
+                metadata["storage_provider"],
+                "remove"
+            )
+            
+            # Remove from registry
+            await self.consul_integration.consul.kv_delete(
+                f"services/digital-asset-service/assets/{asset_id}"
+            )
+            
+            return {"status": "success", "message": f"Asset {asset_id} deleted"}
+            
+        @self.app.get("/api/v1/storage/metrics")
+        async def get_storage_metrics():
+            """Get storage usage metrics"""
+            return await self.consul_integration.get_storage_metrics()
+            
+        @self.app.post("/api/v1/storage/rotate-credentials/{provider}")
+        async def rotate_storage_credentials(provider: str):
+            """Rotate storage provider credentials"""
+            try:
+                provider_enum = AssetStorageProvider(provider)
+                await self.vault_integration.rotate_storage_credentials(provider_enum)
+                return {"status": "success", "message": f"Credentials rotated for {provider}"}
+            except ValueError:
+                raise HTTPException(400, f"Invalid provider: {provider}")
+            except Exception as e:
+                logger.error(f"Credential rotation failed: {e}")
+                raise HTTPException(500, f"Rotation failed: {str(e)}")
+                
+    def _determine_asset_type(self, mime_type: str) -> AssetType:
+        """Determine asset type from mime type"""
+        if mime_type.startswith("image/"):
+            return AssetType.IMAGE
+        elif mime_type.startswith("video/"):
+            return AssetType.VIDEO
+        elif mime_type.startswith("audio/"):
+            return AssetType.AUDIO
+        elif mime_type.startswith("application/pdf") or mime_type.startswith("text/"):
+            return AssetType.DOCUMENT
+        elif mime_type in ["application/x-blender", "model/gltf+json", "model/gltf-binary"]:
+            return AssetType.MODEL_3D
+        elif mime_type.startswith("application/") and any(x in mime_type for x in ["json", "xml", "yaml"]):
+            return AssetType.CODE
+        else:
+            return AssetType.OTHER
+            
+    async def _check_duplicate_asset(self, file_hash: str) -> Optional[Dict]:
+        """Check if asset with same hash already exists"""
+        for asset_id, metadata in self.consul_integration._asset_registry.items():
+            if metadata.get("hash") == file_hash:
+                return metadata
+        return None
+        
+    async def _process_asset(self, asset_id: str):
+        """Process uploaded asset"""
+        try:
+            # Update status
+            await self.consul_integration.update_asset_status(asset_id, "processing")
+            
+            # Get metadata
+            metadata = await self.consul_integration.get_asset_metadata(asset_id)
+            
+            # Run processing based on type
+            asset_type = self._determine_asset_type(metadata["mime_type"])
+            processing_config = await self.consul_integration.get_processing_config()
+            
+            updates = {}
+            
+            # Generate thumbnails for images/videos
+            if asset_type in [AssetType.IMAGE, AssetType.VIDEO] and processing_config.auto_thumbnail:
+                thumbnails = await self.asset_processor.generate_thumbnails(
+                    asset_id, metadata, asset_type
+                )
+                updates["thumbnails"] = thumbnails
+                
+            # Extract metadata
+            if processing_config.auto_metadata_extraction:
+                extracted_metadata = await self.asset_processor.extract_metadata(
+                    asset_id, metadata, asset_type
+                )
+                updates["extracted_metadata"] = extracted_metadata
+                
+            # Virus scanning
+            if processing_config.virus_scanning:
+                scan_result = await self.asset_processor.scan_for_viruses(
+                    asset_id, metadata
+                )
+                updates["virus_scan"] = scan_result
+                
+            # Content moderation
+            if processing_config.content_moderation and asset_type == AssetType.IMAGE:
+                moderation_result = await self.asset_processor.moderate_content(
+                    asset_id, metadata
+                )
+                updates["content_moderation"] = moderation_result
+                
+            # Update metadata
+            if updates:
+                await self.consul_integration.consul.kv_merge(
+                    f"services/digital-asset-service/assets/{asset_id}/metadata",
+                    updates
+                )
+                
+            # Update status
+            await self.consul_integration.update_asset_status(asset_id, "completed")
+            
+        except Exception as e:
+            logger.error(f"Asset processing failed for {asset_id}: {e}")
+            await self.consul_integration.update_asset_status(
+                asset_id, 
+                "failed",
+                {"error": str(e)}
+            )
+        finally:
+            await self.consul_integration.release_processing_slot(asset_id)
+            
+    async def _check_vault_health(self) -> bool:
+        """Check Vault connectivity"""
+        try:
+            await self.vault_integration.vault.get_secret("digital-asset-service/health-check")
+            return True
+        except:
+            return False
+            
+    async def _check_consul_health(self) -> bool:
+        """Check Consul connectivity"""
+        try:
+            await self.consul_integration.consul.kv_get("services/digital-asset-service/health/status")
+            return True
+        except:
+            return False
+            
+    async def _check_storage_health(self) -> Dict[str, bool]:
+        """Check storage provider health"""
+        storage_health = {}
+        
+        for provider in AssetStorageProvider:
+            healthy = await self.consul_integration.check_storage_health(provider)
+            storage_health[provider.value] = healthy
+            
+        return storage_health
+        
+    async def _health_check_loop(self):
+        """Periodic health check"""
+        while True:
+            try:
+                await asyncio.sleep(30)  # Every 30 seconds
+                
+                # Check storage health
+                for provider in AssetStorageProvider:
+                    try:
+                        # Test storage connectivity
+                        healthy = await self.storage_manager.test_connection(provider)
+                        await self.consul_integration.update_storage_health(provider, healthy)
+                    except:
+                        await self.consul_integration.update_storage_health(provider, False)
+                        
+            except Exception as e:
+                logger.error(f"Health check loop error: {e}")
+                
+    async def _process_pending_assets(self):
+        """Process assets that are pending"""
+        while True:
+            try:
+                await asyncio.sleep(60)  # Every minute
+                
+                # Find pending assets
+                for asset_id, metadata in self.consul_integration._asset_registry.items():
+                    if metadata.get("processing_status") == "pending":
+                        if await self.consul_integration.acquire_processing_slot(asset_id):
+                            asyncio.create_task(self._process_asset(asset_id))
+                            
+            except Exception as e:
+                logger.error(f"Pending asset processor error: {e}")
+                
+    async def _cleanup_expired_assets(self):
+        """Clean up expired or orphaned assets"""
+        while True:
+            try:
+                await asyncio.sleep(3600)  # Every hour
+                
+                # This would implement cleanup logic
+                logger.info("Running asset cleanup")
+                
+            except Exception as e:
+                logger.error(f"Asset cleanup error: {e}")
 
 
-# Create app with enhanced patterns
-app = create_base_app(
-    service_name="digital-asset-service",
-    db_session_dependency=get_db_session,
-    api_key_crud_dependency=get_api_key_crud_placeholder,
-    user_crud_dependency=get_user_crud_placeholder,
-    password_verifier_dependency=get_password_verifier_placeholder,
-    event_processors=[
-        asset_event_processor,
-        function_result_processor,
-        data_lake_processor,
-        vc_processor
-    ] if all([asset_event_processor, function_result_processor, data_lake_processor, vc_processor]) else []
-)
+# Create app instance
+asset_service = DigitalAssetService()
+app = asset_service.app
 
-# Set lifespan
-app.router.lifespan_context = lifespan
+# Set up lifespan
+app.router.lifespan_context = asset_service.lifespan
 
-# Include service-specific routers
-app.include_router(digital_assets.router, prefix="/api/v1", tags=["digital-assets"])
-app.include_router(processing_rules.router, prefix="/api/v1", tags=["processing-rules"])
-app.include_router(marketplace.router, prefix="/api/v1", tags=["marketplace"])
-
-# Import and include the CAD collaboration router
-try:
-    from .api.endpoints import cad_collaboration
-    app.include_router(cad_collaboration.router, prefix="/api/v1", tags=["cad-collaboration"])
-    logger.info("CAD collaboration endpoints loaded")
-except ImportError:
-    logger.warning("CAD collaboration endpoints not available")
-
-# Import and include unified data endpoints
-try:
-    from .api.endpoints import digital_assets_unified
-    app.include_router(digital_assets_unified.router, prefix="/api/v1", tags=["unified-data"])
-    logger.info("Unified data endpoints loaded")
-except ImportError:
-    logger.warning("Unified data endpoints not available")
-
-# Service root endpoint
-@app.get("/")
-def read_root():
-    return {
-        "service": "digital-asset-service",
-        "version": "2.0",
-        "features": [
-            "asset-management",
-            "marketplace",
-            "processing-rules",
-            "event-driven",
-            "cad-collaboration",
-            "unified-data"
-        ]
-    }
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000)
