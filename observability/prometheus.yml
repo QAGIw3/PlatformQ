@@ -18,4 +18,155 @@ scrape_configs:
 
   - job_name: "otel-collector"
     static_configs:
-      - targets: ["otel-collector:8889"] 
+      - targets: ["otel-collector:8889"]
+
+  # Node Exporter - System metrics
+  - job_name: 'node-exporter'
+    static_configs:
+      - targets: 
+        - 'node-exporter:9100'
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: instance
+        regex: '([^:]+):.*'
+
+  # Container metrics
+  - job_name: 'cadvisor'
+    static_configs:
+      - targets: ['cadvisor:8080']
+
+  # PostgreSQL metrics
+  - job_name: 'postgres'
+    static_configs:
+      - targets: ['postgres-exporter:9187']
+
+  # Elasticsearch metrics
+  - job_name: 'elasticsearch'
+    static_configs:
+      - targets: ['elasticsearch-exporter:9114']
+
+  # Pulsar metrics
+  - job_name: 'pulsar'
+    static_configs:
+      - targets: ['pulsar:8080']
+    metrics_path: '/metrics'
+
+  # MinIO metrics
+  - job_name: 'minio'
+    static_configs:
+      - targets: ['minio:9000']
+    metrics_path: '/minio/v2/metrics/cluster'
+
+  # Airflow metrics
+  - job_name: 'airflow'
+    static_configs:
+      - targets: ['airflow-exporter:9112']
+
+  # Flink metrics
+  - job_name: 'flink'
+    static_configs:
+      - targets: 
+        - 'flink-jobmanager:8081'
+        - 'flink-taskmanager:8081'
+
+  # Trino metrics
+  - job_name: 'trino'
+    static_configs:
+      - targets: ['trino-coordinator:8080']
+    metrics_path: '/v1/metrics'
+
+  # Ignite metrics
+  - job_name: 'ignite'
+    static_configs:
+      - targets: ['ignite:8080']
+    metrics_path: '/ignite?cmd=probe'
+
+  # JanusGraph metrics
+  - job_name: 'janusgraph'
+    static_configs:
+      - targets: ['janusgraph:8182']
+
+  # Vault metrics
+  - job_name: 'vault'
+    metrics_path: "/v1/sys/metrics"
+    params:
+      format: ['prometheus']
+    bearer_token: '${VAULT_TOKEN}'
+    static_configs:
+      - targets: ['vault:8200']
+
+  # Consul metrics
+  - job_name: 'consul'
+    metrics_path: "/v1/agent/metrics"
+    params:
+      format: ['prometheus']
+    static_configs:
+      - targets: 
+        - 'consul-server-1:8500'
+        - 'consul-server-2:8500'
+        - 'consul-server-3:8500'
+
+  # PlatformQ Services
+  - job_name: 'platformq-services'
+    kubernetes_sd_configs:
+      - role: pod
+        namespaces:
+          names:
+            - platformq
+    relabel_configs:
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_scrape]
+        action: keep
+        regex: true
+      - source_labels: [__meta_kubernetes_pod_annotation_prometheus_io_path]
+        action: replace
+        target_label: __metrics_path__
+        regex: (.+)
+      - source_labels: [__address__, __meta_kubernetes_pod_annotation_prometheus_io_port]
+        action: replace
+        regex: ([^:]+)(?::\d+)?;(\d+)
+        replacement: $1:$2
+        target_label: __address__
+      - action: labelmap
+        regex: __meta_kubernetes_pod_label_(.+)
+      - source_labels: [__meta_kubernetes_namespace]
+        action: replace
+        target_label: kubernetes_namespace
+      - source_labels: [__meta_kubernetes_pod_name]
+        action: replace
+        target_label: kubernetes_pod_name
+
+  # Blackbox Exporter - Endpoint monitoring
+  - job_name: 'blackbox-http'
+    metrics_path: /probe
+    params:
+      module: [http_2xx]
+    static_configs:
+      - targets:
+        - https://blockchain-gateway.platformq.io/health
+        - https://data-platform.platformq.io/health
+        - https://workflow.platformq.io/health
+        - https://marketplace.platformq.io/health
+    relabel_configs:
+      - source_labels: [__address__]
+        target_label: __param_target
+      - source_labels: [__param_target]
+        target_label: instance
+      - target_label: __address__
+        replacement: blackbox-exporter:9115
+
+  # Custom PlatformQ exporters
+  - job_name: 'blockchain-metrics'
+    static_configs:
+      - targets: ['blockchain-exporter:9300']
+
+  - job_name: 'ml-model-metrics'
+    static_configs:
+      - targets: ['ml-model-exporter:9301']
+
+  - job_name: 'data-quality-metrics'
+    static_configs:
+      - targets: ['data-quality-exporter:9302']
+
+  - job_name: 'compute-marketplace-metrics'
+    static_configs:
+      - targets: ['compute-marketplace-exporter:9303'] 

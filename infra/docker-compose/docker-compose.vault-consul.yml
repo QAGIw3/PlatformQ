@@ -1,0 +1,134 @@
+version: '3.8'
+
+services:
+  # Consul cluster (3 nodes for HA)
+  consul-server-1:
+    image: consul:1.16.1
+    container_name: consul-server-1
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    command: agent -server -ui -node=consul-server-1 -bootstrap-expect=3 -client=0.0.0.0
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_CLIENT_INTERFACE=eth0
+    volumes:
+      - consul-data-1:/consul/data
+      - ./consul/consul-server.json:/consul/config/consul-server.json:ro
+    ports:
+      - "8500:8500"  # HTTP API
+      - "8600:8600/udp"  # DNS
+
+  consul-server-2:
+    image: consul:1.16.1
+    container_name: consul-server-2
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    command: agent -server -node=consul-server-2 -bootstrap-expect=3 -client=0.0.0.0 -retry-join=consul-server-1
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_CLIENT_INTERFACE=eth0
+    volumes:
+      - consul-data-2:/consul/data
+      - ./consul/consul-server.json:/consul/config/consul-server.json:ro
+
+  consul-server-3:
+    image: consul:1.16.1
+    container_name: consul-server-3
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    command: agent -server -node=consul-server-3 -bootstrap-expect=3 -client=0.0.0.0 -retry-join=consul-server-1
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_CLIENT_INTERFACE=eth0
+    volumes:
+      - consul-data-3:/consul/data
+      - ./consul/consul-server.json:/consul/config/consul-server.json:ro
+
+  # Vault server (single node for development, use Raft storage for production HA)
+  vault:
+    image: vault:1.15.1
+    container_name: vault
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    cap_add:
+      - IPC_LOCK
+    environment:
+      - VAULT_ADDR=http://0.0.0.0:8200
+      - VAULT_API_ADDR=http://vault:8200
+      - VAULT_DEV_ROOT_TOKEN_ID=root  # Only for development
+    volumes:
+      - vault-data:/vault/data
+      - vault-logs:/vault/logs
+      - vault-policies:/vault/policies
+      - ./vault/vault-config.hcl:/vault/config/vault-config.hcl:ro
+    ports:
+      - "8200:8200"  # Vault UI and API
+    command: server -config=/vault/config/vault-config.hcl
+    depends_on:
+      - consul-server-1
+      - consul-server-2
+      - consul-server-3
+
+  # Vault initialization and configuration job
+  vault-init:
+    image: vault:1.15.1
+    container_name: vault-init
+    networks:
+      - platformq-network
+    environment:
+      - VAULT_ADDR=http://vault:8200
+    volumes:
+      - ./vault/init-scripts:/scripts:ro
+      - vault-keys:/vault/keys
+    command: >
+      sh -c "
+        sleep 10 &&
+        if [ ! -f /vault/keys/initialized ]; then
+          echo 'Initializing Vault...' &&
+          vault operator init -key-shares=5 -key-threshold=3 > /vault/keys/init-keys.txt &&
+          touch /vault/keys/initialized &&
+          echo 'Vault initialized. Keys saved to /vault/keys/init-keys.txt'
+        else
+          echo 'Vault already initialized'
+        fi
+      "
+    depends_on:
+      - vault
+
+  # Consul agent for service registration (example for other services)
+  consul-agent:
+    image: consul:1.16.1
+    container_name: consul-agent
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    command: agent -retry-join=consul-server-1 -client=0.0.0.0
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_CLIENT_INTERFACE=eth0
+    volumes:
+      - ./consul/consul-agent.json:/consul/config/consul-agent.json:ro
+
+volumes:
+  consul-data-1:
+    driver: local
+  consul-data-2:
+    driver: local
+  consul-data-3:
+    driver: local
+  vault-data:
+    driver: local
+  vault-logs:
+    driver: local
+  vault-policies:
+    driver: local
+  vault-keys:
+    driver: local
+
+networks:
+  platformq-network:
+    external: true 

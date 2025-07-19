@@ -11,6 +11,7 @@ import uuid
 import logging
 
 from .. import main
+from ..api.v1 import quality_remediation
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -527,4 +528,8 @@ async def report_quality_anomaly(
         
     except Exception as e:
         logger.error(f"Failed to process quality anomaly: {str(e)}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Include remediation endpoints
+router.include_router(quality_remediation.router, prefix="", tags=["quality-remediation"]) 

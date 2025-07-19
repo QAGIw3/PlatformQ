@@ -1,0 +1,305 @@
+version: '3.8'
+
+services:
+  # Prometheus
+  prometheus:
+    image: prom/prometheus:v2.45.0
+    container_name: prometheus
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    command:
+      - '--config.file=/etc/prometheus/prometheus.yml'
+      - '--storage.tsdb.path=/prometheus'
+      - '--web.console.libraries=/usr/share/prometheus/console_libraries'
+      - '--web.console.templates=/usr/share/prometheus/consoles'
+      - '--web.enable-lifecycle'
+      - '--storage.tsdb.retention.time=30d'
+    volumes:
+      - prometheus-data:/prometheus
+      - ../../observability/prometheus.yml:/etc/prometheus/prometheus.yml:ro
+      - ../../observability/prometheus-rules.yaml:/etc/prometheus/rules/prometheus-rules.yaml:ro
+      - ../../observability/marketplace-prometheus-rules.yaml:/etc/prometheus/rules/marketplace-rules.yaml:ro
+    ports:
+      - "9090:9090"
+
+  # Grafana
+  grafana:
+    image: grafana/grafana:10.0.0
+    container_name: grafana
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    environment:
+      - GF_SECURITY_ADMIN_USER=admin
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+      - GF_USERS_ALLOW_SIGN_UP=false
+      - GF_INSTALL_PLUGINS=grafana-piechart-panel,grafana-worldmap-panel
+    volumes:
+      - grafana-data:/var/lib/grafana
+      - ../../observability/grafana-dashboards:/etc/grafana/provisioning/dashboards:ro
+      - ./config/grafana-datasources.yml:/etc/grafana/provisioning/datasources/datasources.yml:ro
+    ports:
+      - "3000:3000"
+    depends_on:
+      - prometheus
+
+  # Alertmanager
+  alertmanager:
+    image: prom/alertmanager:v0.26.0
+    container_name: alertmanager
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    command:
+      - '--config.file=/etc/alertmanager/config.yml'
+      - '--storage.path=/alertmanager'
+    volumes:
+      - alertmanager-data:/alertmanager
+      - ../../observability/alertmanager/marketplace-alerts.yaml:/etc/alertmanager/config.yml:ro
+    ports:
+      - "9093:9093"
+
+  # Node Exporter
+  node-exporter:
+    image: prom/node-exporter:v1.6.1
+    container_name: node-exporter
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    command:
+      - '--path.procfs=/host/proc'
+      - '--path.sysfs=/host/sys'
+      - '--path.rootfs=/rootfs'
+      - '--collector.filesystem.mount-points-exclude=^/(sys|proc|dev|host|etc)($$|/)'
+    volumes:
+      - /proc:/host/proc:ro
+      - /sys:/host/sys:ro
+      - /:/rootfs:ro
+    ports:
+      - "9100:9100"
+
+  # cAdvisor
+  cadvisor:
+    image: gcr.io/cadvisor/cadvisor:v0.47.0
+    container_name: cadvisor
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    volumes:
+      - /:/rootfs:ro
+      - /var/run:/var/run:ro
+      - /sys:/sys:ro
+      - /var/lib/docker/:/var/lib/docker:ro
+      - /dev/disk/:/dev/disk:ro
+    ports:
+      - "8080:8080"
+    devices:
+      - /dev/kmsg
+    privileged: true
+
+  # PostgreSQL Exporter
+  postgres-exporter:
+    image: prometheuscommunity/postgres-exporter:v0.13.2
+    container_name: postgres-exporter
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    environment:
+      - DATA_SOURCE_NAME=postgresql://postgres_exporter:password@postgres:5432/postgres?sslmode=disable
+      - PG_EXPORTER_AUTO_DISCOVER_DATABASES=true
+      - PG_EXPORTER_EXCLUDE_DATABASES=template0,template1
+    ports:
+      - "9187:9187"
+
+  # Elasticsearch Exporter
+  elasticsearch-exporter:
+    image: prometheuscommunity/elasticsearch-exporter:v1.6.0
+    container_name: elasticsearch-exporter
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    command:
+      - '--es.uri=http://elasticsearch:9200'
+      - '--es.all'
+      - '--es.indices'
+      - '--es.cluster_settings'
+      - '--es.indices_settings'
+      - '--es.shards'
+      - '--es.snapshots'
+    ports:
+      - "9114:9114"
+
+  # JMX Exporter for Java applications
+  jmx-exporter:
+    image: sscaling/jmx-prometheus-exporter:0.19.0
+    container_name: jmx-exporter
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    volumes:
+      - ./config/jmx-exporter:/etc/jmx-exporter:ro
+    ports:
+      - "9404:9404"  # Spark
+      - "9405:9405"  # Kafka/Pulsar
+      - "9406:9406"  # Cassandra
+      - "9407:9407"  # Elasticsearch
+      - "9408:9408"  # Ignite
+
+  # MinIO Exporter (built into MinIO)
+  # Configured via MinIO environment variables
+
+  # Blackbox Exporter
+  blackbox-exporter:
+    image: prom/blackbox-exporter:v0.24.0
+    container_name: blackbox-exporter
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    command:
+      - '--config.file=/etc/blackbox_exporter/config.yml'
+    volumes:
+      - ./config/blackbox-exporter.yml:/etc/blackbox_exporter/config.yml:ro
+    ports:
+      - "9115:9115"
+
+  # Custom PlatformQ Blockchain Exporter
+  blockchain-exporter:
+    build:
+      context: ../../
+      dockerfile: observability/exporters/blockchain/Dockerfile
+    container_name: blockchain-exporter
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    environment:
+      - ETH_RPC_URL=${ETH_RPC_URL}
+      - SOLANA_RPC_URL=${SOLANA_RPC_URL}
+      - POLKADOT_RPC_URL=${POLKADOT_RPC_URL}
+    ports:
+      - "9300:9300"
+
+  # Custom PlatformQ ML Model Exporter
+  ml-model-exporter:
+    build:
+      context: ../../
+      dockerfile: observability/exporters/ml-model/Dockerfile
+    container_name: ml-model-exporter
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    environment:
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+    ports:
+      - "9301:9301"
+
+  # Custom PlatformQ Data Quality Exporter
+  data-quality-exporter:
+    build:
+      context: ../../
+      dockerfile: observability/exporters/data-quality/Dockerfile
+    container_name: data-quality-exporter
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    environment:
+      - IGNITE_ENDPOINT=ignite:10800
+    ports:
+      - "9302:9302"
+
+  # Custom PlatformQ Compute Marketplace Exporter
+  compute-marketplace-exporter:
+    build:
+      context: ../../
+      dockerfile: observability/exporters/compute-marketplace/Dockerfile
+    container_name: compute-marketplace-exporter
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    environment:
+      - MARKETPLACE_API_URL=http://marketplace:8000
+    ports:
+      - "9303:9303"
+
+  # OpenTelemetry Collector
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:0.82.0
+    container_name: otel-collector
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    command: ["--config=/etc/otel-collector-config.yaml"]
+    volumes:
+      - ../../observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC receiver
+      - "4318:4318"   # OTLP HTTP receiver
+      - "8888:8888"   # Prometheus metrics exposed by the collector
+      - "8889:8889"   # Prometheus exporter metrics
+      - "13133:13133" # health_check extension
+      - "55679:55679" # zpages extension
+
+  # Jaeger
+  jaeger:
+    image: jaegertracing/all-in-one:1.47
+    container_name: jaeger
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    environment:
+      - COLLECTOR_ZIPKIN_HOST_PORT=:9411
+      - COLLECTOR_OTLP_ENABLED=true
+    ports:
+      - "5775:5775/udp"
+      - "6831:6831/udp"
+      - "6832:6832/udp"
+      - "5778:5778"
+      - "16686:16686"
+      - "14268:14268"
+      - "14250:14250"
+      - "9411:9411"
+
+  # Elasticsearch for logs and traces
+  elasticsearch-monitoring:
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.9.0
+    container_name: elasticsearch-monitoring
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    environment:
+      - discovery.type=single-node
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+      - xpack.security.enabled=false
+    volumes:
+      - elasticsearch-monitoring-data:/usr/share/elasticsearch/data
+    ports:
+      - "9201:9200"
+      - "9301:9300"
+
+  # Kibana for log visualization
+  kibana:
+    image: docker.elastic.co/kibana/kibana:8.9.0
+    container_name: kibana
+    restart: unless-stopped
+    networks:
+      - platformq-network
+    environment:
+      - ELASTICSEARCH_HOSTS=http://elasticsearch-monitoring:9200
+    ports:
+      - "5601:5601"
+    depends_on:
+      - elasticsearch-monitoring
+
+volumes:
+  prometheus-data:
+    driver: local
+  grafana-data:
+    driver: local
+  alertmanager-data:
+    driver: local
+  elasticsearch-monitoring-data:
+    driver: local
+
+networks:
+  platformq-network:
+    external: true 

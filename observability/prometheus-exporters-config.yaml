@@ -1,0 +1,301 @@
+# PlatformQ Prometheus Exporters Configuration
+
+# Node Exporter - System metrics
+node_exporter:
+  enabled: true
+  port: 9100
+  collectors:
+    - cpu
+    - diskstats
+    - filesystem
+    - loadavg
+    - meminfo
+    - netdev
+    - stat
+    - time
+    - uname
+    - vmstat
+    - processes
+    - tcpstat
+    - netstat
+    - interrupts
+    - systemd
+  
+# Container metrics
+cadvisor:
+  enabled: true
+  port: 8080
+  storage_duration: 2m
+  housekeeping_interval: 10s
+  global_housekeeping_interval: 30s
+  disable_metrics:
+    - accelerator
+    - advtcp
+    - hugetlb
+    - referenced_memory
+    - resctrl
+    - schedstat
+    - tcp
+    - udp
+
+# JMX Exporter - Java applications
+jmx_exporter:
+  enabled: true
+  configs:
+    - name: spark
+      port: 9404
+      config_file: /etc/jmx-exporter/spark.yml
+    - name: kafka
+      port: 9405
+      config_file: /etc/jmx-exporter/kafka.yml
+    - name: cassandra
+      port: 9406
+      config_file: /etc/jmx-exporter/cassandra.yml
+    - name: elasticsearch
+      port: 9407
+      config_file: /etc/jmx-exporter/elasticsearch.yml
+    - name: ignite
+      port: 9408
+      config_file: /etc/jmx-exporter/ignite.yml
+
+# PostgreSQL Exporter
+postgres_exporter:
+  enabled: true
+  port: 9187
+  datasource: "postgresql://postgres_exporter:password@postgres:5432/postgres?sslmode=disable"
+  auto_discover_databases: true
+  exclude_databases:
+    - postgres
+    - template0
+    - template1
+  custom_queries_config_path: /etc/postgres-exporter/queries.yaml
+
+# Redis/Ignite Exporter
+redis_exporter:
+  enabled: true
+  port: 9121
+  redis_addr: "redis://localhost:6379"
+  check_keys: true
+  check_single_keys: true
+  export_client_list: true
+  export_client_port: true
+
+# MongoDB Exporter
+mongodb_exporter:
+  enabled: true
+  port: 9216
+  mongodb_uri: "mongodb://exporter:password@mongodb:27017"
+  collect_all: true
+
+# Elasticsearch Exporter
+elasticsearch_exporter:
+  enabled: true
+  port: 9114
+  elasticsearch_url: "http://elasticsearch:9200"
+  timeout: 10s
+  all: true
+  cluster_health: true
+  cluster_stats: true
+  indices: true
+  indices_settings: true
+  indices_mappings: true
+  shards: true
+  snapshots: true
+
+# Pulsar Exporter
+pulsar_exporter:
+  enabled: true
+  port: 9150
+  stats_urls:
+    - "http://pulsar:8080/admin/v2/broker-stats/metrics"
+    - "http://pulsar:8080/admin/v2/bookkeeper/metrics"
+  topic_metrics: true
+  subscription_metrics: true
+  consumer_metrics: true
+  producer_metrics: true
+
+# MinIO Exporter
+minio_exporter:
+  enabled: true
+  port: 9290
+  minio_server: "http://minio:9000"
+  minio_access_key: "${MINIO_ACCESS_KEY}"
+  minio_secret_key: "${MINIO_SECRET_KEY}"
+  bucket_stats: true
+  cluster_stats: true
+
+# JanusGraph Exporter
+janusgraph_exporter:
+  enabled: true
+  port: 9420
+  janusgraph_host: "janusgraph"
+  janusgraph_port: 8182
+  metrics:
+    - graph_traversal_metrics
+    - cache_metrics
+    - transaction_metrics
+    - index_metrics
+
+# Airflow Exporter
+airflow_exporter:
+  enabled: true
+  port: 9112
+  airflow_export_type: statsd
+  dags_metrics: true
+  tasks_metrics: true
+  pools_metrics: true
+  imports_metrics: true
+  schedulers_metrics: true
+  executors_metrics: true
+
+# Flink Exporter
+flink_exporter:
+  enabled: true
+  port: 9249
+  flink_jobmanager_url: "http://flink-jobmanager:8081"
+  checkpointing_metrics: true
+  job_metrics: true
+  task_metrics: true
+  operator_metrics: true
+  watermark_metrics: true
+
+# Trino Exporter
+trino_exporter:
+  enabled: true
+  port: 9483
+  trino_coordinator_url: "http://trino-coordinator:8080"
+  username: "exporter"
+  cluster_metrics: true
+  query_metrics: true
+  node_metrics: true
+
+# GPU Exporter (NVIDIA)
+gpu_exporter:
+  enabled: true
+  port: 9835
+  nvidia_smi_command: "/usr/bin/nvidia-smi"
+  query_field_names:
+    - index
+    - name
+    - uuid
+    - temperature.gpu
+    - utilization.gpu
+    - utilization.memory
+    - memory.total
+    - memory.free
+    - memory.used
+    - power.draw
+    - power.limit
+    - clocks.sm
+    - clocks.memory
+    - clocks.video
+
+# Custom PlatformQ Exporters
+platformq_exporters:
+  # Blockchain metrics
+  blockchain_exporter:
+    enabled: true
+    port: 9300
+    endpoints:
+      - chain: ethereum
+        url: "${ETH_RPC_URL}"
+      - chain: solana
+        url: "${SOLANA_RPC_URL}"
+      - chain: polkadot
+        url: "${POLKADOT_RPC_URL}"
+    metrics:
+      - block_height
+      - transaction_pool_size
+      - gas_price
+      - account_balance
+      - smart_contract_calls
+  
+  # ML Model metrics
+  ml_model_exporter:
+    enabled: true
+    port: 9301
+    mlflow_tracking_uri: "http://mlflow:5000"
+    metrics:
+      - model_accuracy
+      - model_latency
+      - prediction_count
+      - feature_drift
+      - model_staleness
+  
+  # Data quality metrics
+  data_quality_exporter:
+    enabled: true
+    port: 9302
+    ignite_endpoint: "ignite:10800"
+    metrics:
+      - dataset_quality_score
+      - completeness_score
+      - accuracy_score
+      - consistency_score
+      - timeliness_score
+      - failed_quality_checks
+  
+  # Compute marketplace metrics
+  compute_marketplace_exporter:
+    enabled: true
+    port: 9303
+    metrics:
+      - active_compute_contracts
+      - compute_utilization
+      - sla_violations
+      - revenue_per_provider
+      - job_queue_length
+      - average_job_duration
+
+# Blackbox Exporter - Endpoint probing
+blackbox_exporter:
+  enabled: true
+  port: 9115
+  modules:
+    http_2xx:
+      prober: http
+      timeout: 5s
+      http:
+        valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+        valid_status_codes: [200, 201, 202, 204]
+        method: GET
+        follow_redirects: true
+        fail_if_ssl: false
+        fail_if_not_ssl: false
+        tls_config:
+          insecure_skip_verify: false
+    
+    http_post_2xx:
+      prober: http
+      timeout: 5s
+      http:
+        valid_http_versions: ["HTTP/1.1", "HTTP/2.0"]
+        valid_status_codes: [200, 201, 202, 204]
+        method: POST
+        headers:
+          Content-Type: application/json
+        body: '{}'
+    
+    tcp_connect:
+      prober: tcp
+      timeout: 5s
+    
+    dns_lookup:
+      prober: dns
+      timeout: 5s
+      dns:
+        query_name: example.com
+        query_type: A
+    
+    icmp_ping:
+      prober: icmp
+      timeout: 5s
+      icmp:
+        preferred_ip_protocol: ip4
+    
+    grpc_health:
+      prober: grpc
+      timeout: 5s
+      grpc:
+        tls: false
+        service: ""  # Empty for health check 

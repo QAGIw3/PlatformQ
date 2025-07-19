@@ -1,0 +1,188 @@
+# Kong OIDC Plugin Configuration
+# Integrates with PlatformQ Auth Service as OIDC Provider
+
+plugins:
+  # Global OIDC plugin for all routes
+  - name: oidc
+    config:
+      # Auth Service OIDC endpoints
+      issuer: "http://auth-service.platformq.svc.cluster.local:8000"
+      discovery: "http://auth-service.platformq.svc.cluster.local:8000/.well-known/openid-configuration"
+      
+      # Client configuration
+      client_id: "platformq-api-gateway"
+      client_secret: "${KONG_OIDC_CLIENT_SECRET}"  # From Vault
+      
+      # Token validation
+      token_endpoint_auth_method: "client_secret_post"
+      ssl_verify: false  # Set to true in production with proper certs
+      
+      # Session configuration
+      session_secret: "${KONG_SESSION_SECRET}"  # From Vault
+      session_cookie_name: "platformq_session"
+      session_cookie_lifetime: 3600
+      session_cookie_idletime: 1800
+      session_cookie_httponly: true
+      session_cookie_secure: true  # Enable in production
+      session_cookie_samesite: "Lax"
+      
+      # Redirect URIs
+      redirect_uri: "/auth/callback"
+      logout_path: "/auth/logout"
+      post_logout_redirect_uri: "/"
+      
+      # Scopes
+      scope: "openid email profile roles"
+      
+      # Response mode
+      response_type: "code"
+      
+      # Introspection for API tokens
+      introspection_endpoint: "http://auth-service.platformq.svc.cluster.local:8000/api/v1/token/introspect"
+      introspection_endpoint_auth_method: "client_secret_post"
+      
+      # Cache configuration
+      cache_ttl: 60
+      
+      # Error handling
+      unauth_action: "auth"  # Redirect to auth for web, return 401 for API
+      
+  # Rate limiting by authenticated user
+  - name: rate-limiting
+    config:
+      minute: 60
+      hour: 1000
+      policy: "local"  # Use "redis" for distributed rate limiting
+      fault_tolerant: true
+      hide_client_headers: false
+      
+  # Request size limiting
+  - name: request-size-limiting
+    config:
+      allowed_payload_size: 10  # MB
+      size_unit: "megabytes"
+      
+  # CORS configuration
+  - name: cors
+    config:
+      origins:
+        - "https://app.platformq.io"
+        - "https://platformq.io"
+        - "http://localhost:3000"  # Development
+      methods:
+        - GET
+        - POST
+        - PUT
+        - DELETE
+        - OPTIONS
+        - PATCH
+      headers:
+        - Accept
+        - Accept-Version
+        - Content-Length
+        - Content-MD5
+        - Content-Type
+        - Date
+        - X-Auth-Token
+        - X-Requested-With
+        - Authorization
+      exposed_headers:
+        - X-Auth-Token
+        - X-Total-Count
+        - X-Page-Number
+        - X-Page-Size
+      credentials: true
+      max_age: 3600
+      
+  # Request transformation - add user context to headers
+  - name: request-transformer
+    config:
+      add:
+        headers:
+          - "X-User-Id:$(x_userinfo_sub)"
+          - "X-Tenant-Id:$(x_userinfo_tid)"
+          - "X-User-Roles:$(x_userinfo_roles)"
+          - "X-User-Email:$(x_userinfo_email)"
+      
+  # Response transformation - remove internal headers
+  - name: response-transformer
+    config:
+      remove:
+        headers:
+          - "X-Kong-Upstream-Latency"
+          - "X-Kong-Proxy-Latency"
+          - "Via"
+          
+  # Bot detection
+  - name: bot-detection
+    config:
+      allow:
+        - "Prometheus"  # Allow Prometheus scraping
+        - "Datadog"     # Allow monitoring
+      deny:
+        - "Go-http-client"  # Generic Go clients
+        - "python-requests"  # Generic Python clients (unless with proper user-agent)
+        
+  # IP restriction (for admin endpoints)
+  - name: ip-restriction
+    route: admin-routes
+    config:
+      allow:
+        - "10.0.0.0/8"     # Internal network
+        - "172.16.0.0/12"  # Docker networks
+        - "192.168.0.0/16" # Private networks
+        
+# Route-specific plugin configurations
+route_plugins:
+  # Public routes (no auth required)
+  - route: "health-check"
+    plugins:
+      - name: oidc
+        config:
+          bearer_only: "yes"
+          realm: "platformq"
+          disable_userinfo_endpoint: true
+          
+  # API routes (bearer token only)
+  - route: "api-*"
+    plugins:
+      - name: oidc
+        config:
+          bearer_only: "yes"
+          realm: "platformq-api"
+          
+  # Admin routes (additional IP restriction)
+  - route: "admin-*"
+    plugins:
+      - name: oidc
+        config:
+          bearer_only: "no"
+          realm: "platformq-admin"
+          roles_required:
+            - "admin"
+            - "platform_admin"
+      - name: ip-restriction
+        config:
+          allow:
+            - "${ADMIN_IP_WHITELIST}"
+            
+  # Webhook routes (different auth)
+  - route: "webhooks-*"
+    plugins:
+      - name: key-auth
+        config:
+          key_names:
+            - "X-Webhook-Key"
+            - "apikey"
+          hide_credentials: true
+          
+  # WebSocket routes
+  - route: "ws-*"
+    plugins:
+      - name: oidc
+        config:
+          bearer_only: "yes"
+          realm: "platformq-ws"
+      - name: websocket-size-limit
+        config:
+          max_payload_size: 1048576  # 1MB 

@@ -1,0 +1,350 @@
+{
+  "dashboard": {
+    "id": null,
+    "uid": "platformq-database-storage",
+    "title": "PlatformQ Database & Storage Systems",
+    "tags": ["database", "storage", "elasticsearch", "cassandra", "ignite", "minio"],
+    "timezone": "browser",
+    "schemaVersion": 36,
+    "version": 1,
+    "refresh": "30s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    },
+    "panels": [
+      {
+        "id": 1,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 0},
+        "type": "graph",
+        "title": "Elasticsearch Cluster Health",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "elasticsearch_cluster_health_status{color=\"green\"}",
+            "legendFormat": "Green",
+            "refId": "A"
+          },
+          {
+            "expr": "elasticsearch_cluster_health_status{color=\"yellow\"}",
+            "legendFormat": "Yellow",
+            "refId": "B"
+          },
+          {
+            "expr": "elasticsearch_cluster_health_status{color=\"red\"}",
+            "legendFormat": "Red",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "short",
+            "max": 1,
+            "min": 0
+          },
+          {
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 2,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 0},
+        "type": "graph",
+        "title": "Elasticsearch Index Performance",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "rate(elasticsearch_indices_indexing_index_total[5m])",
+            "legendFormat": "Index Rate",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(elasticsearch_indices_search_query_total[5m])",
+            "legendFormat": "Query Rate",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "ops",
+            "min": 0
+          },
+          {
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 3,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 8},
+        "type": "graph",
+        "title": "Cassandra Performance",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "rate(cassandra_clientrequest_latency_total{request_type=\"read\"}[5m])",
+            "legendFormat": "Read Latency",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(cassandra_clientrequest_latency_total{request_type=\"write\"}[5m])",
+            "legendFormat": "Write Latency",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "ms",
+            "min": 0
+          },
+          {
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 4,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 8},
+        "type": "graph",
+        "title": "Cassandra Compaction",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "cassandra_compaction_pending_tasks",
+            "legendFormat": "Pending Tasks - {{instance}}",
+            "refId": "A"
+          },
+          {
+            "expr": "cassandra_compaction_completed_tasks",
+            "legendFormat": "Completed Tasks - {{instance}}",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "short",
+            "min": 0
+          },
+          {
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 5,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 16},
+        "type": "graph",
+        "title": "Apache Ignite Cache Hit Rate",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "(sum(rate(ignite_cache_hits_total[5m])) / sum(rate(ignite_cache_gets_total[5m]))) * 100",
+            "legendFormat": "Hit Rate %",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "percent",
+            "max": 100,
+            "min": 0
+          },
+          {
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 6,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 16},
+        "type": "graph",
+        "title": "Ignite Memory Usage",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "ignite_dataregion_usedsize_bytes / ignite_dataregion_maxsize_bytes * 100",
+            "legendFormat": "{{dataregion}} - {{node}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "percent",
+            "max": 100,
+            "min": 0
+          },
+          {
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 7,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 24},
+        "type": "graph",
+        "title": "PostgreSQL Connections",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "pg_stat_database_numbackends{datname!~\"template.*|postgres\"}",
+            "legendFormat": "{{datname}}",
+            "refId": "A"
+          },
+          {
+            "expr": "pg_settings_max_connections",
+            "legendFormat": "Max Connections",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "short",
+            "min": 0
+          },
+          {
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 8,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 24},
+        "type": "graph",
+        "title": "PostgreSQL Transaction Rate",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "rate(pg_stat_database_xact_commit[5m])",
+            "legendFormat": "Commits - {{datname}}",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(pg_stat_database_xact_rollback[5m])",
+            "legendFormat": "Rollbacks - {{datname}}",
+            "refId": "B"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "ops",
+            "min": 0
+          },
+          {
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 9,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 32},
+        "type": "graph",
+        "title": "MinIO Object Storage",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "minio_bucket_usage_total_bytes",
+            "legendFormat": "{{bucket}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "decbytes",
+            "min": 0
+          },
+          {
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 10,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 32},
+        "type": "graph",
+        "title": "MinIO API Requests",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "rate(minio_api_requests_total[5m])",
+            "legendFormat": "{{api}} - {{status}}",
+            "refId": "A"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "reqps",
+            "min": 0
+          },
+          {
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 11,
+        "gridPos": {"h": 8, "w": 12, "x": 0, "y": 40},
+        "type": "graph",
+        "title": "JanusGraph Transactions",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "rate(janusgraph_transaction_started_total[5m])",
+            "legendFormat": "Started",
+            "refId": "A"
+          },
+          {
+            "expr": "rate(janusgraph_transaction_committed_total[5m])",
+            "legendFormat": "Committed",
+            "refId": "B"
+          },
+          {
+            "expr": "rate(janusgraph_transaction_rollback_total[5m])",
+            "legendFormat": "Rollback",
+            "refId": "C"
+          }
+        ],
+        "yaxes": [
+          {
+            "format": "ops",
+            "min": 0
+          },
+          {
+            "format": "short"
+          }
+        ]
+      },
+      {
+        "id": 12,
+        "gridPos": {"h": 8, "w": 12, "x": 12, "y": 40},
+        "type": "table",
+        "title": "Storage System Health",
+        "datasource": "Prometheus",
+        "targets": [
+          {
+            "expr": "up{job=~\"postgres|elasticsearch|cassandra|ignite|minio|janusgraph\"}",
+            "format": "table",
+            "instant": true,
+            "refId": "A"
+          }
+        ],
+        "transformations": [
+          {
+            "id": "organize",
+            "options": {
+              "excludeByName": {
+                "Time": true,
+                "__name__": true
+              },
+              "renameByName": {
+                "job": "Storage System",
+                "instance": "Instance",
+                "Value": "Status"
+              }
+            }
+          }
+        ]
+      }
+    ]
+  }
+} 

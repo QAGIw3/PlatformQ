@@ -4,6 +4,7 @@ Transaction management for blockchain gateway.
 
 import logging
 import asyncio
+import os
 from typing import Dict, Optional, List, Any
 from decimal import Decimal
 from dataclasses import dataclass
@@ -107,12 +108,41 @@ class TransactionManager(ITransactionManager):
                     
                 return transaction
                 
-    async def sign_transaction(self, transaction: Transaction, private_key: str) -> str:
-        """Sign a transaction and return the signed data"""
-        # In production, use secure key management (HSM, KMS, etc.)
-        # For now, we'll store the key in metadata
-        transaction.metadata['private_key'] = private_key
-        return "signed"  # Placeholder
+    async def sign_transaction(self, transaction: Transaction, key_id: str) -> str:
+        """Sign a transaction using secure key management"""
+        # Use secure signing service with Vault
+        from platformq_blockchain_common.secure_signing import SecureTransactionSigner
+        from platformq_shared.vault.vault_client import VaultClient, VaultConfig
+        from platformq_shared.consul.consul_client import ConsulClient, ConsulConfig
+        
+        # Initialize Vault and Consul clients
+        vault_config = VaultConfig(
+            url=os.getenv("VAULT_URL", "http://vault:8200"),
+            token=os.getenv("VAULT_TOKEN"),
+            app_role_id=os.getenv("VAULT_APP_ROLE_ID"),
+            app_role_secret=os.getenv("VAULT_APP_ROLE_SECRET")
+        )
+        vault_client = VaultClient(vault_config)
+        
+        consul_config = ConsulConfig(
+            host=os.getenv("CONSUL_HOST", "consul"),
+            port=int(os.getenv("CONSUL_PORT", "8500"))
+        )
+        consul_client = ConsulClient(consul_config)
+        
+        # Create secure signer
+        signer = SecureTransactionSigner(vault_client, consul_client)
+        await signer.initialize()
+        
+        # Sign transaction
+        signed_tx = await signer.sign_transaction(transaction, key_id)
+        
+        # Store signed data in transaction metadata
+        transaction.metadata['signed_data'] = signed_tx.signed_data
+        transaction.metadata['signature'] = signed_tx.signature
+        transaction.metadata['transaction_hash'] = signed_tx.transaction_hash
+        
+        return signed_tx.signature
         
     async def broadcast_transaction(self, signed_tx: str, chain_type: ChainType,
                                   transaction: Transaction) -> str:

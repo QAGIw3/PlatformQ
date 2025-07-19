@@ -1,0 +1,58 @@
+# OPA Configuration for PlatformQ
+
+services:
+  - name: platformq
+    url: http://bundle-server:8080/bundles/platformq
+    
+  # Use Consul for service discovery
+  - name: consul
+    url: http://consul:8500
+    
+labels:
+  app: "platformq"
+  environment: "production"
+
+# Decision logging configuration
+decision_logs:
+  console: true
+  reporting:
+    min_delay_seconds: 5
+    max_delay_seconds: 10
+    
+# Prometheus metrics
+prometheus:
+  enabled: true
+  port: 9090
+  
+# Status API
+status:
+  console: true
+  
+# Bundle configuration
+bundles:
+  platformq:
+    resource: "/bundles/platformq/bundle.tar.gz"
+    persist: true
+    polling:
+      min_delay_seconds: 10
+      max_delay_seconds: 20
+      
+# Plugin configuration
+plugins:
+  envoy_ext_authz_grpc:
+    addr: ":9191"
+    enable_reflection: true
+    
+# Discovery configuration
+discovery:
+  name: platformq
+  prefix: "/v1"
+  
+# Distributed tracing
+distributed_tracing:
+  type: "grpc"
+  address: "otel-collector:4317"
+  service_name: "opa"
+  
+# Default decision
+default_decision: "/platformq/authz/allow" 
