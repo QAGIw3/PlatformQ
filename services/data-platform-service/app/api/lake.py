@@ -11,6 +11,7 @@ import uuid
 import logging
 
 from .. import main
+from ..lake.medallion_architecture import DataZone
 
 router = APIRouter()
 logger = logging.getLogger(__name__)
@@ -676,4 +677,239 @@ async def get_storage_usage(
         }
     except Exception as e:
         logger.error(f"Failed to get storage usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 
+
+# Iceberg-specific endpoints
+
+@router.post("/iceberg/tables")
+async def create_iceberg_table(
+    request: Request,
+    table_name: str = Body(...),
+    schema: Dict[str, str] = Body(...),
+    partition_by: List[str] = Body(default=[]),
+    properties: Optional[Dict[str, str]] = Body(default=None)
+) -> Dict[str, Any]:
+    """Create a new Iceberg table"""
+    try:
+        lake_manager = request.app.state.lake_manager
+        
+        # Create a temporary DataFrame with the schema
+        spark = lake_manager.spark
+        df = spark.createDataFrame([], schema=schema)
+        
+        await lake_manager._create_iceberg_table(
+            table_name=table_name,
+            df=df,
+            partition_by=partition_by,
+            properties=properties
+        )
+        
+        return {
+            "status": "success",
+            "table_name": table_name,
+            "partition_by": partition_by,
+            "properties": properties
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to create Iceberg table: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/iceberg/convert")
+async def convert_delta_to_iceberg(
+    request: Request,
+    delta_path: str = Body(...),
+    iceberg_table: str = Body(...),
+    partition_by: Optional[List[str]] = Body(default=None)
+) -> Dict[str, Any]:
+    """Convert Delta table to Iceberg format"""
+    try:
+        lake_manager = request.app.state.lake_manager
+        
+        await lake_manager.convert_delta_to_iceberg(
+            delta_path=delta_path,
+            iceberg_table=iceberg_table,
+            partition_by=partition_by
+        )
+        
+        return {
+            "status": "success",
+            "source_delta": delta_path,
+            "target_iceberg": iceberg_table
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to convert Delta to Iceberg: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.put("/iceberg/{table_name}/schema")
+async def evolve_iceberg_schema(
+    request: Request,
+    table_name: str,
+    add_columns: Optional[Dict[str, str]] = Body(default=None),
+    rename_columns: Optional[Dict[str, str]] = Body(default=None),
+    drop_columns: Optional[List[str]] = Body(default=None)
+) -> Dict[str, Any]:
+    """Evolve schema of an Iceberg table"""
+    try:
+        lake_manager = request.app.state.lake_manager
+        
+        await lake_manager.evolve_iceberg_schema(
+            table_name=table_name,
+            add_columns=add_columns,
+            rename_columns=rename_columns,
+            drop_columns=drop_columns
+        )
+        
+        return {
+            "status": "success",
+            "table_name": table_name,
+            "changes": {
+                "added": list(add_columns.keys()) if add_columns else [],
+                "renamed": list(rename_columns.keys()) if rename_columns else [],
+                "dropped": drop_columns or []
+            }
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to evolve schema: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/iceberg/{table_name}/snapshots")
+async def get_iceberg_snapshots(
+    request: Request,
+    table_name: str
+) -> Dict[str, Any]:
+    """Get all snapshots of an Iceberg table"""
+    try:
+        lake_manager = request.app.state.lake_manager
+        
+        snapshots = await lake_manager.get_iceberg_snapshots(table_name)
+        
+        return {
+            "table_name": table_name,
+            "snapshots": snapshots,
+            "count": len(snapshots)
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get snapshots: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/iceberg/time-travel")
+async def iceberg_time_travel_query(
+    request: Request,
+    table_name: str = Body(...),
+    snapshot_id: Optional[int] = Body(default=None),
+    as_of_timestamp: Optional[str] = Body(default=None),
+    query: Optional[str] = Body(default=None),
+    limit: int = Body(default=100)
+) -> Dict[str, Any]:
+    """Query Iceberg table at specific snapshot or timestamp"""
+    try:
+        lake_manager = request.app.state.lake_manager
+        
+        # Read table at specific point in time
+        df = await lake_manager.iceberg_time_travel(
+            table_name=table_name,
+            snapshot_id=snapshot_id,
+            as_of_timestamp=as_of_timestamp
+        )
+        
+        # Apply optional query
+        if query:
+            df.createOrReplaceTempView("time_travel_table")
+            df = lake_manager.spark.sql(query)
+        
+        # Collect results
+        results = df.limit(limit).collect()
+        data = [row.asDict() for row in results]
+        
+        return {
+            "table_name": table_name,
+            "snapshot_id": snapshot_id,
+            "as_of_timestamp": as_of_timestamp,
+            "row_count": len(data),
+            "data": data
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to time travel query: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/iceberg/optimize")
+async def optimize_iceberg_tables(
+    request: Request,
+    compact_small_files: bool = Body(default=True),
+    expire_snapshots: bool = Body(default=True),
+    rewrite_manifests: bool = Body(default=True)
+) -> Dict[str, Any]:
+    """Optimize Iceberg tables for better performance"""
+    try:
+        lake_manager = request.app.state.lake_manager
+        
+        results = await lake_manager.optimize_iceberg_tables(
+            compact_small_files=compact_small_files,
+            expire_snapshots=expire_snapshots,
+            rewrite_manifests=rewrite_manifests
+        )
+        
+        return results
+        
+    except Exception as e:
+        logger.error(f"Failed to optimize Iceberg tables: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/tables/comparison")
+async def compare_table_formats(
+    request: Request,
+    table_name: str = Query(...)
+) -> Dict[str, Any]:
+    """Compare Delta and Iceberg table formats for the same dataset"""
+    try:
+        lake_manager = request.app.state.lake_manager
+        
+        comparison = {
+            "table_name": table_name,
+            "formats": {}
+        }
+        
+        # Check Delta table
+        delta_path = f"{lake_manager.zone_paths[DataZone.SILVER]}/{table_name}"
+        try:
+            delta_df = lake_manager.spark.read.format("delta").load(delta_path)
+            comparison["formats"]["delta"] = {
+                "exists": True,
+                "row_count": delta_df.count(),
+                "columns": len(delta_df.columns),
+                "partitions": delta_df.rdd.getNumPartitions()
+            }
+        except:
+            comparison["formats"]["delta"] = {"exists": False}
+        
+        # Check Iceberg table
+        iceberg_table = f"iceberg.silver.{table_name}"
+        try:
+            iceberg_df = lake_manager.spark.table(iceberg_table)
+            snapshots = await lake_manager.get_iceberg_snapshots(iceberg_table)
+            comparison["formats"]["iceberg"] = {
+                "exists": True,
+                "row_count": iceberg_df.count(),
+                "columns": len(iceberg_df.columns),
+                "snapshots": len(snapshots),
+                "latest_snapshot": snapshots[0] if snapshots else None
+            }
+        except:
+            comparison["formats"]["iceberg"] = {"exists": False}
+        
+        return comparison
+        
+    except Exception as e:
+        logger.error(f"Failed to compare table formats: {e}")
         raise HTTPException(status_code=500, detail=str(e)) 

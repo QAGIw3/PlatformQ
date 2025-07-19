@@ -1,5 +1,5 @@
 """
-Medallion Architecture Data Lake Manager
+Medallion Architecture Data Lake Manager with Iceberg and Delta Support
 """
 import os
 from typing import Dict, Any, List, Optional, Union, Tuple
@@ -11,6 +11,10 @@ from pyspark.sql import SparkSession, DataFrame
 from pyspark.sql.types import StructType, StructField
 from pyspark.sql.functions import col, current_timestamp, hash, lit
 from delta import DeltaTable, configure_spark_with_delta_pip
+from pyiceberg.catalog import load_catalog
+from pyiceberg.table import Table
+from pyiceberg.schema import Schema
+from pyiceberg.types import *
 from minio import Minio
 from minio.error import S3Error
 
@@ -31,6 +35,7 @@ class DataZone(str, Enum):
 class DataFormat(str, Enum):
     """Supported data formats"""
     DELTA = "delta"
+    ICEBERG = "iceberg"
     PARQUET = "parquet"
     AVRO = "avro"
     JSON = "json"
@@ -38,31 +43,46 @@ class DataFormat(str, Enum):
     ORC = "orc"
 
 
+class TableFormat(str, Enum):
+    """Table formats for lakehouse"""
+    DELTA = "delta"
+    ICEBERG = "iceberg"
+
+
 class MedallionLakeManager:
     """
-    Manages the medallion architecture data lake.
+    Manages the medallion architecture data lake with Iceberg and Delta support.
     
     Features:
     - Bronze layer: Raw data ingestion
     - Silver layer: Data cleaning and validation
     - Gold layer: Business aggregates and marts
+    - Apache Iceberg for advanced table management
     - Delta Lake for ACID transactions
     - Time travel and versioning
     - Schema evolution
     - Data quality enforcement
+    - Partition evolution (Iceberg)
+    - Hidden partitioning (Iceberg)
     """
     
     def __init__(self,
-                 spark_master: str,
-                 minio_endpoint: str,
-                 minio_access_key: str,
-                 minio_secret_key: str,
-                 lake_bucket: str = "platformq-lake"):
-        self.spark_master = spark_master
-        self.minio_endpoint = minio_endpoint
-        self.minio_access_key = minio_access_key
-        self.minio_secret_key = minio_secret_key
-        self.lake_bucket = lake_bucket
+                 spark_config: Optional[Dict[str, str]] = None,
+                 storage_config: Optional[Dict[str, str]] = None,
+                 default_table_format: TableFormat = TableFormat.ICEBERG):
+        # Parse configs
+        spark_config = spark_config or {}
+        storage_config = storage_config or {}
+        
+        self.spark_master = spark_config.get("spark.master", "local[*]")
+        self.minio_endpoint = storage_config.get("endpoint", "http://minio:9000").replace("http://", "")
+        self.minio_access_key = storage_config.get("access_key", "minioadmin")
+        self.minio_secret_key = storage_config.get("secret_key", "minioadmin")
+        self.lake_bucket = storage_config.get("bucket", "platformq-lake")
+        self.default_table_format = default_table_format
+        
+        # Store full spark config for session creation
+        self.spark_config = spark_config
         
         # Spark session (to be initialized)
         self.spark: Optional[SparkSession] = None
@@ -70,12 +90,18 @@ class MedallionLakeManager:
         # MinIO client
         self.minio_client: Optional[Minio] = None
         
+        # Iceberg catalog
+        self.iceberg_catalog = None
+        
         # Zone paths
         self.zone_paths = {
             DataZone.BRONZE: f"s3a://{lake_bucket}/bronze",
             DataZone.SILVER: f"s3a://{lake_bucket}/silver",
             DataZone.GOLD: f"s3a://{lake_bucket}/gold"
         }
+        
+        # Iceberg warehouse path
+        self.iceberg_warehouse = f"s3a://{lake_bucket}/iceberg/warehouse"
         
         # Checkpoint paths for streaming
         self.checkpoint_paths = {
@@ -93,24 +119,35 @@ class MedallionLakeManager:
             # Initialize MinIO client
             await self._init_minio()
             
+            # Initialize Iceberg catalog
+            await self._init_iceberg_catalog()
+            
             # Create bucket structure
             await self._create_lake_structure()
             
-            logger.info("Medallion lake manager initialized")
+            logger.info("Medallion lake manager initialized with Iceberg and Delta support")
             
         except Exception as e:
             logger.error(f"Failed to initialize lake manager: {e}")
             raise
     
     async def _init_spark(self) -> None:
-        """Initialize Spark session with Delta Lake"""
+        """Initialize Spark session with Delta Lake and Iceberg"""
         try:
-            # Configure Spark with Delta
-            builder = SparkSession.builder \
-                .appName("PlatformQ-DataLake") \
-                .master(self.spark_master) \
-                .config("spark.sql.extensions", "io.delta.sql.DeltaSparkSessionExtension") \
-                .config("spark.sql.catalog.spark_catalog", "org.apache.spark.sql.delta.catalog.DeltaCatalog")
+            # Configure Spark with Delta and Iceberg
+            builder = SparkSession.builder
+            
+            # Apply all spark configs from initialization
+            for key, value in self.spark_config.items():
+                builder = builder.config(key, value)
+            
+            # Ensure Iceberg and Delta extensions are included
+            extensions = self.spark_config.get("spark.sql.extensions", "")
+            if "IcebergSparkSessionExtensions" not in extensions:
+                extensions = f"{extensions},org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions" if extensions else "org.apache.iceberg.spark.extensions.IcebergSparkSessionExtensions"
+            if "DeltaSparkSessionExtension" not in extensions:
+                extensions = f"{extensions},io.delta.sql.DeltaSparkSessionExtension" if extensions else "io.delta.sql.DeltaSparkSessionExtension"
+            builder = builder.config("spark.sql.extensions", extensions)
             
             # S3/MinIO configuration
             builder = builder \
@@ -121,12 +158,21 @@ class MedallionLakeManager:
                 .config("spark.hadoop.fs.s3a.impl", "org.apache.hadoop.fs.s3a.S3AFileSystem") \
                 .config("spark.hadoop.fs.s3a.connection.ssl.enabled", "false")
             
+            # Iceberg-specific configurations
+            builder = builder \
+                .config("spark.sql.catalog.iceberg.io-impl", "org.apache.iceberg.aws.s3.S3FileIO") \
+                .config("spark.sql.catalog.iceberg.s3.endpoint", f"http://{self.minio_endpoint}") \
+                .config("spark.sql.catalog.iceberg.s3.access-key-id", self.minio_access_key) \
+                .config("spark.sql.catalog.iceberg.s3.secret-access-key", self.minio_secret_key) \
+                .config("spark.sql.catalog.iceberg.s3.path-style-access", "true")
+            
             # Performance optimizations
             builder = builder \
                 .config("spark.sql.adaptive.enabled", "true") \
                 .config("spark.sql.adaptive.coalescePartitions.enabled", "true") \
                 .config("spark.sql.adaptive.skewJoin.enabled", "true") \
-                .config("spark.sql.shuffle.partitions", "200")
+                .config("spark.sql.shuffle.partitions", "200") \
+                .config("spark.sql.iceberg.vectorization.enabled", "true")
             
             # Create session
             self.spark = configure_spark_with_delta_pip(builder).getOrCreate()
@@ -158,6 +204,15 @@ class MedallionLakeManager:
             logger.error(f"Failed to initialize MinIO: {e}")
             raise
     
+    async def _init_iceberg_catalog(self) -> None:
+        """Initialize Iceberg catalog"""
+        try:
+            self.iceberg_catalog = load_catalog("iceberg")
+            logger.info(f"Initialized Iceberg catalog: {self.iceberg_catalog.get_current_location()}")
+        except Exception as e:
+            logger.error(f"Failed to initialize Iceberg catalog: {e}")
+            raise
+    
     async def _create_lake_structure(self) -> None:
         """Create lake bucket and directory structure"""
         try:
@@ -180,10 +235,14 @@ class MedallionLakeManager:
                              tenant_id: str,
                              source_format: DataFormat = DataFormat.JSON,
                              schema: Optional[StructType] = None,
-                             partition_by: Optional[List[str]] = None) -> Dict[str, Any]:
-        """Ingest raw data into Bronze zone"""
+                             partition_by: Optional[List[str]] = None,
+                             table_format: Optional[TableFormat] = None) -> Dict[str, Any]:
+        """Ingest raw data into Bronze zone with support for Delta and Iceberg"""
         try:
             start_time = datetime.utcnow()
+            
+            # Use default table format if not specified
+            table_format = table_format or self.default_table_format
             
             # Load data
             if isinstance(source_data, str):
@@ -197,11 +256,28 @@ class MedallionLakeManager:
                    .withColumn("_source_file", lit(source_data if isinstance(source_data, str) else "dataframe")) \
                    .withColumn("_record_hash", hash(*[col(c) for c in df.columns]))
             
-            # Bronze path
-            bronze_path = f"{self.zone_paths[DataZone.BRONZE]}/{tenant_id}/{dataset_name}"
-            
-            # Write to Delta format
-            writer = df.write.mode("append").format("delta")
+            # Bronze path/table
+            if table_format == TableFormat.ICEBERG:
+                table_name = f"iceberg.bronze.{tenant_id}_{dataset_name}"
+                
+                # Create table if not exists
+                if not self._iceberg_table_exists(table_name):
+                    await self._create_iceberg_table(
+                        table_name=table_name,
+                        df=df,
+                        partition_by=partition_by or ["_ingestion_timestamp"]
+                    )
+                
+                # Write to Iceberg table
+                df.writeTo(table_name).using("iceberg").mode("append").save()
+                
+                result_path = table_name
+            else:
+                # Delta format
+                bronze_path = f"{self.zone_paths[DataZone.BRONZE]}/{tenant_id}/{dataset_name}"
+                
+                # Write to Delta format
+                writer = df.write.mode("append").format("delta")
             
             # Add partitioning if specified
             if partition_by:
@@ -625,4 +701,207 @@ class MedallionLakeManager:
 
 
 # Import pyspark.sql.functions as F for aggregations
-import pyspark.sql.functions as F 
+    # Iceberg-specific methods
+    
+    def _iceberg_table_exists(self, table_name: str) -> bool:
+        """Check if Iceberg table exists"""
+        try:
+            self.spark.table(table_name)
+            return True
+        except Exception:
+            return False
+    
+    async def _create_iceberg_table(self,
+                                   table_name: str,
+                                   df: DataFrame,
+                                   partition_by: List[str],
+                                   properties: Optional[Dict[str, str]] = None) -> None:
+        """Create a new Iceberg table"""
+        try:
+            # Create table with partitioning
+            create_table_sql = f"""
+            CREATE TABLE IF NOT EXISTS {table_name}
+            USING iceberg
+            """
+            
+            if partition_by:
+                create_table_sql += f"\nPARTITIONED BY ({', '.join(partition_by)})"
+            
+            if properties:
+                props_str = ", ".join([f"'{k}'='{v}'" for k, v in properties.items()])
+                create_table_sql += f"\nTBLPROPERTIES ({props_str})"
+            
+            # Create empty table with schema
+            df.createOrReplaceTempView("temp_table_schema")
+            create_table_sql += "\nAS SELECT * FROM temp_table_schema WHERE 1=0"
+            
+            self.spark.sql(create_table_sql)
+            logger.info(f"Created Iceberg table: {table_name}")
+            
+        except Exception as e:
+            logger.error(f"Failed to create Iceberg table: {e}")
+            raise
+    
+    async def evolve_iceberg_schema(self,
+                                   table_name: str,
+                                   add_columns: Optional[Dict[str, str]] = None,
+                                   rename_columns: Optional[Dict[str, str]] = None,
+                                   drop_columns: Optional[List[str]] = None) -> None:
+        """Evolve schema of an Iceberg table"""
+        try:
+            if add_columns:
+                for col_name, col_type in add_columns.items():
+                    self.spark.sql(f"ALTER TABLE {table_name} ADD COLUMN {col_name} {col_type}")
+                    logger.info(f"Added column {col_name} to {table_name}")
+            
+            if rename_columns:
+                for old_name, new_name in rename_columns.items():
+                    self.spark.sql(f"ALTER TABLE {table_name} RENAME COLUMN {old_name} TO {new_name}")
+                    logger.info(f"Renamed column {old_name} to {new_name} in {table_name}")
+            
+            if drop_columns:
+                for col_name in drop_columns:
+                    self.spark.sql(f"ALTER TABLE {table_name} DROP COLUMN {col_name}")
+                    logger.info(f"Dropped column {col_name} from {table_name}")
+                    
+        except Exception as e:
+            logger.error(f"Failed to evolve schema: {e}")
+            raise
+    
+    async def iceberg_time_travel(self,
+                                 table_name: str,
+                                 snapshot_id: Optional[int] = None,
+                                 as_of_timestamp: Optional[str] = None) -> DataFrame:
+        """Read Iceberg table at specific snapshot or timestamp"""
+        try:
+            if snapshot_id:
+                return self.spark.read.option("snapshot-id", snapshot_id).table(table_name)
+            elif as_of_timestamp:
+                return self.spark.read.option("as-of-timestamp", as_of_timestamp).table(table_name)
+            else:
+                return self.spark.table(table_name)
+                
+        except Exception as e:
+            logger.error(f"Failed to read Iceberg table snapshot: {e}")
+            raise
+    
+    async def get_iceberg_snapshots(self, table_name: str) -> List[Dict[str, Any]]:
+        """Get all snapshots of an Iceberg table"""
+        try:
+            snapshots_df = self.spark.sql(f"SELECT * FROM {table_name}.snapshots")
+            snapshots = []
+            
+            for row in snapshots_df.collect():
+                snapshots.append({
+                    "snapshot_id": row.snapshot_id,
+                    "parent_id": row.parent_id,
+                    "operation": row.operation,
+                    "manifest_list": row.manifest_list,
+                    "summary": row.summary,
+                    "committed_at": datetime.fromtimestamp(row.committed_at / 1000).isoformat()
+                })
+                
+            return snapshots
+            
+        except Exception as e:
+            logger.error(f"Failed to get snapshots: {e}")
+            raise
+    
+    async def optimize_iceberg_tables(self,
+                                     compact_small_files: bool = True,
+                                     expire_snapshots: bool = True,
+                                     rewrite_manifests: bool = True) -> Dict[str, Any]:
+        """Optimize Iceberg tables for better performance"""
+        try:
+            results = {
+                "optimized_tables": [],
+                "errors": []
+            }
+            
+            # Get all Iceberg tables
+            tables_df = self.spark.sql("SHOW TABLES IN iceberg")
+            
+            for row in tables_df.collect():
+                table_name = f"iceberg.{row.namespace}.{row.tableName}"
+                
+                try:
+                    # Compact small files
+                    if compact_small_files:
+                        self.spark.sql(f"""
+                        CALL iceberg.system.rewrite_data_files(
+                            table => '{table_name}',
+                            strategy => 'binpack',
+                            options => map('target-file-size-bytes', '134217728')
+                        )
+                        """)
+                    
+                    # Expire old snapshots
+                    if expire_snapshots:
+                        retention_days = 7
+                        expire_timestamp = (datetime.utcnow() - timedelta(days=retention_days)).isoformat()
+                        self.spark.sql(f"""
+                        CALL iceberg.system.expire_snapshots(
+                            table => '{table_name}',
+                            older_than => TIMESTAMP '{expire_timestamp}',
+                            retain_last => 3
+                        )
+                        """)
+                    
+                    # Rewrite manifests
+                    if rewrite_manifests:
+                        self.spark.sql(f"""
+                        CALL iceberg.system.rewrite_manifests(
+                            table => '{table_name}'
+                        )
+                        """)
+                    
+                    results["optimized_tables"].append(table_name)
+                    logger.info(f"Optimized Iceberg table: {table_name}")
+                    
+                except Exception as e:
+                    results["errors"].append({
+                        "table": table_name,
+                        "error": str(e)
+                    })
+                    logger.error(f"Failed to optimize {table_name}: {e}")
+            
+            return results
+            
+        except Exception as e:
+            logger.error(f"Failed to optimize Iceberg tables: {e}")
+            raise
+    
+    async def convert_delta_to_iceberg(self,
+                                      delta_path: str,
+                                      iceberg_table: str,
+                                      partition_by: Optional[List[str]] = None) -> None:
+        """Convert existing Delta table to Iceberg format"""
+        try:
+            # Read Delta table
+            delta_df = self.spark.read.format("delta").load(delta_path)
+            
+            # Create Iceberg table
+            await self._create_iceberg_table(
+                table_name=iceberg_table,
+                df=delta_df,
+                partition_by=partition_by or [],
+                properties={
+                    "write.format.default": "parquet",
+                    "write.parquet.compression-codec": "snappy"
+                }
+            )
+            
+            # Write data to Iceberg
+            delta_df.writeTo(iceberg_table).using("iceberg").mode("overwrite").save()
+            
+            logger.info(f"Converted Delta table {delta_path} to Iceberg {iceberg_table}")
+            
+        except Exception as e:
+            logger.error(f"Failed to convert Delta to Iceberg: {e}")
+            raise
+            
+    def close(self) -> None:
+        """Close resources"""
+        if self.spark:
+            self.spark.stop()
+            logger.info("Spark session closed") 
