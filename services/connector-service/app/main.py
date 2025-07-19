@@ -5,16 +5,25 @@ from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from typing import Dict
 import asyncio
 import logging
+from contextlib import asynccontextmanager
 
 # Assuming the generate_grpc.sh script has been run
 from .grpc_generated import connector_pb2, connector_pb2_grpc
 from . import plugins
+from .plugins.k8s_utils import K8sJobBuilder
 from platformq.shared.base_service import create_base_app
 from .core.config import settings
 
 # Setup basic logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
+
+# The scheduler is used to run connectors that have a cron schedule defined.
+scheduler = AsyncIOScheduler()
+
+# This dictionary acts as a plugin registry, holding instantiated connector plugins,
+# mapping their unique 'connector_type' string to the class instance.
+connector_plugins: Dict[str, plugins.base.BaseConnector] = {}
 
 # gRPC Server implementation
 class ConnectorServiceServicer(connector_pb2_grpc.ConnectorServiceServicer):
@@ -24,21 +33,132 @@ class ConnectorServiceServicer(connector_pb2_grpc.ConnectorServiceServicer):
     async def CreateAssetFromURI(self, request, context):
         logger.info(f"gRPC: Received CreateAssetFromURI request for URI: {request.uri} in tenant: {request.tenant_id}")
         
-        # TODO: Implement the actual logic to find the right connector
-        # and trigger the asset creation. This is a placeholder.
+        # Find the appropriate connector based on file extension or URI pattern
+        connector = None
+        uri_lower = request.uri.lower()
         
-        # For the PoC, we just return a success message.
-        return connector_pb2.CreateAssetFromURIResponse(
-            asset_id="dummy-asset-id-12345",
-            success=True,
-            message=f"Successfully triggered asset creation for {request.uri}"
-        )
+        # Map file extensions to connectors
+        extension_map = {
+            '.blend': 'blender',
+            '.fcstd': 'freecad',
+            '.aup3': 'audacity',
+            '.osp': 'openshot',
+            '.xcf': 'gimp',
+            '.foam': 'openfoam'
+        }
+        
+        for ext, connector_type in extension_map.items():
+            if uri_lower.endswith(ext):
+                connector = connector_plugins.get(connector_type)
+                break
+        
+        if connector:
+            # Trigger the connector with the URI
+            context_data = {
+                "file_uri": request.uri,
+                "tenant_id": request.tenant_id,
+                "asset_id": request.asset_id if request.asset_id else None
+            }
+            
+            # Run asynchronously
+            asyncio.create_task(connector.run(context=context_data))
+            
+            return connector_pb2.CreateAssetFromURIResponse(
+                asset_id=context_data.get("asset_id", "processing"),
+                success=True,
+                message=f"Asset creation initiated using {connector.connector_type} connector"
+            )
+        else:
+            return connector_pb2.CreateAssetFromURIResponse(
+                asset_id="",
+                success=False,
+                message=f"No suitable connector found for URI: {request.uri}"
+            )
 
-# Placeholder dependencies for create_base_app as this service is self-contained
-def get_db_session(): return None
-def get_api_key_crud_placeholder(): return None
-def get_user_crud_placeholder(): return None
-def get_password_verifier_placeholder(): return None
+# Database dependency placeholders
+async def get_db_session():
+    # TODO: Implement actual database session when needed
+    yield None
+
+async def get_api_key_crud_placeholder():
+    return None
+
+async def get_user_crud_placeholder():
+    return None
+
+async def get_password_verifier_placeholder():
+    return None
+
+
+def discover_and_schedule_plugins():
+    """
+    Dynamically discovers, imports, and instantiates all connector plugins
+    from the 'plugins' directory. This is the core of the plugin architecture.
+    
+    If a connector has a 'schedule' property, it is automatically added to
+    the APScheduler job queue.
+    """
+    logger.info("Discovering connector plugins...")
+    # pkgutil.iter_modules is used to find all modules in the plugins package.
+    # This is more robust than walking the filesystem as it works with different
+    # packaging formats.
+    for (_, name, _) in pkgutil.iter_modules(plugins.__path__):
+        # We skip the 'base' module as it only contains the abstract class.
+        # Also skip the k8s_utils module
+        if name not in ["base", "k8s_utils"]:
+            try:
+                plugin_module = importlib.import_module(f".{name}", plugins.__name__)
+                
+                # We iterate through the attributes of the loaded module to find
+                # the class that inherits from our BaseConnector.
+                for attribute_name in dir(plugin_module):
+                    attribute = getattr(plugin_module, attribute_name)
+                    if isinstance(attribute, type) and issubclass(attribute, plugins.base.BaseConnector) and attribute is not plugins.base.BaseConnector:
+                        # Instantiate the connector (with config from settings)
+                        config = settings.connector_plugins.get(name, {})
+                        connector_instance = attribute(config=config)
+                        connector_plugins[connector_instance.connector_type] = connector_instance
+                        logger.info(f"Loaded connector: {connector_instance.connector_type}")
+                        
+                        # If a schedule is provided (e.g., '0 * * * *'), parse the cron
+                        # string and add the connector's 'run' method to the scheduler.
+                        if connector_instance.schedule:
+                            logger.info(f"Scheduling '{connector_instance.connector_type}' with cron: {connector_instance.schedule}")
+                            scheduler.add_job(
+                                connector_instance.run,
+                                'cron',
+                                **{field: val for field, val in zip(['minute', 'hour', 'day', 'month', 'day_of_week'], connector_instance.schedule.split())}
+                            )
+            except Exception as e:
+                logger.error(f"Failed to load plugin {name}: {e}")
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI):
+    """Application lifespan manager"""
+    # Startup
+    logger.info("Starting Connector Service...")
+    
+    # Initialize Kubernetes PVCs if running in cluster
+    try:
+        K8sJobBuilder.create_pvcs_if_not_exist()
+        logger.info("Kubernetes PVCs initialized")
+    except Exception as e:
+        logger.warning(f"Could not initialize Kubernetes PVCs: {e}")
+    
+    # Discover and schedule plugins
+    discover_and_schedule_plugins()
+    
+    # Start the scheduler
+    scheduler.start()
+    logger.info("Scheduler started")
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down Connector Service...")
+    scheduler.shutdown()
+
 
 app = create_base_app(
     service_name="connector-service",
@@ -49,107 +169,46 @@ app = create_base_app(
     grpc_servicer=ConnectorServiceServicer(),
     grpc_add_servicer_func=connector_pb2_grpc.add_ConnectorServiceServicer_to_server,
     grpc_port=50051,
+    lifespan=lifespan
 )
 
-# The scheduler is used to run connectors that have a cron schedule defined.
-scheduler = AsyncIOScheduler()
 
-# This dictionary acts as a plugin registry, holding instantiated connector plugins,
-# mapping their unique 'connector_type' string to the class instance.
-connector_plugins: Dict[str, plugins.base.BaseConnector] = {}
-
-def discover_and_schedule_plugins():
-    """
-    Dynamically discovers, imports, and instantiates all connector plugins
-    from the 'plugins' directory. This is the core of the plugin architecture.
-    
-    If a connector has a 'schedule' property, it is automatically added to
-    the APScheduler job queue.
-    """
-    print("Discovering plugins...")
-    # pkgutil.iter_modules is used to find all modules in the plugins package.
-    # This is more robust than walking the filesystem as it works with different
-    # packaging formats.
-    for (_, name, _) in pkgutil.iter_modules(plugins.__path__):
-        # We skip the 'base' module as it only contains the abstract class.
-        if name != "base":
-            plugin_module = importlib.import_module(f".{name}", plugins.__name__)
-            
-            # We iterate through the attributes of the loaded module to find
-            # the class that inherits from our BaseConnector.
-            for attribute_name in dir(plugin_module):
-                attribute = getattr(plugin_module, attribute_name)
-                if isinstance(attribute, type) and issubclass(attribute, plugins.base.BaseConnector) and attribute is not plugins.base.BaseConnector:
-                    # Instantiate the connector (with dummy config for now)
-                    # and add it to our registry.
-                    # In a production system, a config object would be passed here.
-                    config = settings.connector_plugins.get(name, {})
-                    connector_instance = attribute(config=config)
-                    connector_plugins[connector_instance.connector_type] = connector_instance
-                    
-                    # If a schedule is provided (e.g., '0 * * * *'), parse the cron
-                    # string and add the connector's 'run' method to the scheduler.
-                    if connector_instance.schedule:
-                        print(f"Scheduling '{connector_instance.connector_type}' with cron: {connector_instance.schedule}")
-                        scheduler.add_job(
-                            connector_instance.run,
-                            'cron',
-                            **{field: val for field, val in zip(['minute', 'hour', 'day', 'month', 'day_of_week'], connector_instance.schedule.split())}
-                        )
-
-
-@app.on_event("startup")
-async def startup_event():
-    """
-    On startup, run the plugin discovery and start the global scheduler.
-    The gRPC server is now started automatically by the base service factory.
-    """
-    discover_and_schedule_plugins()
-    scheduler.start()
-    logger.info("Connector Service started. Scheduler and gRPC server are running.")
-
-
-@app.on_event("shutdown")
-async def shutdown_event():
-    """
-    Ensure the scheduler is shut down cleanly when the service stops.
-    """
-    scheduler.shutdown()
-
-@app.get("/")
-def read_root():
-    return {"message": "connector-service is running"}
+# ============= REST API Endpoints =============
 
 @app.get("/connectors")
 async def list_connectors():
     """
-    An administrative endpoint to list all discovered and loaded connectors.
+    Returns a list of all available connector types that have been discovered
+    and loaded. This can be used by administrators to verify which connectors
+    are operational.
     """
-    return {"connectors": list(connector_plugins.keys())}
+    return {
+        "connectors": list(connector_plugins.keys()),
+        "count": len(connector_plugins)
+    }
+
 
 @app.post("/connectors/{connector_name}/run")
-async def trigger_connector_run(connector_name: str, request: Request):
+async def run_connector(connector_name: str, context: Dict = None):
     """
-    An administrative endpoint to manually trigger a connector's run method.
-    This is useful for testing, debugging, or reprocessing data.
-    The request body is passed as the 'context' to the connector.
+    Manually triggers a specific connector. The request body can contain any
+    JSON data, which is passed as 'context' to the connector's 'run' method.
+    
+    This is useful for testing connectors during development or triggering
+    one-off imports.
     """
     if connector_name not in connector_plugins:
         raise HTTPException(status_code=404, detail=f"Connector '{connector_name}' not found.")
     
     connector = connector_plugins[connector_name]
     
-    try:
-        context_payload = await request.json()
-        # The connector's run method is executed in the background to avoid
-        # blocking the HTTP request.
-        asyncio.create_task(connector.run(context=context_payload))
-        return {
-            "message": f"Manual run for connector '{connector_name}' triggered successfully.",
-            "context": context_payload
-        }
-    except Exception as e:
-        raise HTTPException(status_code=400, detail=f"Invalid JSON payload for context: {e}")
+    # The connector's logic is run in the background to avoid blocking.
+    asyncio.create_task(connector.run(context=context))
+    
+    return {
+        "message": f"Connector '{connector_name}' triggered successfully.",
+        "context": context
+    }
 
 
 @app.post("/webhooks/{connector_name}")
@@ -173,4 +232,13 @@ async def receive_webhook(connector_name: str, request: Request):
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Invalid JSON payload: {e}")
 
-# TODO: Add endpoints for managing connectors (e.g., list, trigger, check status).
+
+@app.get("/health")
+async def health_check():
+    """Health check endpoint for Kubernetes probes"""
+    return {
+        "status": "healthy",
+        "service": "connector-service",
+        "plugins_loaded": len(connector_plugins),
+        "scheduler_running": scheduler.running
+    }

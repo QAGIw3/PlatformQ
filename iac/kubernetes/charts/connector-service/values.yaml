@@ -1,0 +1,137 @@
+# Default values for connector-service.
+
+replicaCount: 1
+
+image:
+  repository: platformq/connector-service
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  # Specifies whether a service account should be created
+  create: true
+  # Annotations to add to the service account
+  annotations: {}
+  # The name of the service account to use
+  name: "processor-service-account"
+
+podAnnotations: {}
+
+podSecurityContext: {}
+
+securityContext: {}
+
+service:
+  type: ClusterIP
+  port: 8000
+  grpcPort: 50051
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: connector-service.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+resources:
+  limits:
+    cpu: 500m
+    memory: 512Mi
+  requests:
+    cpu: 250m
+    memory: 256Mi
+
+autoscaling:
+  enabled: false
+  minReplicas: 1
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity: {}
+
+# Processor PVCs
+persistence:
+  enabled: true
+  
+  inputPVC:
+    enabled: true
+    name: processor-input-pvc
+    storageClass: fast-ssd
+    accessMode: ReadOnlyMany
+    size: 100Gi
+    
+  outputPVC:
+    enabled: true
+    name: processor-output-pvc
+    storageClass: fast-ssd
+    accessMode: ReadWriteMany
+    size: 100Gi
+
+# RBAC for creating Kubernetes Jobs
+rbac:
+  create: true
+  rules:
+    - apiGroups: ["batch"]
+      resources: ["jobs"]
+      verbs: ["create", "get", "list", "watch", "delete"]
+    - apiGroups: [""]
+      resources: ["pods", "pods/log"]
+      verbs: ["get", "list", "watch"]
+    - apiGroups: [""]
+      resources: ["persistentvolumeclaims"]
+      verbs: ["get", "list", "create"]
+
+# Environment variables
+env:
+  - name: DIGITAL_ASSET_SERVICE_URL
+    value: "http://digital-asset-service:8000"
+  - name: STORAGE_SERVICE_URL
+    value: "http://storage-service:8000"
+  - name: KUBERNETES_NAMESPACE
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.namespace
+
+# Connector plugin configurations
+connectorPlugins:
+  blender:
+    processor_image: "platformq/blender-processor:latest"
+    namespace: default
+  freecad:
+    processor_image: "platformq/freecad-processor:latest"
+    namespace: default
+  openfoam:
+    processor_image: "platformq/openfoam-processor:latest"
+    namespace: default
+  gimp:
+    processor_image: "platformq/gimp-processor:latest"
+    namespace: default
+  audacity:
+    processor_image: "platformq/audacity-processor:latest"
+    namespace: default
+  openshot:
+    processor_image: "platformq/openshot-processor:latest"
+    namespace: default
+  flightgear:
+    processor_image: "platformq/flightgear-processor:latest"
+    namespace: default
+  suitecrm:
+    base_url: "https://crm.example.com"
+    client_id: "sugar"
+    tenant_id: "default"
+  metasfresh:
+    base_url: "https://erp.example.com"
+    tenant_id: "default" 

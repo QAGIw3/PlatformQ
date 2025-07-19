@@ -3,6 +3,9 @@
 # Service-specific dependencies
 apscheduler
 httpx
+
+# Kubernetes client for job orchestration
+kubernetes>=28.1.0
  
 # Development and Testing
 pytest
