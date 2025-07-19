@@ -16,6 +16,10 @@ import logging
 from pyignite import Client as IgniteClient
 import pulsar
 
+from platformq_shared.state_management import StateManagementClient, CacheConfig
+from platformq_shared.risk_engine import RiskEngineClient
+from .distributed_order_book import DistributedOrderBook
+
 logger = logging.getLogger(__name__)
 
 
@@ -62,132 +66,106 @@ class Order:
             self.metadata = {}
 
 
-class OrderBook:
-    """Order book for a specific market"""
-    
-    def __init__(self, market_id: str):
-        self.market_id = market_id
-        self.buy_orders: List[Order] = []
-        self.sell_orders: List[Order] = []
-        self._lock = asyncio.Lock()
-        
-    async def add_order(self, order: Order) -> None:
-        """Add order to the book"""
-        async with self._lock:
-            if order.side == OrderSide.BUY:
-                self.buy_orders.append(order)
-                self.buy_orders.sort(key=lambda x: (-x.price, x.timestamp))
-            else:
-                self.sell_orders.append(order)
-                self.sell_orders.sort(key=lambda x: (x.price, x.timestamp))
-                
-    async def remove_order(self, order_id: str) -> Optional[Order]:
-        """Remove order from the book"""
-        async with self._lock:
-            for order in self.buy_orders:
-                if order.order_id == order_id:
-                    self.buy_orders.remove(order)
-                    return order
-                    
-            for order in self.sell_orders:
-                if order.order_id == order_id:
-                    self.sell_orders.remove(order)
-                    return order
-                    
-        return None
-        
-    async def get_best_bid(self) -> Optional[Decimal]:
-        """Get best bid price"""
-        async with self._lock:
-            if self.buy_orders:
-                return self.buy_orders[0].price
-        return None
-        
-    async def get_best_ask(self) -> Optional[Decimal]:
-        """Get best ask price"""
-        async with self._lock:
-            if self.sell_orders:
-                return self.sell_orders[0].price
-        return None
-
-
 class UnifiedMatchingEngine:
-    """
-    Unified order matching engine for all trading types.
-    Supports both traditional order matching and prediction market mechanisms.
-    """
+    """Unified order matching engine with distributed state management"""
     
     def __init__(self, 
-                 ignite_client: IgniteClient,
-                 pulsar_client: pulsar.Client):
-        self.ignite = ignite_client
+                 state_client: StateManagementClient,  # New dependency
+                 pulsar_client: pulsar.Client,
+                 risk_engine_client: RiskEngineClient):  # New dependency
+        self.state = state_client
         self.pulsar = pulsar_client
-        self.order_books: Dict[str, OrderBook] = {}
-        self.matching_rules: Dict[str, callable] = {}
-        self._matching_tasks: Dict[str, asyncio.Task] = {}
+        self.risk = risk_engine_client
         
-        # Initialize caches
-        self.orders_cache = self.ignite.get_or_create_cache("orders")
-        self.trades_cache = self.ignite.get_or_create_cache("trades")
-        
-        # Initialize event publisher
-        self.trade_producer = self.pulsar.create_producer(
-            "persistent://platformq/trading/trades"
+        # Cache configuration for order books
+        self.cache_config = CacheConfig(
+            name="order_books",
+            cache_mode="PARTITIONED",
+            backups=2,
+            atomicity_mode="TRANSACTIONAL",
+            eviction_policy="LRU",
+            eviction_max_size=1000000
         )
         
+        # Initialize distributed order books
+        asyncio.create_task(self._initialize_order_books())
+    
+    async def _initialize_order_books(self):
+        """Initialize distributed order book caches"""
+        await self.state.create_cache(self.cache_config)
+        
+        # Create cache for active orders
+        await self.state.create_cache(CacheConfig(
+            name="active_orders",
+            cache_mode="REPLICATED",  # Replicated for fast reads
+            backups=2,
+            atomicity_mode="TRANSACTIONAL"
+        ))
+    
     async def submit_order(self, order: Order) -> str:
-        """Submit a new order to the matching engine"""
-        # Validate order
-        if not self._validate_order(order):
-            raise ValueError("Invalid order")
-            
-        # Store order in cache
-        self.orders_cache.put(order.order_id, order)
+        """Submit order with risk validation"""
+        # Validate with risk engine first
+        risk_assessment = await self.risk.assess_order_risk(
+            order_id=order.order_id,
+            market_id=order.market_id,
+            trader_id=order.trader_id,
+            side=order.side.value,
+            size=str(order.quantity),
+            leverage=order.metadata.get("leverage", 1)
+        )
         
-        # Get or create order book
-        if order.market_id not in self.order_books:
-            self.order_books[order.market_id] = OrderBook(order.market_id)
-            
-        order_book = self.order_books[order.market_id]
+        if not risk_assessment["approved"]:
+            raise Exception(f"Order rejected by risk engine: {risk_assessment['reason']}")
         
-        # Handle different order types
-        if order.order_type == OrderType.MARKET:
-            await self._process_market_order(order, order_book)
-        elif order.order_type == OrderType.LIMIT:
-            await self._process_limit_order(order, order_book)
-            
-        # Start matching if not already running
-        if order.market_id not in self._matching_tasks:
-            self._matching_tasks[order.market_id] = asyncio.create_task(
-                self._continuous_matching(order.market_id)
-            )
-            
+        # Store order in distributed state
+        await self.state.put(
+            cache_name="active_orders",
+            key=order.order_id,
+            value=order.dict(),
+            ttl=86400  # 24 hour TTL
+        )
+        
+        # Get or create distributed order book
+        order_book = await self._get_distributed_order_book(order.market_id)
+        
+        # Add to order book with transaction
+        async with self.state.transaction() as tx:
+            await tx.add_order(order_book, order)
+            await tx.commit()
+        
+        # Publish order event
+        await self._publish_order_event(order, "submitted")
+        
+        # Trigger matching
+        await self._trigger_distributed_matching(order.market_id)
+        
         return order.order_id
-        
+    
     async def cancel_order(self, order_id: str) -> bool:
         """Cancel an existing order"""
-        order = self.orders_cache.get(order_id)
+        order = await self.state.get("active_orders", order_id)
         if not order:
             return False
             
-        if order.status not in [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]:
+        if order["status"] not in [OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value]:
             return False
             
         # Remove from order book
-        order_book = self.order_books.get(order.market_id)
-        if order_book:
-            await order_book.remove_order(order_id)
+        order_book = await self._get_distributed_order_book(order["market_id"])
+        async with self.state.transaction() as tx:
+            await tx.remove_order(order_book, order_id)
+            await tx.commit()
             
         # Update order status
-        order.status = OrderStatus.CANCELLED
-        self.orders_cache.put(order_id, order)
+        order["status"] = OrderStatus.CANCELLED.value
+        await self.state.put("active_orders", order_id, order)
         
         # Publish cancellation event
         await self._publish_order_event(order, "cancelled")
         
         return True
         
-    async def _process_market_order(self, order: Order, order_book: OrderBook):
+    async def _process_market_order(self, order: Order, order_book: DistributedOrderBook):
         """Process a market order"""
         matches = await self._find_matches(order, order_book)
         
@@ -202,9 +180,9 @@ class UnifiedMatchingEngine:
                 await order_book.add_order(order)
             else:
                 order.status = OrderStatus.CANCELLED
-                self.orders_cache.put(order.order_id, order)
+                await self.state.put("active_orders", order.order_id, order)
                 
-    async def _process_limit_order(self, order: Order, order_book: OrderBook):
+    async def _process_limit_order(self, order: Order, order_book: DistributedOrderBook):
         """Process a limit order"""
         matches = await self._find_matches(order, order_book)
         
@@ -214,9 +192,9 @@ class UnifiedMatchingEngine:
         if order.filled_quantity < order.quantity:
             order.status = OrderStatus.OPEN
             await order_book.add_order(order)
-            self.orders_cache.put(order.order_id, order)
+            await self.state.put("active_orders", order.order_id, order)
             
-    async def _find_matches(self, order: Order, order_book: OrderBook) -> List[Tuple[Order, Decimal]]:
+    async def _find_matches(self, order: Order, order_book: DistributedOrderBook) -> List[Tuple[Order, Decimal]]:
         """Find matching orders in the book"""
         matches = []
         remaining_quantity = order.quantity - order.filled_quantity
@@ -271,13 +249,15 @@ class UnifiedMatchingEngine:
             order2.status = OrderStatus.PARTIALLY_FILLED
             
         # Store updated orders
-        self.orders_cache.put(order1.order_id, order1)
-        self.orders_cache.put(order2.order_id, order2)
+        await self.state.put("active_orders", order1.order_id, order1)
+        await self.state.put("active_orders", order2.order_id, order2)
         
         # Remove filled orders from book
         if order2.status == OrderStatus.FILLED:
-            order_book = self.order_books[order2.market_id]
-            await order_book.remove_order(order2.order_id)
+            order_book = await self._get_distributed_order_book(order2.market_id)
+            async with self.state.transaction() as tx:
+                await tx.remove_order(order_book, order2.order_id)
+                await tx.commit()
             
         # Create and store trade record
         trade = {
@@ -290,16 +270,16 @@ class UnifiedMatchingEngine:
             "timestamp": datetime.utcnow().isoformat()
         }
         
-        self.trades_cache.put(trade["trade_id"], trade)
+        await self.state.put("trades", trade["trade_id"], trade)
         
         # Publish trade event
         await self._publish_trade_event(trade)
         
     async def _continuous_matching(self, market_id: str):
         """Continuous matching loop for a market"""
-        while market_id in self.order_books:
+        while True: # Infinite loop for continuous matching
             try:
-                order_book = self.order_books[market_id]
+                order_book = await self._get_distributed_order_book(market_id)
                 
                 # Check for crossing orders
                 best_bid = await order_book.get_best_bid()
@@ -327,7 +307,9 @@ class UnifiedMatchingEngine:
     async def _publish_trade_event(self, trade: dict):
         """Publish trade event to Pulsar"""
         try:
-            self.trade_producer.send(
+            self.pulsar.create_producer(
+                "persistent://platformq/trading/trades"
+            ).send(
                 trade,
                 properties={"market_id": trade["market_id"]}
             )
@@ -346,7 +328,9 @@ class UnifiedMatchingEngine:
                 "timestamp": datetime.utcnow().isoformat()
             }
             
-            self.trade_producer.send(
+            self.pulsar.create_producer(
+                "persistent://platformq/trading/orders"
+            ).send(
                 event,
                 properties={"event_type": event_type, "market_id": order.market_id}
             )
@@ -365,15 +349,17 @@ class UnifiedMatchingEngine:
         
     def register_matching_rule(self, market_type: str, rule_func: callable):
         """Register custom matching rules for specific market types"""
-        self.matching_rules[market_type] = rule_func
+        # This method is no longer directly applicable with distributed state
+        # as order books are managed by the state management service.
+        # Custom rules would need to be implemented within the state management service
+        # or passed as part of the order submission process.
+        logger.warning(f"register_matching_rule is deprecated for distributed matching.")
         
     async def get_order_book_snapshot(self, market_id: str) -> dict:
         """Get current order book snapshot"""
-        order_book = self.order_books.get(market_id)
-        if not order_book:
-            return {"bids": [], "asks": []}
-            
-        async with order_book._lock:
+        order_book = await self._get_distributed_order_book(market_id)
+        
+        async with order_book._lock: # This lock is no longer needed as state is distributed
             bids = [
                 {
                     "price": str(order.price),
@@ -381,7 +367,7 @@ class UnifiedMatchingEngine:
                     "order_id": order.order_id
                 }
                 for order in order_book.buy_orders
-                if order.status in [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]
+                if order.status in [OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value]
             ]
             
             asks = [
@@ -391,7 +377,32 @@ class UnifiedMatchingEngine:
                     "order_id": order.order_id
                 }
                 for order in order_book.sell_orders
-                if order.status in [OrderStatus.OPEN, OrderStatus.PARTIALLY_FILLED]
+                if order.status in [OrderStatus.OPEN.value, OrderStatus.PARTIALLY_FILLED.value]
             ]
             
         return {"bids": bids, "asks": asks} 
+            
+    async def _get_distributed_order_book(self, market_id: str) -> DistributedOrderBook:
+        """Get order book from distributed state"""
+        cache_key = f"orderbook:{market_id}"
+        
+        # Try to get from state
+        order_book_data = await self.state.get("order_books", cache_key)
+        
+        if order_book_data:
+            return DistributedOrderBook.from_dict(order_book_data)
+        
+        # Create new order book
+        order_book = DistributedOrderBook(market_id)
+        await self.state.put("order_books", cache_key, order_book.to_dict())
+        
+        return order_book
+    
+    async def _trigger_distributed_matching(self, market_id: str):
+        """Trigger matching across distributed nodes"""
+        # Use Ignite compute grid for distributed matching
+        await self.state.execute_compute_task(
+            task_name="match_orders",
+            params={"market_id": market_id},
+            affinity_key=market_id  # Execute on node holding this market's data
+        ) 

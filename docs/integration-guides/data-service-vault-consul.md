@@ -27,10 +27,11 @@ data-platform-service/
 │   │   └── api-keys/
 │   │       ├── search-api-key
 │   │       └── index-api-key
-│   └── clickhouse/
+│   └── druid/
 │       ├── admin-credentials
 │       └── roles/
-│           └── analytics
+│           ├── analytics
+│           └── timeseries
 ├── encryption/
 │   ├── column-keys/              # Column-level encryption
 │   │   ├── pii-encryption-key

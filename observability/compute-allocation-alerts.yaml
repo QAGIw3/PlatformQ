@@ -1,0 +1,185 @@
+groups:
+  - name: compute_allocation_alerts
+    interval: 30s
+    rules:
+      # High allocation failure rate
+      - alert: HighAllocationFailureRate
+        expr: |
+          (
+            sum(rate(compute_allocations_total{status="failure"}[5m]))
+            /
+            sum(rate(compute_allocations_total[5m]))
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: compute-allocation
+        annotations:
+          summary: "High compute allocation failure rate ({{ $value | humanizePercentage }})"
+          description: "More than 10% of compute allocation requests are failing in the last 5 minutes."
+          
+      # Very high allocation failure rate
+      - alert: VeryHighAllocationFailureRate
+        expr: |
+          (
+            sum(rate(compute_allocations_total{status="failure"}[5m]))
+            /
+            sum(rate(compute_allocations_total[5m]))
+          ) > 0.25
+        for: 2m
+        labels:
+          severity: critical
+          service: compute-allocation
+        annotations:
+          summary: "Critical compute allocation failure rate ({{ $value | humanizePercentage }})"
+          description: "More than 25% of compute allocation requests are failing. Immediate action required."
+          
+      # High allocation latency
+      - alert: HighAllocationLatency
+        expr: |
+          histogram_quantile(0.95, sum(rate(compute_allocation_duration_seconds_bucket[5m])) by (le)) > 5
+        for: 5m
+        labels:
+          severity: warning
+          service: compute-allocation
+        annotations:
+          summary: "High compute allocation latency ({{ $value }}s)"
+          description: "95th percentile allocation latency is above 5 seconds."
+          
+      # Provider unavailable
+      - alert: ComputeProviderUnavailable
+        expr: |
+          compute_provider_health{status="unhealthy"} == 1
+        for: 5m
+        labels:
+          severity: warning
+          service: compute-allocation
+          provider: "{{ $labels.provider }}"
+        annotations:
+          summary: "Compute provider {{ $labels.provider }} is unavailable"
+          description: "The compute provider {{ $labels.provider }} has been unhealthy for 5 minutes."
+          
+      # All providers unavailable
+      - alert: AllComputeProvidersUnavailable
+        expr: |
+          sum(compute_provider_health{status="healthy"}) == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: compute-allocation
+        annotations:
+          summary: "All compute providers are unavailable"
+          description: "No healthy compute providers available. All allocations will fail."
+          
+      # Budget threshold exceeded
+      - alert: TenantBudgetExceeded
+        expr: |
+          compute_tenant_budget_usage_percent > 90
+        for: 5m
+        labels:
+          severity: warning
+          service: compute-allocation
+          tenant_id: "{{ $labels.tenant_id }}"
+        annotations:
+          summary: "Tenant {{ $labels.tenant_id }} approaching budget limit"
+          description: "Tenant {{ $labels.tenant_id }} has used {{ $value }}% of their monthly budget."
+          
+      # Service down
+      - alert: ComputeAllocationServiceDown
+        expr: |
+          up{job="compute-allocation-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: compute-allocation
+        annotations:
+          summary: "Compute allocation service is down"
+          description: "The compute allocation service has been down for 2 minutes."
+          
+      # High memory usage
+      - alert: ComputeAllocationHighMemory
+        expr: |
+          container_memory_usage_bytes{pod=~"compute-allocation-service-.*"} 
+          / 
+          container_spec_memory_limit_bytes{pod=~"compute-allocation-service-.*"} > 0.9
+        for: 5m
+        labels:
+          severity: warning
+          service: compute-allocation
+        annotations:
+          summary: "High memory usage in compute allocation service"
+          description: "Pod {{ $labels.pod }} is using {{ $value | humanizePercentage }} of its memory limit."
+
+  - name: provisioning_service_alerts
+    interval: 30s
+    rules:
+      # High provisioning failure rate
+      - alert: HighProvisioningFailureRate
+        expr: |
+          (
+            sum(rate(provisioning_requests_total{status="failure"}[5m]))
+            /
+            sum(rate(provisioning_requests_total[5m]))
+          ) > 0.1
+        for: 5m
+        labels:
+          severity: warning
+          service: provisioning
+        annotations:
+          summary: "High provisioning failure rate ({{ $value | humanizePercentage }})"
+          description: "More than 10% of provisioning requests are failing in the last 5 minutes."
+          
+      # Scaling failure
+      - alert: ScalingActionFailed
+        expr: |
+          sum(rate(scaling_actions_total{status="failed"}[5m])) by (service) > 0
+        for: 5m
+        labels:
+          severity: warning
+          service: provisioning
+          target_service: "{{ $labels.service }}"
+        annotations:
+          summary: "Scaling action failed for service {{ $labels.service }}"
+          description: "Failed to scale service {{ $labels.service }}. Manual intervention may be required."
+          
+      # Resource exhaustion warning
+      - alert: ClusterResourceExhaustion
+        expr: |
+          (
+            sum(kube_node_status_allocatable{resource="cpu"})
+            -
+            sum(kube_pod_container_resource_requests{resource="cpu"})
+          ) / sum(kube_node_status_allocatable{resource="cpu"}) < 0.15
+        for: 10m
+        labels:
+          severity: warning
+          service: provisioning
+        annotations:
+          summary: "Cluster CPU resources approaching exhaustion"
+          description: "Less than 15% of cluster CPU capacity remains available."
+          
+      # Service down
+      - alert: ProvisioningServiceDown
+        expr: |
+          up{job="provisioning-service"} == 0
+        for: 2m
+        labels:
+          severity: critical
+          service: provisioning
+        annotations:
+          summary: "Provisioning service is down"
+          description: "The provisioning service has been down for 2 minutes."
+          
+      # Tenant quota exceeded
+      - alert: TenantQuotaExceeded
+        expr: |
+          tenant_resource_usage_percent > 95
+        for: 5m
+        labels:
+          severity: warning
+          service: provisioning
+          tenant_id: "{{ $labels.tenant_id }}"
+          resource: "{{ $labels.resource }}"
+        annotations:
+          summary: "Tenant {{ $labels.tenant_id }} exceeding {{ $labels.resource }} quota"
+          description: "Tenant {{ $labels.tenant_id }} is using {{ $value }}% of their {{ $labels.resource }} quota." 

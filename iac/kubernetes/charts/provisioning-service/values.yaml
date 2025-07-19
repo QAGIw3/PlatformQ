@@ -1,17 +1,257 @@
-replicaCount: 1
+# Default values for provisioning-service
+
+replicaCount: 2
 
 image:
-  repository: your-docker-registry/provisioning-service # CHANGE THIS
+  repository: platformq/provisioning-service
   pullPolicy: IfNotPresent
-  tag: "latest" 
+  tag: "latest"
 
-ignite:
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations:
+  prometheus.io/scrape: "true"
+  prometheus.io/port: "8000"
+  prometheus.io/path: "/metrics"
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+    - ALL
+
+service:
+  type: ClusterIP
+  port: 80
+  targetPort: 8000
+
+ingress:
   enabled: true
-  host: ignite
-  port: 10800
+  className: "nginx"
+  annotations:
+    cert-manager.io/cluster-issuer: "letsencrypt-prod"
+    nginx.ingress.kubernetes.io/rate-limit: "50"
+  hosts:
+    - host: provisioning.platformq.io
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: provisioning-tls
+      hosts:
+        - provisioning.platformq.io
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 2Gi
+  requests:
+    cpu: 1000m
+    memory: 1Gi
 
 autoscaling:
   enabled: true
   minReplicas: 2
-  maxReplicas: 10
-  targetCPUUtilizationPercentage: 70 
+  maxReplicas: 6
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+env:
+  - name: SERVICE_NAME
+    value: "provisioning-service"
+  - name: SERVICE_HOST
+    value: "0.0.0.0"
+  - name: SERVICE_PORT
+    value: "8000"
+  - name: ENVIRONMENT
+    valueFrom:
+      fieldRef:
+        fieldPath: metadata.namespace
+  
+  # Consul Configuration
+  - name: CONSUL_HOST
+    value: "consul.default.svc.cluster.local"
+  - name: CONSUL_PORT
+    value: "8500"
+  - name: CONSUL_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: consul-tokens
+        key: provisioning-token
+  
+  # Vault Configuration
+  - name: VAULT_ENABLED
+    value: "true"
+  - name: VAULT_ADDR
+    value: "http://vault.default.svc.cluster.local:8200"
+  - name: VAULT_TOKEN
+    valueFrom:
+      secretKeyRef:
+        name: vault-tokens
+        key: provisioning-token
+  
+  # Database Configuration
+  - name: CASSANDRA_HOSTS
+    value: "cassandra-0.cassandra.default.svc.cluster.local,cassandra-1.cassandra.default.svc.cluster.local,cassandra-2.cassandra.default.svc.cluster.local"
+  - name: ELASTICSEARCH_HOSTS
+    value: "elasticsearch.default.svc.cluster.local:9200"
+  
+  # Storage
+  - name: MINIO_ENDPOINT
+    value: "minio.default.svc.cluster.local:9000"
+  
+  # Messaging
+  - name: PULSAR_URL
+    value: "pulsar://pulsar-proxy.default.svc.cluster.local:6650"
+  
+  # Caching
+  - name: IGNITE_HOST
+    value: "ignite.default.svc.cluster.local"
+  - name: IGNITE_PORT
+    value: "10800"
+  
+  # Monitoring
+  - name: PROMETHEUS_URL
+    value: "http://prometheus.monitoring.svc.cluster.local:9090"
+  
+  # Integration Services
+  - name: DERIVATIVES_ENGINE_URL
+    value: "http://derivatives-engine-service.default.svc.cluster.local:8000"
+  
+  # Kubernetes
+  - name: K8S_NAMESPACE
+    value: "platformq"
+
+# Liveness and readiness probes
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 45
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 20
+  periodSeconds: 5
+  timeoutSeconds: 3
+  successThreshold: 1
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - provisioning-service
+        topologyKey: kubernetes.io/hostname
+
+# NetworkPolicy
+networkPolicy:
+  enabled: true
+  ingress:
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: default
+      ports:
+      - port: 8000
+        protocol: TCP
+    - from:
+      - namespaceSelector:
+          matchLabels:
+            name: monitoring
+      ports:
+      - port: 8000
+        protocol: TCP
+  egress:
+    - to:
+      - namespaceSelector:
+          matchLabels:
+            name: default
+      ports:
+      - port: 8500  # Consul
+        protocol: TCP
+      - port: 8200  # Vault
+        protocol: TCP
+      - port: 6650  # Pulsar
+        protocol: TCP
+      - port: 9042  # Cassandra
+        protocol: TCP
+      - port: 9200  # Elasticsearch
+        protocol: TCP
+      - port: 9000  # MinIO
+        protocol: TCP
+      - port: 10800 # Ignite
+        protocol: TCP
+    - to:
+      - namespaceSelector:
+          matchLabels:
+            name: monitoring
+      ports:
+      - port: 9090  # Prometheus
+        protocol: TCP
+    - to:
+      - namespaceSelector:
+          matchLabels:
+            name: kube-system
+      ports:
+      - port: 443   # Kubernetes API
+        protocol: TCP
+    - ports:
+      - port: 53    # DNS
+        protocol: UDP
+      - port: 443   # HTTPS for external APIs
+        protocol: TCP
+
+# PodDisruptionBudget
+podDisruptionBudget:
+  enabled: true
+  minAvailable: 1
+
+# ServiceMonitor for Prometheus
+serviceMonitor:
+  enabled: true
+  interval: 30s
+  path: /metrics
+
+# RBAC for Kubernetes access
+rbac:
+  create: true
+  rules:
+  - apiGroups: [""]
+    resources: ["namespaces", "services", "configmaps", "secrets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments", "statefulsets"]
+    verbs: ["get", "list", "watch", "create", "update", "patch", "scale"]
+  - apiGroups: ["autoscaling"]
+    resources: ["horizontalpodautoscalers"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"] 

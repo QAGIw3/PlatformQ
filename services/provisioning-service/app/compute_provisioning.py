@@ -11,69 +11,46 @@ from typing import Dict, Any, Optional, List
 from datetime import datetime, timedelta
 from decimal import Decimal
 import uuid
-from enum import Enum
-from dataclasses import dataclass
 import asyncio
+
+from platformq_compute_common.models import (
+    ComputeResourceType,
+    ProviderType,
+    AllocationStatus,
+    ResourceRequirements,
+    ResourceAllocation,
+    AllocationRequest,
+    AllocationResponse,
+    PricingModel
+)
+from platformq_compute_common.providers import ProviderRegistry
+from platformq_compute_common.cost import CostCalculator, BudgetManager
+
+from .core.config_manager import ConfigManager
 
 logger = logging.getLogger(__name__)
 
 
-class ComputeResourceType(Enum):
-    """Types of compute resources"""
-    GPU = "gpu"
-    CPU = "cpu"
-    MEMORY = "memory"
-    STORAGE = "storage"
-
-
-class ProvisioningStatus(Enum):
-    """Status of provisioning request"""
-    PENDING = "pending"
-    ALLOCATING = "allocating"
-    PROVISIONED = "provisioned"
-    ACTIVE = "active"
-    FAILED = "failed"
-    TERMINATED = "terminated"
-
-
-@dataclass
-class ComputeProvisioningRequest:
-    """Compute provisioning request"""
-    request_id: str
-    tenant_id: str
-    service_type: str
-    resource_type: ComputeResourceType
-    quantity: int
-    duration_hours: int
-    start_time: datetime
-    provider_id: Optional[str] = None
-    metadata: Dict[str, Any] = None
-
-
-@dataclass
-class ComputeProvisioningResult:
-    """Result of compute provisioning"""
-    request_id: str
-    allocation_id: str
-    status: ProvisioningStatus
-    provider: Optional[str]
-    access_details: Dict[str, Any]
-    cost: Optional[Decimal]
-    message: Optional[str] = None
-
-
 class ComputeProvisioningManager:
-    """Manages compute resource provisioning"""
+    """Manages compute resource provisioning using shared compute framework"""
     
     def __init__(
         self,
+        config_manager: ConfigManager,
+        provider_registry: ProviderRegistry,
         derivatives_engine_url: str = "http://derivatives-engine-service:8000",
         ignite_client = None,
         pulsar_publisher = None
     ):
+        self.config_manager = config_manager
+        self.provider_registry = provider_registry
         self.derivatives_engine_url = derivatives_engine_url
         self.ignite_client = ignite_client
         self.pulsar_publisher = pulsar_publisher
+        
+        # Cost management
+        self.cost_calculator = CostCalculator()
+        self.budget_manager = BudgetManager()
         
         # HTTP client for derivatives engine
         self.http_client = httpx.AsyncClient(
@@ -81,155 +58,232 @@ class ComputeProvisioningManager:
             timeout=30.0
         )
         
-        # Track provisioning requests
-        self.active_provisions: Dict[str, ComputeProvisioningRequest] = {}
+        # Track active allocations
+        self.active_allocations: Dict[str, ResourceAllocation] = {}
+        
+    async def initialize(self):
+        """Initialize the provisioning manager"""
+        # Load provider configurations from Consul
+        providers_config = await self.config_manager.get_config("compute_providers", {})
+        
+        # Initialize providers with credentials from Vault
+        for provider_name, config in providers_config.items():
+            if config.get("enabled", False):
+                # Get credentials from Vault
+                credentials = await self.config_manager.get_provider_credentials(provider_name)
+                config.update(credentials)
+                
+                # Create and register provider
+                # This would instantiate actual provider implementations
+                logger.info(f"Initialized provider: {provider_name}")
+        
+        # Start provider health monitoring
+        await self.provider_registry.start_health_monitoring()
+        
+        # Watch for configuration changes
+        await self.config_manager.watch_config(
+            "compute_providers",
+            self._handle_provider_config_change
+        )
+        
+    async def _handle_provider_config_change(self, new_config: Dict[str, Any]):
+        """Handle provider configuration changes"""
+        logger.info("Provider configuration changed, reloading...")
+        # Re-initialize providers with new config
+        # This would be implemented based on specific requirements
         
     async def provision_compute(
         self,
-        request: ComputeProvisioningRequest
-    ) -> ComputeProvisioningResult:
+        request: AllocationRequest
+    ) -> AllocationResponse:
         """Provision compute resources through derivatives engine"""
         try:
+            # Validate request
+            errors = request.requirements.validate()
+            if errors:
+                return AllocationResponse(
+                    success=False,
+                    message=f"Invalid requirements: {', '.join(errors)}"
+                )
+            
+            # Check budget
+            cost_analysis = self.cost_calculator.calculate_requirements_cost(
+                request.requirements,
+                ProviderType.AWS,  # Default for estimation
+                "us-east-1",
+                request.pricing_preferences[0] if request.pricing_preferences else PricingModel.ON_DEMAND,
+                request.duration_hours
+            )
+            
+            budget_ok, budget_msg = self.budget_manager.check_budget(
+                request.tenant_id,
+                cost_analysis.total_hourly_cost * Decimal(str(request.duration_hours))
+            )
+            
+            if not budget_ok:
+                return AllocationResponse(
+                    success=False,
+                    message=budget_msg
+                )
+            
             # First, request capacity from cross-service coordinator
             capacity_response = await self._request_capacity_allocation(request)
             
             if not capacity_response or capacity_response.get("status") != "allocated":
-                return ComputeProvisioningResult(
-                    request_id=request.request_id,
-                    allocation_id="",
-                    status=ProvisioningStatus.FAILED,
-                    provider=None,
-                    access_details={},
-                    cost=None,
-                    message="Failed to allocate capacity"
+                return AllocationResponse(
+                    success=False,
+                    message="Failed to allocate capacity from derivatives engine"
                 )
                 
             allocation_id = capacity_response["allocation_id"]
-            provider = capacity_response.get("provider")
-            cost = Decimal(capacity_response.get("cost", "0"))
+            provider_name = capacity_response.get("provider")
             
-            # Now provision the actual resources
-            access_details = await self._provision_resources(
-                allocation_id,
-                request,
-                provider
+            # Find best provider if not specified
+            if not provider_name:
+                result = await self.provider_registry.find_best_provider(
+                    request.requirements,
+                    request.strategy.value.lower()
+                )
+                
+                if not result:
+                    return AllocationResponse(
+                        success=False,
+                        message="No suitable provider found"
+                    )
+                
+                provider_name, provider = result
+            else:
+                provider = self.provider_registry.get_provider(provider_name)
+                
+            if not provider:
+                return AllocationResponse(
+                    success=False,
+                    message=f"Provider {provider_name} not available"
+                )
+            
+            # Create allocation record
+            allocation = ResourceAllocation(
+                allocation_id=allocation_id,
+                tenant_id=request.tenant_id,
+                workload_id=request.workload_id,
+                workload_type=request.workload_type,
+                provider=provider.provider_type,
+                region=request.requirements.regions[0] if request.requirements.regions else "us-east-1",
+                cpu_cores=request.requirements.cpu_cores,
+                memory_gb=request.requirements.memory_gb,
+                storage_gb=request.requirements.storage_gb,
+                gpu_count=request.requirements.gpu_count,
+                gpu_type=request.requirements.gpu_type,
+                status=AllocationStatus.PROVISIONING,
+                cost_per_hour=cost_analysis.total_hourly_cost,
+                pricing_model=request.pricing_preferences[0] if request.pricing_preferences else PricingModel.ON_DEMAND,
+                expires_at=datetime.utcnow() + timedelta(hours=request.duration_hours),
+                tags=request.tags,
+                metadata=request.metadata
             )
             
-            if not access_details:
-                return ComputeProvisioningResult(
-                    request_id=request.request_id,
-                    allocation_id=allocation_id,
-                    status=ProvisioningStatus.FAILED,
-                    provider=provider,
-                    access_details={},
-                    cost=cost,
+            # Provision through provider
+            success, details = await provider.allocate(allocation)
+            
+            if success:
+                allocation.status = AllocationStatus.ACTIVE
+                allocation.activated_at = datetime.utcnow()
+                allocation.access_details = details
+                
+                # Store active allocation
+                self.active_allocations[allocation.allocation_id] = allocation
+                
+                # Publish provisioning event
+                if self.pulsar_publisher:
+                    await self._publish_provisioning_event(allocation, "provisioned")
+                    
+                return AllocationResponse(
+                    success=True,
+                    allocation=allocation,
+                    message="Resources provisioned successfully"
+                )
+            else:
+                allocation.status = AllocationStatus.FAILED
+                return AllocationResponse(
+                    success=False,
                     message="Failed to provision resources"
                 )
                 
-            # Store active provision
-            self.active_provisions[request.request_id] = request
-            
-            # Publish provisioning event
-            if self.pulsar_publisher:
-                await self.pulsar_publisher.publish(
-                    "persistent://platformq/provisioning/compute-provisioned",
-                    {
-                        "request_id": request.request_id,
-                        "tenant_id": request.tenant_id,
-                        "service_type": request.service_type,
-                        "resource_type": request.resource_type.value,
-                        "quantity": request.quantity,
-                        "provider": provider,
-                        "allocation_id": allocation_id,
-                        "status": "provisioned",
-                        "timestamp": datetime.utcnow().isoformat()
-                    }
-                )
-                
-            return ComputeProvisioningResult(
-                request_id=request.request_id,
-                allocation_id=allocation_id,
-                status=ProvisioningStatus.PROVISIONED,
-                provider=provider,
-                access_details=access_details,
-                cost=cost
-            )
-            
         except Exception as e:
             logger.error(f"Error provisioning compute: {e}")
-            return ComputeProvisioningResult(
-                request_id=request.request_id,
-                allocation_id="",
-                status=ProvisioningStatus.FAILED,
-                provider=None,
-                access_details={},
-                cost=None,
+            return AllocationResponse(
+                success=False,
                 message=str(e)
             )
             
     async def get_provisioning_status(
         self,
-        request_id: str
+        allocation_id: str
     ) -> Dict[str, Any]:
         """Get status of provisioning request"""
-        if request_id not in self.active_provisions:
+        if allocation_id not in self.active_allocations:
             return {"status": "not_found"}
             
-        request = self.active_provisions[request_id]
+        allocation = self.active_allocations[allocation_id]
         
-        # Check with derivatives engine for current status
-        try:
-            response = await self.http_client.get(
-                f"/api/v1/provisioning/status/{request_id}"
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                return {
-                    "status": "unknown",
-                    "request": request.__dict__
-                }
+        # Get provider
+        provider = None
+        for name, p in self.provider_registry.get_all_providers().items():
+            if p.provider_type == allocation.provider:
+                provider = p
+                break
                 
-        except Exception as e:
-            logger.error(f"Error getting provisioning status: {e}")
+        if provider:
+            status = await provider.get_status(allocation)
             return {
-                "status": "error",
-                "message": str(e)
+                "allocation": allocation.to_dict(),
+                "provider_status": status
+            }
+        else:
+            return {
+                "allocation": allocation.to_dict(),
+                "provider_status": {"error": "Provider not found"}
             }
             
     async def terminate_provision(
         self,
-        request_id: str
+        allocation_id: str
     ) -> bool:
         """Terminate provisioned resources"""
-        if request_id not in self.active_provisions:
-            logger.warning(f"Provision {request_id} not found")
+        if allocation_id not in self.active_allocations:
+            logger.warning(f"Allocation {allocation_id} not found")
             return False
             
+        allocation = self.active_allocations[allocation_id]
+        
         try:
-            # Call derivatives engine to release resources
-            response = await self.http_client.post(
-                f"/api/v1/provisioning/terminate/{request_id}"
-            )
+            # Get provider
+            provider = None
+            for name, p in self.provider_registry.get_all_providers().items():
+                if p.provider_type == allocation.provider:
+                    provider = p
+                    break
+                    
+            if not provider:
+                logger.error(f"Provider {allocation.provider} not found")
+                return False
             
-            if response.status_code == 200:
-                # Remove from active provisions
-                del self.active_provisions[request_id]
+            # Deallocate through provider
+            success, message = await provider.deallocate(allocation)
+            
+            if success:
+                allocation.status = AllocationStatus.TERMINATED
+                
+                # Remove from active allocations
+                del self.active_allocations[allocation_id]
                 
                 # Publish termination event
                 if self.pulsar_publisher:
-                    await self.pulsar_publisher.publish(
-                        "persistent://platformq/provisioning/compute-terminated",
-                        {
-                            "request_id": request_id,
-                            "timestamp": datetime.utcnow().isoformat()
-                        }
-                    )
+                    await self._publish_provisioning_event(allocation, "terminated")
                     
                 return True
             else:
-                logger.error(f"Failed to terminate provision: {response.text}")
+                logger.error(f"Failed to terminate allocation: {message}")
                 return False
                 
         except Exception as e:
@@ -241,50 +295,58 @@ class ComputeProvisioningManager:
         resource_type: ComputeResourceType,
         region: Optional[str] = None
     ) -> Dict[str, Any]:
-        """Get available capacity from derivatives engine"""
-        try:
-            params = {
-                "resource_type": resource_type.value
-            }
-            if region:
-                params["region"] = region
+        """Get available capacity from all providers"""
+        capacity = {
+            "total_available": 0,
+            "by_provider": {},
+            "by_region": {}
+        }
+        
+        # Query each healthy provider
+        for name, provider in self.provider_registry.get_healthy_providers().items():
+            try:
+                # Create sample requirements
+                requirements = ResourceRequirements()
+                if resource_type == ComputeResourceType.GPU:
+                    requirements.gpu_count = 1
+                elif resource_type == ComputeResourceType.CPU:
+                    requirements.cpu_cores = 1
                 
-            response = await self.http_client.get(
-                "/api/v1/partners/inventory",
-                params=params
-            )
-            
-            if response.status_code == 200:
-                return response.json()
-            else:
-                return {
-                    "total_inventory": 0,
-                    "inventory": []
-                }
+                available, instance_type, details = await provider.check_availability(
+                    requirements,
+                    region
+                )
                 
-        except Exception as e:
-            logger.error(f"Error getting available capacity: {e}")
-            return {
-                "total_inventory": 0,
-                "inventory": [],
-                "error": str(e)
-            }
+                if available:
+                    capacity["by_provider"][name] = details
+                    
+                    # Aggregate by region
+                    provider_region = details.get("region", "unknown")
+                    if provider_region not in capacity["by_region"]:
+                        capacity["by_region"][provider_region] = 0
+                    capacity["by_region"][provider_region] += details.get("available_count", 0)
+                    capacity["total_available"] += details.get("available_count", 0)
+                    
+            except Exception as e:
+                logger.error(f"Error checking capacity for provider {name}: {e}")
+                
+        return capacity
             
     # Private methods
     async def _request_capacity_allocation(
         self,
-        request: ComputeProvisioningRequest
+        request: AllocationRequest
     ) -> Optional[Dict[str, Any]]:
         """Request capacity allocation from derivatives engine"""
         try:
-            # Prepare allocation request
-            allocation_request = {
-                "service_type": request.service_type,
+            # Prepare allocation request for derivatives engine
+            derivatives_request = {
+                "service_type": request.workload_type,
                 "tenant_id": request.tenant_id,
-                "resource_type": request.resource_type.value,
-                "quantity": str(request.quantity),
+                "resource_type": ComputeResourceType.GPU.value if request.requirements.gpu_count > 0 else ComputeResourceType.CPU.value,
+                "quantity": str(request.requirements.gpu_count or request.requirements.cpu_cores),
                 "duration_hours": request.duration_hours,
-                "start_time": request.start_time.isoformat(),
+                "start_time": (request.start_time or datetime.utcnow()).isoformat(),
                 "priority": 5,  # Default medium priority
                 "flexibility_hours": 2,  # Allow 2 hour flexibility
                 "metadata": request.metadata or {}
@@ -293,7 +355,7 @@ class ComputeProvisioningManager:
             # Call cross-service capacity coordinator
             response = await self.http_client.post(
                 "/api/v1/capacity/request",
-                json=allocation_request
+                json=derivatives_request
             )
             
             if response.status_code == 200:
@@ -323,54 +385,29 @@ class ComputeProvisioningManager:
             logger.error(f"Error requesting capacity allocation: {e}")
             return None
             
-    async def _provision_resources(
-        self,
-        allocation_id: str,
-        request: ComputeProvisioningRequest,
-        provider: Optional[str]
-    ) -> Optional[Dict[str, Any]]:
-        """Provision actual compute resources"""
-        # This would integrate with specific providers
-        # For now, return mock access details
-        
-        if request.resource_type == ComputeResourceType.GPU:
-            # GPU provisioning
-            return {
-                "type": "gpu_instance",
-                "provider": provider or "platform",
-                "instance_id": f"gpu-{allocation_id}",
-                "ssh_host": f"gpu-{allocation_id}.compute.platformq.io",
-                "ssh_port": 22,
-                "ssh_user": "platformq",
-                "gpu_type": "nvidia-a100",
-                "gpu_count": request.quantity,
-                "jupyter_url": f"https://jupyter-{allocation_id}.compute.platformq.io",
-                "monitoring_url": f"https://grafana.platformq.io/d/{allocation_id}"
-            }
-        elif request.resource_type == ComputeResourceType.CPU:
-            # CPU provisioning
-            return {
-                "type": "cpu_instance",
-                "provider": provider or "platform",
-                "instance_id": f"cpu-{allocation_id}",
-                "ssh_host": f"cpu-{allocation_id}.compute.platformq.io",
-                "ssh_port": 22,
-                "ssh_user": "platformq",
-                "cpu_cores": request.quantity,
-                "memory_gb": request.quantity * 4,  # 4GB per core
-                "monitoring_url": f"https://grafana.platformq.io/d/{allocation_id}"
-            }
-        else:
-            # Storage or memory provisioning
-            return {
-                "type": request.resource_type.value,
-                "provider": provider or "platform",
-                "allocation_id": allocation_id,
-                "access_endpoint": f"https://storage.platformq.io/{allocation_id}",
-                "capacity": request.quantity,
-                "unit": "GB" if request.resource_type == ComputeResourceType.STORAGE else "GB"
+    async def _publish_provisioning_event(self, allocation: ResourceAllocation, event_type: str):
+        """Publish provisioning event"""
+        try:
+            event = {
+                "event_type": f"compute_{event_type}",
+                "allocation_id": allocation.allocation_id,
+                "tenant_id": allocation.tenant_id,
+                "workload_id": allocation.workload_id,
+                "workload_type": allocation.workload_type,
+                "provider": allocation.provider.value,
+                "region": allocation.region,
+                "status": allocation.status.value,
+                "timestamp": datetime.utcnow().isoformat()
             }
             
+            await self.pulsar_publisher.publish(
+                "persistent://platformq/provisioning/compute-events",
+                event
+            )
+        except Exception as e:
+            logger.error(f"Failed to publish provisioning event: {e}")
+            
     async def close(self):
-        """Close HTTP client"""
-        await self.http_client.aclose() 
+        """Close HTTP client and clean up"""
+        await self.http_client.aclose()
+        await self.provider_registry.stop_health_monitoring() 

@@ -1,37 +1,58 @@
-"""
-Compute Allocation Service
+"""Compute Allocation Service API
 
-Centralized compute resource allocation service with multi-provider support.
+Provides REST API for compute resource allocation using the shared framework.
 """
 
+from contextlib import asynccontextmanager
+from typing import Dict, Any, Optional, List
 import os
 import logging
-from contextlib import asynccontextmanager
-from typing import Dict, Any, List, Optional
 
-from fastapi import FastAPI, HTTPException, Depends, Query, Body
+from fastapi import FastAPI, HTTPException, Depends, Query, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
-from pydantic import BaseModel
-from platformq_shared.metrics import MetricsCollector
+from prometheus_client import Counter, Histogram, Gauge, generate_latest
+from prometheus_client.core import CollectorRegistry
+from pydantic import BaseModel, Field
+
+from platformq_compute_common.models import (
+    ResourceRequirements,
+    AllocationRequest,
+    AllocationResponse,
+    AllocationStrategy,
+    PricingModel
+)
 from platformq_shared.security import get_current_user_from_trusted_header as get_current_user
 
-from .core.allocation_engine import (
-    AllocationEngine, ResourceRequirements, AllocationStrategy,
-    ResourceAllocation
-)
+from .allocation_service import AllocationService
+from .config_manager import ConfigManager
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
+# Prometheus metrics
+registry = CollectorRegistry()
+allocation_counter = Counter(
+    'compute_allocations_total',
+    'Total number of allocation requests',
+    ['status', 'provider'],
+    registry=registry
+)
+allocation_duration = Histogram(
+    'compute_allocation_duration_seconds',
+    'Time spent allocating resources',
+    registry=registry
+)
+active_allocations = Gauge(
+    'compute_allocations_active',
+    'Number of active allocations',
+    ['provider'],
+    registry=registry
+)
 
-# Pydantic models
-class AllocateRequest(BaseModel):
-    workload_type: str
-    workload_id: str
-    requirements: Dict[str, Any]
-    strategy: str = "BALANCED"
-    duration_hours: float = 1.0
+# Global instances
+config_manager = ConfigManager()
+allocation_service = None
 
 
 class ModifyAllocationRequest(BaseModel):
@@ -39,59 +60,55 @@ class ModifyAllocationRequest(BaseModel):
     scale_to: Optional[Dict[str, Any]] = None
 
 
-class CostForecastRequest(BaseModel):
-    workload_type: str
-    requirements: Dict[str, Any]
-    duration_hours: float = 1.0
-
-
-class FuturesContractRequest(BaseModel):
-    resource_type: str
-    quantity: int
-    duration_days: int
-    max_price_per_unit: float
-    start_date: Optional[str] = None
-
-
-class SLADerivativeRequest(BaseModel):
-    workload_id: str
-    sla_metrics: Dict[str, float]
-    penalty_structure: Dict[str, Any]
-    duration_days: int
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    logger.info("Starting Compute Allocation Service")
+    global allocation_service
     
-    # Initialize allocation engine
-    app.state.allocation_engine = AllocationEngine()
-    await app.state.allocation_engine.start()
+    # Initialize configuration manager
+    consul_config = {
+        "host": os.getenv("CONSUL_HOST", "consul"),
+        "port": int(os.getenv("CONSUL_PORT", "8500")),
+        "token": os.getenv("CONSUL_TOKEN", "")
+    }
     
-    # Initialize metrics
-    app.state.metrics = MetricsCollector("compute_allocation")
+    vault_config = {
+        "enabled": os.getenv("VAULT_ENABLED", "true").lower() == "true",
+        "address": os.getenv("VAULT_ADDR", "http://vault:8200"),
+        "token": os.getenv("VAULT_TOKEN", "")
+    }
     
-    # Track contracts
-    app.state.futures_contracts = {}
-    app.state.sla_derivatives = {}
+    await config_manager.initialize(consul_config, vault_config)
+    
+    # Register service with Consul
+    service_host = os.getenv("SERVICE_HOST", "0.0.0.0")
+    service_port = int(os.getenv("SERVICE_PORT", "8000"))
+    await config_manager.register_service(service_host, service_port)
+    
+    # Initialize allocation service
+    allocation_service = AllocationService(config_manager)
+    await allocation_service.initialize()
+    
+    logger.info("Compute Allocation Service started")
     
     yield
     
     # Cleanup
-    logger.info("Shutting down Compute Allocation Service")
-    await app.state.allocation_engine.stop()
+    await allocation_service.shutdown()
+    await config_manager.deregister_service(service_host, service_port)
+    await config_manager.close()
+    
+    logger.info("Compute Allocation Service stopped")
 
 
-# Create FastAPI app
 app = FastAPI(
     title="Compute Allocation Service",
-    description="Centralized compute resource allocation with multi-provider support",
+    description="Manages compute resource allocation across multiple providers",
     version="1.0.0",
     lifespan=lifespan
 )
 
-# Add CORS middleware
+# Configure CORS
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -101,61 +118,63 @@ app.add_middleware(
 )
 
 
-# Health check
 @app.get("/health")
 async def health_check():
     """Health check endpoint"""
     return {
         "status": "healthy",
-        "service": "compute-allocation",
+        "service": "compute-allocation-service",
         "version": "1.0.0"
     }
 
 
-# Allocation endpoints
-@app.post("/api/v1/allocations")
+@app.post("/api/v1/allocations", response_model=AllocationResponse)
 async def allocate_resources(
-    request: AllocateRequest,
+    requirements: ResourceRequirements,
+    workload_type: str,
+    workload_id: str,
+    strategy: AllocationStrategy = AllocationStrategy.BALANCED,
+    duration_hours: float = 1.0,
+    pricing_preferences: Optional[List[PricingModel]] = None,
+    tags: Optional[Dict[str, str]] = None,
     current_user=Depends(get_current_user)
 ):
     """Allocate compute resources"""
-    try:
-        # Parse requirements
-        requirements = ResourceRequirements.from_dict(request.requirements)
-        
-        # Parse strategy
+    with allocation_duration.time():
         try:
-            strategy = AllocationStrategy(request.strategy)
-        except ValueError:
-            strategy = AllocationStrategy.BALANCED
-        
-        # Allocate resources
-        allocation = await app.state.allocation_engine.allocate_resources(
-            workload_type=request.workload_type,
-            workload_id=request.workload_id,
-            requirements=requirements,
-            strategy=strategy,
-            duration_hours=request.duration_hours
-        )
-        
-        if not allocation:
-            raise HTTPException(status_code=503, detail="No resources available")
-        
-        # Track metrics
-        app.state.metrics.increment("allocations_created", 
-                                   tags={"provider": allocation.provider.value,
-                                         "workload_type": request.workload_type})
-        
-        return {
-            "success": True,
-            "allocation": allocation.to_dict()
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to allocate resources: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+            # Create allocation request
+            request = AllocationRequest(
+                tenant_id=current_user["tenant_id"],
+                workload_id=workload_id,
+                workload_type=workload_type,
+                requirements=requirements,
+                strategy=strategy,
+                duration_hours=duration_hours,
+                pricing_preferences=pricing_preferences or [PricingModel.ON_DEMAND],
+                tags=tags or {}
+            )
+            
+            # Allocate resources
+            response = await allocation_service.allocate_resources(request)
+            
+            # Update metrics
+            if response.success:
+                allocation_counter.labels(
+                    status="success",
+                    provider=response.allocation.provider.value if response.allocation else "unknown"
+                ).inc()
+            else:
+                allocation_counter.labels(status="failure", provider="unknown").inc()
+            
+            if not response.success:
+                raise HTTPException(status_code=400, detail=response.message)
+            
+            return response
+            
+        except Exception as e:
+            allocation_counter.labels(status="error", provider="unknown").inc()
+            logger.error(f"Error allocating resources: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
 
 
 @app.get("/api/v1/allocations/{allocation_id}")
@@ -164,10 +183,14 @@ async def get_allocation(
     current_user=Depends(get_current_user)
 ):
     """Get allocation details"""
-    allocation = await app.state.allocation_engine.get_allocation(allocation_id)
+    allocation = await allocation_service.get_allocation(allocation_id)
     
     if not allocation:
         raise HTTPException(status_code=404, detail="Allocation not found")
+    
+    # Check tenant authorization
+    if allocation.tenant_id != current_user["tenant_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
     
     return allocation.to_dict()
 
@@ -179,26 +202,25 @@ async def modify_allocation(
     current_user=Depends(get_current_user)
 ):
     """Modify an existing allocation"""
-    try:
-        modifications = request.dict(exclude_none=True)
-        
-        success = await app.state.allocation_engine.modify_allocation(
-            allocation_id, modifications
-        )
-        
-        if not success:
-            raise HTTPException(status_code=404, detail="Allocation not found")
-        
-        # Track metrics
-        app.state.metrics.increment("allocations_modified")
-        
-        return {"success": True}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to modify allocation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Get allocation to check authorization
+    allocation = await allocation_service.get_allocation(allocation_id)
+    
+    if not allocation:
+        raise HTTPException(status_code=404, detail="Allocation not found")
+    
+    if allocation.tenant_id != current_user["tenant_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Modify allocation
+    success = await allocation_service.modify_allocation(
+        allocation_id,
+        request.dict(exclude_unset=True)
+    )
+    
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to modify allocation")
+    
+    return {"status": "modified", "allocation_id": allocation_id}
 
 
 @app.delete("/api/v1/allocations/{allocation_id}")
@@ -207,20 +229,22 @@ async def release_allocation(
     current_user=Depends(get_current_user)
 ):
     """Release allocated resources"""
-    try:
-        success = await app.state.allocation_engine.deallocate_resources(allocation_id)
-        
-        if not success:
-            raise HTTPException(status_code=404, detail="Allocation not found")
-        
-        # Track metrics
-        app.state.metrics.increment("allocations_released")
-        
-        return {"success": True}
-        
-    except Exception as e:
-        logger.error(f"Failed to release allocation: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+    # Get allocation to check authorization
+    allocation = await allocation_service.get_allocation(allocation_id)
+    
+    if not allocation:
+        raise HTTPException(status_code=404, detail="Allocation not found")
+    
+    if allocation.tenant_id != current_user["tenant_id"]:
+        raise HTTPException(status_code=403, detail="Access denied")
+    
+    # Deallocate resources
+    success = await allocation_service.deallocate_resources(allocation_id)
+    
+    if not success:
+        raise HTTPException(status_code=400, detail="Failed to deallocate resources")
+    
+    return {"status": "deallocated", "allocation_id": allocation_id}
 
 
 @app.get("/api/v1/allocations")
@@ -230,196 +254,104 @@ async def list_allocations(
     status: Optional[str] = Query(None),
     current_user=Depends(get_current_user)
 ):
-    """List allocations"""
-    allocations = []
+    """List allocations for the current tenant"""
+    # Get all allocations for the tenant
+    all_allocations = []
     
-    for allocation in app.state.allocation_engine.allocations.values():
-        # Filter by criteria
-        if workload_type and allocation.workload_type != workload_type:
-            continue
-        if workload_id and allocation.workload_id != workload_id:
-            continue
-        if status and allocation.status != status:
-            continue
-        
-        allocations.append(allocation.to_dict())
-    
-    return {
-        "allocations": allocations,
-        "total": len(allocations)
-    }
-
-
-# Pricing endpoints
-@app.get("/api/v1/pricing/current")
-async def get_current_pricing():
-    """Get current spot pricing across providers"""
-    pricing = await app.state.allocation_engine.get_current_pricing()
+    for allocation in allocation_service.allocations.values():
+        if allocation.tenant_id == current_user["tenant_id"]:
+            # Apply filters
+            if workload_type and allocation.workload_type != workload_type:
+                continue
+            if workload_id and allocation.workload_id != workload_id:
+                continue
+            if status and allocation.status.value != status:
+                continue
+                
+            all_allocations.append(allocation.to_dict())
     
     return {
-        "timestamp": datetime.utcnow().isoformat(),
-        "pricing": pricing
+        "allocations": all_allocations,
+        "total": len(all_allocations)
     }
 
 
-@app.get("/api/v1/costs/forecast")
-async def get_cost_forecast(request: CostForecastRequest):
-    """Get cost forecast for a workload"""
-    try:
-        requirements = ResourceRequirements.from_dict(request.requirements)
-        
-        # Get pricing for each strategy
-        forecasts = {}
-        for strategy in AllocationStrategy:
-            # Simulate allocation to get cost
-            provider, region, instance_type, cost = await app.state.allocation_engine._find_best_allocation(
-                requirements, strategy
-            )
-            
-            if provider:
-                forecasts[strategy.value] = {
-                    "provider": provider.provider_type.value,
-                    "region": region,
-                    "instance_type": instance_type,
-                    "cost_per_hour": cost,
-                    "total_cost": cost * request.duration_hours
-                }
-        
-        return {
-            "workload_type": request.workload_type,
-            "duration_hours": request.duration_hours,
-            "forecasts": forecasts
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to forecast costs: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# Resource availability
-@app.get("/api/v1/resources/available")
-async def get_available_resources(
-    resource_type: Optional[str] = Query(None)
-):
-    """Get available resources across providers"""
-    resources = await app.state.allocation_engine.get_available_resources(resource_type)
-    
-    return resources
-
-
-# Futures contracts (simplified mock implementation)
-@app.post("/api/v1/contracts/futures")
-async def create_futures_contract(
-    request: FuturesContractRequest,
-    current_user=Depends(get_current_user)
-):
-    """Create a futures contract for compute capacity"""
-    import uuid
-    from datetime import datetime, timedelta
-    
-    contract_id = str(uuid.uuid4())
-    
-    contract = {
-        "contract_id": contract_id,
-        "resource_type": request.resource_type,
-        "quantity": request.quantity,
-        "duration_days": request.duration_days,
-        "max_price_per_unit": request.max_price_per_unit,
-        "created_at": datetime.utcnow().isoformat(),
-        "start_date": request.start_date or datetime.utcnow().isoformat(),
-        "end_date": (datetime.utcnow() + timedelta(days=request.duration_days)).isoformat(),
-        "status": "ACTIVE",
-        "holder": current_user["user_id"]
-    }
-    
-    app.state.futures_contracts[contract_id] = contract
-    
-    # Track metric
-    app.state.metrics.increment("futures_contracts_created")
-    
-    return contract
-
-
-@app.get("/api/v1/contracts/futures/{contract_id}")
-async def get_futures_contract(
-    contract_id: str,
-    current_user=Depends(get_current_user)
-):
-    """Get futures contract details"""
-    contract = app.state.futures_contracts.get(contract_id)
-    
-    if not contract:
-        raise HTTPException(status_code=404, detail="Contract not found")
-    
-    return contract
-
-
-# SLA derivatives (simplified mock implementation)
-@app.post("/api/v1/derivatives/sla")
-async def create_sla_derivative(
-    request: SLADerivativeRequest,
-    current_user=Depends(get_current_user)
-):
-    """Create an SLA performance derivative"""
-    import uuid
-    from datetime import datetime, timedelta
-    
-    derivative_id = str(uuid.uuid4())
-    
-    derivative = {
-        "derivative_id": derivative_id,
-        "workload_id": request.workload_id,
-        "sla_metrics": request.sla_metrics,
-        "penalty_structure": request.penalty_structure,
-        "duration_days": request.duration_days,
-        "created_at": datetime.utcnow().isoformat(),
-        "expires_at": (datetime.utcnow() + timedelta(days=request.duration_days)).isoformat(),
-        "status": "ACTIVE",
-        "holder": current_user["user_id"],
-        "current_performance": {
-            "uptime": 0.999,
-            "latency_ms": 25,
-            "throughput_mbps": 950
-        }
-    }
-    
-    app.state.sla_derivatives[derivative_id] = derivative
-    
-    # Track metric
-    app.state.metrics.increment("sla_derivatives_created")
-    
-    return derivative
-
-
-@app.get("/api/v1/derivatives/sla/{derivative_id}")
-async def get_sla_derivative(
-    derivative_id: str,
-    current_user=Depends(get_current_user)
-):
-    """Get SLA derivative details"""
-    derivative = app.state.sla_derivatives.get(derivative_id)
-    
-    if not derivative:
-        raise HTTPException(status_code=404, detail="Derivative not found")
-    
-    return derivative
-
-
-# Metrics endpoints
 @app.get("/api/v1/metrics/allocations")
 async def get_allocation_metrics():
     """Get allocation metrics"""
-    metrics = app.state.allocation_engine.get_allocation_metrics()
+    metrics = await allocation_service.get_allocation_metrics()
+    
+    # Update Prometheus gauges
+    for provider, stats in metrics.get("by_provider", {}).items():
+        active_allocations.labels(provider=provider).set(stats["count"])
+    
     return metrics
 
 
 @app.get("/metrics")
 async def get_metrics():
-    """Get Prometheus metrics"""
-    return app.state.metrics.generate_metrics()
+    """Prometheus metrics endpoint"""
+    return generate_latest(registry)
+
+
+# Additional endpoints for cost analysis
+@app.get("/api/v1/costs/estimate")
+async def estimate_costs(
+    requirements: ResourceRequirements,
+    duration_hours: float = 1.0,
+    pricing_model: PricingModel = PricingModel.ON_DEMAND
+):
+    """Estimate costs for given requirements"""
+    from platformq_compute_common.cost import CostCalculator
+    from platformq_compute_common.models import ProviderType
+    
+    calculator = CostCalculator()
+    
+    # Calculate costs for different providers
+    estimates = {}
+    
+    for provider in [ProviderType.AWS, ProviderType.CLOUDSTACK, ProviderType.KUBERNETES]:
+        cost_analysis = calculator.calculate_requirements_cost(
+            requirements,
+            provider,
+            "us-east-1",  # Default region
+            pricing_model,
+            duration_hours
+        )
+        
+        estimates[provider.value] = cost_analysis.to_dict()
+    
+    return {
+        "estimates": estimates,
+        "duration_hours": duration_hours,
+        "pricing_model": pricing_model.value
+    }
+
+
+@app.get("/api/v1/providers/capabilities")
+async def get_provider_capabilities():
+    """Get capabilities of all registered providers"""
+    capabilities = {}
+    
+    for name, provider in allocation_service.provider_registry.get_all_providers().items():
+        try:
+            caps = await provider.get_capabilities()
+            capabilities[name] = {
+                "provider_type": caps.provider_type.value,
+                "regions": caps.supported_regions,
+                "instance_types": list(caps.supported_instance_types.keys()),
+                "gpu_types": caps.supported_gpu_types,
+                "pricing_models": [p.value for p in caps.supported_pricing_models],
+                "features": caps.features,
+                "sla_guarantees": caps.sla_guarantees
+            }
+        except Exception as e:
+            logger.error(f"Failed to get capabilities for {name}: {e}")
+            capabilities[name] = {"error": str(e)}
+    
+    return capabilities
 
 
 if __name__ == "__main__":
     import uvicorn
-    from datetime import datetime
     uvicorn.run(app, host="0.0.0.0", port=8000) 

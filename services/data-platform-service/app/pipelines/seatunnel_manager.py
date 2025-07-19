@@ -50,7 +50,7 @@ class ConnectorType(str, Enum):
     # Sinks
     CONSOLE = "console"
     HIVE = "hive"
-    CLICKHOUSE = "clickhouse"
+    DRUID = "druid"
     DORIS = "doris"
     ICEBERG = "iceberg"
     HUDI = "hudi"
@@ -202,6 +202,11 @@ class SeaTunnelPipelineManager:
                 "plugin_name": "DeltaLake",
                 "required": ["path"],
                 "optional": ["mode", "options", "partition_by"]
+            },
+            ConnectorType.DRUID: {
+                "plugin_name": "Druid",
+                "required": ["coordinator_url", "datasource"],
+                "optional": ["broker_url", "overlord_url", "timestamp_column", "timestamp_format", "segment_granularity"]
             }
         }
         

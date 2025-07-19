@@ -25,6 +25,7 @@ from .vault_consul_integration import (
     DataQualityLevel
 )
 from .models import Query, QueryResult, Dataset, DataQualityReport
+from .analytics import DruidAnalyticsEngine
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -39,6 +40,7 @@ class DataPlatformService:
         self.vault_integration: Optional[DataServiceVaultIntegration] = None
         self.consul_integration: Optional[DataServiceConsulIntegration] = None
         self._query_cache: Dict[str, Any] = {}
+        self.druid_engine: Optional[DruidAnalyticsEngine] = None
         
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
@@ -75,6 +77,15 @@ class DataPlatformService:
             self.consul_integration = DataServiceConsulIntegration(consul_client)
             await self.consul_integration.initialize()
             
+            # Initialize Druid analytics engine
+            druid_config = {
+                'coordinator_url': os.getenv('DRUID_COORDINATOR_URL', 'http://druid-coordinator:8081'),
+                'broker_url': os.getenv('DRUID_BROKER_URL', 'http://druid-broker:8082'),
+                'overlord_url': os.getenv('DRUID_OVERLORD_URL', 'http://druid-overlord:8090')
+            }
+            self.druid_engine = DruidAnalyticsEngine(druid_config)
+            logger.info("Initialized Druid analytics engine")
+            
             # Set up routes
             self._setup_routes()
             
@@ -105,6 +116,11 @@ class DataPlatformService:
         for task in asyncio.all_tasks():
             if task.get_name() in ["health_check", "quality_monitor", "retention_enforcer"]:
                 task.cancel()
+        
+        # Close Druid engine
+        if self.druid_engine:
+            await self.druid_engine.close()
+            logger.info("Closed Druid analytics engine")
                 
         # Deregister from Consul
         if self.consul_integration:
@@ -410,6 +426,116 @@ class DataPlatformService:
             except Exception as e:
                 logger.error(f"Failed to get {tool} credentials: {e}")
                 raise HTTPException(500, f"Failed to get {tool} connection")
+        
+        @self.app.post("/api/v1/analytics/timeseries")
+        async def query_timeseries(
+            datasource: str,
+            metrics: List[str],
+            granularity: str = "hour",
+            filter: Optional[Dict[str, Any]] = None,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None
+        ):
+            """Query time-series data from Druid"""
+            try:
+                if not self.druid_engine:
+                    raise HTTPException(503, "Druid analytics engine not available")
+                
+                results = await self.druid_engine.query_timeseries(
+                    datasource=datasource,
+                    metrics=metrics,
+                    granularity=granularity,
+                    filter=filter,
+                    start_time=start_time,
+                    end_time=end_time
+                )
+                
+                return {
+                    "datasource": datasource,
+                    "metrics": metrics,
+                    "data": results
+                }
+                
+            except Exception as e:
+                logger.error(f"Druid timeseries query failed: {e}")
+                raise HTTPException(500, f"Analytics query failed: {str(e)}")
+        
+        @self.app.post("/api/v1/analytics/groupby")
+        async def query_groupby(
+            datasource: str,
+            dimensions: List[str],
+            metrics: List[str],
+            filter: Optional[Dict[str, Any]] = None,
+            start_time: Optional[datetime] = None,
+            end_time: Optional[datetime] = None,
+            limit: int = 100
+        ):
+            """Execute group-by analytics query on Druid"""
+            try:
+                if not self.druid_engine:
+                    raise HTTPException(503, "Druid analytics engine not available")
+                
+                results = await self.druid_engine.query_groupby(
+                    datasource=datasource,
+                    dimensions=dimensions,
+                    metrics=metrics,
+                    filter=filter,
+                    start_time=start_time,
+                    end_time=end_time,
+                    limit=limit
+                )
+                
+                return {
+                    "datasource": datasource,
+                    "dimensions": dimensions,
+                    "metrics": metrics,
+                    "data": results
+                }
+                
+            except Exception as e:
+                logger.error(f"Druid groupby query failed: {e}")
+                raise HTTPException(500, f"Analytics query failed: {str(e)}")
+        
+        @self.app.post("/api/v1/analytics/ingest")
+        async def ingest_analytics_data(
+            datasource: str,
+            data: List[Dict[str, Any]],
+            timestamp_column: str = "timestamp"
+        ):
+            """Ingest data into Druid for analytics"""
+            try:
+                if not self.druid_engine:
+                    raise HTTPException(503, "Druid analytics engine not available")
+                
+                result = await self.druid_engine.ingest_batch(
+                    datasource=datasource,
+                    data=data,
+                    timestamp_column=timestamp_column
+                )
+                
+                return result
+                
+            except Exception as e:
+                logger.error(f"Druid data ingestion failed: {e}")
+                raise HTTPException(500, f"Data ingestion failed: {str(e)}")
+        
+        @self.app.get("/api/v1/analytics/datasources")
+        async def list_datasources():
+            """List available Druid datasources"""
+            try:
+                if not self.druid_engine:
+                    raise HTTPException(503, "Druid analytics engine not available")
+                
+                datasources = await self.druid_engine.get_datasources()
+                
+                return {
+                    "datasources": datasources,
+                    "count": len(datasources)
+                }
+                
+            except Exception as e:
+                logger.error(f"Failed to list datasources: {e}")
+                raise HTTPException(500, f"Failed to list datasources: {str(e)}")
                 
         @self.app.post("/api/v1/keys/rotate")
         async def rotate_encryption_keys():
@@ -440,7 +566,7 @@ class DataPlatformService:
     async def _check_database_health(self) -> Dict[str, bool]:
         """Check database connections"""
         db_health = {}
-        databases = ["postgres", "cassandra", "elasticsearch", "clickhouse"]
+        databases = ["postgres", "cassandra", "elasticsearch", "druid"]
         
         for db in databases:
             try:
@@ -450,7 +576,12 @@ class DataPlatformService:
                         await conn.fetchval("SELECT 1")
                     elif db == "elasticsearch":
                         await conn.ping()
-                    # Add other database checks as needed
+                    elif db == "druid":
+                        # Druid health check via REST API
+                        import httpx
+                        async with httpx.AsyncClient() as client:
+                            response = await client.get("http://druid-broker:8082/status/health")
+                            response.raise_for_status()
                     
                 db_health[db] = True
             except:

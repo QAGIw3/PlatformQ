@@ -99,12 +99,14 @@ class DataServiceVaultIntegration:
                 "password": await self._get_admin_password("elasticsearch"),
                 "allowed_roles": ["search", "index"]
             },
-            "clickhouse": {
-                "plugin": "mysql-database-plugin",  # ClickHouse uses MySQL protocol
-                "connection_url": "{{username}}:{{password}}@tcp(clickhouse:9004)/analytics",
-                "allowed_roles": ["analytics"],
+            "druid": {
+                "plugin": "custom-database-plugin",  # Druid uses REST API
+                "broker_url": "http://druid-broker:8082",
+                "coordinator_url": "http://druid-coordinator:8081",
+                "overlord_url": "http://druid-overlord:8090",
+                "allowed_roles": ["analytics", "timeseries"],
                 "username": "vault_admin",
-                "password": await self._get_admin_password("clickhouse")
+                "password": await self._get_admin_password("druid")
             }
         }
         
@@ -280,15 +282,14 @@ class DataServiceVaultIntegration:
                     basic_auth=(username, password),
                     verify_certs=True
                 )
-            elif database == "clickhouse":
-                import clickhouse_driver
+            elif database == "druid":
+                from pydruid.client import PyDruid
                 
-                connection = clickhouse_driver.Client(
-                    host='clickhouse',
-                    port=9000,
-                    user=username,
-                    password=password,
-                    database='analytics'
+                connection = PyDruid(
+                    url='http://druid-broker:8082',
+                    endpoint='druid/v2',
+                    username=username,
+                    password=password
                 )
                 
             yield connection
@@ -302,8 +303,9 @@ class DataServiceVaultIntegration:
                     connection.shutdown()
                 elif database == "elasticsearch":
                     await connection.close()
-                elif database == "clickhouse":
-                    connection.disconnect()
+                elif database == "druid":
+                    # PyDruid client doesn't require explicit disconnect
+                    pass
                     
             # Revoke credentials
             try:
@@ -531,7 +533,7 @@ class DataServiceConsulIntegration:
             meta={
                 "version": "2.0.0",
                 "capabilities": "query,catalog,quality,lineage,encryption",
-                "databases": "postgres,cassandra,elasticsearch,clickhouse"
+                "databases": "postgres,cassandra,elasticsearch,druid"
             },
             check={
                 "http": "http://localhost:8000/health",

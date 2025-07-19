@@ -3,6 +3,7 @@
 from pydantic import BaseSettings, Field, validator
 from typing import Dict, List, Optional
 import os
+import uuid
 
 
 class Settings(BaseSettings):
@@ -10,6 +11,9 @@ class Settings(BaseSettings):
     
     # Service info
     service_name: str = "provisioning-service"
+    instance_id: str = Field(default_factory=lambda: str(uuid.uuid4())[:8])
+    service_host: str = Field(default="0.0.0.0", env="SERVICE_HOST")
+    service_port: int = Field(default=8000, env="SERVICE_PORT")
     environment: str = Field(default="development", env="ENVIRONMENT")
     debug: bool = Field(default=False, env="DEBUG")
     
@@ -43,6 +47,30 @@ class Settings(BaseSettings):
         "namespace": os.getenv("PULSAR_NAMESPACE", "platformq"),
         "max_pending_messages": int(os.getenv("PULSAR_MAX_PENDING_MESSAGES", "1000")),
         "batch_size": int(os.getenv("PULSAR_BATCH_SIZE", "100"))
+    })
+    
+    # Ignite Configuration
+    ignite_config: Dict = Field(default_factory=lambda: {
+        "host": os.getenv("IGNITE_HOST", "ignite"),
+        "port": int(os.getenv("IGNITE_PORT", "10800")),
+        "cache_timeout": int(os.getenv("IGNITE_CACHE_TIMEOUT", "3600"))
+    })
+    
+    # Elasticsearch Configuration
+    elasticsearch_config: Dict = Field(default_factory=lambda: {
+        "hosts": os.getenv("ELASTICSEARCH_HOSTS", "elasticsearch:9200").split(","),
+        "username": os.getenv("ELASTICSEARCH_USERNAME", ""),
+        "password": os.getenv("ELASTICSEARCH_PASSWORD", ""),
+        "verify_certs": os.getenv("ELASTICSEARCH_VERIFY_CERTS", "false").lower() == "true"
+    })
+    
+    # Consul Configuration
+    consul_config: Dict = Field(default_factory=lambda: {
+        "host": os.getenv("CONSUL_HOST", "consul"),
+        "port": int(os.getenv("CONSUL_PORT", "8500")),
+        "token": os.getenv("CONSUL_TOKEN", ""),
+        "datacenter": os.getenv("CONSUL_DATACENTER", "dc1"),
+        "scheme": os.getenv("CONSUL_SCHEME", "http")
     })
     
     # Compute Provider Configuration
@@ -105,10 +133,23 @@ class Settings(BaseSettings):
     # Monitoring
     monitoring_config: Dict = Field(default_factory=lambda: {
         "prometheus_enabled": os.getenv("PROMETHEUS_ENABLED", "true").lower() == "true",
+        "prometheus_port": int(os.getenv("PROMETHEUS_PORT", "9090")),
         "jaeger_enabled": os.getenv("JAEGER_ENABLED", "true").lower() == "true",
         "jaeger_agent_host": os.getenv("JAEGER_AGENT_HOST", "jaeger"),
         "jaeger_agent_port": int(os.getenv("JAEGER_AGENT_PORT", "6831"))
     })
+    
+    # Prometheus Configuration
+    prometheus_url: str = Field(
+        default="http://prometheus:9090",
+        env="PROMETHEUS_URL"
+    )
+    
+    # Kubernetes Configuration
+    kubernetes_namespace: str = Field(
+        default="platformq",
+        env="K8S_NAMESPACE"
+    )
     
     @validator("environment")
     def validate_environment(cls, v):

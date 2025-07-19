@@ -1,331 +1,286 @@
 # Compute Allocation Service
 
-## Overview
-
-The Compute Allocation Service provides centralized compute resource management across PlatformQ, integrating with the derivatives engine for cost optimization and supporting multi-provider resource allocation.
+The Compute Allocation Service provides centralized compute resource allocation across multiple cloud providers and on-premise infrastructure. It implements intelligent provider selection, cost optimization, and unified resource management.
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│                 Compute Allocation Service                    │
-├─────────────────────────────────────────────────────────────┤
-│  API Layer                                                   │
-│  ┌─────────────┐  ┌──────────────┐  ┌─────────────────┐   │
-│  │  REST API   │  │   gRPC API   │  │  Event API      │   │
-│  └─────────────┘  └──────────────┘  └─────────────────┘   │
-├─────────────────────────────────────────────────────────────┤
-│  Allocation Engine                                          │
-│  ┌─────────────────────┐  ┌─────────────────────────────┐ │
-│  │ Resource Optimizer   │  │ Cost Optimizer              │ │
-│  │ - Demand Prediction  │  │ - Spot Market Integration   │ │
-│  │ - Capacity Planning  │  │ - Futures Contracts         │ │
-│  │ - Load Balancing     │  │ - Performance Derivatives   │ │
-│  └─────────────────────┘  └─────────────────────────────┘ │
-├─────────────────────────────────────────────────────────────┤
-│  Provider Integration                                        │
-│  ┌─────────────────────┐  ┌─────────────────────────────┐ │
-│  │ Cloud Providers      │  │ On-Premise Resources        │ │
-│  │ - AWS, Azure, GCP    │  │ - GPU Clusters              │ │
-│  │ - Specialty Clouds   │  │ - HPC Systems               │ │
-│  │ - Edge Providers     │  │ - Quantum Processors        │ │
-│  └─────────────────────┘  └─────────────────────────────┘ │
-└─────────────────────────────────────────────────────────────┘
-```
+The service has been refactored with the following improvements:
 
-## Core Features
+- **Shared Compute Library** - Reusable models, providers, and cost management
+- **Provider Abstraction** - Unified interface for all compute providers
+- **Configuration Management** - Dynamic configuration via Consul, secrets via Vault
+- **Event-Driven** - Asynchronous operations with Apache Pulsar
+- **Cost Optimization** - Real-time pricing and budget management
+- **Multi-Tenant** - Tenant isolation and resource quotas
 
-### 1. Multi-Provider Resource Management
-- **Unified Interface**: Single API for all compute providers
-- **Provider Abstraction**: Hide provider-specific details
-- **Automatic Failover**: Switch providers on failure
-- **Cost Optimization**: Choose most cost-effective provider
+## Features
 
-### 2. Advanced Allocation Strategies
-- **Spot Market Integration**: Leverage spot instances
-- **Futures Contracts**: Lock in future capacity
-- **Burst Capacity**: Handle sudden demand spikes
-- **Performance Derivatives**: Guarantee performance SLAs
+### Multi-Provider Support
+- **AWS EC2** - Full EC2 instance management with spot/reserved pricing
+- **CloudStack** - On-premise cloud infrastructure
+- **Kubernetes** - Container-based workloads
+- **Rackspace** - Additional cloud capacity
+- **Extensible** - Easy to add new providers
 
-### 3. Workload-Specific Optimization
-- **Simulation Workloads**: GPU optimization for physics
-- **ML Training**: Distributed GPU allocation
-- **CAD Processing**: CPU/GPU hybrid allocation
-- **Quantum Workloads**: Quantum processor scheduling
+### Intelligent Allocation
+- **Strategy-Based** - Cost-optimized, performance-optimized, or balanced
+- **Availability Checking** - Real-time capacity verification
+- **Best-Fit Selection** - Automatic provider and instance type selection
+- **Multi-Region** - Cross-region resource allocation
+- **Fallback Options** - Alternative suggestions when primary fails
 
-### 4. Cost Management
-- **Real-time Pricing**: Current market rates
-- **Budget Controls**: Per-tenant spending limits
-- **Cost Forecasting**: Predict future costs
-- **Billing Integration**: Detailed cost attribution
+### Cost Management
+- **Real-Time Pricing** - Current pricing from all providers
+- **Budget Enforcement** - Per-tenant spending limits
+- **Cost Forecasting** - Predictive cost analysis
+- **Optimization Suggestions** - Recommendations for cost savings
+- **Usage Tracking** - Detailed resource consumption metrics
 
-## Resource Types
-
-### GPU Resources
-```yaml
-GPU_V100:
-  memory: 16GB
-  compute: 7.0 TFLOPS
-  use_cases:
-    - simulation
-    - ml_training
-    - rendering
-
-GPU_A100:
-  memory: 40GB/80GB
-  compute: 19.5 TFLOPS
-  use_cases:
-    - large_scale_simulation
-    - distributed_training
-    - multi_physics
-
-GPU_H100:
-  memory: 80GB
-  compute: 60 TFLOPS
-  use_cases:
-    - extreme_scale
-    - real_time_inference
-```
-
-### CPU Resources
-```yaml
-CPU_COMPUTE:
-  cores: 32-128
-  memory: 128GB-2TB
-  use_cases:
-    - preprocessing
-    - mesh_optimization
-    - data_transformation
-
-CPU_MEMORY:
-  cores: 16-64
-  memory: 512GB-8TB
-  use_cases:
-    - in_memory_analytics
-    - large_cad_models
-```
-
-### Specialized Resources
-```yaml
-QUANTUM:
-  qubits: 20-1000
-  providers:
-    - IBM_Q
-    - Rigetti
-    - IonQ
-  use_cases:
-    - optimization
-    - cryptography
-
-FPGA:
-  gates: 1M-10M
-  use_cases:
-    - stream_processing
-    - custom_algorithms
-```
+### Resource Management
+- **Lifecycle Management** - Provision, resize, and terminate
+- **Health Monitoring** - Continuous resource health checks
+- **Auto-Cleanup** - Expired resource termination
+- **Modification Support** - Extend duration or scale resources
+- **Access Control** - Secure credential management
 
 ## API Endpoints
 
 ### Resource Allocation
-```
-POST   /api/v1/allocations                # Request resources
-GET    /api/v1/allocations/{id}          # Get allocation status
-PUT    /api/v1/allocations/{id}          # Modify allocation
-DELETE /api/v1/allocations/{id}          # Release resources
+- `POST /api/v1/allocations` - Allocate compute resources
+- `GET /api/v1/allocations/{allocation_id}` - Get allocation details
+- `PUT /api/v1/allocations/{allocation_id}` - Modify allocation
+- `DELETE /api/v1/allocations/{allocation_id}` - Release resources
+- `GET /api/v1/allocations` - List allocations
+
+### Cost Analysis
+- `GET /api/v1/costs/estimate` - Estimate costs for requirements
+- `GET /api/v1/metrics/allocations` - Get allocation metrics
+
+### Provider Management
+- `GET /api/v1/providers/capabilities` - Get provider capabilities
+
+### Monitoring
+- `GET /health` - Health check
+- `GET /metrics` - Prometheus metrics
+
+## Request/Response Models
+
+### Allocation Request
+```json
+{
+  "workload_type": "ml-training",
+  "workload_id": "model-123",
+  "requirements": {
+    "cpu_cores": 8,
+    "memory_gb": 32,
+    "gpu_count": 1,
+    "gpu_type": "nvidia-v100",
+    "storage_gb": 100,
+    "regions": ["us-east-1", "us-west-2"]
+  },
+  "strategy": "COST_OPTIMIZED",
+  "duration_hours": 24,
+  "pricing_preferences": ["SPOT", "ON_DEMAND"],
+  "tags": {
+    "project": "ml-research",
+    "team": "data-science"
+  }
+}
 ```
 
-### Cost Management
-```
-GET    /api/v1/pricing/current            # Current spot prices
-POST   /api/v1/contracts/futures          # Create futures contract
-GET    /api/v1/costs/forecast             # Cost forecast
-GET    /api/v1/billing/{tenant}           # Tenant billing
-```
-
-### Resource Discovery
-```
-GET    /api/v1/resources/available        # Available resources
-GET    /api/v1/resources/types            # Resource types
-POST   /api/v1/resources/match            # Find matching resources
-```
-
-### Performance Derivatives
-```
-POST   /api/v1/derivatives/sla            # Create SLA derivative
-GET    /api/v1/derivatives/{id}/status    # Check SLA compliance
-POST   /api/v1/derivatives/{id}/claim     # Claim SLA violation
-```
-
-## Allocation Strategies
-
-### 1. Cost-Optimized
-```python
-allocation = allocator.allocate(
-    requirements=ResourceRequirements(
-        gpu_type="GPU_A100",
-        gpu_count=4,
-        duration_hours=24
-    ),
-    strategy="COST_OPTIMIZED",
-    constraints={
-        "max_cost_per_hour": 50.0,
-        "acceptable_delay_minutes": 30
+### Allocation Response
+```json
+{
+  "success": true,
+  "allocation": {
+    "allocation_id": "alloc-123456",
+    "provider": "AWS",
+    "region": "us-east-1",
+    "instance_type": "p3.2xlarge",
+    "status": "ACTIVE",
+    "cost_per_hour": 3.06,
+    "access_details": {
+      "instance_id": "i-0a1b2c3d",
+      "public_ip": "54.123.45.67",
+      "dns_name": "ec2-54-123-45-67.compute-1.amazonaws.com"
     }
-)
+  }
+}
 ```
-
-### 2. Performance-Optimized
-```python
-allocation = allocator.allocate(
-    requirements=ResourceRequirements(
-        gpu_type="GPU_H100",
-        gpu_count=8,
-        duration_hours=4
-    ),
-    strategy="PERFORMANCE_OPTIMIZED",
-    constraints={
-        "max_latency_ms": 10,
-        "min_bandwidth_gbps": 100
-    }
-)
-```
-
-### 3. Balanced
-```python
-allocation = allocator.allocate(
-    requirements=ResourceRequirements(
-        gpu_type="GPU_V100|GPU_A100",
-        gpu_count=2,
-        duration_hours=12
-    ),
-    strategy="BALANCED",
-    constraints={
-        "cost_weight": 0.6,
-        "performance_weight": 0.4
-    }
-)
-```
-
-## Integration Examples
-
-### Collaboration Platform Integration
-```python
-# Automatic allocation for simulation
-@simulation_started.handler
-async def allocate_simulation_resources(event):
-    allocation = await compute_service.allocate(
-        workload_type="simulation",
-        workload_id=event.simulation_id,
-        requirements={
-            "agent_count": event.agent_count,
-            "timesteps": event.timesteps,
-            "physics_engines": event.physics_engines
-        }
-    )
-    
-    await state_service.put(
-        f"allocation:{event.simulation_id}",
-        allocation
-    )
-```
-
-### ML Platform Integration
-```python
-# Federated learning resource allocation
-async def allocate_federated_resources(session_id, participants):
-    allocations = []
-    
-    for participant in participants:
-        allocation = await compute_service.allocate(
-            workload_type="federated_ml",
-            workload_id=f"{session_id}:{participant.id}",
-            requirements={
-                "gpu_type": "GPU_V100",
-                "gpu_count": 1,
-                "region": participant.region
-            }
-        )
-        allocations.append(allocation)
-    
-    return allocations
-```
-
-## Cost Optimization Features
-
-### Spot Market Integration
-- Real-time spot price monitoring
-- Automatic instance replacement
-- Checkpointing for interruption handling
-- Multi-region arbitrage
-
-### Futures Contracts
-- Lock in future capacity
-- Hedge against price increases
-- Guaranteed availability
-- Flexible contract terms
-
-### Performance Derivatives
-- SLA guarantees with compensation
-- Latency futures
-- Throughput bonds
-- Availability swaps
-
-## Monitoring & Metrics
-
-### Key Metrics
-- Resource utilization by type
-- Cost per workload
-- Allocation success rate
-- Provider availability
-- SLA compliance
-
-### Dashboards
-- Real-time resource usage
-- Cost trends and forecasts
-- Provider performance
-- Workload distribution
-
-### Alerts
-- Budget threshold exceeded
-- Resource exhaustion
-- Provider failures
-- SLA violations
 
 ## Configuration
 
+### Environment Variables
+```bash
+# Service Configuration
+SERVICE_HOST=0.0.0.0
+SERVICE_PORT=8000
+
+# Consul Configuration
+CONSUL_HOST=consul
+CONSUL_PORT=8500
+CONSUL_TOKEN=<consul-token>
+
+# Vault Configuration
+VAULT_ENABLED=true
+VAULT_ADDR=http://vault:8200
+VAULT_TOKEN=<vault-token>
+```
+
+### Consul Configuration Structure
+```
+platformq/compute-allocation-service/
+├── compute_providers/
+│   ├── aws/
+│   │   ├── enabled: true
+│   │   ├── regions: ["us-east-1", "us-west-2"]
+│   │   └── instance_types: {...}
+│   ├── cloudstack/
+│   │   ├── enabled: true
+│   │   ├── api_url: "http://cloudstack:8080/client/api"
+│   │   └── zone_id: "1"
+│   └── kubernetes/
+│       ├── enabled: true
+│       └── namespace: "platformq"
+└── tenant_budgets/
+    └── tenant-123/
+        ├── monthly_limit: 10000
+        └── alert_thresholds: [0.5, 0.75, 0.9]
+```
+
+### Vault Secret Structure
+```
+secret/
+├── providers/
+│   ├── aws/credentials
+│   │   ├── access_key: "..."
+│   │   └── secret_key: "..."
+│   └── cloudstack/credentials
+│       ├── api_key: "..."
+│       └── secret_key: "..."
+└── database/
+    └── postgres/credentials
+        ├── username: "..."
+        └── password: "..."
+```
+
+## Provider Integration
+
+### Adding a New Provider
+1. Implement the `ResourceProvider` interface
+2. Add provider-specific configuration
+3. Register with `ProviderRegistry`
+4. Add credentials to Vault
+5. Enable in Consul configuration
+
+Example provider implementation:
+```python
+from platformq_compute_common.providers import ResourceProvider
+
+class MyProvider(ResourceProvider):
+    async def get_capabilities(self) -> ProviderCapabilities:
+        # Return provider capabilities
+        
+    async def check_availability(self, requirements, region):
+        # Check if resources are available
+        
+    async def allocate(self, allocation):
+        # Allocate resources
+        
+    async def deallocate(self, allocation):
+        # Release resources
+```
+
+## Development
+
+### Installation
+```bash
+pip install -r requirements.txt
+```
+
+### Running Locally
+```bash
+# Start dependencies
+docker-compose up -d consul vault
+
+# Configure Consul/Vault
+python scripts/setup_config.py
+
+# Run service
+uvicorn app.main:app --reload --port 8000
+```
+
+### Running Tests
+```bash
+pytest tests/ -v
+```
+
+## Deployment
+
+### Kubernetes Deployment
 ```yaml
-compute_allocation:
-  providers:
-    aws:
-      enabled: true
-      regions: [us-east-1, us-west-2, eu-west-1]
-      instance_types: [p3.*, p4.*, g4dn.*]
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: compute-allocation-service
+spec:
+  replicas: 3
+  template:
+    spec:
+      containers:
+      - name: service
+        image: platformq/compute-allocation-service:latest
+        env:
+        - name: CONSUL_HOST
+          value: consul.default.svc.cluster.local
+        - name: VAULT_ADDR
+          value: http://vault.default.svc.cluster.local:8200
+        resources:
+          requests:
+            memory: "512Mi"
+            cpu: "500m"
+          limits:
+            memory: "1Gi"
+            cpu: "1000m"
+```
+
+## Monitoring
+
+### Metrics
+The service exposes Prometheus metrics:
+- `compute_allocations_total` - Total allocation requests
+- `compute_allocation_duration_seconds` - Allocation latency
+- `compute_allocations_active` - Currently active allocations
+
+### Logging
+Structured JSON logging with correlation IDs for request tracing.
+
+### Alerts
+Example Prometheus alerts:
+```yaml
+- alert: HighAllocationFailureRate
+  expr: rate(compute_allocations_total{status="failure"}[5m]) > 0.1
+  annotations:
+    summary: High allocation failure rate
     
-    azure:
-      enabled: true
-      regions: [eastus, westus2, northeurope]
-      instance_types: [NC*, ND*, NV*]
-    
-    on_premise:
-      enabled: true
-      clusters:
-        - name: gpu-cluster-1
-          location: datacenter-1
-          gpus: 128
-          type: GPU_A100
-    
-  optimization:
-    spot_threshold: 0.7  # Use spot if 70% cheaper
-    futures_horizon_days: 30
-    performance_sla_default: 0.99
-    
-  limits:
-    max_cost_per_hour: 1000.0
-    max_gpus_per_tenant: 100
-    max_allocation_duration_hours: 168
-    
-  derivatives:
-    enabled: true
-    min_contract_value: 100.0
-    max_liability_ratio: 0.2
-``` 
+- alert: ProviderUnavailable
+  expr: up{job="compute-allocation-service"} == 0
+  annotations:
+    summary: Compute allocation service is down
+```
+
+## Security
+
+- **Authentication** - JWT tokens via shared auth service
+- **Authorization** - Tenant-based access control
+- **Secrets** - All credentials stored in Vault
+- **Encryption** - TLS for all external communications
+- **Audit** - All allocation actions logged
+
+## Performance
+
+- **Caching** - Provider capabilities cached
+- **Connection Pooling** - Reused HTTP connections
+- **Async Operations** - Non-blocking I/O
+- **Health Checks** - Continuous provider monitoring
+- **Circuit Breakers** - Fault tolerance for provider failures 

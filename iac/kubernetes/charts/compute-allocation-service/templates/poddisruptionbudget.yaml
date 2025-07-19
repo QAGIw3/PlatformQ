@@ -1,0 +1,13 @@
+{{- if .Values.podDisruptionBudget.enabled }}
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: {{ include "compute-allocation-service.fullname" . }}
+  labels:
+    {{- include "compute-allocation-service.labels" . | nindent 4 }}
+spec:
+  minAvailable: {{ .Values.podDisruptionBudget.minAvailable }}
+  selector:
+    matchLabels:
+      {{- include "compute-allocation-service.selectorLabels" . | nindent 6 }}
+{{- end }} 
