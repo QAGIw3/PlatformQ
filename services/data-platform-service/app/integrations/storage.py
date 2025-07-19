@@ -583,7 +583,7 @@ class StorageIntegration:
                     <tbody>
                         {''.join(
                             f"<tr>{''.join(f'<td>{cell}</td>' for cell in row)}</tr>"
-                            for row in report_data['data'][:1000]  # Limit to 1000 rows
+                            for row in report_data['data'][:1000]
                         )}
                     </tbody>
                 </table>
