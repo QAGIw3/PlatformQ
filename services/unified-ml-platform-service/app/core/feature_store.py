@@ -1,633 +1,808 @@
 """
-Feature Store for managing ML features
+Unified Feature Store for PlatformQ ML Platform
+
+Provides centralized feature management with:
+- Online serving via Apache Ignite (<5ms latency)
+- Offline serving via Apache Iceberg
+- Real-time updates via Apache Pulsar
+- Feature versioning and lineage tracking
 """
-from typing import Dict, List, Any, Optional, Union
+
+import asyncio
+import json
+import logging
+from typing import Dict, List, Optional, Any, Union, Tuple
 from datetime import datetime, timedelta
+from dataclasses import dataclass, field
 import pandas as pd
 import numpy as np
-from platformq_shared.utils.logger import get_logger
-from platformq_shared.cache.ignite_client import IgniteClient
-from platformq_shared.events import EventPublisher
-from platformq_shared.errors import ValidationError, NotFoundError
+from enum import Enum
 
-logger = get_logger(__name__)
+from pyignite import Client as IgniteClient
+from pyignite.datatypes import String, DoubleArray, LongArray, BoolArray
+from pulsar import Client as PulsarClient, Producer, Consumer
+import pyarrow as pa
+import pyarrow.parquet as pq
+
+from platformq_shared.iceberg_client import IcebergClient
+from platformq_shared.config import ConfigLoader
+
+logger = logging.getLogger(__name__)
+
+
+class FeatureType(str, Enum):
+    """Types of features"""
+    NUMERIC = "numeric"
+    CATEGORICAL = "categorical"
+    EMBEDDING = "embedding"
+    BINARY = "binary"
+    TEXT = "text"
+    IMAGE = "image"
+    TIME_SERIES = "time_series"
+
+
+class FeatureStatus(str, Enum):
+    """Feature lifecycle status"""
+    DRAFT = "draft"
+    ACTIVE = "active"
+    DEPRECATED = "deprecated"
+    ARCHIVED = "archived"
+
+
+@dataclass
+class FeatureDefinition:
+    """Definition of a feature"""
+    name: str
+    description: str
+    feature_type: FeatureType
+    data_type: str  # numpy/pandas dtype
+    shape: Optional[Tuple[int, ...]] = None  # For embeddings/arrays
+    default_value: Any = None
+    tags: List[str] = field(default_factory=list)
+    owner: str = ""
+    created_at: datetime = field(default_factory=datetime.utcnow)
+    updated_at: datetime = field(default_factory=datetime.utcnow)
+    version: int = 1
+    status: FeatureStatus = FeatureStatus.ACTIVE
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
+
+@dataclass
+class FeatureValue:
+    """Value of a feature for an entity"""
+    entity_id: str
+    feature_name: str
+    value: Any
+    timestamp: datetime = field(default_factory=datetime.utcnow)
+    event_timestamp: Optional[datetime] = None  # When the feature was generated
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 class FeatureStore:
-    """Feature store for managing ML features"""
+    """
+    Unified Feature Store implementation
+    """
     
-    def __init__(self):
-        self.cache = IgniteClient()
-        self.event_publisher = EventPublisher()
-        self.feature_sets: Dict[str, Dict] = {}
-        self.feature_views: Dict[str, Dict] = {}
-        self.materialization_jobs: Dict[str, Dict] = {}
+    def __init__(self,
+                 ignite_host: str = "localhost",
+                 ignite_port: int = 10800,
+                 pulsar_url: str = "pulsar://localhost:6650",
+                 iceberg_catalog: str = "platformq",
+                 config_loader: Optional[ConfigLoader] = None):
+        """
+        Initialize Feature Store
         
-    async def create_feature_set(self, feature_set_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a new feature set"""
+        Args:
+            ignite_host: Apache Ignite host
+            ignite_port: Apache Ignite port
+            pulsar_url: Apache Pulsar broker URL
+            iceberg_catalog: Iceberg catalog name
+            config_loader: Configuration loader
+        """
+        self.config_loader = config_loader or ConfigLoader()
+        
+        # Initialize Ignite client for online serving
+        self.ignite_client = IgniteClient()
+        self.ignite_client.connect(ignite_host, ignite_port)
+        
+        # Initialize Pulsar client for real-time updates
+        self.pulsar_client = PulsarClient(pulsar_url)
+        self._init_pulsar_topics()
+        
+        # Initialize Iceberg client for offline serving
+        self.iceberg_client = IcebergClient(catalog_name=iceberg_catalog)
+        
+        # Feature registry cache
+        self._feature_registry: Dict[str, FeatureDefinition] = {}
+        self._load_feature_registry()
+        
+        # Initialize caches
+        self._init_ignite_caches()
+        
+        # Start background tasks
+        self._running = True
+        self._background_tasks = []
+        self._start_background_tasks()
+        
+    def _init_ignite_caches(self):
+        """Initialize Ignite caches for features"""
+        # Feature values cache (online serving)
+        self.feature_cache = self.ignite_client.get_or_create_cache(
+            "feature_store_values"
+        )
+        
+        # Feature metadata cache
+        self.metadata_cache = self.ignite_client.get_or_create_cache(
+            "feature_store_metadata"
+        )
+        
+        # Feature statistics cache
+        self.stats_cache = self.ignite_client.get_or_create_cache(
+            "feature_store_stats"
+        )
+        
+        logger.info("Initialized Ignite caches for feature store")
+        
+    def _init_pulsar_topics(self):
+        """Initialize Pulsar topics for feature updates"""
+        self.feature_update_topic = "persistent://platformq/features/updates"
+        self.feature_request_topic = "persistent://platformq/features/requests"
+        self.feature_log_topic = "persistent://platformq/features/logs"
+        
+        # Create producers
+        self.update_producer = self.pulsar_client.create_producer(
+            self.feature_update_topic,
+            producer_name="feature-store-producer",
+            batching_enabled=True,
+            batching_max_publish_delay_ms=10
+        )
+        
+        # Create consumers for background processing
+        self.update_consumer = self.pulsar_client.subscribe(
+            self.feature_update_topic,
+            "feature-store-consumer",
+            consumer_type=ConsumerType.Shared
+        )
+        
+    def _load_feature_registry(self):
+        """Load feature definitions from storage"""
         try:
-            # Validate feature set
-            required_fields = ["name", "features", "entity", "source"]
-            for field in required_fields:
-                if field not in feature_set_data:
-                    raise ValidationError(f"Missing required field: {field}")
+            # Load from Iceberg table
+            registry_df = self.iceberg_client.read_table(
+                "feature_registry",
+                namespace="ml"
+            )
             
-            # Generate feature set ID
-            fs_id = f"fs_{feature_set_data['name']}_{datetime.utcnow().timestamp()}"
+            for _, row in registry_df.iterrows():
+                feature = FeatureDefinition(
+                    name=row['name'],
+                    description=row['description'],
+                    feature_type=FeatureType(row['feature_type']),
+                    data_type=row['data_type'],
+                    shape=tuple(row['shape']) if row['shape'] else None,
+                    default_value=row['default_value'],
+                    tags=row['tags'].split(',') if row['tags'] else [],
+                    owner=row['owner'],
+                    created_at=row['created_at'],
+                    updated_at=row['updated_at'],
+                    version=row['version'],
+                    status=FeatureStatus(row['status']),
+                    metadata=json.loads(row['metadata']) if row['metadata'] else {}
+                )
+                self._feature_registry[feature.name] = feature
+                
+            logger.info(f"Loaded {len(self._feature_registry)} features from registry")
             
-            # Create feature set
-            feature_set = {
-                "feature_set_id": fs_id,
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat(),
-                "status": "active",
-                "version": 1,
-                **feature_set_data
+        except Exception as e:
+            logger.warning(f"Could not load feature registry: {e}")
+            # Initialize empty registry
+            self._create_feature_registry_table()
+            
+    def _create_feature_registry_table(self):
+        """Create feature registry table in Iceberg"""
+        schema = pa.schema([
+            ('name', pa.string()),
+            ('description', pa.string()),
+            ('feature_type', pa.string()),
+            ('data_type', pa.string()),
+            ('shape', pa.list_(pa.int64())),
+            ('default_value', pa.string()),
+            ('tags', pa.string()),
+            ('owner', pa.string()),
+            ('created_at', pa.timestamp('us')),
+            ('updated_at', pa.timestamp('us')),
+            ('version', pa.int64()),
+            ('status', pa.string()),
+            ('metadata', pa.string())
+        ])
+        
+        # Create empty table
+        empty_df = pd.DataFrame(columns=schema.names)
+        self.iceberg_client.write_table(
+            empty_df,
+            "feature_registry",
+            namespace="ml",
+            mode="create"
+        )
+        
+    async def register_feature(self, feature: FeatureDefinition) -> bool:
+        """
+        Register a new feature or update existing
+        
+        Args:
+            feature: Feature definition
+            
+        Returns:
+            Success status
+        """
+        try:
+            # Check if feature exists
+            if feature.name in self._feature_registry:
+                # Update version
+                existing = self._feature_registry[feature.name]
+                feature.version = existing.version + 1
+                feature.created_at = existing.created_at
+                
+            feature.updated_at = datetime.utcnow()
+            
+            # Update registry
+            self._feature_registry[feature.name] = feature
+            
+            # Persist to Iceberg
+            feature_data = {
+                'name': feature.name,
+                'description': feature.description,
+                'feature_type': feature.feature_type.value,
+                'data_type': feature.data_type,
+                'shape': list(feature.shape) if feature.shape else None,
+                'default_value': str(feature.default_value),
+                'tags': ','.join(feature.tags),
+                'owner': feature.owner,
+                'created_at': feature.created_at,
+                'updated_at': feature.updated_at,
+                'version': feature.version,
+                'status': feature.status.value,
+                'metadata': json.dumps(feature.metadata)
             }
             
-            # Validate feature definitions
-            for feature in feature_set["features"]:
-                self._validate_feature_definition(feature)
+            # Upsert to registry table
+            filter_expr = self.iceberg_client.eq('name', feature.name)
             
-            # Store feature set
-            self.feature_sets[fs_id] = feature_set
-            await self.cache.put(f"feature_store:set:{fs_id}", feature_set)
-            
-            # Register with data catalog
-            await self._register_in_catalog(feature_set)
-            
-            # Publish event
-            await self.event_publisher.publish("feature_store.set.created", {
-                "feature_set_id": fs_id,
-                "name": feature_set_data["name"],
-                "feature_count": len(feature_set_data["features"])
-            })
-            
-            logger.info(f"Created feature set: {fs_id}")
-            return feature_set
-            
-        except Exception as e:
-            logger.error(f"Failed to create feature set: {str(e)}")
-            raise
-    
-    async def create_feature_view(self, view_data: Dict[str, Any]) -> Dict[str, Any]:
-        """Create a feature view combining multiple feature sets"""
-        try:
-            # Validate view
-            required_fields = ["name", "feature_sets", "entities", "ttl"]
-            for field in required_fields:
-                if field not in view_data:
-                    raise ValidationError(f"Missing required field: {field}")
-            
-            # Generate view ID
-            view_id = f"fv_{view_data['name']}_{datetime.utcnow().timestamp()}"
-            
-            # Create feature view
-            feature_view = {
-                "view_id": view_id,
-                "created_at": datetime.utcnow().isoformat(),
-                "updated_at": datetime.utcnow().isoformat(),
-                "materialized": False,
-                **view_data
-            }
-            
-            # Validate feature sets exist
-            for fs_name in feature_view["feature_sets"]:
-                if not await self._get_feature_set_by_name(fs_name):
-                    raise ValidationError(f"Feature set {fs_name} not found")
-            
-            # Store view
-            self.feature_views[view_id] = feature_view
-            await self.cache.put(f"feature_store:view:{view_id}", feature_view)
-            
-            # Publish event
-            await self.event_publisher.publish("feature_store.view.created", {
-                "view_id": view_id,
-                "name": view_data["name"]
-            })
-            
-            return feature_view
-            
-        except Exception as e:
-            logger.error(f"Failed to create feature view: {str(e)}")
-            raise
-    
-    async def get_online_features(self,
-                                entity_ids: List[str],
-                                feature_names: List[str]) -> pd.DataFrame:
-        """Get features for online serving"""
-        try:
-            # Find feature sets containing requested features
-            feature_sets = await self._find_feature_sets(feature_names)
-            
-            # Fetch features from online store (Ignite)
-            features_data = []
-            
-            for entity_id in entity_ids:
-                entity_features = {"entity_id": entity_id}
-                
-                for fs in feature_sets:
-                    # Get features from cache
-                    cache_key = f"features:online:{fs['name']}:{entity_id}"
-                    cached_features = await self.cache.get(cache_key)
-                    
-                    if cached_features:
-                        # Filter requested features
-                        for feature_name in feature_names:
-                            if feature_name in cached_features:
-                                entity_features[feature_name] = cached_features[feature_name]
-                    else:
-                        # Features not in cache, compute on-demand
-                        computed = await self._compute_features_online(fs, entity_id, feature_names)
-                        entity_features.update(computed)
-                
-                features_data.append(entity_features)
-            
-            # Convert to DataFrame
-            df = pd.DataFrame(features_data)
-            
-            # Log feature serving
-            await self._log_feature_serving("online", entity_ids, feature_names)
-            
-            return df
-            
-        except Exception as e:
-            logger.error(f"Failed to get online features: {str(e)}")
-            raise
-    
-    async def get_historical_features(self,
-                                    entity_df: pd.DataFrame,
-                                    feature_names: List[str]) -> pd.DataFrame:
-        """Get historical features for training"""
-        try:
-            # Validate entity DataFrame
-            if "entity_id" not in entity_df.columns:
-                raise ValidationError("entity_df must contain 'entity_id' column")
-            
-            if "event_timestamp" not in entity_df.columns:
-                raise ValidationError("entity_df must contain 'event_timestamp' column")
-            
-            # Find feature sets
-            feature_sets = await self._find_feature_sets(feature_names)
-            
-            # Fetch historical features
-            result_df = entity_df.copy()
-            
-            for fs in feature_sets:
-                # Get features from offline store
-                fs_features = await self._fetch_historical_features(
-                    fs, entity_df, feature_names
+            try:
+                # Try to update existing
+                self.iceberg_client.update_table(
+                    'feature_registry',
+                    namespace='ml',
+                    updates=feature_data,
+                    filter_expr=filter_expr
+                )
+            except:
+                # Insert new
+                df = pd.DataFrame([feature_data])
+                self.iceberg_client.write_table(
+                    df,
+                    'feature_registry',
+                    namespace='ml',
+                    mode='append'
                 )
                 
-                # Join features
-                result_df = result_df.merge(
-                    fs_features,
-                    on=["entity_id", "event_timestamp"],
-                    how="left"
+            # Publish update event
+            await self._publish_feature_event('feature_registered', feature)
+            
+            logger.info(f"Registered feature: {feature.name} (v{feature.version})")
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to register feature: {e}")
+            return False
+            
+    async def set_feature(self,
+                         entity_id: str,
+                         feature_name: str,
+                         value: Any,
+                         event_timestamp: Optional[datetime] = None) -> bool:
+        """
+        Set feature value for an entity (online)
+        
+        Args:
+            entity_id: Entity identifier
+            feature_name: Name of the feature
+            value: Feature value
+            event_timestamp: When the feature was generated
+            
+        Returns:
+            Success status
+        """
+        try:
+            # Validate feature exists
+            if feature_name not in self._feature_registry:
+                raise ValueError(f"Feature {feature_name} not registered")
+                
+            feature_def = self._feature_registry[feature_name]
+            
+            # Create feature value
+            feature_value = FeatureValue(
+                entity_id=entity_id,
+                feature_name=feature_name,
+                value=value,
+                event_timestamp=event_timestamp or datetime.utcnow()
+            )
+            
+            # Store in Ignite (online serving)
+            cache_key = f"{entity_id}:{feature_name}"
+            
+            # Convert value based on type
+            if feature_def.feature_type == FeatureType.EMBEDDING:
+                # Store embeddings as double array
+                cache_value = {
+                    'value': value.tolist() if hasattr(value, 'tolist') else value,
+                    'timestamp': feature_value.timestamp.isoformat(),
+                    'event_timestamp': feature_value.event_timestamp.isoformat()
+                }
+            else:
+                cache_value = {
+                    'value': value,
+                    'timestamp': feature_value.timestamp.isoformat(),
+                    'event_timestamp': feature_value.event_timestamp.isoformat()
+                }
+                
+            self.feature_cache.put(cache_key, cache_value)
+            
+            # Publish update event for downstream processing
+            await self._publish_feature_update(feature_value)
+            
+            # Update statistics
+            await self._update_feature_stats(feature_name, value)
+            
+            return True
+            
+        except Exception as e:
+            logger.error(f"Failed to set feature: {e}")
+            return False
+            
+    async def set_features(self,
+                          entity_id: str,
+                          features: Dict[str, Any],
+                          event_timestamp: Optional[datetime] = None) -> bool:
+        """
+        Set multiple features for an entity
+        
+        Args:
+            entity_id: Entity identifier
+            features: Dictionary of feature_name -> value
+            event_timestamp: When the features were generated
+            
+        Returns:
+            Success status
+        """
+        results = []
+        for feature_name, value in features.items():
+            result = await self.set_feature(
+                entity_id, 
+                feature_name, 
+                value, 
+                event_timestamp
+            )
+            results.append(result)
+            
+        return all(results)
+        
+    def get_feature(self,
+                    entity_id: str,
+                    feature_name: str,
+                    use_default: bool = True) -> Optional[Any]:
+        """
+        Get feature value for an entity (online)
+        
+        Args:
+            entity_id: Entity identifier
+            feature_name: Name of the feature
+            use_default: Whether to use default value if not found
+            
+        Returns:
+            Feature value or None
+        """
+        try:
+            # Check cache
+            cache_key = f"{entity_id}:{feature_name}"
+            cached = self.feature_cache.get(cache_key)
+            
+            if cached:
+                return cached['value']
+                
+            # Use default if enabled
+            if use_default and feature_name in self._feature_registry:
+                return self._feature_registry[feature_name].default_value
+                
+            return None
+            
+        except Exception as e:
+            logger.error(f"Failed to get feature: {e}")
+            return None
+            
+    def get_features(self,
+                     entity_id: str,
+                     feature_names: List[str],
+                     use_default: bool = True) -> Dict[str, Any]:
+        """
+        Get multiple features for an entity (online)
+        
+        Args:
+            entity_id: Entity identifier
+            feature_names: List of feature names
+            use_default: Whether to use default values
+            
+        Returns:
+            Dictionary of feature_name -> value
+        """
+        features = {}
+        for feature_name in feature_names:
+            value = self.get_feature(entity_id, feature_name, use_default)
+            if value is not None:
+                features[feature_name] = value
+                
+        return features
+        
+    def get_feature_batch(self,
+                          entity_ids: List[str],
+                          feature_names: List[str],
+                          use_default: bool = True) -> pd.DataFrame:
+        """
+        Get features for multiple entities (batch online serving)
+        
+        Args:
+            entity_ids: List of entity identifiers
+            feature_names: List of feature names
+            use_default: Whether to use default values
+            
+        Returns:
+            DataFrame with entities as rows and features as columns
+        """
+        data = []
+        
+        for entity_id in entity_ids:
+            row = {'entity_id': entity_id}
+            features = self.get_features(entity_id, feature_names, use_default)
+            row.update(features)
+            data.append(row)
+            
+        return pd.DataFrame(data)
+        
+    def get_historical_features(self,
+                               entity_ids: List[str],
+                               feature_names: List[str],
+                               start_time: datetime,
+                               end_time: Optional[datetime] = None) -> pd.DataFrame:
+        """
+        Get historical features (offline serving)
+        
+        Args:
+            entity_ids: List of entity identifiers
+            feature_names: List of feature names
+            start_time: Start of time range
+            end_time: End of time range (default: now)
+            
+        Returns:
+            DataFrame with historical feature values
+        """
+        try:
+            # Build filter expression
+            filters = [
+                self.iceberg_client.in_('entity_id', entity_ids),
+                self.iceberg_client.in_('feature_name', feature_names),
+                self.iceberg_client.gte('event_timestamp', start_time)
+            ]
+            
+            if end_time:
+                filters.append(self.iceberg_client.lte('event_timestamp', end_time))
+                
+            filter_expr = self.iceberg_client.and_(*filters)
+            
+            # Read from offline store
+            df = self.iceberg_client.read_table(
+                'feature_values',
+                namespace='ml',
+                filter_expr=filter_expr
+            )
+            
+            # Pivot to wide format
+            if not df.empty:
+                df_pivot = df.pivot_table(
+                    index=['entity_id', 'event_timestamp'],
+                    columns='feature_name',
+                    values='value',
+                    aggfunc='last'
+                ).reset_index()
+                
+                return df_pivot
+            else:
+                return pd.DataFrame()
+                
+        except Exception as e:
+            logger.error(f"Failed to get historical features: {e}")
+            return pd.DataFrame()
+            
+    def get_feature_statistics(self,
+                              feature_name: str,
+                              window: Optional[timedelta] = None) -> Dict[str, Any]:
+        """
+        Get feature statistics
+        
+        Args:
+            feature_name: Name of the feature
+            window: Time window for statistics (default: all time)
+            
+        Returns:
+            Dictionary of statistics
+        """
+        try:
+            stats_key = f"stats:{feature_name}"
+            
+            if window:
+                # Calculate time-windowed stats
+                stats_key = f"{stats_key}:{int(window.total_seconds())}"
+                
+            cached_stats = self.stats_cache.get(stats_key)
+            
+            if cached_stats:
+                return cached_stats
+            else:
+                # Calculate from offline store
+                return self._calculate_feature_statistics(feature_name, window)
+                
+        except Exception as e:
+            logger.error(f"Failed to get feature statistics: {e}")
+            return {}
+            
+    async def _publish_feature_update(self, feature_value: FeatureValue):
+        """Publish feature update to Pulsar"""
+        message = {
+            'entity_id': feature_value.entity_id,
+            'feature_name': feature_value.feature_name,
+            'value': feature_value.value,
+            'timestamp': feature_value.timestamp.isoformat(),
+            'event_timestamp': feature_value.event_timestamp.isoformat(),
+            'metadata': feature_value.metadata
+        }
+        
+        self.update_producer.send_async(
+            json.dumps(message).encode('utf-8'),
+            callback=lambda res, msg: logger.debug(f"Feature update published: {res}")
+        )
+        
+    async def _publish_feature_event(self, event_type: str, feature: FeatureDefinition):
+        """Publish feature registry event"""
+        message = {
+            'event_type': event_type,
+            'feature_name': feature.name,
+            'version': feature.version,
+            'timestamp': datetime.utcnow().isoformat()
+        }
+        
+        self.update_producer.send_async(
+            json.dumps(message).encode('utf-8'),
+            properties={'event_type': event_type}
+        )
+        
+    async def _update_feature_stats(self, feature_name: str, value: Any):
+        """Update feature statistics incrementally"""
+        stats_key = f"stats:{feature_name}"
+        
+        # Get current stats
+        current_stats = self.stats_cache.get(stats_key) or {
+            'count': 0,
+            'sum': 0,
+            'sum_squares': 0,
+            'min': float('inf'),
+            'max': float('-inf'),
+            'last_updated': datetime.utcnow().isoformat()
+        }
+        
+        # Update stats (for numeric features)
+        try:
+            if isinstance(value, (int, float)):
+                current_stats['count'] += 1
+                current_stats['sum'] += value
+                current_stats['sum_squares'] += value ** 2
+                current_stats['min'] = min(current_stats['min'], value)
+                current_stats['max'] = max(current_stats['max'], value)
+                current_stats['mean'] = current_stats['sum'] / current_stats['count']
+                current_stats['variance'] = (
+                    current_stats['sum_squares'] / current_stats['count'] - 
+                    current_stats['mean'] ** 2
                 )
-            
-            # Fill missing values based on feature definitions
-            result_df = await self._handle_missing_values(result_df, feature_sets)
-            
-            # Log feature serving
-            await self._log_feature_serving(
-                "historical", 
-                entity_df["entity_id"].unique().tolist(),
-                feature_names
-            )
-            
-            return result_df
-            
-        except Exception as e:
-            logger.error(f"Failed to get historical features: {str(e)}")
-            raise
-    
-    async def materialize_features(self,
-                                 view_id: str,
-                                 start_date: datetime,
-                                 end_date: datetime) -> Dict[str, Any]:
-        """Materialize features for a date range"""
-        try:
-            # Get feature view
-            view = await self._get_feature_view(view_id)
-            
-            if not view:
-                raise NotFoundError(f"Feature view {view_id} not found")
-            
-            # Create materialization job
-            job_id = f"mat_{view_id}_{datetime.utcnow().timestamp()}"
-            
-            job = {
-                "job_id": job_id,
-                "view_id": view_id,
-                "started_at": datetime.utcnow().isoformat(),
-                "status": "running",
-                "start_date": start_date.isoformat(),
-                "end_date": end_date.isoformat(),
-                "progress": 0
-            }
-            
-            self.materialization_jobs[job_id] = job
-            await self.cache.put(f"feature_store:mat_job:{job_id}", job)
-            
-            # Start materialization asynchronously
-            import asyncio
-            asyncio.create_task(self._run_materialization(job_id))
-            
-            # Publish event
-            await self.event_publisher.publish("feature_store.materialization.started", {
-                "job_id": job_id,
-                "view_id": view_id
-            })
-            
-            return job
-            
-        except Exception as e:
-            logger.error(f"Failed to start materialization: {str(e)}")
-            raise
-    
-    async def validate_features(self,
-                              feature_set_id: str,
-                              validation_rules: Optional[List[Dict]] = None) -> Dict[str, Any]:
-        """Validate feature quality"""
-        try:
-            feature_set = await self._get_feature_set(feature_set_id)
-            
-            if not feature_set:
-                raise NotFoundError(f"Feature set {feature_set_id} not found")
-            
-            # Default validation rules
-            if not validation_rules:
-                validation_rules = [
-                    {"type": "null_check", "threshold": 0.1},
-                    {"type": "range_check", "enabled": True},
-                    {"type": "uniqueness_check", "enabled": True}
-                ]
-            
-            # Sample data for validation
-            sample_data = await self._get_feature_sample(feature_set)
-            
-            # Run validation
-            validation_results = {
-                "feature_set_id": feature_set_id,
-                "validated_at": datetime.utcnow().isoformat(),
-                "results": {}
-            }
-            
-            for feature in feature_set["features"]:
-                feature_name = feature["name"]
-                feature_results = []
+                current_stats['std'] = current_stats['variance'] ** 0.5
                 
-                for rule in validation_rules:
-                    result = await self._validate_feature_rule(
-                        sample_data.get(feature_name, []),
-                        feature,
-                        rule
-                    )
-                    feature_results.append(result)
-                
-                validation_results["results"][feature_name] = feature_results
+            current_stats['last_updated'] = datetime.utcnow().isoformat()
             
-            # Calculate overall status
-            all_passed = all(
-                all(r["passed"] for r in results)
-                for results in validation_results["results"].values()
-            )
-            validation_results["status"] = "passed" if all_passed else "failed"
-            
-            # Store results
-            await self.cache.put(
-                f"feature_store:validation:{feature_set_id}:{datetime.utcnow().timestamp()}",
-                validation_results,
-                ttl=86400
-            )
-            
-            return validation_results
+            # Update cache
+            self.stats_cache.put(stats_key, current_stats)
             
         except Exception as e:
-            logger.error(f"Failed to validate features: {str(e)}")
-            raise
-    
-    async def get_feature_statistics(self, 
-                                   feature_set_id: str,
-                                   feature_name: str) -> Dict[str, Any]:
-        """Get statistics for a feature"""
+            logger.warning(f"Failed to update stats for {feature_name}: {e}")
+            
+    def _calculate_feature_statistics(self,
+                                     feature_name: str,
+                                     window: Optional[timedelta] = None) -> Dict[str, Any]:
+        """Calculate feature statistics from offline store"""
         try:
-            feature_set = await self._get_feature_set(feature_set_id)
+            # Build filter
+            filters = [self.iceberg_client.eq('feature_name', feature_name)]
             
-            # Get feature data sample
-            sample_data = await self._get_feature_sample(feature_set)
-            feature_values = sample_data.get(feature_name, [])
+            if window:
+                start_time = datetime.utcnow() - window
+                filters.append(self.iceberg_client.gte('event_timestamp', start_time))
+                
+            filter_expr = self.iceberg_client.and_(*filters)
             
-            if not feature_values:
-                return {"error": "No data available"}
+            # Read data
+            df = self.iceberg_client.read_table(
+                'feature_values',
+                namespace='ml',
+                columns=['value'],
+                filter_expr=filter_expr
+            )
             
+            if df.empty:
+                return {}
+                
             # Calculate statistics
-            stats = {
-                "feature_name": feature_name,
-                "count": len(feature_values),
-                "null_count": sum(1 for v in feature_values if v is None),
-                "null_ratio": sum(1 for v in feature_values if v is None) / len(feature_values)
-            }
+            feature_def = self._feature_registry.get(feature_name)
             
-            # Numeric features
-            numeric_values = [v for v in feature_values if isinstance(v, (int, float)) and v is not None]
-            if numeric_values:
-                stats.update({
-                    "min": float(np.min(numeric_values)),
-                    "max": float(np.max(numeric_values)),
-                    "mean": float(np.mean(numeric_values)),
-                    "median": float(np.median(numeric_values)),
-                    "std": float(np.std(numeric_values)),
-                    "percentiles": {
-                        "25": float(np.percentile(numeric_values, 25)),
-                        "50": float(np.percentile(numeric_values, 50)),
-                        "75": float(np.percentile(numeric_values, 75)),
-                        "95": float(np.percentile(numeric_values, 95))
-                    }
-                })
-            
-            # Categorical features
-            unique_values = list(set(v for v in feature_values if v is not None))
-            if len(unique_values) < 50:  # Only for low cardinality
-                value_counts = {}
-                for v in feature_values:
-                    if v is not None:
-                        value_counts[str(v)] = value_counts.get(str(v), 0) + 1
-                stats["value_distribution"] = value_counts
-                stats["unique_count"] = len(unique_values)
+            if feature_def and feature_def.feature_type == FeatureType.NUMERIC:
+                stats = {
+                    'count': len(df),
+                    'mean': df['value'].mean(),
+                    'std': df['value'].std(),
+                    'min': df['value'].min(),
+                    'max': df['value'].max(),
+                    'q25': df['value'].quantile(0.25),
+                    'q50': df['value'].quantile(0.50),
+                    'q75': df['value'].quantile(0.75),
+                    'unique': df['value'].nunique(),
+                    'null_count': df['value'].isnull().sum()
+                }
+            else:
+                # Categorical or other types
+                stats = {
+                    'count': len(df),
+                    'unique': df['value'].nunique(),
+                    'top_values': df['value'].value_counts().head(10).to_dict(),
+                    'null_count': df['value'].isnull().sum()
+                }
+                
+            # Cache stats
+            stats_key = f"stats:{feature_name}"
+            if window:
+                stats_key = f"{stats_key}:{int(window.total_seconds())}"
+                
+            self.stats_cache.put(stats_key, stats, ttl=3600)  # 1 hour TTL
             
             return stats
             
         except Exception as e:
-            logger.error(f"Failed to get feature statistics: {str(e)}")
-            raise
-    
-    def _validate_feature_definition(self, feature: Dict):
-        """Validate feature definition"""
-        required_fields = ["name", "dtype", "description"]
-        for field in required_fields:
-            if field not in feature:
-                raise ValidationError(f"Feature missing required field: {field}")
-        
-        # Validate data type
-        valid_dtypes = ["int", "float", "string", "bool", "timestamp", "list", "dict"]
-        if feature["dtype"] not in valid_dtypes:
-            raise ValidationError(f"Invalid dtype: {feature['dtype']}")
-    
-    async def _find_feature_sets(self, feature_names: List[str]) -> List[Dict]:
-        """Find feature sets containing requested features"""
-        found_sets = []
-        
-        for fs in self.feature_sets.values():
-            fs_feature_names = [f["name"] for f in fs["features"]]
-            if any(fname in fs_feature_names for fname in feature_names):
-                found_sets.append(fs)
-        
-        return found_sets
-    
-    async def _compute_features_online(self, 
-                                     feature_set: Dict,
-                                     entity_id: str,
-                                     feature_names: List[str]) -> Dict[str, Any]:
-        """Compute features on-demand for online serving"""
-        # In production, compute from source data
-        # For now, return mock features
-        computed = {}
-        for fname in feature_names:
-            for feature in feature_set["features"]:
-                if feature["name"] == fname:
-                    if feature["dtype"] == "float":
-                        computed[fname] = np.random.randn()
-                    elif feature["dtype"] == "int":
-                        computed[fname] = np.random.randint(0, 100)
-                    elif feature["dtype"] == "string":
-                        computed[fname] = f"value_{entity_id}"
-                    elif feature["dtype"] == "bool":
-                        computed[fname] = np.random.choice([True, False])
-        
-        # Cache computed features
-        cache_key = f"features:online:{feature_set['name']}:{entity_id}"
-        await self.cache.put(cache_key, computed, ttl=feature_set.get("ttl", 3600))
-        
-        return computed
-    
-    async def _fetch_historical_features(self,
-                                       feature_set: Dict,
-                                       entity_df: pd.DataFrame,
-                                       feature_names: List[str]) -> pd.DataFrame:
-        """Fetch historical features from offline store"""
-        # In production, query from data warehouse
-        # For now, generate mock historical data
-        result_data = []
-        
-        for _, row in entity_df.iterrows():
-            features = {
-                "entity_id": row["entity_id"],
-                "event_timestamp": row["event_timestamp"]
-            }
+            logger.error(f"Failed to calculate statistics: {e}")
+            return {}
             
-            for fname in feature_names:
-                for feature in feature_set["features"]:
-                    if feature["name"] == fname:
-                        # Generate time-aware mock data
-                        base_value = hash(f"{row['entity_id']}_{fname}") % 100
-                        time_offset = (datetime.now() - row["event_timestamp"]).days * 0.1
+    def _start_background_tasks(self):
+        """Start background processing tasks"""
+        # Feature update processor
+        task1 = asyncio.create_task(self._process_feature_updates())
+        self._background_tasks.append(task1)
+        
+        # Offline store sync
+        task2 = asyncio.create_task(self._sync_to_offline_store())
+        self._background_tasks.append(task2)
+        
+        # Stats refresh
+        task3 = asyncio.create_task(self._refresh_statistics())
+        self._background_tasks.append(task3)
+        
+        logger.info("Started feature store background tasks")
+        
+    async def _process_feature_updates(self):
+        """Process feature updates from Pulsar"""
+        while self._running:
+            try:
+                msg = self.update_consumer.receive(timeout_millis=1000)
+                
+                try:
+                    data = json.loads(msg.data().decode('utf-8'))
+                    
+                    # Process based on message type
+                    if msg.properties().get('event_type') == 'feature_registered':
+                        # Reload registry
+                        self._load_feature_registry()
+                    else:
+                        # Feature value update - already in cache
+                        pass
                         
-                        if feature["dtype"] == "float":
-                            features[fname] = base_value + time_offset + np.random.randn()
-                        elif feature["dtype"] == "int":
-                            features[fname] = int(base_value + time_offset)
-                        else:
-                            features[fname] = f"hist_{base_value}"
-            
-            result_data.append(features)
-        
-        return pd.DataFrame(result_data)
-    
-    async def _handle_missing_values(self, 
-                                   df: pd.DataFrame,
-                                   feature_sets: List[Dict]) -> pd.DataFrame:
-        """Handle missing values based on feature definitions"""
-        for fs in feature_sets:
-            for feature in fs["features"]:
-                fname = feature["name"]
-                if fname in df.columns:
-                    # Apply default value or imputation strategy
-                    if "default_value" in feature:
-                        df[fname].fillna(feature["default_value"], inplace=True)
-                    elif feature["dtype"] in ["int", "float"]:
-                        df[fname].fillna(0, inplace=True)
-                    elif feature["dtype"] == "string":
-                        df[fname].fillna("", inplace=True)
-        
-        return df
-    
-    async def _run_materialization(self, job_id: str):
-        """Run feature materialization job"""
-        try:
-            job = self.materialization_jobs[job_id]
-            view = await self._get_feature_view(job["view_id"])
-            
-            # Simulate materialization progress
-            for progress in [25, 50, 75, 100]:
-                await asyncio.sleep(2)  # Simulate work
+                    self.update_consumer.acknowledge(msg)
+                    
+                except Exception as e:
+                    logger.error(f"Error processing update: {e}")
+                    self.update_consumer.negative_acknowledge(msg)
+                    
+            except Exception:
+                # Timeout - continue
+                await asyncio.sleep(0.1)
                 
-                job["progress"] = progress
-                await self.cache.put(f"feature_store:mat_job:{job_id}", job)
+    async def _sync_to_offline_store(self):
+        """Periodically sync online features to offline store"""
+        while self._running:
+            try:
+                await asyncio.sleep(60)  # Sync every minute
                 
-                # Publish progress
-                await self.event_publisher.publish("feature_store.materialization.progress", {
-                    "job_id": job_id,
-                    "progress": progress
-                })
+                # Get all cached features
+                batch = []
+                
+                for key in self.feature_cache.get_all().keys():
+                    entity_id, feature_name = key.split(':', 1)
+                    value_data = self.feature_cache.get(key)
+                    
+                    if value_data:
+                        batch.append({
+                            'entity_id': entity_id,
+                            'feature_name': feature_name,
+                            'value': str(value_data['value']),  # Convert to string
+                            'timestamp': datetime.fromisoformat(value_data['timestamp']),
+                            'event_timestamp': datetime.fromisoformat(value_data['event_timestamp'])
+                        })
+                        
+                    # Write batch
+                    if len(batch) >= 1000:
+                        df = pd.DataFrame(batch)
+                        self.iceberg_client.write_table(
+                            df,
+                            'feature_values',
+                            namespace='ml',
+                            mode='append'
+                        )
+                        batch = []
+                        
+                # Write remaining
+                if batch:
+                    df = pd.DataFrame(batch)
+                    self.iceberg_client.write_table(
+                        df,
+                        'feature_values',
+                        namespace='ml',
+                        mode='append'
+                    )
+                    
+                logger.info(f"Synced {len(batch)} features to offline store")
+                
+            except Exception as e:
+                logger.error(f"Error syncing to offline store: {e}")
+                
+    async def _refresh_statistics(self):
+        """Periodically refresh feature statistics"""
+        while self._running:
+            try:
+                await asyncio.sleep(300)  # Every 5 minutes
+                
+                # Refresh stats for active features
+                for feature_name, feature_def in self._feature_registry.items():
+                    if feature_def.status == FeatureStatus.ACTIVE:
+                        # Refresh 1-hour window stats
+                        self._calculate_feature_statistics(
+                            feature_name,
+                            window=timedelta(hours=1)
+                        )
+                        
+            except Exception as e:
+                logger.error(f"Error refreshing statistics: {e}")
+                
+    def close(self):
+        """Clean up resources"""
+        self._running = False
+        
+        # Cancel background tasks
+        for task in self._background_tasks:
+            task.cancel()
             
-            # Complete job
-            job["status"] = "completed"
-            job["completed_at"] = datetime.utcnow().isoformat()
-            await self.cache.put(f"feature_store:mat_job:{job_id}", job)
-            
-            # Update view
-            view["materialized"] = True
-            view["last_materialized"] = datetime.utcnow().isoformat()
-            await self._update_feature_view(view["view_id"], view)
-            
-            # Publish completion
-            await self.event_publisher.publish("feature_store.materialization.completed", {
-                "job_id": job_id,
-                "view_id": job["view_id"]
-            })
-            
-        except Exception as e:
-            logger.error(f"Materialization job {job_id} failed: {str(e)}")
-            job["status"] = "failed"
-            job["error"] = str(e)
-            await self.cache.put(f"feature_store:mat_job:{job_id}", job)
-    
-    async def _validate_feature_rule(self, 
-                                   values: List[Any],
-                                   feature: Dict,
-                                   rule: Dict) -> Dict[str, Any]:
-        """Validate a feature against a rule"""
-        result = {
-            "rule_type": rule["type"],
-            "passed": True,
-            "details": {}
-        }
+        # Close connections
+        self.ignite_client.close()
+        self.pulsar_client.close()
         
-        if rule["type"] == "null_check":
-            null_ratio = sum(1 for v in values if v is None) / len(values) if values else 0
-            result["passed"] = null_ratio <= rule["threshold"]
-            result["details"]["null_ratio"] = null_ratio
-            result["details"]["threshold"] = rule["threshold"]
-        
-        elif rule["type"] == "range_check" and feature["dtype"] in ["int", "float"]:
-            numeric_values = [v for v in values if isinstance(v, (int, float)) and v is not None]
-            if numeric_values and "min_value" in feature:
-                min_val = min(numeric_values)
-                result["passed"] = result["passed"] and min_val >= feature["min_value"]
-                result["details"]["min_value"] = min_val
-            
-            if numeric_values and "max_value" in feature:
-                max_val = max(numeric_values)
-                result["passed"] = result["passed"] and max_val <= feature["max_value"]
-                result["details"]["max_value"] = max_val
-        
-        elif rule["type"] == "uniqueness_check" and feature.get("unique", False):
-            unique_ratio = len(set(values)) / len(values) if values else 1
-            result["passed"] = unique_ratio == 1.0
-            result["details"]["unique_ratio"] = unique_ratio
-        
-        return result
-    
-    async def _get_feature_sample(self, feature_set: Dict) -> Dict[str, List]:
-        """Get sample data for a feature set"""
-        # In production, sample from actual data source
-        # For now, generate mock sample
-        sample_size = 1000
-        sample_data = {}
-        
-        for feature in feature_set["features"]:
-            fname = feature["name"]
-            if feature["dtype"] == "float":
-                sample_data[fname] = list(np.random.randn(sample_size))
-            elif feature["dtype"] == "int":
-                sample_data[fname] = list(np.random.randint(0, 100, sample_size))
-            elif feature["dtype"] == "string":
-                sample_data[fname] = [f"val_{i}" for i in range(sample_size)]
-            elif feature["dtype"] == "bool":
-                sample_data[fname] = list(np.random.choice([True, False], sample_size))
-            
-            # Add some nulls
-            null_indices = np.random.choice(sample_size, int(sample_size * 0.05))
-            for idx in null_indices:
-                sample_data[fname][idx] = None
-        
-        return sample_data
-    
-    async def _log_feature_serving(self, 
-                                 serving_type: str,
-                                 entity_ids: List[str],
-                                 feature_names: List[str]):
-        """Log feature serving for monitoring"""
-        await self.event_publisher.publish("feature_store.features.served", {
-            "serving_type": serving_type,
-            "entity_count": len(entity_ids),
-            "feature_count": len(feature_names),
-            "features": feature_names,
-            "timestamp": datetime.utcnow().isoformat()
-        })
-    
-    async def _register_in_catalog(self, feature_set: Dict):
-        """Register feature set in data catalog"""
-        # In production, integrate with data catalog service
-        await self.event_publisher.publish("catalog.asset.register", {
-            "asset_type": "feature_set",
-            "asset_id": feature_set["feature_set_id"],
-            "name": feature_set["name"],
-            "metadata": {
-                "features": len(feature_set["features"]),
-                "entity": feature_set["entity"],
-                "source": feature_set["source"]
-            }
-        })
-    
-    async def _get_feature_set(self, feature_set_id: str) -> Optional[Dict]:
-        """Get feature set by ID"""
-        if feature_set_id in self.feature_sets:
-            return self.feature_sets[feature_set_id]
-        
-        cached = await self.cache.get(f"feature_store:set:{feature_set_id}")
-        if cached:
-            self.feature_sets[feature_set_id] = cached
-            return cached
-        
-        return None
-    
-    async def _get_feature_set_by_name(self, name: str) -> Optional[Dict]:
-        """Get feature set by name"""
-        for fs in self.feature_sets.values():
-            if fs["name"] == name:
-                return fs
-        
-        # Search in cache
-        # In production, query from database
-        return None
-    
-    async def _get_feature_view(self, view_id: str) -> Optional[Dict]:
-        """Get feature view by ID"""
-        if view_id in self.feature_views:
-            return self.feature_views[view_id]
-        
-        cached = await self.cache.get(f"feature_store:view:{view_id}")
-        if cached:
-            self.feature_views[view_id] = cached
-            return cached
-        
-        return None
-    
-    async def _update_feature_view(self, view_id: str, view: Dict):
-        """Update feature view"""
-        view["updated_at"] = datetime.utcnow().isoformat()
-        self.feature_views[view_id] = view
-        await self.cache.put(f"feature_store:view:{view_id}", view) 
+        logger.info("Feature store closed") 

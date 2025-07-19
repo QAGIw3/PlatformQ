@@ -604,14 +604,22 @@ class ComputeFuturesEngine:
             timeout=30.0
         )
         
+        # Provider health tracking
+        self.provider_health_scores: Dict[str, float] = {}  # provider_id -> health score (0-100)
+        self.provider_health_history: Dict[str, List[Dict]] = defaultdict(list)
+        self.provider_last_seen: Dict[str, datetime] = {}
+        self.provider_regions: Dict[str, str] = {}  # provider_id -> region
+        
         # Background tasks
         self._monitoring_task = None
         self._settlement_task = None
+        self._health_monitoring_task = None
         
     async def start(self):
         """Start background monitoring and settlement tasks"""
         self._monitoring_task = asyncio.create_task(self._monitor_sla_loop())
         self._settlement_task = asyncio.create_task(self._settlement_loop())
+        self._health_monitoring_task = asyncio.create_task(self._monitor_provider_health_loop())
         
     async def stop(self):
         """Stop background tasks"""
@@ -619,6 +627,8 @@ class ComputeFuturesEngine:
             self._monitoring_task.cancel()
         if self._settlement_task:
             self._settlement_task.cancel()
+        if self._health_monitoring_task:
+            self._health_monitoring_task.cancel()
         await self.http_client.aclose()
         
     async def get_day_ahead_market(
@@ -834,55 +844,56 @@ class ComputeFuturesEngine:
         """Handle failed provisioning with automatic failover"""
         settlement.provisioning_status = "failed"
         
-        # Try failover providers
-        failover_providers = self.failover_providers.get(
-            settlement.resource_type, []
+        # Get failover providers sorted by health score
+        failover_providers = await self._get_healthy_failover_providers(
+            settlement.resource_type,
+            settlement.provider_id
         )
         
-        # Debug: log the order of providers
-        logger.info(f"Failover providers for {settlement.resource_type}: {failover_providers}")
+        logger.info(f"Healthy failover providers for {settlement.resource_type}: {failover_providers}")
         
         for provider_id in failover_providers:
-            if provider_id != settlement.provider_id:
-                try:
-                    logger.info(f"Attempting failover to provider {provider_id}")
+            try:
+                health_score = self.provider_health_scores.get(provider_id, 100.0)
+                logger.info(f"Attempting failover to provider {provider_id} (health: {health_score:.1f}%)")
+                
+                response = await self.http_client.post(
+                    "/api/v1/compute/provision",
+                    json={
+                        "settlement_id": settlement.settlement_id,
+                        "resource_type": settlement.resource_type,
+                        "quantity": str(settlement.quantity),
+                        "duration_hours": settlement.duration_hours,
+                        "start_time": settlement.delivery_start.isoformat(),
+                        "provider_id": provider_id,
+                        "buyer_id": settlement.buyer_id,
+                        "is_failover": True
+                    }
+                )
+                
+                if response.status_code == 200:
+                    settlement.failover_used = True
+                    settlement.failover_provider = provider_id
+                    settlement.provisioning_status = "provisioned"
+                    await self._store_settlement(settlement)
                     
-                    response = await self.http_client.post(
-                        "/api/v1/compute/provision",
-                        json={
+                    # Notify about failover
+                    await self.pulsar.publish(
+                        "persistent://platformq/compute/failover-events",
+                        {
                             "settlement_id": settlement.settlement_id,
-                            "resource_type": settlement.resource_type,
-                            "quantity": str(settlement.quantity),
-                            "duration_hours": settlement.duration_hours,
-                            "start_time": settlement.delivery_start.isoformat(),
-                            "provider_id": provider_id,
-                            "buyer_id": settlement.buyer_id,
-                            "is_failover": True
+                            "original_provider": settlement.provider_id,
+                            "failover_provider": provider_id,
+                            "provider_health_score": health_score,
+                            "timestamp": datetime.utcnow().isoformat()
                         }
                     )
+                    break
                     
-                    if response.status_code == 200:
-                        settlement.failover_used = True
-                        settlement.failover_provider = provider_id
-                        settlement.provisioning_status = "provisioned"
-                        await self._store_settlement(settlement)
-                        
-                        # Notify about failover
-                        await self.pulsar.publish(
-                            "persistent://platformq/compute/failover-events",
-                            {
-                                "settlement_id": settlement.settlement_id,
-                                "original_provider": settlement.provider_id,
-                                "failover_provider": provider_id,
-                                "timestamp": datetime.utcnow().isoformat()
-                            }
-                        )
-                        break
-                        
-                except Exception as e:
-                    logger.error(f"Failover to {provider_id} failed: {e}")
-                    continue
-                    
+            except Exception as e:
+                logger.error(f"Failover to {provider_id} failed: {e}")
+                continue
+                
         if settlement.provisioning_status == "failed":
             # Apply liquidated damages
             await self._apply_liquidated_damages(settlement)
@@ -1384,4 +1395,192 @@ class ComputeFuturesEngine:
         await self.ignite.set(
             f"compute_settlement:{settlement.settlement_id}",
             settlement.__dict__
-        ) 
+        )
+        
+    async def _get_healthy_failover_providers(
+        self,
+        resource_type: str,
+        exclude_provider: str
+    ) -> List[str]:
+        """Get failover providers sorted by health score"""
+        all_providers = self.failover_providers.get(resource_type, [])
+        
+        # Filter out excluded provider and unhealthy providers
+        healthy_providers = []
+        for provider_id in all_providers:
+            if provider_id == exclude_provider:
+                continue
+                
+            health_score = self.provider_health_scores.get(provider_id, 100.0)
+            
+            # Only consider providers with health score > 50%
+            if health_score > 50.0:
+                healthy_providers.append((provider_id, health_score))
+                
+        # Sort by health score (descending)
+        healthy_providers.sort(key=lambda x: x[1], reverse=True)
+        
+        return [provider_id for provider_id, _ in healthy_providers]
+        
+    async def _monitor_provider_health_loop(self):
+        """Background task to monitor provider health"""
+        while True:
+            try:
+                # Subscribe to provider health events
+                await self._process_health_events()
+                
+                # Check for stale providers
+                await self._check_stale_providers()
+                
+                await asyncio.sleep(60)  # Check every minute
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in provider health monitoring: {e}")
+                await asyncio.sleep(30)
+                
+    async def _process_health_events(self):
+        """Process health events from Flink CEP"""
+        try:
+            # In practice, subscribe to Pulsar topic for health events
+            # For now, simulate with cache lookups
+            
+            health_events = await self.ignite.get_all(
+                pattern="provider_health:*",
+                limit=100
+            )
+            
+            for key, event in health_events.items():
+                provider_id = event.get("provider_id")
+                health_score = event.get("health_score", 100.0)
+                timestamp = datetime.fromisoformat(event.get("timestamp"))
+                
+                # Update health score
+                self.provider_health_scores[provider_id] = health_score
+                self.provider_last_seen[provider_id] = timestamp
+                
+                # Store health history
+                history = self.provider_health_history[provider_id]
+                history.append({
+                    "score": health_score,
+                    "timestamp": timestamp
+                })
+                
+                # Keep only last 100 entries
+                if len(history) > 100:
+                    self.provider_health_history[provider_id] = history[-100:]
+                    
+        except Exception as e:
+            logger.error(f"Error processing health events: {e}")
+            
+    async def _check_stale_providers(self):
+        """Check for providers that haven't reported health recently"""
+        now = datetime.utcnow()
+        stale_threshold = timedelta(minutes=5)
+        
+        for provider_id, last_seen in list(self.provider_last_seen.items()):
+            if now - last_seen > stale_threshold:
+                # Mark provider as unhealthy
+                self.provider_health_scores[provider_id] = 0.0
+                
+                logger.warning(f"Provider {provider_id} marked as unhealthy - no health reports for {(now - last_seen).seconds} seconds")
+                
+                # Publish provider down event
+                await self.pulsar.publish(
+                    "persistent://platformq/compute/provider-health",
+                    {
+                        "provider_id": provider_id,
+                        "event_type": "PROVIDER_DOWN",
+                        "health_score": 0.0,
+                        "reason": "no_health_reports",
+                        "timestamp": now.isoformat()
+                    }
+                )
+                
+    async def update_provider_health(
+        self,
+        provider_id: str,
+        health_score: float,
+        metrics: Optional[Dict] = None
+    ):
+        """Update provider health score from external monitoring"""
+        self.provider_health_scores[provider_id] = health_score
+        self.provider_last_seen[provider_id] = datetime.utcnow()
+        
+        # Store in cache for other services
+        await self.ignite.set(
+            f"provider_health:{provider_id}",
+            {
+                "provider_id": provider_id,
+                "health_score": health_score,
+                "metrics": metrics or {},
+                "timestamp": datetime.utcnow().isoformat()
+            },
+            ttl=300  # 5 minute TTL
+        )
+        
+    async def get_provider_health_trend(
+        self,
+        provider_id: str,
+        hours: int = 24
+    ) -> Dict[str, Any]:
+        """Get provider health trend over time"""
+        history = self.provider_health_history.get(provider_id, [])
+        
+        if not history:
+            return {
+                "provider_id": provider_id,
+                "current_health": self.provider_health_scores.get(provider_id, 0.0),
+                "trend": "unknown",
+                "average_health": 0.0,
+                "volatility": 0.0
+            }
+            
+        # Filter by time window
+        cutoff = datetime.utcnow() - timedelta(hours=hours)
+        recent_history = [
+            h for h in history 
+            if h["timestamp"] > cutoff
+        ]
+        
+        if not recent_history:
+            return {
+                "provider_id": provider_id,
+                "current_health": self.provider_health_scores.get(provider_id, 0.0),
+                "trend": "no_data",
+                "average_health": 0.0,
+                "volatility": 0.0
+            }
+            
+        # Calculate metrics
+        scores = [h["score"] for h in recent_history]
+        avg_health = sum(scores) / len(scores)
+        
+        # Calculate trend
+        if len(scores) >= 2:
+            recent_avg = sum(scores[-5:]) / min(5, len(scores))
+            older_avg = sum(scores[:-5]) / max(1, len(scores) - 5)
+            
+            if recent_avg > older_avg + 5:
+                trend = "improving"
+            elif recent_avg < older_avg - 5:
+                trend = "degrading"
+            else:
+                trend = "stable"
+        else:
+            trend = "insufficient_data"
+            
+        # Calculate volatility (standard deviation)
+        mean = avg_health
+        variance = sum((x - mean) ** 2 for x in scores) / len(scores)
+        volatility = variance ** 0.5
+        
+        return {
+            "provider_id": provider_id,
+            "current_health": self.provider_health_scores.get(provider_id, 0.0),
+            "trend": trend,
+            "average_health": avg_health,
+            "volatility": volatility,
+            "sample_count": len(recent_history)
+        } 

@@ -163,4 +163,14 @@ __all__ = [
     "SeaTunnelClient",
     "InsurancePoolClient",
     'BlockchainEventBridgeClient',
+    'get_synthetic_derivatives_engine',
 ] 
+
+# Import main module to get engine instances
+import app.main as main
+
+def get_synthetic_derivatives_engine():
+    """Get synthetic derivatives engine instance"""
+    if main.synthetic_derivatives_engine is None:
+        raise RuntimeError("Synthetic derivatives engine not initialized")
+    return main.synthetic_derivatives_engine 

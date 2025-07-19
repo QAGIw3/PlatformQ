@@ -83,6 +83,7 @@ class MeshDecimator:
         # Caches for performance
         self.quadric_cache = {}
         self.edge_cache = {}
+        self.edge_faces_cache = {}  # Maps edge -> (face_indices, normals)
         
     async def decimate_mesh(self,
                           vertices: np.ndarray,
@@ -153,6 +154,9 @@ class MeshDecimator:
         """
         Quadric error metric decimation (Garland & Heckbert)
         """
+        # Build edge-face adjacency cache
+        self._build_edge_faces_cache(vertices, faces)
+        
         # Initialize quadrics for each vertex
         quadrics = self._compute_vertex_quadrics(vertices, faces)
         
@@ -259,6 +263,32 @@ class MeshDecimator:
                     quadrics[vid] += Q
                     
         return dict(quadrics)
+        
+    def _build_edge_faces_cache(self, vertices: np.ndarray, faces: np.ndarray):
+        """Build cache mapping edges to adjacent faces and their normals"""
+        self.edge_faces_cache.clear()
+        
+        for face_idx, face in enumerate(faces):
+            # Compute face normal
+            v0, v1, v2 = vertices[face[0]], vertices[face[1]], vertices[face[2]]
+            normal = np.cross(v1 - v0, v2 - v0)
+            normal_len = np.linalg.norm(normal)
+            if normal_len > 1e-10:
+                normal = normal / normal_len
+            else:
+                normal = np.array([0.0, 0.0, 1.0])  # Degenerate face
+                
+            # Add face to each edge
+            for i in range(3):
+                v1_idx = face[i]
+                v2_idx = face[(i + 1) % 3]
+                edge_key = (min(v1_idx, v2_idx), max(v1_idx, v2_idx))
+                
+                if edge_key not in self.edge_faces_cache:
+                    self.edge_faces_cache[edge_key] = ([], [])
+                    
+                self.edge_faces_cache[edge_key][0].append(face_idx)
+                self.edge_faces_cache[edge_key][1].append(normal)
         
     def _build_edge_list(self,
                         vertices: np.ndarray,
@@ -371,6 +401,66 @@ class MeshDecimator:
                     return False
                     
         return True
+        
+    def _interpolate_vertex_attributes(self,
+                                     original_mesh: trimesh.Trimesh,
+                                     simplified_mesh: trimesh.Trimesh,
+                                     normals: Optional[np.ndarray] = None,
+                                     colors: Optional[np.ndarray] = None,
+                                     uvs: Optional[np.ndarray] = None) -> Dict[str, np.ndarray]:
+        """Interpolate vertex attributes from original to simplified mesh"""
+        result = {}
+        
+        # Build KD-tree for nearest neighbor search
+        tree = cKDTree(original_mesh.vertices)
+        
+        # Find nearest original vertices for each simplified vertex
+        distances, indices = tree.query(simplified_mesh.vertices, k=3)
+        
+        # Compute weights based on inverse distance
+        epsilon = 1e-6
+        weights = 1.0 / (distances + epsilon)
+        weights = weights / np.sum(weights, axis=1, keepdims=True)
+        
+        # Interpolate normals
+        if normals is not None:
+            interpolated_normals = np.zeros((len(simplified_mesh.vertices), 3))
+            for i, (idx, w) in enumerate(zip(indices, weights)):
+                # Weighted average of normals
+                for j, (vi, wi) in enumerate(zip(idx, w)):
+                    interpolated_normals[i] += normals[vi] * wi
+                # Renormalize
+                norm = np.linalg.norm(interpolated_normals[i])
+                if norm > epsilon:
+                    interpolated_normals[i] /= norm
+                else:
+                    interpolated_normals[i] = [0, 0, 1]  # Default up
+            result["normals"] = interpolated_normals
+            
+        # Interpolate colors
+        if colors is not None:
+            interpolated_colors = np.zeros((len(simplified_mesh.vertices), colors.shape[1]))
+            for i, (idx, w) in enumerate(zip(indices, weights)):
+                for j, (vi, wi) in enumerate(zip(idx, w)):
+                    interpolated_colors[i] += colors[vi] * wi
+            # Clamp colors to valid range
+            if colors.dtype == np.uint8:
+                interpolated_colors = np.clip(interpolated_colors, 0, 255).astype(np.uint8)
+            else:
+                interpolated_colors = np.clip(interpolated_colors, 0, 1)
+            result["colors"] = interpolated_colors
+            
+        # Interpolate UVs
+        if uvs is not None:
+            interpolated_uvs = np.zeros((len(simplified_mesh.vertices), 2))
+            for i, (idx, w) in enumerate(zip(indices, weights)):
+                for j, (vi, wi) in enumerate(zip(idx, w)):
+                    interpolated_uvs[i] += uvs[vi] * wi
+            # Clamp UVs to valid range
+            interpolated_uvs = np.clip(interpolated_uvs, 0, 1)
+            result["uvs"] = interpolated_uvs
+            
+        return result
         
     def _collapse_edge(self,
                       edge: Edge,
@@ -598,35 +688,111 @@ class MeshDecimator:
                                       colors: Optional[np.ndarray] = None,
                                       uvs: Optional[np.ndarray] = None) -> Dict[str, Any]:
         """
-        Simple edge collapse without quadric error
+        Edge collapse with proper attribute handling
         """
-        # Use trimesh for convenience
+        # Create mesh with attributes
         mesh = trimesh.Trimesh(vertices=vertices, faces=faces)
         
-        # Simplify
-        simplified = mesh.simplify_quadric_decimation(target_vertices)
-        
-        result = {
-            "vertices": simplified.vertices,
-            "faces": simplified.faces
-        }
-        
-        # TODO: Properly handle attributes in trimesh decimation
+        # Add vertex attributes if provided
+        if normals is not None:
+            mesh.vertex_normals = normals
+        if colors is not None:
+            mesh.visual.vertex_colors = colors
+            
+        # Store UV coordinates as vertex attributes
+        if uvs is not None:
+            mesh.vertex_attributes['texture_uv'] = uvs
+            
+        # Perform decimation preserving attributes
+        try:
+            # Use trimesh's quadric decimation which preserves attributes
+            simplified = mesh.simplify_quadric_decimation(
+                target_vertices,
+                vertex_attribute_names=['texture_uv'] if uvs is not None else None
+            )
+            
+            result = {
+                "vertices": simplified.vertices,
+                "faces": simplified.faces
+            }
+            
+            # Extract preserved attributes
+            if normals is not None:
+                # Recompute normals for simplified mesh
+                simplified.vertex_normals
+                result["normals"] = simplified.vertex_normals
+                
+            if colors is not None and hasattr(simplified.visual, 'vertex_colors'):
+                result["colors"] = simplified.visual.vertex_colors
+                
+            if uvs is not None and 'texture_uv' in simplified.vertex_attributes:
+                result["uvs"] = simplified.vertex_attributes['texture_uv']
+                
+        except Exception as e:
+            logger.warning(f"Trimesh decimation failed: {e}, using basic decimation")
+            # Fallback to basic decimation
+            simplified = mesh.simplify_quadric_decimation(target_vertices)
+            result = {
+                "vertices": simplified.vertices,
+                "faces": simplified.faces
+            }
+            
+            # Interpolate attributes manually
+            if normals is not None or colors is not None or uvs is not None:
+                result.update(self._interpolate_vertex_attributes(
+                    mesh, simplified, normals, colors, uvs
+                ))
         
         return result
         
     def _is_boundary_edge(self, v1: int, v2: int) -> bool:
         """Check if edge is on mesh boundary"""
-        # TODO: Implement boundary detection
-        return False
+        # An edge is on the boundary if it belongs to only one face
+        edge_key = (min(v1, v2), max(v1, v2))
+        
+        # Get faces adjacent to this edge
+        edge_data = self.edge_faces_cache.get(edge_key)
+        if not edge_data:
+            return False
+            
+        face_indices, _ = edge_data
+        
+        # Boundary edges have exactly one adjacent face
+        return len(face_indices) == 1
         
     def _compute_feature_angle(self,
                               v1: int,
                               v2: int,
                               vertices: np.ndarray) -> float:
         """Compute feature angle between adjacent faces"""
-        # TODO: Implement feature angle computation
-        return 0.0
+        edge_key = (min(v1, v2), max(v1, v2))
+        
+        # Get faces adjacent to this edge
+        edge_data = self.edge_faces_cache.get(edge_key)
+        if not edge_data or len(edge_data[0]) < 2:
+            return 0.0  # Not a feature edge
+            
+        face_indices = edge_data[0]
+        if len(face_indices) != 2:
+            return np.pi  # Non-manifold edge, treat as sharp feature
+            
+        # Get face normals
+        normals = edge_data[1]
+        if len(normals) < 2:
+            return 0.0
+            
+        # Compute angle between face normals
+        n1, n2 = normals[0], normals[1]
+        
+        # Normalize (should already be normalized, but ensure)
+        n1 = n1 / (np.linalg.norm(n1) + 1e-10)
+        n2 = n2 / (np.linalg.norm(n2) + 1e-10)
+        
+        # Compute angle
+        cos_angle = np.clip(np.dot(n1, n2), -1.0, 1.0)
+        angle = np.arccos(cos_angle)
+        
+        return angle
         
     def _would_create_duplicate_face(self,
                                    face1: np.ndarray,

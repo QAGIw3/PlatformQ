@@ -1,0 +1,164 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "seatunnel.fullname" . }}-master
+  labels:
+    {{- include "seatunnel.labels" . | nindent 4 }}
+    component: master
+spec:
+  replicas: {{ .Values.replicaCount.master }}
+  selector:
+    matchLabels:
+      {{- include "seatunnel.selectorLabels" . | nindent 6 }}
+      component: master
+  template:
+    metadata:
+      labels:
+        {{- include "seatunnel.selectorLabels" . | nindent 8 }}
+        component: master
+    spec:
+      serviceAccountName: {{ include "seatunnel.serviceAccountName" . }}
+      containers:
+      - name: seatunnel-master
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["./bin/seatunnel-cluster.sh"]
+        args: ["master"]
+        env:
+        - name: ST_ENGINE
+          value: {{ .Values.engine }}
+        - name: FLINK_PROPERTIES
+          value: "jobmanager.rpc.address={{ include "seatunnel.fullname" . }}-master"
+        - name: JVM_OPTS
+          value: "-Xmx{{ .Values.flink.jobmanager.memory }} -Xms{{ .Values.flink.jobmanager.memory }}"
+        {{- range .Values.env }}
+        - name: {{ .name }}
+          {{- if .value }}
+          value: {{ .value | quote }}
+          {{- else if .valueFrom }}
+          valueFrom:
+            {{- toYaml .valueFrom | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        ports:
+        - name: api
+          containerPort: {{ .Values.service.ports.api }}
+        - name: flink-ui
+          containerPort: {{ .Values.service.ports.flink }}
+        - name: rpc
+          containerPort: 6123
+        - name: blob
+          containerPort: 6124
+        resources:
+          {{- toYaml .Values.resources.master | nindent 10 }}
+        volumeMounts:
+        - name: config
+          mountPath: /opt/seatunnel/config
+        - name: jobs
+          mountPath: /opt/seatunnel/jobs
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          mountPath: {{ .Values.persistence.mountPath }}
+        {{- end }}
+        livenessProbe:
+          httpGet:
+            path: /overview
+            port: flink-ui
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          httpGet:
+            path: /overview
+            port: flink-ui
+          initialDelaySeconds: 30
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "seatunnel.fullname" . }}-config
+      - name: jobs
+        configMap:
+          name: {{ include "seatunnel.fullname" . }}-jobs
+      {{- if .Values.persistence.enabled }}
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "seatunnel.fullname" . }}-data
+      {{- end }}
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: {{ include "seatunnel.fullname" . }}-worker
+  labels:
+    {{- include "seatunnel.labels" . | nindent 4 }}
+    component: worker
+spec:
+  replicas: {{ .Values.replicaCount.worker }}
+  selector:
+    matchLabels:
+      {{- include "seatunnel.selectorLabels" . | nindent 6 }}
+      component: worker
+  template:
+    metadata:
+      labels:
+        {{- include "seatunnel.selectorLabels" . | nindent 8 }}
+        component: worker
+    spec:
+      serviceAccountName: {{ include "seatunnel.serviceAccountName" . }}
+      containers:
+      - name: seatunnel-worker
+        image: "{{ .Values.image.repository }}:{{ .Values.image.tag }}"
+        imagePullPolicy: {{ .Values.image.pullPolicy }}
+        command: ["./bin/seatunnel-cluster.sh"]
+        args: ["worker"]
+        env:
+        - name: ST_ENGINE
+          value: {{ .Values.engine }}
+        - name: FLINK_PROPERTIES
+          value: "jobmanager.rpc.address={{ include "seatunnel.fullname" . }}-master"
+        - name: JVM_OPTS
+          value: "-Xmx{{ .Values.flink.taskmanager.memory }} -Xms{{ .Values.flink.taskmanager.memory }}"
+        - name: TASK_MANAGER_NUMBER_OF_TASK_SLOTS
+          value: "{{ .Values.flink.taskmanager.numberOfTaskSlots }}"
+        {{- range .Values.env }}
+        - name: {{ .name }}
+          {{- if .value }}
+          value: {{ .value | quote }}
+          {{- else if .valueFrom }}
+          valueFrom:
+            {{- toYaml .valueFrom | nindent 12 }}
+          {{- end }}
+        {{- end }}
+        ports:
+        - name: rpc
+          containerPort: 6122
+        - name: data
+          containerPort: 6121
+        resources:
+          {{- toYaml .Values.resources.worker | nindent 10 }}
+        volumeMounts:
+        - name: config
+          mountPath: /opt/seatunnel/config
+        {{- if .Values.persistence.enabled }}
+        - name: data
+          mountPath: {{ .Values.persistence.mountPath }}
+        {{- end }}
+        livenessProbe:
+          tcpSocket:
+            port: rpc
+          initialDelaySeconds: 30
+          periodSeconds: 10
+        readinessProbe:
+          tcpSocket:
+            port: rpc
+          initialDelaySeconds: 30
+          periodSeconds: 5
+      volumes:
+      - name: config
+        configMap:
+          name: {{ include "seatunnel.fullname" . }}-config
+      {{- if .Values.persistence.enabled }}
+      - name: data
+        persistentVolumeClaim:
+          claimName: {{ include "seatunnel.fullname" . }}-data
+      {{- end }} 

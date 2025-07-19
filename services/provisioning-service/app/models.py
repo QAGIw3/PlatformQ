@@ -19,6 +19,7 @@ class ProviderType(str, Enum):
     ON_PREMISE = "on_premise"
     EDGE = "edge"
     PARTNER = "partner"
+    CLOUDSTACK = "cloudstack"
 
 
 class ResourceType(str, Enum):

@@ -1,0 +1,22 @@
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: {{ include "seatunnel.fullname" . }}-jobs
+  labels:
+    {{- include "seatunnel.labels" . | nindent 4 }}
+data:
+  {{- if .Values.configMaps.computeFuturesSync.enabled }}
+  compute-futures-sync.conf: |
+{{ .Values.configMaps.computeFuturesSync.config | indent 4 }}
+  {{- end }}
+  
+  {{- if .Values.configMaps.platformCdcSync.enabled }}
+  platform-cdc-sync.conf: |
+{{ .Values.configMaps.platformCdcSync.config | indent 4 }}
+  {{- end }}
+  
+  # Additional job configurations can be added here
+  {{- range $name, $config := .Values.additionalJobs }}
+  {{ $name }}.conf: |
+{{ $config | indent 4 }}
+  {{- end }} 

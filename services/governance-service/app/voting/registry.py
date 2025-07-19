@@ -5,9 +5,12 @@ Registry for voting strategies.
 import logging
 from typing import Dict, Optional, Type
 
-from .base import VotingStrategy, VotingMechanism
+from .strategy import VotingStrategy, VotingMechanism
 from .simple import SimpleVoting
 from .quadratic import QuadraticVoting
+from .conviction import ConvictionVoting
+from .delegation import VoteDelegation
+from .time_weighted import TimeWeightedVoting
 
 logger = logging.getLogger(__name__)
 
@@ -26,10 +29,9 @@ class VotingStrategyRegistry:
         """Register default voting strategies"""
         self.register(VotingMechanism.SIMPLE, SimpleVoting)
         self.register(VotingMechanism.QUADRATIC, QuadraticVoting)
-        # TODO: Register other strategies when implemented
-        # self.register(VotingMechanism.CONVICTION, ConvictionVoting)
-        # self.register(VotingMechanism.DELEGATION, DelegationVoting)
-        # self.register(VotingMechanism.TIME_WEIGHTED, TimeWeightedVoting)
+        self.register(VotingMechanism.CONVICTION, ConvictionVoting)
+        self.register(VotingMechanism.DELEGATION, VoteDelegation)
+        self.register(VotingMechanism.TIME_WEIGHTED, TimeWeightedVoting)
         
     def register(self, mechanism: VotingMechanism, strategy_class: Type[VotingStrategy]):
         """Register a voting strategy"""

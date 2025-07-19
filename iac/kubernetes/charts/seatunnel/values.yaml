@@ -1,0 +1,255 @@
+# SeaTunnel Helm Chart Values
+
+replicaCount:
+  master: 1
+  worker: 3
+
+image:
+  repository: apache/seatunnel
+  tag: "2.3.3-flink-1.17"
+  pullPolicy: IfNotPresent
+
+engine: flink
+
+flink:
+  jobmanager:
+    memory: "2g"
+    cpu: "2"
+  taskmanager:
+    memory: "4g"
+    cpu: "4"
+    numberOfTaskSlots: 2
+
+resources:
+  master:
+    limits:
+      memory: "4Gi"
+      cpu: "2"
+    requests:
+      memory: "2Gi"
+      cpu: "1"
+  worker:
+    limits:
+      memory: "6Gi"
+      cpu: "4"
+    requests:
+      memory: "4Gi"
+      cpu: "2"
+
+persistence:
+  enabled: true
+  storageClass: "fast-ssd"
+  size: "100Gi"
+  mountPath: "/opt/seatunnel/data"
+
+configMaps:
+  # Compute Futures Sync Job
+  computeFuturesSync:
+    enabled: true
+    schedule: "*/5 * * * *"  # Every 5 minutes
+    config: |
+      env {
+        execution.parallelism = 4
+        job.mode = "STREAMING"
+        checkpoint.interval = 60000
+      }
+      
+      source {
+        Pulsar {
+          result_table_name = "pulsar_compute_events"
+          service_url = "pulsar://pulsar:6650"
+          admin_url = "http://pulsar:8080"
+          topics = [
+            "persistent://platformq/compute/settlement-initiated",
+            "persistent://platformq/compute/sla-violations",
+            "persistent://platformq/compute/failover-events"
+          ]
+          subscription_name = "seatunnel-compute-futures"
+          format = "json"
+        }
+      }
+      
+      transform {
+        Sql {
+          source_table_name = "pulsar_compute_events"
+          result_table_name = "enriched_events"
+          sql = """
+            SELECT 
+              settlement_id,
+              event_type,
+              timestamp,
+              resource_type,
+              CAST(quantity AS DECIMAL(18,2)) as quantity_decimal,
+              provider_id,
+              buyer_id,
+              current_timestamp() as processing_time
+            FROM pulsar_compute_events
+          """
+        }
+      }
+      
+      sink {
+        Ignite {
+          source_table_name = "enriched_events"
+          ignite_config {
+            addresses = ["ignite:10800"]
+            cache_name = "compute_futures_events"
+          }
+          primary_keys = ["settlement_id", "timestamp"]
+          write_mode = "UPSERT"
+        }
+      }
+      
+      sink {
+        Elasticsearch {
+          source_table_name = "enriched_events"
+          hosts = ["http://elasticsearch:9200"]
+          index = "compute-futures-events"
+          bulk_size = 1000
+        }
+      }
+
+  # Platform CDC Sync Job
+  platformCdcSync:
+    enabled: true
+    schedule: "*/2 * * * *"  # Every 2 minutes
+    config: |
+      env {
+        execution.parallelism = 2
+        job.mode = "STREAMING"
+        checkpoint.interval = 30000
+      }
+      
+      source {
+        JDBC {
+          result_table_name = "postgres_changes"
+          driver = "org.postgresql.Driver"
+          url = "jdbc:postgresql://postgres:5432/platformq"
+          username = "postgres"
+          password = "${POSTGRES_PASSWORD}"
+          query = """
+            SELECT * FROM compute_contracts 
+            WHERE updated_at > NOW() - INTERVAL '5 minutes'
+          """
+          poll_interval = 30000
+        }
+      }
+      
+      sink {
+        Pulsar {
+          source_table_name = "postgres_changes"
+          service_url = "pulsar://pulsar:6650"
+          topic = "persistent://platformq/cdc/contract-changes"
+        }
+      }
+
+# Service connections
+connections:
+  pulsar:
+    serviceUrl: "pulsar://pulsar:6650"
+    adminUrl: "http://pulsar:8080"
+  ignite:
+    addresses: 
+      - "ignite:10800"
+  cassandra:
+    hosts:
+      - "cassandra:9042"
+    keyspace: "platformq"
+    username: "cassandra"
+  elasticsearch:
+    hosts:
+      - "http://elasticsearch:9200"
+    username: "elastic"
+  postgresql:
+    host: "postgres"
+    port: 5432
+    database: "platformq"
+    username: "postgres"
+
+# Connector libraries to include
+connectors:
+  - pulsar
+  - ignite
+  - cassandra
+  - elasticsearch
+  - jdbc-postgres
+  - cdc-postgres
+
+# Environment variables
+env:
+  - name: POSTGRES_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: postgres-credentials
+        key: password
+  - name: CASSANDRA_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: cassandra-credentials
+        key: password
+  - name: ELASTIC_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: elastic-credentials
+        key: password
+
+service:
+  type: ClusterIP
+  ports:
+    api: 5070
+    flink: 8081
+
+ingress:
+  enabled: true
+  className: nginx
+  annotations:
+    cert-manager.io/cluster-issuer: letsencrypt-prod
+  hosts:
+    - host: seatunnel.platformq.io
+      paths:
+        - path: /
+          pathType: Prefix
+  tls:
+    - secretName: seatunnel-tls
+      hosts:
+        - seatunnel.platformq.io
+
+monitoring:
+  enabled: true
+  serviceMonitor:
+    enabled: true
+    interval: 30s
+  prometheusRule:
+    enabled: true
+    rules:
+      - alert: SeaTunnelJobFailed
+        expr: seatunnel_job_status{status="FAILED"} > 0
+        for: 5m
+        annotations:
+          summary: "SeaTunnel job {{ $labels.job_name }} has failed"
+      - alert: SeaTunnelHighLatency
+        expr: seatunnel_sink_latency_ms > 5000
+        for: 10m
+        annotations:
+          summary: "SeaTunnel sink latency is high: {{ $value }}ms"
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 70
+  targetMemoryUtilizationPercentage: 80
+
+# Job submission automation
+jobSubmitter:
+  enabled: true
+  image: apache/seatunnel:2.3.3-flink-1.17
+  schedule: "*/10 * * * *"  # Check every 10 minutes
+  activeDeadlineSeconds: 300
+  
+# Backup configuration
+backup:
+  enabled: true
+  schedule: "0 2 * * *"  # Daily at 2 AM
+  retention: 7  # Keep 7 days of backups
+  destination: "s3://platformq-backups/seatunnel" 

@@ -12,6 +12,7 @@ public class SLAViolation implements Serializable {
     private String description;
     private double expectedValue;
     private double actualValue;
+    private String severity; // CRITICAL, HIGH, MEDIUM, LOW
     private long timestamp;
     
     // Constructors
@@ -25,6 +26,17 @@ public class SLAViolation implements Serializable {
         this.expectedValue = expectedValue;
         this.actualValue = actualValue;
         this.timestamp = timestamp;
+        this.severity = "MEDIUM"; // Default severity
+    }
+    
+    public SLAViolation(String settlementId, String violationType, 
+                       double expectedValue, double actualValue, String severity) {
+        this.settlementId = settlementId;
+        this.violationType = violationType;
+        this.expectedValue = expectedValue;
+        this.actualValue = actualValue;
+        this.severity = severity;
+        this.timestamp = System.currentTimeMillis();
     }
     
     // Getters and setters
@@ -68,6 +80,14 @@ public class SLAViolation implements Serializable {
         this.actualValue = actualValue;
     }
     
+    public String getSeverity() {
+        return severity;
+    }
+    
+    public void setSeverity(String severity) {
+        this.severity = severity;
+    }
+    
     public long getTimestamp() {
         return timestamp;
     }
@@ -78,7 +98,7 @@ public class SLAViolation implements Serializable {
     
     @Override
     public String toString() {
-        return String.format("SLAViolation{settlementId='%s', type='%s', expected=%.2f, actual=%.2f}",
-            settlementId, violationType, expectedValue, actualValue);
+        return String.format("SLAViolation{settlementId='%s', type='%s', severity='%s', expected=%.2f, actual=%.2f}",
+            settlementId, violationType, severity, expectedValue, actualValue);
     }
 } 

@@ -7,7 +7,7 @@ from decimal import Decimal
 import logging
 from datetime import datetime
 
-from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard, partner_capacity, capacity_coordinator, risk_intelligence, asset_compute_nexus, compute_spot, compute_options, burst_compute, compute_stablecoin
+from app.api import markets, trading, positions, analytics, compliant_pools, risk, lending, liquidity, options, market_makers, compute_futures, variance_swaps, structured_products, risk_limits, monitoring_dashboard, partner_capacity, capacity_coordinator, risk_intelligence, asset_compute_nexus, compute_spot, compute_options, burst_compute, compute_stablecoin, synthetic_derivatives
 from app.engines.matching_engine import MatchingEngine
 from app.engines.funding_engine import FundingEngine
 from app.engines.settlement_engine import SettlementEngine
@@ -19,6 +19,7 @@ from app.engines.compute_spot_market import ComputeSpotMarket
 from app.engines.compute_options_engine import ComputeOptionsEngine
 from app.engines.burst_compute_derivatives import BurstComputeEngine
 from app.engines.compute_stablecoin import ComputeStablecoinEngine
+from app.engines.synthetic_derivatives_engine import SyntheticDerivativesEngine
 from app.engines.pricing import BlackScholesEngine
 from app.engines.volatility_surface import VolatilitySurfaceEngine
 from app.engines.options_amm import OptionsAMM, AMMConfig
@@ -59,6 +60,7 @@ compute_spot_market: Optional[ComputeSpotMarket] = None
 compute_options_engine: Optional[ComputeOptionsEngine] = None
 burst_compute_engine: Optional[BurstComputeEngine] = None
 compute_stablecoin_engine: Optional[ComputeStablecoinEngine] = None
+synthetic_derivatives_engine: Optional[SyntheticDerivativesEngine] = None
 collateral_engine: Optional[MultiTierCollateralEngine] = None
 liquidation_engine: Optional[PartialLiquidationEngine] = None
 fee_engine: Optional[DynamicFeeEngine] = None
@@ -100,7 +102,8 @@ async def lifespan(app: FastAPI):
     global partner_capacity_manager, wholesale_arbitrage_engine, cross_service_coordinator
     global collateral_engine, liquidation_engine, fee_engine
     global market_dao, websocket_manager, metrics, graph_intelligence, asset_compute_nexus
-    global options_amm
+    global options_amm, synthetic_derivatives_engine, compute_spot_market, compute_options_engine
+    global burst_compute_engine, compute_stablecoin_engine
     
     # Collateral and risk engines
     collateral_engine = MultiTierCollateralEngine(ignite, graph_client, oracle_client, None, None)
@@ -254,6 +257,14 @@ async def lifespan(app: FastAPI):
     # Set stablecoin engine instance in API module
     compute_stablecoin.set_stablecoin_engine(compute_stablecoin_engine)
     
+    # Synthetic derivatives engine
+    synthetic_derivatives_engine = SyntheticDerivativesEngine(
+        ignite,
+        pulsar,
+        oracle_client,
+        collateral_engine
+    )
+    
     # Governance
     market_dao = MarketCreationDAO(
         graph_client,
@@ -303,6 +314,7 @@ async def lifespan(app: FastAPI):
     asyncio.create_task(options_amm.start())
     asyncio.create_task(burst_compute_engine.start())
     asyncio.create_task(compute_stablecoin_engine.start())
+    asyncio.create_task(synthetic_derivatives_engine.start())
     
     # Setup data pipelines with SeaTunnel
     await setup_data_pipelines(seatunnel_client)
@@ -326,6 +338,7 @@ async def lifespan(app: FastAPI):
     await options_amm.stop()
     await burst_compute_engine.stop()
     await compute_stablecoin_engine.stop()
+    await synthetic_derivatives_engine.stop()
     
     # Close connections
     await ignite.close()
@@ -437,6 +450,7 @@ app.include_router(compute_spot.router)  # Compute spot market
 app.include_router(compute_options.router)  # Compute options
 app.include_router(burst_compute.router)  # Burst compute derivatives
 app.include_router(compute_stablecoin.router)  # Compute-backed stablecoins
+app.include_router(synthetic_derivatives.router)  # Synthetic derivatives
 app.include_router(variance_swaps.router)  # Variance swaps trading
 app.include_router(structured_products.router)  # Structured products
 app.include_router(risk_limits.router)  # Risk limits management

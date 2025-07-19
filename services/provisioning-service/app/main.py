@@ -197,6 +197,22 @@ class ProvisioningEngine:
         
         # CloudStack Provider - Unified management for partners and on-premise
         from app.providers.cloudstack_provider import CloudStackProvider
+        self.providers[ProviderType.CLOUDSTACK] = CloudStackProvider({
+            "name": "CloudStack",
+            "api_endpoint": os.getenv("CLOUDSTACK_API_URL", "http://cloudstack-management:8080/client/api"),
+            "api_key": os.getenv("CLOUDSTACK_API_KEY", ""),
+            "secret_key": os.getenv("CLOUDSTACK_SECRET_KEY", ""),
+            "zone_id": os.getenv("CLOUDSTACK_ZONE_ID", "zone-1"),
+            "network_id": os.getenv("CLOUDSTACK_NETWORK_ID"),
+            "template_mappings": {
+                "ubuntu-22.04": os.getenv("CLOUDSTACK_UBUNTU_TEMPLATE"),
+                "centos-8": os.getenv("CLOUDSTACK_CENTOS_TEMPLATE")
+            },
+            "service_offering_mappings": {
+                "nvidia-a100": os.getenv("CLOUDSTACK_GPU_A100_OFFERING"),
+                "nvidia-v100": os.getenv("CLOUDSTACK_GPU_V100_OFFERING")
+            }
+        })
         self.providers[ProviderType.PARTNER] = CloudStackProvider({
             "name": "CloudStack Unified",
             "cloudstack": {

@@ -207,21 +207,109 @@ class TenantProvisioningProcessor(EventProcessor):
     async def handle_tenant_deleted(self, event: TenantDeletedEvent, msg):
         """Handle tenant deletion and cleanup"""
         try:
-            # TODO: Implement comprehensive cleanup
-            # - Delete Cassandra keyspace
-            # - Remove MinIO bucket
-            # - Delete Pulsar namespace
-            # - Clean up Ignite caches
-            # - Remove Elasticsearch indices
-            # - Delete resource quotas
+            # Comprehensive tenant cleanup
+            logger.info(f"Starting comprehensive cleanup for tenant {event.tenant_id}")
+            cleanup_results = {}
             
-            logger.info(f"Processing deletion for tenant {event.tenant_id}")
+            # 1. Delete Cassandra keyspace
+            try:
+                keyspace_name = f"tenant_{event.tenant_id.replace('-', '_')}"
+                await self.service_clients.cassandra_session.execute(
+                    f"DROP KEYSPACE IF EXISTS {keyspace_name}"
+                )
+                cleanup_results['cassandra'] = "success"
+                logger.info(f"Deleted Cassandra keyspace: {keyspace_name}")
+            except Exception as e:
+                cleanup_results['cassandra'] = f"failed: {str(e)}"
+                logger.error(f"Failed to delete Cassandra keyspace: {e}")
             
-            # For now, just mark as deleted in provisioning records
+            # 2. Remove MinIO bucket
+            try:
+                bucket_name = f"tenant-{event.tenant_id}"
+                # List and delete all objects first
+                objects = self.service_clients.minio_client.list_objects(
+                    bucket_name, recursive=True
+                )
+                for obj in objects:
+                    self.service_clients.minio_client.remove_object(
+                        bucket_name, obj.object_name
+                    )
+                # Remove bucket
+                self.service_clients.minio_client.remove_bucket(bucket_name)
+                cleanup_results['minio'] = "success"
+                logger.info(f"Deleted MinIO bucket: {bucket_name}")
+            except Exception as e:
+                cleanup_results['minio'] = f"failed: {str(e)}"
+                logger.error(f"Failed to delete MinIO bucket: {e}")
+            
+            # 3. Delete Pulsar namespace
+            try:
+                namespace = f"platformq/{event.tenant_id}"
+                # Delete all topics in namespace first
+                topics = self.service_clients.pulsar_admin.namespaces().get_topics(namespace)
+                for topic in topics:
+                    self.service_clients.pulsar_admin.topics().delete(topic)
+                # Delete namespace
+                self.service_clients.pulsar_admin.namespaces().delete(namespace)
+                cleanup_results['pulsar'] = "success"
+                logger.info(f"Deleted Pulsar namespace: {namespace}")
+            except Exception as e:
+                cleanup_results['pulsar'] = f"failed: {str(e)}"
+                logger.error(f"Failed to delete Pulsar namespace: {e}")
+            
+            # 4. Clean up Ignite caches
+            try:
+                # Get all caches for tenant
+                cache_prefix = f"tenant_{event.tenant_id}_"
+                for cache_name in self.service_clients.ignite_client.get_cache_names():
+                    if cache_name.startswith(cache_prefix):
+                        cache = self.service_clients.ignite_client.get_cache(cache_name)
+                        cache.destroy()
+                        logger.info(f"Destroyed Ignite cache: {cache_name}")
+                cleanup_results['ignite'] = "success"
+            except Exception as e:
+                cleanup_results['ignite'] = f"failed: {str(e)}"
+                logger.error(f"Failed to clean up Ignite caches: {e}")
+            
+            # 5. Remove Elasticsearch indices
+            try:
+                index_pattern = f"tenant-{event.tenant_id}-*"
+                indices = self.service_clients.es_client.indices.get(index=index_pattern)
+                for index_name in indices:
+                    self.service_clients.es_client.indices.delete(index=index_name)
+                    logger.info(f"Deleted Elasticsearch index: {index_name}")
+                cleanup_results['elasticsearch'] = "success"
+            except Exception as e:
+                cleanup_results['elasticsearch'] = f"failed: {str(e)}"
+                logger.error(f"Failed to delete Elasticsearch indices: {e}")
+            
+            # 6. Delete resource quotas from Kubernetes
+            try:
+                namespace = f"tenant-{event.tenant_id}"
+                # Delete ResourceQuota
+                self.service_clients.k8s_core_v1.delete_namespaced_resource_quota(
+                    name=f"{namespace}-quota",
+                    namespace=namespace
+                )
+                # Delete LimitRange
+                self.service_clients.k8s_core_v1.delete_namespaced_limit_range(
+                    name=f"{namespace}-limits",
+                    namespace=namespace
+                )
+                cleanup_results['k8s_quotas'] = "success"
+                logger.info(f"Deleted Kubernetes resource quotas for namespace: {namespace}")
+            except Exception as e:
+                cleanup_results['k8s_quotas'] = f"failed: {str(e)}"
+                logger.error(f"Failed to delete K8s resource quotas: {e}")
+            
+            # Update provisioning records with cleanup results
             self.provisioning_repo.update_provisioning_status(
                 tenant_id=uuid.UUID(event.tenant_id),
                 status="deleted",
-                details={"deleted_at": datetime.utcnow().isoformat()}
+                details={
+                    "deleted_at": datetime.utcnow().isoformat(),
+                    "cleanup_results": cleanup_results
+                }
             )
             
             return ProcessingResult(status=ProcessingStatus.SUCCESS)
@@ -535,18 +623,224 @@ class ResourceCleanupProcessor(EventProcessor):
             
     async def _cleanup_orphaned_pods(self, tenant_id: str):
         """Clean up orphaned Kubernetes pods"""
-        # TODO: Implement Kubernetes API calls to clean up pods
         logger.info(f"Cleaning up orphaned pods for tenant {tenant_id}")
+        
+        try:
+            namespace = f"tenant-{tenant_id}"
+            
+            # List all pods in tenant namespace
+            pods = self.service_clients.k8s_core_v1.list_namespaced_pod(
+                namespace=namespace
+            )
+            
+            orphaned_count = 0
+            for pod in pods.items:
+                # Check if pod is orphaned (no owner references)
+                if not pod.metadata.owner_references:
+                    # Check pod age - consider orphaned if older than 1 hour
+                    age = datetime.utcnow() - pod.metadata.creation_timestamp.replace(tzinfo=None)
+                    if age > timedelta(hours=1):
+                        # Delete orphaned pod
+                        self.service_clients.k8s_core_v1.delete_namespaced_pod(
+                            name=pod.metadata.name,
+                            namespace=namespace
+                        )
+                        orphaned_count += 1
+                        logger.info(f"Deleted orphaned pod: {pod.metadata.name}")
+                
+                # Check for failed/evicted pods
+                elif pod.status.phase in ["Failed", "Evicted"]:
+                    # Delete failed pods older than 30 minutes
+                    age = datetime.utcnow() - pod.metadata.creation_timestamp.replace(tzinfo=None)
+                    if age > timedelta(minutes=30):
+                        self.service_clients.k8s_core_v1.delete_namespaced_pod(
+                            name=pod.metadata.name,
+                            namespace=namespace
+                        )
+                        orphaned_count += 1
+                        logger.info(f"Deleted {pod.status.phase} pod: {pod.metadata.name}")
+            
+            # Clean up completed jobs
+            jobs = self.service_clients.k8s_batch_v1.list_namespaced_job(
+                namespace=namespace
+            )
+            
+            for job in jobs.items:
+                if job.status.succeeded and job.status.completion_time:
+                    age = datetime.utcnow() - job.status.completion_time.replace(tzinfo=None)
+                    if age > timedelta(hours=24):  # Clean up jobs older than 24 hours
+                        self.service_clients.k8s_batch_v1.delete_namespaced_job(
+                            name=job.metadata.name,
+                            namespace=namespace,
+                            propagation_policy='Background'
+                        )
+                        logger.info(f"Deleted completed job: {job.metadata.name}")
+            
+            logger.info(f"Cleaned up {orphaned_count} orphaned pods for tenant {tenant_id}")
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up orphaned pods: {e}")
         
     async def _cleanup_unused_storage(self, tenant_id: str):
         """Clean up unused storage"""
-        # TODO: Implement MinIO cleanup for unused objects
         logger.info(f"Cleaning up unused storage for tenant {tenant_id}")
+        
+        try:
+            bucket_name = f"tenant-{tenant_id}"
+            
+            # Get storage usage statistics
+            total_size = 0
+            object_count = 0
+            old_objects = []
+            
+            # List all objects
+            objects = self.service_clients.minio_client.list_objects(
+                bucket_name, recursive=True
+            )
+            
+            for obj in objects:
+                total_size += obj.size
+                object_count += 1
+                
+                # Check object age
+                age = datetime.utcnow() - obj.last_modified.replace(tzinfo=None)
+                
+                # Mark old temporary files for deletion
+                if ('temp/' in obj.object_name or 
+                    '/tmp/' in obj.object_name or 
+                    obj.object_name.endswith('.tmp')):
+                    if age > timedelta(hours=24):
+                        old_objects.append(obj.object_name)
+                
+                # Mark old cache files for deletion
+                elif 'cache/' in obj.object_name:
+                    if age > timedelta(days=7):
+                        old_objects.append(obj.object_name)
+                
+                # Mark old log files for deletion
+                elif obj.object_name.endswith('.log'):
+                    if age > timedelta(days=30):
+                        old_objects.append(obj.object_name)
+            
+            # Delete old objects
+            deleted_count = 0
+            deleted_size = 0
+            
+            for obj_name in old_objects:
+                try:
+                    # Get object size before deletion
+                    stat = self.service_clients.minio_client.stat_object(
+                        bucket_name, obj_name
+                    )
+                    deleted_size += stat.size
+                    
+                    # Delete object
+                    self.service_clients.minio_client.remove_object(
+                        bucket_name, obj_name
+                    )
+                    deleted_count += 1
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to delete object {obj_name}: {e}")
+            
+            # Set lifecycle policy for automatic cleanup
+            lifecycle_config = {
+                "Rules": [
+                    {
+                        "ID": "cleanup-temp-files",
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": "temp/"},
+                        "Expiration": {"Days": 1}
+                    },
+                    {
+                        "ID": "cleanup-old-logs",
+                        "Status": "Enabled", 
+                        "Filter": {"Prefix": "logs/"},
+                        "Expiration": {"Days": 30}
+                    },
+                    {
+                        "ID": "cleanup-cache",
+                        "Status": "Enabled",
+                        "Filter": {"Prefix": "cache/"},
+                        "Expiration": {"Days": 7}
+                    }
+                ]
+            }
+            
+            # Note: MinIO Python client doesn't have direct lifecycle API
+            # In production, use mc client or S3 API
+            
+            logger.info(
+                f"Storage cleanup for tenant {tenant_id}: "
+                f"Deleted {deleted_count} objects ({deleted_size / 1024 / 1024:.2f} MB), "
+                f"Remaining: {object_count - deleted_count} objects ({(total_size - deleted_size) / 1024 / 1024:.2f} MB)"
+            )
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up unused storage: {e}")
         
     async def _cleanup_stale_caches(self, tenant_id: str):
         """Clean up stale Ignite caches"""
-        # TODO: Implement Ignite cache cleanup
         logger.info(f"Cleaning up stale caches for tenant {tenant_id}")
+        
+        try:
+            cache_prefix = f"tenant_{tenant_id}_"
+            cleaned_entries = 0
+            
+            # Get all caches for tenant
+            for cache_name in self.service_clients.ignite_client.get_cache_names():
+                if cache_name.startswith(cache_prefix):
+                    cache = self.service_clients.ignite_client.get_cache(cache_name)
+                    
+                    # Scan cache entries
+                    with cache.scan() as cursor:
+                        for key, value in cursor:
+                            try:
+                                # Check if entry has timestamp
+                                if isinstance(value, dict) and 'timestamp' in value:
+                                    # Parse timestamp
+                                    if isinstance(value['timestamp'], str):
+                                        entry_time = datetime.fromisoformat(
+                                            value['timestamp'].replace('Z', '+00:00')
+                                        )
+                                    else:
+                                        entry_time = datetime.fromtimestamp(value['timestamp'])
+                                    
+                                    # Remove entries older than 7 days
+                                    age = datetime.utcnow() - entry_time
+                                    if age > timedelta(days=7):
+                                        cache.remove(key)
+                                        cleaned_entries += 1
+                                
+                                # Check TTL-based entries
+                                elif isinstance(value, dict) and 'ttl' in value:
+                                    created_at = value.get('created_at', 0)
+                                    ttl = value.get('ttl', 0)
+                                    
+                                    if created_at + ttl < datetime.utcnow().timestamp():
+                                        cache.remove(key)
+                                        cleaned_entries += 1
+                                        
+                            except Exception as e:
+                                logger.warning(f"Error processing cache entry {key}: {e}")
+                    
+                    # Get cache metrics
+                    cache_size = cache.get_size()
+                    logger.info(
+                        f"Cache {cache_name}: Removed {cleaned_entries} stale entries, "
+                        f"Remaining size: {cache_size}"
+                    )
+            
+            # Clear empty caches
+            for cache_name in self.service_clients.ignite_client.get_cache_names():
+                if cache_name.startswith(cache_prefix):
+                    cache = self.service_clients.ignite_client.get_cache(cache_name)
+                    if cache.get_size() == 0:
+                        cache.destroy()
+                        logger.info(f"Destroyed empty cache: {cache_name}")
+            
+        except Exception as e:
+            logger.error(f"Error cleaning up stale caches: {e}")
 
 
 class UserProvisioningProcessor(EventProcessor):

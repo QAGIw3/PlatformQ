@@ -127,6 +127,21 @@ async def lifespan(app: FastAPI):
         await es_vector_service.initialize()
         app.state.es_vector_service = es_vector_service
         logger.info("Initialized native Elasticsearch v8 vector search")
+        
+    # Initialize enhanced vector search with JanusGraph
+    from .services.enhanced_vector_search import EnhancedVectorSearchService
+    from .api import vector_endpoints
+    
+    enhanced_vector_service = EnhancedVectorSearchService(
+        es_client=es_client,
+        janusgraph_url=settings.JANUSGRAPH_URL,
+        redis_client=None,  # Would initialize Redis here
+        openai_api_key=settings.OPENAI_API_KEY
+    )
+    await enhanced_vector_service.initialize()
+    app.state.enhanced_vector_service = enhanced_vector_service
+    vector_endpoints.vector_service = enhanced_vector_service
+    logger.info("Initialized enhanced vector search with JanusGraph integration")
     
     # Initialize indexers
     app.state.asset_indexer = AssetIndexer(es_client, vector_service)
@@ -225,6 +240,7 @@ app.router.lifespan_context = lifespan
 
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["search"])
+app.include_router(vector_endpoints.router, prefix="/api/v1", tags=["vector_search"])
 
 # Service root endpoint
 @app.get("/")

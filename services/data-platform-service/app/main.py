@@ -57,6 +57,9 @@ from .integrations import (
     ServiceOrchestrator
 )
 
+# Digital Integration Hub
+from .dih.digital_integration_hub import DigitalIntegrationHub, ConsistencyLevel
+
 # API routers
 from .api import (
     query_router,
@@ -68,7 +71,8 @@ from .api import (
     pipelines_router,
     admin_router,
     integrations_router,
-    features_router
+    features_router,
+    dih_router
 )
 
 # Event handlers
@@ -113,6 +117,9 @@ service_orchestrator: Optional[ServiceOrchestrator] = None
 # Event processors
 event_processors: List[Any] = []
 
+# Digital Integration Hub
+dih_instance: Optional[DigitalIntegrationHub] = None
+
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
@@ -122,7 +129,7 @@ async def lifespan(app: FastAPI):
     global quality_profiler, lineage_tracker, seatunnel_manager, pipeline_coordinator
     global ml_integration, event_integration, analytics_integration, storage_integration
     global service_orchestrator, event_processors
-    global feature_registry, feature_store_manager
+    global feature_registry, feature_store_manager, dih_instance
     
     # Startup
     logger.info("Starting Data Platform Service...")
@@ -268,6 +275,24 @@ async def lifespan(app: FastAPI):
         )
         await feature_store_manager.initialize()
         
+        # Initialize Digital Integration Hub
+        logger.info("Initializing Digital Integration Hub...")
+        ignite_nodes = [
+            (os.getenv("IGNITE_HOST_1", "ignite-0.ignite"), 10800),
+            (os.getenv("IGNITE_HOST_2", "ignite-1.ignite"), 10800),
+            (os.getenv("IGNITE_HOST_3", "ignite-2.ignite"), 10800)
+        ]
+        
+        dih_instance = DigitalIntegrationHub(
+            ignite_nodes=ignite_nodes,
+            default_consistency=ConsistencyLevel.STRONG
+        )
+        await dih_instance.initialize()
+        
+        # Set DIH instance in router
+        from .api import dih_router
+        dih_router.dih_instance = dih_instance
+        
         # Store instances in app state
         app.state.connection_manager = connection_manager
         app.state.cache_manager = cache_manager
@@ -289,6 +314,7 @@ async def lifespan(app: FastAPI):
         app.state.service_orchestrator = service_orchestrator
         app.state.feature_registry = feature_registry
         app.state.feature_store_manager = feature_store_manager
+        app.state.dih_instance = dih_instance
         
         # Initialize event processors
         event_processors = [
@@ -340,6 +366,8 @@ async def lifespan(app: FastAPI):
             await lineage_tracker.close()
         if catalog_manager:
             await catalog_manager.close()
+        if dih_instance:
+            await dih_instance.shutdown()
         if lake_manager:
             lake_manager.close()
         if trino_client:
@@ -383,6 +411,7 @@ app.include_router(pipelines_router, prefix="/api/v1")
 app.include_router(admin_router, prefix="/api/v1")
 app.include_router(integrations_router, prefix="/api/v1")
 app.include_router(features_router, prefix="/api/v1")
+app.include_router(dih_router, prefix="/api/v1")
 
 # Mount metrics endpoint
 metrics_app = make_asgi_app()

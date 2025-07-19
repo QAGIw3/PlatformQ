@@ -23,6 +23,12 @@ from . import security as shared_security
 from .config import get_settings, Settings
 from .error_handling import add_error_handlers, ErrorMiddleware
 from .event_framework import EventProcessor
+from .observability import (
+    UnifiedObservability, 
+    ObservabilityConfig,
+    instrument_fastapi_app,
+    get_observability
+)
 
 logger = logging.getLogger(__name__)
 
@@ -64,25 +70,38 @@ def setup_observability(app: FastAPI, service_name: str, otel_endpoint: str, ins
     This allows us to trace requests across all microservices, visualize
     the entire request flow, and pinpoint performance bottlenecks.
     """
-    resource = Resource.create({
-        "service.name": service_name,
-        "service.instance.id": socket.gethostname(),
-    })
-
-    trace.set_tracer_provider(TracerProvider(resource=resource))
-    tracer_provider = trace.get_tracer_provider()
-
-    # Configure the OTLP exporter, pointing to our Jaeger or OTLP collector.
-    otlp_exporter = OTLPSpanExporter(endpoint=otel_endpoint, insecure=True)
-    span_processor = BatchSpanProcessor(otlp_exporter)
-    tracer_provider.add_span_processor(span_processor)
-
-    # Automatically instrument the FastAPI app.
+    # Create unified observability configuration
+    obs_config = ObservabilityConfig(
+        service_name=service_name,
+        otlp_endpoint=otel_endpoint,
+        enable_traces=True,
+        enable_metrics=True,
+        enable_lineage=True,
+        elasticsearch_url=os.getenv("ELASTICSEARCH_URL", "http://elasticsearch:9200"),
+        iceberg_catalog_uri=os.getenv("ICEBERG_CATALOG_URI", "thrift://hive-metastore:9083"),
+        jaeger_ui_url=os.getenv("JAEGER_UI_URL", "http://jaeger:16686")
+    )
+    
+    # Initialize unified observability
+    async def init_observability():
+        obs = UnifiedObservability(obs_config)
+        await obs.initialize()
+        app.state.observability = obs
+        
+    # Schedule initialization
+    asyncio.create_task(init_observability())
+    
+    # Instrument FastAPI app with enhanced observability
+    instrument_fastapi_app(app)
+    
+    # Legacy compatibility - still instrument with basic FastAPIInstrumentor
     FastAPIInstrumentor.instrument_app(app)
 
     # Optionally instrument gRPC if the service uses it.
     if instrument_grpc:
         GrpcInstrumentorServer().instrument()
+    
+    logger.info(f"Enhanced observability configured for {service_name}")
 
 def get_kubernetes_token():
     """

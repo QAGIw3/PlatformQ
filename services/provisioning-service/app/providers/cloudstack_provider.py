@@ -1,652 +1,511 @@
 """
-CloudStack Provider for Unified Compute Management
+CloudStack Provider for PlatformQ Provisioning Service
 
-Manages compute resources across multiple CloudStack zones including
-partner infrastructure, on-premise resources, and edge locations.
+Unified cloud management across multiple CloudStack installations including
+partner clouds (Rackspace, etc.) and on-premise infrastructure.
 """
 
-import asyncio
 import logging
-from typing import Dict, List, Optional, Tuple, Any
-from datetime import datetime, timedelta
-from decimal import Decimal
-import uuid
-import hashlib
-import hmac
-import base64
-from urllib.parse import quote
-
 import httpx
-from pydantic import BaseModel, Field
+import hmac
+import hashlib
+import base64
+import urllib.parse
+from typing import Dict, List, Optional, Tuple, Any
+from datetime import datetime
+import asyncio
+import uuid
 
-from app.providers.base import ComputeProvider
-from app.models import ResourceSpec, ResourceAllocation, AllocationStatus, ResourceType
+from app.models import (
+    ResourceSpec, ResourceAllocation, ResourceType,
+    AllocationStatus, ProviderType
+)
+from .base import ComputeProvider
 
 logger = logging.getLogger(__name__)
 
 
-class CloudStackConfig(BaseModel):
-    """CloudStack connection configuration"""
-    api_url: str
-    api_key: str
-    secret_key: str
-    zones: Dict[str, Dict[str, Any]] = Field(default_factory=dict)
-    default_zone_id: Optional[str] = None
-    verify_ssl: bool = True
-    timeout: int = 60
-
-
-class ServiceOffering(BaseModel):
-    """CloudStack service offering"""
-    id: str
-    name: str
-    displaytext: str
-    cpunumber: int
-    cpuspeed: int  # MHz
-    memory: int  # MB
-    resource_type: ResourceType
-    tags: Dict[str, str] = Field(default_factory=dict)
-
-
-class CloudStackZone(BaseModel):
-    """CloudStack zone information"""
-    id: str
-    name: str
-    description: str
-    capacity: Dict[str, float]
-    location: str
-    provider_type: str  # partner, on_premise, edge
-    partner_id: Optional[str] = None
-
-
 class CloudStackProvider(ComputeProvider):
-    """
-    CloudStack provider implementation for unified compute management
-    """
+    """CloudStack compute provider for multi-cloud management"""
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
-        self.cloudstack_config = CloudStackConfig(**config.get("cloudstack", {}))
+        self.api_key = config.get("api_key", "")
+        self.secret_key = config.get("secret_key", "")
+        self.zone_id = config.get("zone_id")
+        self.network_id = config.get("network_id")
+        self.template_mappings = config.get("template_mappings", {})
+        self.service_offering_mappings = config.get("service_offering_mappings", {})
+        
+        # HTTP client for CloudStack API
         self.client = httpx.AsyncClient(
-            base_url=self.cloudstack_config.api_url,
-            verify=self.cloudstack_config.verify_ssl,
-            timeout=self.cloudstack_config.timeout
+            base_url=self.api_endpoint,
+            timeout=30.0
         )
         
-        # Cache for service offerings and zones
-        self.service_offerings: Dict[str, ServiceOffering] = {}
-        self.zones: Dict[str, CloudStackZone] = {}
-        self._cache_timestamp = None
-        self._cache_ttl = 300  # 5 minutes
-        
-        # Resource mapping
-        self.resource_mappings = {
-            ResourceType.CPU: {"tags": ["cpu-optimized"], "min_cpu": 4},
-            ResourceType.GPU: {"tags": ["gpu-enabled"], "min_gpu": 1},
-            ResourceType.TPU: {"tags": ["tpu-enabled"], "min_tpu": 1},
-            ResourceType.MEMORY: {"tags": ["memory-optimized"], "min_memory": 32768},
-            ResourceType.STORAGE: {"tags": ["storage-optimized"], "min_storage": 1000}
-        }
-        
-    async def _sign_request(self, params: Dict[str, str]) -> str:
+    def _sign_request(self, params: Dict[str, str]) -> str:
         """Sign CloudStack API request"""
-        # Add API key
-        params["apiKey"] = self.cloudstack_config.api_key
-        params["response"] = "json"
-        
         # Sort parameters
-        sorted_params = sorted(params.items(), key=lambda x: x[0].lower())
+        sorted_params = sorted(params.items())
         
         # Create query string
-        query_string = "&".join([f"{k}={quote(str(v))}" for k, v in sorted_params])
+        query_string = urllib.parse.urlencode(sorted_params).lower()
         
-        # Generate signature
+        # Create signature
         signature = hmac.new(
-            self.cloudstack_config.secret_key.encode('utf-8'),
-            query_string.lower().encode('utf-8'),
+            self.secret_key.encode('utf-8'),
+            query_string.encode('utf-8'),
             hashlib.sha1
         ).digest()
         
         # Base64 encode and URL encode
-        signature_b64 = base64.b64encode(signature).decode('utf-8')
-        params["signature"] = signature_b64
+        return urllib.parse.quote(base64.b64encode(signature).decode('utf-8'))
         
-        return query_string + f"&signature={quote(signature_b64)}"
+    async def _make_request(self, command: str, **kwargs) -> Dict[str, Any]:
+        """Make authenticated CloudStack API request"""
+        params = {
+            "command": command,
+            "apiKey": self.api_key,
+            "response": "json",
+            **kwargs
+        }
         
-    async def _api_call(self, command: str, params: Dict[str, Any] = None) -> Dict:
-        """Make CloudStack API call"""
-        if params is None:
-            params = {}
+        # Add signature
+        params["signature"] = self._sign_request(params)
+        
+        try:
+            response = await self.client.get("", params=params)
+            response.raise_for_status()
             
-        params["command"] = command
-        
-        # Sign request
-        signed_query = await self._sign_request(params.copy())
-        
-        # Make request
-        response = await self.client.get("", params=signed_query)
-        
-        if response.status_code != 200:
-            raise Exception(f"CloudStack API error: {response.status_code} - {response.text}")
+            data = response.json()
             
-        result = response.json()
-        
-        # Check for API error
-        if "errorresponse" in result:
-            error = result["errorresponse"]
-            raise Exception(f"CloudStack error: {error.get('errortext', 'Unknown error')}")
-            
-        return result
-        
-    async def _refresh_cache(self):
-        """Refresh service offerings and zones cache"""
-        now = datetime.utcnow()
-        
-        if (self._cache_timestamp and 
-            (now - self._cache_timestamp).total_seconds() < self._cache_ttl):
-            return
-            
-        # Get zones
-        zones_response = await self._api_call("listZones")
-        for zone_data in zones_response.get("listzonesresponse", {}).get("zone", []):
-            zone = CloudStackZone(
-                id=zone_data["id"],
-                name=zone_data["name"],
-                description=zone_data.get("description", ""),
-                capacity=await self._get_zone_capacity(zone_data["id"]),
-                location=zone_data.get("tags", {}).get("location", zone_data["name"]),
-                provider_type=zone_data.get("tags", {}).get("provider_type", "on_premise"),
-                partner_id=zone_data.get("tags", {}).get("partner_id")
-            )
-            self.zones[zone.id] = zone
-            
-        # Get service offerings
-        offerings_response = await self._api_call("listServiceOfferings")
-        for offering_data in offerings_response.get("listserviceofferingsresponse", {}).get("serviceoffering", []):
-            
-            # Determine resource type from tags
-            resource_type = ResourceType.CPU  # default
-            tags = offering_data.get("tags", "").split(",") if offering_data.get("tags") else []
-            
-            if "gpu-enabled" in tags:
-                resource_type = ResourceType.GPU
-            elif "tpu-enabled" in tags:
-                resource_type = ResourceType.TPU
-            elif "memory-optimized" in tags:
-                resource_type = ResourceType.MEMORY
-            elif "storage-optimized" in tags:
-                resource_type = ResourceType.STORAGE
+            # Check for error response
+            if "errorresponse" in data:
+                error = data["errorresponse"]
+                raise Exception(f"CloudStack API error: {error.get('errortext', 'Unknown error')}")
                 
-            offering = ServiceOffering(
-                id=offering_data["id"],
-                name=offering_data["name"],
-                displaytext=offering_data["displaytext"],
-                cpunumber=offering_data["cpunumber"],
-                cpuspeed=offering_data["cpuspeed"],
-                memory=offering_data["memory"],
-                resource_type=resource_type,
-                tags={tag.split(":")[0]: tag.split(":")[1] if ":" in tag else "true" 
-                      for tag in tags}
-            )
-            self.service_offerings[offering.id] = offering
+            return data
             
-        self._cache_timestamp = now
-        
-    async def _get_zone_capacity(self, zone_id: str) -> Dict[str, float]:
-        """Get zone capacity metrics"""
-        capacity_response = await self._api_call(
-            "listCapacity",
-            {"zoneid": zone_id}
-        )
-        
-        capacity = {}
-        for cap in capacity_response.get("listcapacityresponse", {}).get("capacity", []):
-            # Map capacity types to our metrics
-            if cap["type"] == 0:  # Memory
-                capacity["memory_gb"] = (cap["capacitytotal"] - cap["capacityused"]) / 1024
-            elif cap["type"] == 1:  # CPU
-                capacity["cpu_cores"] = cap["capacitytotal"] - cap["capacityused"]
-            elif cap["type"] == 3:  # Storage
-                capacity["storage_gb"] = (cap["capacitytotal"] - cap["capacityused"]) / 1024
-                
-        return capacity
-        
+        except Exception as e:
+            logger.error(f"CloudStack API request failed: {e}")
+            raise
+            
     async def check_availability(
         self,
         resources: List[ResourceSpec],
         location: Optional[str] = None
     ) -> Tuple[bool, Dict[str, Any]]:
-        """Check if resources are available in CloudStack"""
-        await self._refresh_cache()
-        
-        # Find suitable zone
-        suitable_zones = []
-        
-        for zone in self.zones.values():
-            if location and zone.location != location:
-                continue
-                
-            # Check capacity
-            has_capacity = True
-            for resource in resources:
-                if resource.resource_type == ResourceType.CPU:
-                    if zone.capacity.get("cpu_cores", 0) < float(resource.quantity):
-                        has_capacity = False
-                        break
-                elif resource.resource_type == ResourceType.GPU:
-                    # Check GPU availability via tags
-                    if "gpu_count" not in zone.capacity or \
-                       zone.capacity["gpu_count"] < float(resource.quantity):
-                        has_capacity = False
-                        break
-                elif resource.resource_type == ResourceType.MEMORY:
-                    if zone.capacity.get("memory_gb", 0) < float(resource.quantity):
-                        has_capacity = False
-                        break
+        """Check resource availability in CloudStack"""
+        try:
+            # Get zone capacity
+            zone_id = location or self.zone_id
+            capacity_response = await self._make_request(
+                "listCapacity",
+                zoneid=zone_id
+            )
+            
+            capacities = capacity_response.get("listcapacityresponse", {}).get("capacity", [])
+            
+            # Parse capacity by type
+            available_resources = {}
+            for cap in capacities:
+                cap_type = cap["type"]
+                if cap_type == 0:  # Memory
+                    available_resources["memory_gb"] = (cap["capacitytotal"] - cap["capacityused"]) / 1024
+                elif cap_type == 1:  # CPU
+                    available_resources["cpu_cores"] = cap["capacitytotal"] - cap["capacityused"]
+                elif cap_type == 2:  # Storage
+                    available_resources["storage_gb"] = (cap["capacitytotal"] - cap["capacityused"]) / 1024
+                elif cap_type == 4:  # Public IPs
+                    available_resources["public_ips"] = cap["capacitytotal"] - cap["capacityused"]
+                    
+            # Check if requested resources are available
+            for spec in resources:
+                if spec.resource_type == ResourceType.CPU:
+                    if available_resources.get("cpu_cores", 0) < spec.quantity:
+                        return False, {"reason": "Insufficient CPU cores", "available": available_resources}
+                elif spec.resource_type == ResourceType.GPU:
+                    # Check GPU-enabled service offerings
+                    gpu_offerings = await self._get_gpu_offerings()
+                    if len(gpu_offerings) == 0:
+                        return False, {"reason": "No GPU offerings available", "available": available_resources}
+                elif spec.resource_type == ResourceType.MEMORY:
+                    if available_resources.get("memory_gb", 0) < spec.quantity:
+                        return False, {"reason": "Insufficient memory", "available": available_resources}
+                elif spec.resource_type == ResourceType.STORAGE:
+                    if available_resources.get("storage_gb", 0) < spec.quantity:
+                        return False, {"reason": "Insufficient storage", "available": available_resources}
                         
-            if has_capacity:
-                suitable_zones.append(zone)
-                
-        if not suitable_zones:
-            return False, {
-                "reason": "No zones with sufficient capacity",
-                "requested_location": location
+            return True, {
+                "zone_id": zone_id,
+                "available_resources": available_resources,
+                "network_id": self.network_id
             }
             
-        # Select best zone (prefer partner zones for cost optimization)
-        best_zone = sorted(
-            suitable_zones,
-            key=lambda z: (
-                0 if z.provider_type == "partner" else 1,
-                -z.capacity.get("cpu_cores", 0)
-            )
-        )[0]
+        except Exception as e:
+            logger.error(f"Error checking CloudStack availability: {e}")
+            return False, {"error": str(e)}
+            
+    async def _get_gpu_offerings(self) -> List[Dict[str, Any]]:
+        """Get GPU-enabled service offerings"""
+        response = await self._make_request(
+            "listServiceOfferings",
+            keyword="gpu"
+        )
         
-        return True, {
-            "zone_id": best_zone.id,
-            "zone_name": best_zone.name,
-            "provider_type": best_zone.provider_type,
-            "partner_id": best_zone.partner_id,
-            "available_capacity": best_zone.capacity
-        }
+        offerings = response.get("listserviceofferingsresponse", {}).get("serviceoffering", [])
+        return [o for o in offerings if "gpu" in o.get("name", "").lower()]
         
     async def allocate_resources(
         self,
         allocation: ResourceAllocation
     ) -> Dict[str, Any]:
         """Allocate resources in CloudStack"""
-        await self._refresh_cache()
-        
-        # Select service offering based on requirements
-        service_offering = await self._select_service_offering(allocation.resources)
-        if not service_offering:
-            raise Exception("No suitable service offering found")
-            
-        # Check availability and get zone
-        available, zone_info = await self.check_availability(
-            allocation.resources,
-            allocation.resources[0].location_preferences[0] 
-            if allocation.resources[0].location_preferences else None
-        )
-        
-        if not available:
-            raise Exception(f"Resources not available: {zone_info.get('reason')}")
-            
-        zone_id = zone_info["zone_id"]
-        
-        # Generate unique name for the deployment
-        deployment_name = f"compute-{allocation.allocation_id[:8]}"
-        
-        # Deploy virtual machine
-        deploy_params = {
-            "serviceofferingid": service_offering.id,
-            "templateid": await self._get_template_id(zone_id, allocation.resources),
-            "zoneid": zone_id,
-            "name": deployment_name,
-            "displayname": f"Settlement {allocation.settlement_id}",
-            "keypair": "platformq-compute",  # Pre-created keypair
-            "affinitygroupnames": "compute-futures",  # For anti-affinity
-        }
-        
-        # Add network configuration
-        network_id = await self._get_network_id(zone_id, allocation.settlement_id)
-        if network_id:
-            deploy_params["networkids"] = network_id
-            
-        # Add tags for tracking
-        deploy_params["tags[0].key"] = "settlement_id"
-        deploy_params["tags[0].value"] = allocation.settlement_id
-        deploy_params["tags[1].key"] = "allocation_id"
-        deploy_params["tags[1].value"] = allocation.allocation_id
-        deploy_params["tags[2].key"] = "buyer_id"
-        deploy_params["tags[2].value"] = allocation.settlement_id.split("_")[1]  # Extract from settlement
-        
-        # Deploy VM
-        deploy_response = await self._api_call("deployVirtualMachine", deploy_params)
-        vm = deploy_response.get("deployvirtualmachineresponse", {}).get("virtualmachine", {})
-        
-        if not vm:
-            raise Exception("Failed to deploy virtual machine")
-            
-        vm_id = vm["id"]
-        
-        # Wait for VM to be ready
-        await self._wait_for_vm_ready(vm_id)
-        
-        # Get VM details
-        vm_details = await self._get_vm_details(vm_id)
-        
-        # Setup access
-        access_details = {
-            "vm_id": vm_id,
-            "instance_name": deployment_name,
-            "zone_id": zone_id,
-            "zone_name": zone_info["zone_name"],
-            "provider_type": zone_info["provider_type"],
-            "partner_id": zone_info.get("partner_id"),
-            "public_ip": vm_details.get("public_ip"),
-            "private_ip": vm_details.get("private_ip"),
-            "ssh_port": 22,
-            "api_endpoint": f"https://compute-{allocation.allocation_id}.{zone_info['zone_name']}.platformq.io",
-            "monitoring_endpoint": f"https://monitor-{allocation.allocation_id}.{zone_info['zone_name']}.platformq.io",
-            "credentials": {
-                "username": "compute",
-                "key_name": "platformq-compute",
-                "access_method": "ssh-key"
-            }
-        }
-        
-        # If GPU allocation, ensure GPU passthrough is configured
-        if any(r.resource_type == ResourceType.GPU for r in allocation.resources):
-            await self._configure_gpu_passthrough(vm_id)
-            
-        return access_details
-        
-    async def deallocate_resources(
-        self,
-        allocation_id: str
-    ) -> bool:
-        """Deallocate CloudStack resources"""
         try:
-            # Find VM by allocation tag
-            vms_response = await self._api_call(
-                "listVirtualMachines",
-                {
-                    "tags[0].key": "allocation_id",
-                    "tags[0].value": allocation_id
+            instances = []
+            
+            for spec in allocation.resources:
+                # Select appropriate service offering
+                service_offering_id = await self._select_service_offering(spec)
+                
+                # Select template
+                template_id = await self._select_template(spec)
+                
+                # Deploy virtual machine
+                deploy_params = {
+                    "serviceofferingid": service_offering_id,
+                    "templateid": template_id,
+                    "zoneid": self.zone_id,
+                    "name": f"platformq-{allocation.allocation_id}-{uuid.uuid4().hex[:8]}",
+                    "displayname": f"PlatformQ Compute - {allocation.settlement_id}"
                 }
-            )
-            
-            vms = vms_response.get("listvirtualmachinesresponse", {}).get("virtualmachine", [])
-            
-            if not vms:
-                logger.warning(f"No VMs found for allocation {allocation_id}")
-                return True
                 
-            # Destroy all VMs for this allocation
-            for vm in vms:
-                await self._api_call(
-                    "destroyVirtualMachine",
-                    {
-                        "id": vm["id"],
-                        "expunge": "true"  # Immediately expunge
-                    }
-                )
+                if self.network_id:
+                    deploy_params["networkids"] = self.network_id
+                    
+                # Add user data for initialization
+                user_data = self._generate_user_data(allocation, spec)
+                if user_data:
+                    deploy_params["userdata"] = base64.b64encode(user_data.encode()).decode()
+                    
+                response = await self._make_request("deployVirtualMachine", **deploy_params)
                 
-            return True
+                vm_info = response.get("deployvirtualmachineresponse", {})
+                vm_id = vm_info.get("id")
+                
+                if not vm_id:
+                    raise Exception("Failed to deploy VM - no ID returned")
+                    
+                # Wait for VM to be ready
+                vm_details = await self._wait_for_vm(vm_id)
+                
+                instances.append({
+                    "vm_id": vm_id,
+                    "name": vm_details["name"],
+                    "ip_address": vm_details.get("nic", [{}])[0].get("ipaddress"),
+                    "public_ip": vm_details.get("publicip"),
+                    "state": vm_details["state"],
+                    "spec": spec.dict()
+                })
+                
+            # Get access details
+            access_details = self._generate_access_details(instances, allocation)
+            
+            return access_details
             
         except Exception as e:
-            logger.error(f"Failed to deallocate resources: {e}")
-            return False
+            logger.error(f"Error allocating CloudStack resources: {e}")
+            raise
             
-    async def get_metrics(
-        self,
-        allocation_id: str
-    ) -> Dict[str, Any]:
-        """Get resource metrics from CloudStack"""
-        # Find VM
-        vms_response = await self._api_call(
-            "listVirtualMachines",
-            {
-                "tags[0].key": "allocation_id",
-                "tags[0].value": allocation_id
-            }
-        )
-        
-        vms = vms_response.get("listvirtualmachinesresponse", {}).get("virtualmachine", [])
-        
-        if not vms:
-            return {
-                "uptime": 0.0,
-                "cpu_utilization": 0.0,
-                "memory_utilization": 0.0,
-                "network_throughput_gbps": 0.0,
-                "error_count": 0
-            }
-            
-        vm = vms[0]
-        vm_id = vm["id"]
-        
-        # Get metrics
-        metrics_response = await self._api_call(
-            "listVirtualMachinesMetrics",
-            {"id": vm_id}
-        )
-        
-        vm_metrics = metrics_response.get("listvirtualmachinesmetricsresponse", {}).get("virtualmachine", [{}])[0]
-        
-        # Calculate uptime
-        created = datetime.fromisoformat(vm["created"].replace("Z", "+00:00"))
-        uptime_hours = (datetime.utcnow() - created).total_seconds() / 3600
-        
-        # Get performance metrics
-        cpu_response = await self._api_call(
-            "listHostsMetrics",
-            {"virtualmachineid": vm_id}
-        )
-        
-        host_metrics = cpu_response.get("listhostsmetricsresponse", {}).get("host", [{}])[0]
-        
-        return {
-            "uptime": 100.0 if vm["state"] == "Running" else 0.0,
-            "cpu_utilization": float(vm_metrics.get("cpuused", "0%").strip("%")),
-            "memory_utilization": float(vm_metrics.get("memoryused", "0%").strip("%")),
-            "network_throughput_gbps": float(vm_metrics.get("networkkbsread", 0)) / 1024 / 1024,
-            "disk_iops": float(vm_metrics.get("diskkbsread", 0)) + float(vm_metrics.get("diskkbswrite", 0)),
-            "latency_ms": float(host_metrics.get("averageload", 1)) * 10,  # Approximate
-            "error_count": 0 if vm["state"] == "Running" else 1,
-            "uptime_hours": uptime_hours
-        }
-        
-    async def _select_service_offering(
-        self,
-        resources: List[ResourceSpec]
-    ) -> Optional[ServiceOffering]:
-        """Select appropriate service offering"""
-        # Find primary resource requirement
-        primary_resource = max(resources, key=lambda r: r.quantity)
-        
-        suitable_offerings = []
-        
-        for offering in self.service_offerings.values():
-            # Check resource type match
-            if offering.resource_type != primary_resource.resource_type:
-                continue
+    async def _select_service_offering(self, spec: ResourceSpec) -> str:
+        """Select appropriate service offering based on resource spec"""
+        # Check mappings first
+        if spec.resource_type == ResourceType.GPU:
+            gpu_type = spec.specifications.get("gpu_type", "nvidia-a100")
+            if gpu_type in self.service_offering_mappings:
+                return self.service_offering_mappings[gpu_type]
                 
-            # Check minimum requirements
-            suitable = True
-            
-            if primary_resource.resource_type == ResourceType.CPU:
-                if offering.cpunumber < int(primary_resource.quantity):
-                    suitable = False
-            elif primary_resource.resource_type == ResourceType.GPU:
-                if "gpu_count" not in offering.tags or \
-                   int(offering.tags["gpu_count"]) < int(primary_resource.quantity):
-                    suitable = False
-            elif primary_resource.resource_type == ResourceType.MEMORY:
-                if offering.memory < int(primary_resource.quantity) * 1024:  # Convert GB to MB
-                    suitable = False
+        # List available offerings
+        response = await self._make_request("listServiceOfferings")
+        offerings = response.get("listserviceofferingsresponse", {}).get("serviceoffering", [])
+        
+        # Select based on requirements
+        for offering in offerings:
+            if spec.resource_type == ResourceType.CPU:
+                if offering.get("cpunumber", 0) >= spec.quantity:
+                    return offering["id"]
+            elif spec.resource_type == ResourceType.GPU:
+                if "gpu" in offering.get("name", "").lower():
+                    return offering["id"]
+            elif spec.resource_type == ResourceType.MEMORY:
+                if offering.get("memory", 0) >= spec.quantity * 1024:  # Convert GB to MB
+                    return offering["id"]
                     
-            if suitable:
-                suitable_offerings.append(offering)
-                
-        if not suitable_offerings:
-            return None
+        # Default to first available
+        if offerings:
+            return offerings[0]["id"]
             
-        # Select best offering (closest match to requirements)
-        return min(
-            suitable_offerings,
-            key=lambda o: abs(o.cpunumber - int(primary_resource.quantity))
+        raise Exception("No suitable service offering found")
+        
+    async def _select_template(self, spec: ResourceSpec) -> str:
+        """Select appropriate template based on resource spec"""
+        # Check mappings
+        template_type = spec.specifications.get("os", "ubuntu-22.04")
+        if template_type in self.template_mappings:
+            return self.template_mappings[template_type]
+            
+        # List available templates
+        response = await self._make_request(
+            "listTemplates",
+            templatefilter="featured"
         )
+        templates = response.get("listtemplatesresponse", {}).get("template", [])
         
-    async def _get_template_id(
-        self,
-        zone_id: str,
-        resources: List[ResourceSpec]
-    ) -> str:
-        """Get appropriate template ID"""
-        # Determine OS based on requirements
-        requires_gpu = any(r.resource_type == ResourceType.GPU for r in resources)
-        
-        template_filter = {
-            "zoneid": zone_id,
-            "templatefilter": "featured",
-            "keyword": "gpu" if requires_gpu else "compute"
-        }
-        
-        templates_response = await self._api_call("listTemplates", template_filter)
-        templates = templates_response.get("listtemplatesresponse", {}).get("template", [])
-        
-        if not templates:
-            # Use default template
-            template_filter = {
-                "zoneid": zone_id,
-                "templatefilter": "featured",
-                "keyword": "ubuntu-22"
-            }
-            templates_response = await self._api_call("listTemplates", template_filter)
-            templates = templates_response.get("listtemplatesresponse", {}).get("template", [])
-            
+        # Find Ubuntu or CentOS template
+        for template in templates:
+            name = template.get("name", "").lower()
+            if "ubuntu" in name or "centos" in name:
+                return template["id"]
+                
+        # Default to first available
         if templates:
             return templates[0]["id"]
             
         raise Exception("No suitable template found")
         
-    async def _get_network_id(
-        self,
-        zone_id: str,
-        settlement_id: str
-    ) -> Optional[str]:
-        """Get or create isolated network for settlement"""
-        # Check if network exists
-        networks_response = await self._api_call(
-            "listNetworks",
-            {
-                "zoneid": zone_id,
-                "tags[0].key": "settlement_id",
-                "tags[0].value": settlement_id
-            }
-        )
+    def _generate_user_data(self, allocation: ResourceAllocation, spec: ResourceSpec) -> str:
+        """Generate cloud-init user data for VM initialization"""
+        user_data = f"""#!/bin/bash
+# PlatformQ Compute Node Initialization
+echo "Initializing PlatformQ compute node..."
+
+# Set hostname
+hostnamectl set-hostname platformq-{allocation.allocation_id}
+
+# Install monitoring agent
+curl -sSL https://platformq.io/install-agent.sh | bash -s -- \
+    --allocation-id {allocation.allocation_id} \
+    --settlement-id {allocation.settlement_id}
+
+# Configure GPU if needed
+"""
         
-        networks = networks_response.get("listnetworksresponse", {}).get("network", [])
+        if spec.resource_type == ResourceType.GPU:
+            user_data += """
+# Install NVIDIA drivers
+apt-get update && apt-get install -y nvidia-driver-525
+modprobe nvidia
+
+# Install CUDA toolkit
+wget https://developer.download.nvidia.com/compute/cuda/repos/ubuntu2204/x86_64/cuda-keyring_1.0-1_all.deb
+dpkg -i cuda-keyring_1.0-1_all.deb
+apt-get update && apt-get -y install cuda
+
+# Install Docker with NVIDIA runtime
+curl -fsSL https://get.docker.com | bash
+apt-get install -y nvidia-docker2
+systemctl restart docker
+"""
         
-        if networks:
-            return networks[0]["id"]
-            
-        # Create new isolated network
-        network_offering_response = await self._api_call(
-            "listNetworkOfferings",
-            {
-                "name": "DefaultIsolatedNetworkOfferingForVpcNetworks",
-                "state": "Enabled"
-            }
-        )
+        user_data += """
+# Start monitoring
+systemctl enable platformq-monitor
+systemctl start platformq-monitor
+
+echo "Initialization complete"
+"""
         
-        offerings = network_offering_response.get("listnetworkofferingsresponse", {}).get("networkoffering", [])
+        return user_data
         
-        if not offerings:
-            return None  # Use default network
-            
-        # Create network
-        create_response = await self._api_call(
-            "createNetwork",
-            {
-                "name": f"settlement-{settlement_id[:8]}",
-                "displaytext": f"Network for settlement {settlement_id}",
-                "networkofferingid": offerings[0]["id"],
-                "zoneid": zone_id,
-                "tags[0].key": "settlement_id",
-                "tags[0].value": settlement_id
-            }
-        )
-        
-        network = create_response.get("createnetworkresponse", {}).get("network", {})
-        
-        return network.get("id")
-        
-    async def _wait_for_vm_ready(
-        self,
-        vm_id: str,
-        timeout: int = 300
-    ) -> None:
+    async def _wait_for_vm(self, vm_id: str, timeout: int = 300) -> Dict[str, Any]:
         """Wait for VM to be in running state"""
         start_time = datetime.utcnow()
         
-        while (datetime.utcnow() - start_time).total_seconds() < timeout:
-            vm_response = await self._api_call(
+        while (datetime.utcnow() - start_time).seconds < timeout:
+            response = await self._make_request(
                 "listVirtualMachines",
-                {"id": vm_id}
+                id=vm_id
             )
             
-            vms = vm_response.get("listvirtualmachinesresponse", {}).get("virtualmachine", [])
-            
-            if vms and vms[0]["state"] == "Running":
-                return
+            vms = response.get("listvirtualmachinesresponse", {}).get("virtualmachine", [])
+            if not vms:
+                raise Exception(f"VM {vm_id} not found")
+                
+            vm = vms[0]
+            if vm["state"] == "Running":
+                return vm
+            elif vm["state"] == "Error":
+                raise Exception(f"VM {vm_id} failed to start")
                 
             await asyncio.sleep(5)
             
-        raise Exception(f"VM {vm_id} did not become ready within {timeout} seconds")
+        raise Exception(f"Timeout waiting for VM {vm_id} to start")
         
-    async def _get_vm_details(self, vm_id: str) -> Dict[str, Any]:
-        """Get VM details including IPs"""
-        vm_response = await self._api_call(
-            "listVirtualMachines",
-            {"id": vm_id}
-        )
-        
-        vms = vm_response.get("listvirtualmachinesresponse", {}).get("virtualmachine", [])
-        
-        if not vms:
-            return {}
-            
-        vm = vms[0]
-        
-        # Get public IP if available
-        public_ip = None
-        for nic in vm.get("nic", []):
-            if nic.get("type") == "Virtual" and nic.get("isdefault"):
-                public_ip = nic.get("ipaddress")
-                break
-                
-        return {
-            "public_ip": public_ip,
-            "private_ip": vm.get("ipaddress"),
-            "state": vm.get("state"),
-            "created": vm.get("created")
+    def _generate_access_details(
+        self,
+        instances: List[Dict[str, Any]],
+        allocation: ResourceAllocation
+    ) -> Dict[str, Any]:
+        """Generate access details for allocated resources"""
+        access_details = {
+            "provider": "cloudstack",
+            "zone_id": self.zone_id,
+            "instances": instances,
+            "allocation_id": allocation.allocation_id,
+            "api_endpoint": f"{self.api_endpoint}/client/console",
+            "monitoring_endpoints": {}
         }
         
-    async def _configure_gpu_passthrough(self, vm_id: str) -> None:
-        """Configure GPU passthrough for VM"""
-        # This would involve CloudStack GPU passthrough APIs
-        # Implementation depends on hypervisor (KVM, VMware, etc.)
-        logger.info(f"Configuring GPU passthrough for VM {vm_id}")
-        
-        # Example for KVM with NVIDIA GPUs
-        await self._api_call(
-            "addGpuToVm",  # Custom API extension
-            {
-                "vmid": vm_id,
-                "gpugroup": "nvidia-a100",
-                "count": 1
+        # Add SSH access for each instance
+        for idx, instance in enumerate(instances):
+            instance_id = instance["vm_id"]
+            
+            # Generate SSH key if needed
+            ssh_key = self._generate_ssh_key(instance_id)
+            
+            instance["ssh_access"] = {
+                "host": instance.get("public_ip") or instance.get("ip_address"),
+                "port": 22,
+                "username": "ubuntu",
+                "key_name": f"platformq-{instance_id}"
             }
-        ) 
+            
+            # Add monitoring endpoint
+            access_details["monitoring_endpoints"][instance_id] = {
+                "metrics": f"https://monitoring.platformq.io/instances/{instance_id}",
+                "logs": f"https://logs.platformq.io/instances/{instance_id}",
+                "console": f"{self.api_endpoint}/client/console?cmd=access&vm={instance_id}"
+            }
+            
+        # Add Jupyter/notebook access for GPU instances
+        gpu_instances = [i for i in instances if i["spec"]["resource_type"] == "gpu"]
+        if gpu_instances:
+            access_details["jupyter_endpoints"] = {
+                i["vm_id"]: f"https://jupyter-{i['vm_id']}.compute.platformq.io"
+                for i in gpu_instances
+            }
+            
+        return access_details
+        
+    def _generate_ssh_key(self, instance_id: str) -> str:
+        """Generate or retrieve SSH key for instance"""
+        # In production, this would integrate with a key management service
+        # For now, return a placeholder
+        return f"ssh-key-{instance_id}"
+        
+    async def deallocate_resources(self, allocation_id: str) -> bool:
+        """Deallocate CloudStack resources"""
+        try:
+            # List VMs with allocation tag
+            response = await self._make_request(
+                "listVirtualMachines",
+                keyword=f"platformq-{allocation_id}"
+            )
+            
+            vms = response.get("listvirtualmachinesresponse", {}).get("virtualmachine", [])
+            
+            for vm in vms:
+                # Stop VM first
+                await self._make_request(
+                    "stopVirtualMachine",
+                    id=vm["id"]
+                )
+                
+                # Wait for stop
+                await self._wait_for_vm_state(vm["id"], "Stopped")
+                
+                # Destroy VM
+                await self._make_request(
+                    "destroyVirtualMachine",
+                    id=vm["id"],
+                    expunge=True
+                )
+                
+                logger.info(f"Deallocated VM {vm['id']} for allocation {allocation_id}")
+                
+            return True
+            
+        except Exception as e:
+            logger.error(f"Error deallocating CloudStack resources: {e}")
+            return False
+            
+    async def _wait_for_vm_state(self, vm_id: str, target_state: str, timeout: int = 60):
+        """Wait for VM to reach target state"""
+        start_time = datetime.utcnow()
+        
+        while (datetime.utcnow() - start_time).seconds < timeout:
+            response = await self._make_request(
+                "listVirtualMachines",
+                id=vm_id
+            )
+            
+            vms = response.get("listvirtualmachinesresponse", {}).get("virtualmachine", [])
+            if vms and vms[0]["state"] == target_state:
+                return
+                
+            await asyncio.sleep(2)
+            
+    async def get_metrics(self, allocation_id: str) -> Dict[str, Any]:
+        """Get resource metrics from CloudStack"""
+        try:
+            # List VMs for allocation
+            response = await self._make_request(
+                "listVirtualMachines",
+                keyword=f"platformq-{allocation_id}"
+            )
+            
+            vms = response.get("listvirtualmachinesresponse", {}).get("virtualmachine", [])
+            
+            if not vms:
+                return {
+                    "cpu_utilization": 0,
+                    "memory_utilization": 0,
+                    "network_throughput_gbps": 0,
+                    "disk_iops": 0,
+                    "uptime": 0,
+                    "latency_ms": 9999,
+                    "error_count": 1
+                }
+                
+            # Aggregate metrics
+            total_cpu = 0
+            total_memory = 0
+            total_network = 0
+            vm_count = len(vms)
+            
+            for vm in vms:
+                # Get VM metrics
+                metrics_response = await self._make_request(
+                    "listVirtualMachinesMetrics",
+                    id=vm["id"]
+                )
+                
+                vm_metrics = metrics_response.get("listvirtualmachinesmetricsresponse", {}).get("virtualmachine", [{}])[0]
+                
+                # Parse metrics
+                total_cpu += float(vm_metrics.get("cpuused", "0").rstrip("%"))
+                total_memory += float(vm_metrics.get("memoryused", "0").rstrip("%"))
+                total_network += float(vm_metrics.get("networkkbsread", 0)) + float(vm_metrics.get("networkkbswrite", 0))
+                
+            # Calculate averages and convert units
+            return {
+                "cpu_utilization": total_cpu / vm_count if vm_count > 0 else 0,
+                "memory_utilization": total_memory / vm_count if vm_count > 0 else 0,
+                "network_throughput_gbps": (total_network / vm_count / 1024 / 1024) if vm_count > 0 else 0,  # KB/s to Gbps
+                "disk_iops": 10000,  # Placeholder - would need storage metrics
+                "uptime": 99.9,  # Calculate from VM state history
+                "latency_ms": 10,  # Would need external monitoring
+                "error_count": 0
+            }
+            
+        except Exception as e:
+            logger.error(f"Error getting CloudStack metrics: {e}")
+            return {
+                "cpu_utilization": 0,
+                "memory_utilization": 0,
+                "network_throughput_gbps": 0,
+                "disk_iops": 0,
+                "uptime": 0,
+                "latency_ms": 9999,
+                "error_count": 1
+            } 

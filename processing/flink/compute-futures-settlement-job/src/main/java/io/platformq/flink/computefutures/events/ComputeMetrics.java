@@ -62,6 +62,11 @@ public class ComputeMetrics implements Serializable {
         this.latencyMs = latencyMs;
     }
     
+    // Add alias method for CEP patterns
+    public double getLatency() {
+        return latencyMs;
+    }
+    
     public double getPerformanceScore() {
         return performanceScore;
     }

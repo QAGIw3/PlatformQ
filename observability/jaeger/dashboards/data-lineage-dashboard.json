@@ -1,0 +1,227 @@
+{
+  "dashboard": {
+    "title": "PlatformQ Data Lineage Dashboard",
+    "version": "1.0.0",
+    "description": "Comprehensive view of data lineage and pipeline operations",
+    "panels": [
+      {
+        "id": "pipeline-overview",
+        "type": "graph",
+        "title": "Data Pipeline Flow",
+        "gridPos": {
+          "x": 0,
+          "y": 0,
+          "w": 24,
+          "h": 8
+        },
+        "targets": [
+          {
+            "query": "operation:data_pipeline",
+            "legendFormat": "{{pipeline.name}}",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "showServiceMap": true,
+          "groupByTag": "pipeline.name"
+        }
+      },
+      {
+        "id": "iceberg-operations",
+        "type": "table",
+        "title": "Iceberg Table Operations",
+        "gridPos": {
+          "x": 0,
+          "y": 8,
+          "w": 12,
+          "h": 6
+        },
+        "targets": [
+          {
+            "query": "iceberg.table_name:*",
+            "fields": [
+              "iceberg.table_name",
+              "iceberg.operation",
+              "iceberg.snapshot_id",
+              "iceberg.record_count",
+              "duration"
+            ],
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": "lineage-graph",
+        "type": "dependency-graph",
+        "title": "Data Lineage Graph",
+        "gridPos": {
+          "x": 12,
+          "y": 8,
+          "w": 12,
+          "h": 6
+        },
+        "targets": [
+          {
+            "query": "span.type:data_pipeline",
+            "showDependencies": true,
+            "groupBy": ["pipeline.source_tables", "pipeline.target_tables"],
+            "refId": "A"
+          }
+        ]
+      },
+      {
+        "id": "pipeline-performance",
+        "type": "timeseries",
+        "title": "Pipeline Performance Metrics",
+        "gridPos": {
+          "x": 0,
+          "y": 14,
+          "w": 16,
+          "h": 6
+        },
+        "targets": [
+          {
+            "query": "operation:data_pipeline",
+            "metric": "duration",
+            "aggregation": "p95",
+            "groupBy": "pipeline.name",
+            "refId": "A"
+          }
+        ],
+        "yAxis": {
+          "label": "Duration (ms)",
+          "scale": "log"
+        }
+      },
+      {
+        "id": "error-tracking",
+        "type": "stat",
+        "title": "Pipeline Errors",
+        "gridPos": {
+          "x": 16,
+          "y": 14,
+          "w": 8,
+          "h": 6
+        },
+        "targets": [
+          {
+            "query": "error:true AND span.type:data_pipeline",
+            "stat": "count",
+            "timeRange": "1h",
+            "refId": "A"
+          }
+        ],
+        "thresholds": {
+          "mode": "absolute",
+          "steps": [
+            {"value": 0, "color": "green"},
+            {"value": 1, "color": "yellow"},
+            {"value": 5, "color": "red"}
+          ]
+        }
+      },
+      {
+        "id": "data-volume",
+        "type": "bargauge",
+        "title": "Data Volume by Pipeline",
+        "gridPos": {
+          "x": 0,
+          "y": 20,
+          "w": 12,
+          "h": 6
+        },
+        "targets": [
+          {
+            "query": "lineage.row_count:*",
+            "aggregation": "sum",
+            "groupBy": "pipeline.name",
+            "refId": "A"
+          }
+        ],
+        "options": {
+          "displayMode": "gradient",
+          "orientation": "horizontal"
+        }
+      },
+      {
+        "id": "transformation-types",
+        "type": "piechart",
+        "title": "Transformation Types",
+        "gridPos": {
+          "x": 12,
+          "y": 20,
+          "w": 12,
+          "h": 6
+        },
+        "targets": [
+          {
+            "query": "pipeline.transformation_type:*",
+            "aggregation": "count",
+            "groupBy": "pipeline.transformation_type",
+            "refId": "A"
+          }
+        ]
+      }
+    ],
+    "templating": {
+      "list": [
+        {
+          "name": "service",
+          "type": "query",
+          "query": "service.name",
+          "multi": true,
+          "includeAll": true,
+          "current": {
+            "value": "$__all",
+            "text": "All"
+          }
+        },
+        {
+          "name": "pipeline",
+          "type": "query",
+          "query": "pipeline.name",
+          "multi": false,
+          "includeAll": true,
+          "current": {
+            "value": "",
+            "text": "None"
+          }
+        },
+        {
+          "name": "table",
+          "type": "query",
+          "query": "iceberg.table_name",
+          "multi": true,
+          "includeAll": true,
+          "current": {
+            "value": "$__all",
+            "text": "All"
+          }
+        }
+      ]
+    },
+    "annotations": {
+      "list": [
+        {
+          "name": "Deployments",
+          "datasource": "Prometheus",
+          "enable": true,
+          "query": "changes(platformq_deployment_info[5m]) > 0",
+          "tagKeys": "service,version"
+        },
+        {
+          "name": "Iceberg Snapshots",
+          "datasource": "Elasticsearch",
+          "enable": true,
+          "query": "operation:snapshot_created",
+          "tagKeys": "table_name,snapshot_id"
+        }
+      ]
+    },
+    "refresh": "10s",
+    "time": {
+      "from": "now-1h",
+      "to": "now"
+    }
+  }
+} 

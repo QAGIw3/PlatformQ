@@ -45,6 +45,17 @@ from .repository import (
     QuantumResourceAllocationRepository
 )
 from .event_processors import QuantumOptimizationEventProcessor
+from .api.deps import (
+    get_current_user,
+    get_current_tenant_id,
+    get_current_user_id,
+    get_db_session,
+    require_quantum_access,
+    get_quantum_resource_quota,
+    get_api_key_crud_placeholder,
+    get_user_crud_placeholder,
+    get_password_verifier_placeholder
+)
 
 # Setup logging
 logger = logging.getLogger(__name__)
@@ -84,10 +95,11 @@ async def lifespan(app: FastAPI):
 
 # Create FastAPI app
 app = create_base_app(
-    title="PlatformQ Quantum Optimization Service",
-    description="Quantum and hybrid optimization solvers for complex problems",
-    version="1.0.0",
-    lifespan=lifespan,
+    service_name="quantum-optimization-service",
+    db_session_dependency=get_db_session,
+    api_key_crud_dependency=get_api_key_crud_placeholder,
+    user_crud_dependency=get_user_crud_placeholder,
+    password_verifier_dependency=get_password_verifier_placeholder,
     event_processors=[event_processor] if event_processor else []
 )
 
@@ -141,9 +153,10 @@ class CircuitCreateRequest(BaseModel):
 @app.post("/api/v1/problems", response_model=Dict[str, Any])
 async def create_problem(
     request: ProblemCreateRequest,
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(lambda: "default-tenant"),  # TODO: Get from auth
-    user_id: str = Depends(lambda: "user")  # TODO: Get from auth
+    db: Session = Depends(get_db_session),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: str = Depends(get_current_user_id),
+    _: bool = Depends(require_quantum_access)  # Ensure user has quantum access
 ):
     """Create a new optimization problem"""
     try:
@@ -185,8 +198,8 @@ async def create_problem(
 async def list_problems(
     problem_type: Optional[ProblemType] = None,
     is_template: Optional[bool] = None,
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(lambda: "default-tenant")
+    db: Session = Depends(get_db_session),
+    tenant_id: str = Depends(get_current_tenant_id)
 ):
     """List optimization problems"""
     try:
@@ -220,7 +233,7 @@ async def list_problems(
 @app.get("/api/v1/problems/{problem_id}", response_model=Dict[str, Any])
 async def get_problem(
     problem_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db_session)
 ):
     """Get problem details"""
     try:
@@ -260,8 +273,8 @@ async def get_problem(
 async def submit_job(
     request: JobSubmitRequest,
     background_tasks: BackgroundTasks,
-    tenant_id: str = Depends(lambda: "default-tenant"),
-    user_id: str = Depends(lambda: "user")
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: str = Depends(get_current_user_id)
 ):
     """Submit an optimization job"""
     try:
@@ -300,7 +313,9 @@ async def submit_job(
 @app.get("/api/v1/jobs/{job_id}", response_model=Dict[str, Any])
 async def get_job_status(
     job_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db_session),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user: Dict[str, Any] = Depends(get_current_user)
 ):
     """Get job status and results"""
     try:
@@ -357,7 +372,7 @@ async def get_job_status(
 @app.get("/api/v1/jobs/{job_id}/iterations", response_model=List[Dict[str, Any]])
 async def get_job_iterations(
     job_id: str,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db_session)
 ):
     """Get optimization iterations for a job"""
     try:
@@ -391,9 +406,9 @@ async def get_job_iterations(
 @app.post("/api/v1/templates", response_model=Dict[str, Any])
 async def create_template(
     request: TemplateCreateRequest,
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(lambda: "default-tenant"),
-    user_id: str = Depends(lambda: "user")
+    db: Session = Depends(get_db_session),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: str = Depends(get_current_user_id)
 ):
     """Create an optimization problem template"""
     try:
@@ -430,7 +445,7 @@ async def list_templates(
     category: Optional[str] = None,
     problem_type: Optional[ProblemType] = None,
     public_only: bool = False,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db_session)
 ):
     """List available templates"""
     try:
@@ -467,9 +482,9 @@ async def create_problem_from_template(
     template_id: str,
     name: str,
     variable_values: Dict[str, Any],
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(lambda: "default-tenant"),
-    user_id: str = Depends(lambda: "user")
+    db: Session = Depends(get_db_session),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: str = Depends(get_current_user_id)
 ):
     """Create a problem from a template"""
     try:
@@ -503,9 +518,9 @@ async def create_problem_from_template(
 @app.post("/api/v1/circuits", response_model=Dict[str, Any])
 async def create_circuit(
     request: CircuitCreateRequest,
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(lambda: "default-tenant"),
-    user_id: str = Depends(lambda: "user")
+    db: Session = Depends(get_db_session),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: str = Depends(get_current_user_id)
 ):
     """Create a quantum circuit"""
     try:
@@ -551,7 +566,7 @@ async def get_benchmarks(
     solver_type: Optional[SolverType] = None,
     min_problem_size: Optional[int] = None,
     max_problem_size: Optional[int] = None,
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db_session)
 ):
     """Get solver benchmark results"""
     try:
@@ -590,7 +605,7 @@ async def get_solver_recommendation(
     problem_type: ProblemType,
     problem_size: int,
     optimize_for: str = "quality",
-    db: Session = Depends(get_db)
+    db: Session = Depends(get_db_session)
 ):
     """Get solver recommendation based on benchmarks"""
     try:
@@ -620,9 +635,9 @@ async def get_solver_recommendation(
 
 @app.get("/api/v1/resource-allocation", response_model=Dict[str, Any])
 async def get_resource_allocation(
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(lambda: "default-tenant"),
-    user_id: str = Depends(lambda: "user")
+    db: Session = Depends(get_db_session),
+    tenant_id: str = Depends(get_current_tenant_id),
+    user_id: str = Depends(get_current_user_id)
 ):
     """Get quantum resource allocation for user"""
     try:
@@ -659,8 +674,8 @@ async def get_resource_allocation(
 @app.get("/api/v1/statistics", response_model=Dict[str, Any])
 async def get_service_statistics(
     days: int = 30,
-    db: Session = Depends(get_db),
-    tenant_id: str = Depends(lambda: "default-tenant")
+    db: Session = Depends(get_db_session),
+    tenant_id: str = Depends(get_current_tenant_id)
 ):
     """Get service statistics"""
     try:

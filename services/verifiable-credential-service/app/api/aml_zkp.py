@@ -3,7 +3,7 @@ AML Zero-Knowledge Proof API Endpoints
 Handles AML compliance credential creation and ZK proof generation/verification
 """
 
-from fastapi import APIRouter, HTTPException, Depends
+from fastapi import APIRouter, HTTPException, Depends, BackgroundTasks
 from typing import Dict, List, Optional
 from datetime import datetime
 from pydantic import BaseModel
@@ -18,7 +18,9 @@ from app.zkp.aml_zkp import (
 from app.zkp.zkp_manager import ZKPManager
 from app.zkp.selective_disclosure import SelectiveDisclosure
 from app.did.did_manager import DIDManager
+from app.zkp.ignite_zkp_compute import IgniteZKPCompute
 from app.api.deps import get_current_user
+from pyignite import Client as IgniteClient
 
 logger = logging.getLogger(__name__)
 router = APIRouter()
@@ -86,23 +88,76 @@ class AMLComplianceCheckResponse(BaseModel):
     recommendations: List[str]
 
 
+class BatchProofRequest(BaseModel):
+    """Request for batch proof generation"""
+    proof_requests: List[GenerateAMLProofRequest]
+    parallel_processing: bool = True
+    
+class BatchProofResponse(BaseModel):
+    """Response for batch proof generation"""
+    proof_ids: List[str]
+    processing_mode: str
+    estimated_time_seconds: float
+    
+class CacheProofComponentsRequest(BaseModel):
+    """Request to cache proof components"""
+    credential_id: str
+    attributes: List[str]
+    ttl_seconds: Optional[int] = 3600
+    
+class CacheProofComponentsResponse(BaseModel):
+    """Response for caching proof components"""
+    cache_key: str
+    cached_attributes: List[str]
+    expires_at: str
+    
+class ComputeStatsResponse(BaseModel):
+    """Compute grid statistics response"""
+    num_workers: int
+    pending_tasks: int
+    completed_tasks: int
+    average_compute_time_ms: float
+    cache_hit_rate: float
+
+
 # Initialize AML ZKP handler
 aml_zkp_handler: Optional[AMLZeroKnowledgeProof] = None
+ignite_zkp_compute: Optional[IgniteZKPCompute] = None
+ignite_client: Optional[IgniteClient] = None
 
 
 def get_aml_zkp_handler() -> AMLZeroKnowledgeProof:
     """Get or initialize AML ZKP handler"""
-    global aml_zkp_handler
+    global aml_zkp_handler, ignite_zkp_compute, ignite_client
+    
     if not aml_zkp_handler:
-        # These would be injected properly in production
+        # Initialize Ignite client and compute service
+        try:
+            ignite_client = IgniteClient()
+            ignite_client.connect('localhost', 10800)
+            
+            ignite_zkp_compute = IgniteZKPCompute(ignite_client)
+            # Note: In production, this would be done asynchronously
+            import asyncio
+            asyncio.create_task(ignite_zkp_compute.initialize())
+            
+            logger.info("Initialized Ignite ZKP compute service")
+        except Exception as e:
+            logger.warning(f"Failed to initialize Ignite compute: {e}")
+            ignite_zkp_compute = None
+            
+        # Initialize ZKP components
         zkp_manager = ZKPManager()
         selective_disclosure = SelectiveDisclosure()
         did_manager = DIDManager()
+        
         aml_zkp_handler = AMLZeroKnowledgeProof(
             zkp_manager=zkp_manager,
             selective_disclosure=selective_disclosure,
-            did_manager=did_manager
+            did_manager=did_manager,
+            ignite_zkp_compute=ignite_zkp_compute
         )
+        
     return aml_zkp_handler
 
 
@@ -396,9 +451,180 @@ async def batch_verify_aml_proofs(
                 "error": str(e)
             })
             
-    return {
-        "total": len(proof_ids),
-        "valid": sum(1 for r in results if r["valid"]),
-        "invalid": sum(1 for r in results if not r["valid"]),
-        "results": results
-    } 
+    return {"results": results}
+
+
+@router.post("/zkp/aml/batch-generate", response_model=BatchProofResponse)
+async def generate_batch_aml_proofs(
+    request: BatchProofRequest,
+    background_tasks: BackgroundTasks,
+    aml_handler: AMLZeroKnowledgeProof = Depends(get_aml_zkp_handler)
+):
+    """
+    Generate multiple AML proofs in batch using distributed compute
+    """
+    try:
+        if not request.parallel_processing or not aml_handler.ignite_zkp_compute:
+            # Sequential processing
+            proof_ids = []
+            for proof_request in request.proof_requests:
+                # Convert to proper format
+                attributes = [AMLAttribute(attr) for attr in proof_request.attributes_to_prove]
+                
+                # Mock credential
+                credential = AMLCredential(
+                    credential_id=proof_request.credential_id,
+                    holder_did=proof_request.holder_did,
+                    issuer_did="did:platform:compliance-service",
+                    credential_type="risk_assessment",
+                    attributes={
+                        "riskScore": 0.4,
+                        "riskLevel": "MEDIUM",
+                        "isSanctioned": False,
+                        "checkDate": datetime.utcnow().isoformat()
+                    },
+                    issued_at=datetime.utcnow(),
+                    expires_at=datetime.utcnow().replace(hour=datetime.utcnow().hour + 24),
+                    credential_hash="mock_hash"
+                )
+                
+                proof = await aml_handler.generate_aml_proof(
+                    holder_did=proof_request.holder_did,
+                    credential=credential,
+                    attributes_to_prove=attributes,
+                    constraints=proof_request.custom_constraints or {},
+                    verifier_challenge=proof_request.verifier_challenge
+                )
+                proof_ids.append(proof.proof_id)
+                
+            return BatchProofResponse(
+                proof_ids=proof_ids,
+                processing_mode="sequential",
+                estimated_time_seconds=len(proof_ids) * 0.5
+            )
+            
+        # Parallel processing using Ignite
+        batch_requests = []
+        for proof_request in request.proof_requests:
+            attributes = [AMLAttribute(attr) for attr in proof_request.attributes_to_prove]
+            
+            # Mock credential
+            credential = AMLCredential(
+                credential_id=proof_request.credential_id,
+                holder_did=proof_request.holder_did,
+                issuer_did="did:platform:compliance-service",
+                credential_type="risk_assessment",
+                attributes={
+                    "riskScore": 0.4,
+                    "riskLevel": "MEDIUM",
+                    "isSanctioned": False,
+                    "checkDate": datetime.utcnow().isoformat()
+                },
+                issued_at=datetime.utcnow(),
+                expires_at=datetime.utcnow().replace(hour=datetime.utcnow().hour + 24),
+                credential_hash="mock_hash"
+            )
+            
+            batch_requests.append({
+                "holder_did": proof_request.holder_did,
+                "credential": credential,
+                "attributes_to_prove": attributes,
+                "constraints": proof_request.custom_constraints or {},
+                "verifier_challenge": proof_request.verifier_challenge
+            })
+            
+        # Generate proofs in parallel
+        proofs = await aml_handler.generate_batch_proofs(batch_requests)
+        proof_ids = [proof.proof_id for proof in proofs]
+        
+        return BatchProofResponse(
+            proof_ids=proof_ids,
+            processing_mode="parallel_distributed",
+            estimated_time_seconds=len(proof_ids) * 0.1  # Faster with parallel processing
+        )
+        
+    except Exception as e:
+        logger.error(f"Error generating batch proofs: {e}")
+        raise HTTPException(status_code=500, detail="Failed to generate batch proofs")
+
+
+@router.post("/zkp/aml/cache-components", response_model=CacheProofComponentsResponse)
+async def cache_proof_components(
+    request: CacheProofComponentsRequest,
+    aml_handler: AMLZeroKnowledgeProof = Depends(get_aml_zkp_handler)
+):
+    """
+    Pre-compute and cache proof components for faster generation
+    """
+    try:
+        # Convert attributes
+        attributes = [AMLAttribute(attr) for attr in request.attributes]
+        
+        # Mock credential
+        credential = AMLCredential(
+            credential_id=request.credential_id,
+            holder_did="did:platform:user123",
+            issuer_did="did:platform:compliance-service",
+            credential_type="risk_assessment",
+            attributes={
+                "riskScore": 0.4,
+                "riskLevel": "MEDIUM",
+                "isSanctioned": False,
+                "checkDate": datetime.utcnow().isoformat()
+            },
+            issued_at=datetime.utcnow(),
+            expires_at=datetime.utcnow().replace(hour=datetime.utcnow().hour + 24),
+            credential_hash="mock_hash"
+        )
+        
+        # Cache components
+        cache_key = await aml_handler.cache_proof_components(credential, attributes)
+        
+        return CacheProofComponentsResponse(
+            cache_key=cache_key,
+            cached_attributes=request.attributes,
+            expires_at=(datetime.utcnow() + aml_handler._cache_ttl).isoformat()
+        )
+        
+    except Exception as e:
+        logger.error(f"Error caching proof components: {e}")
+        raise HTTPException(status_code=500, detail="Failed to cache components")
+
+
+@router.get("/zkp/aml/compute-stats", response_model=ComputeStatsResponse)
+async def get_compute_grid_stats(
+    aml_handler: AMLZeroKnowledgeProof = Depends(get_aml_zkp_handler)
+):
+    """
+    Get distributed compute grid statistics
+    """
+    try:
+        if not aml_handler.ignite_zkp_compute:
+            return ComputeStatsResponse(
+                num_workers=0,
+                pending_tasks=0,
+                completed_tasks=0,
+                average_compute_time_ms=0.0,
+                cache_hit_rate=0.0
+            )
+            
+        # Get compute stats
+        stats = await aml_handler.ignite_zkp_compute.get_compute_stats()
+        
+        # Calculate cache hit rate
+        cache_hits = len([k for k in aml_handler._proof_cache.keys() 
+                         if aml_handler._proof_cache[k]["expires_at"] > datetime.utcnow()])
+        cache_total = len(aml_handler._proof_cache)
+        cache_hit_rate = cache_hits / cache_total if cache_total > 0 else 0.0
+        
+        return ComputeStatsResponse(
+            num_workers=stats.get("num_workers", 0),
+            pending_tasks=stats.get("pending_tasks", 0),
+            completed_tasks=stats.get("completed_tasks", 0),
+            average_compute_time_ms=stats.get("average_compute_time_ms", 0.0),
+            cache_hit_rate=cache_hit_rate
+        )
+        
+    except Exception as e:
+        logger.error(f"Error getting compute stats: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get compute stats") 

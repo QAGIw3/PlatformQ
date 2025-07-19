@@ -1,21 +1,19 @@
 """
-Simple voting strategy implementation.
+Simple majority voting strategy.
 """
 
 from typing import Dict, Any, List
 from collections import defaultdict
 
-from .base import VotingStrategy
+from .strategy import VotingStrategy, VotingMechanism
 
 
 class SimpleVoting(VotingStrategy):
-    """
-    Simple majority voting implementation.
-    One token = one vote.
-    """
+    """Simple majority voting with no vote weighting"""
     
     def __init__(self, config: Dict[str, Any]):
         super().__init__(config)
+        self.mechanism = VotingMechanism.SIMPLE
         self.quorum_percentage = config.get('quorum_percentage', 20)
         self.approval_threshold = config.get('approval_threshold', 50)
         self.min_voting_power = config.get('min_voting_power', 1)

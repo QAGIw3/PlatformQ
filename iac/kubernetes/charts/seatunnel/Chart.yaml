@@ -1,0 +1,23 @@
+apiVersion: v2
+name: seatunnel
+description: Apache SeaTunnel - Unified data integration platform for PlatformQ
+type: application
+version: 0.1.0
+appVersion: "2.3.3"
+keywords:
+  - seatunnel
+  - etl
+  - data-integration
+  - flink
+  - streaming
+home: https://seatunnel.apache.org/
+sources:
+  - https://github.com/apache/seatunnel
+maintainers:
+  - name: PlatformQ Team
+    email: devops@platformq.io
+dependencies:
+  - name: flink
+    version: "1.17.0"
+    repository: "https://apache.github.io/flink-kubernetes-operator/"
+    condition: flink.enabled 

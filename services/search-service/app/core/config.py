@@ -3,6 +3,7 @@ Search Service Configuration
 """
 
 import os
+from typing import Optional
 from pydantic_settings import BaseSettings
 
 
@@ -61,6 +62,13 @@ class Settings(BaseSettings):
     
     # Feature flags
     ENABLE_VECTOR_SEARCH: bool = True
+    ENABLE_ES_VECTOR_SEARCH: bool = True
+    
+    # JanusGraph
+    JANUSGRAPH_URL: str = os.getenv("JANUSGRAPH_URL", "ws://janusgraph:8182/gremlin")
+    
+    # OpenAI for RAG
+    OPENAI_API_KEY: Optional[str] = os.getenv("OPENAI_API_KEY", None)
     ENABLE_QUERY_UNDERSTANDING: bool = True
     ENABLE_MULTI_MODAL_SEARCH: bool = True
     ENABLE_SEARCH_ANALYTICS: bool = True

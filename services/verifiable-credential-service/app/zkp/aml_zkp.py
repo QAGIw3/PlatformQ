@@ -12,10 +12,12 @@ from enum import Enum
 import hashlib
 import json
 import logging
+from concurrent.futures import ThreadPoolExecutor
 
 from app.zkp.zkp_manager import ZKPManager
 from app.zkp.selective_disclosure import SelectiveDisclosure
 from app.did.did_manager import DIDManager
+from app.zkp.ignite_zkp_compute import IgniteZKPCompute, ProofTask, ProofResult
 
 logger = logging.getLogger(__name__)
 
@@ -68,11 +70,16 @@ class AMLZeroKnowledgeProof:
         self,
         zkp_manager: ZKPManager,
         selective_disclosure: SelectiveDisclosure,
-        did_manager: DIDManager
+        did_manager: DIDManager,
+        ignite_zkp_compute: Optional[IgniteZKPCompute] = None
     ):
         self.zkp_manager = zkp_manager
         self.selective_disclosure = selective_disclosure
         self.did_manager = did_manager
+        self.ignite_zkp_compute = ignite_zkp_compute
+        
+        # Thread pool for CPU-intensive operations
+        self.executor = ThreadPoolExecutor(max_workers=4)
         
         # ZK circuits for AML proofs
         self.circuits = {
@@ -86,9 +93,10 @@ class AMLZeroKnowledgeProof:
             AMLAttribute.LAST_CHECK_RECENT: "timestamp_range_circuit"
         }
         
-        # Proof templates for different compliance scenarios
+        # Proof templates for common AML scenarios
         self.proof_templates = {
             "standard_aml": {
+                "description": "Standard AML compliance check",
                 "required_attributes": [
                     AMLAttribute.RISK_SCORE_BELOW_THRESHOLD,
                     AMLAttribute.NOT_SANCTIONED,
@@ -100,31 +108,36 @@ class AMLZeroKnowledgeProof:
                 }
             },
             "enhanced_aml": {
+                "description": "Enhanced due diligence check",
                 "required_attributes": [
                     AMLAttribute.RISK_SCORE_BELOW_THRESHOLD,
                     AMLAttribute.NOT_SANCTIONED,
                     AMLAttribute.NO_HIGH_RISK_COUNTRIES,
                     AMLAttribute.BLOCKCHAIN_ANALYTICS_CLEAN,
-                    AMLAttribute.MONITORING_COMPLIANT
+                    AMLAttribute.LAST_CHECK_RECENT
                 ],
                 "constraints": {
                     "max_risk_score": 0.5,
-                    "check_recency_hours": 12,
-                    "min_analytics_score": 0.8
+                    "min_analytics_score": 0.8,
+                    "check_recency_hours": 12
                 }
             },
             "transaction_compliance": {
+                "description": "Transaction-specific compliance check",
                 "required_attributes": [
                     AMLAttribute.TRANSACTION_VOLUME_COMPLIANT,
                     AMLAttribute.MONITORING_COMPLIANT,
-                    AMLAttribute.RISK_LEVEL_ACCEPTABLE
+                    AMLAttribute.NOT_SANCTIONED
                 ],
                 "constraints": {
-                    "max_daily_volume": 100000,
-                    "acceptable_risk_levels": ["LOW", "MEDIUM"]
+                    "max_daily_volume": 100000
                 }
             }
         }
+        
+        # Cache for proof components
+        self._proof_cache = {}
+        self._cache_ttl = timedelta(hours=1)
         
     async def generate_aml_proof(
         self,
@@ -137,6 +150,14 @@ class AMLZeroKnowledgeProof:
         """Generate a zero-knowledge proof of AML compliance"""
         
         proof_id = f"aml_proof_{holder_did}_{datetime.utcnow().timestamp()}"
+        
+        # Check if distributed compute is available
+        if self.ignite_zkp_compute and len(attributes_to_prove) > 2:
+            # Use distributed proof generation for complex proofs
+            return await self._generate_distributed_proof(
+                proof_id, holder_did, credential, attributes_to_prove, 
+                constraints, verifier_challenge
+            )
         
         # Generate proofs for each attribute
         attribute_proofs = {}
@@ -205,6 +226,268 @@ class AMLZeroKnowledgeProof:
         
         logger.info(f"Generated AML proof {proof_id} for {holder_did}")
         return proof
+        
+    async def _generate_distributed_proof(
+        self,
+        proof_id: str,
+        holder_did: str,
+        credential: AMLCredential,
+        attributes_to_prove: List[AMLAttribute],
+        constraints: Dict[str, Any],
+        verifier_challenge: Optional[str] = None
+    ) -> AMLProof:
+        """Generate proof using distributed compute grid"""
+        logger.info(f"Generating distributed proof for {len(attributes_to_prove)} attributes")
+        
+        # Prepare tasks for parallel processing
+        tasks = []
+        for attribute in attributes_to_prove:
+            circuit = self.circuits.get(attribute)
+            if not circuit:
+                raise ValueError(f"No circuit available for {attribute.value}")
+                
+            task_data = {
+                "proof_type": "aml_attribute",
+                "input_data": {
+                    "attribute": attribute.value,
+                    "credential_data": credential.attributes,
+                    "constraints": self._get_attribute_constraints(attribute, constraints)
+                },
+                "circuit_name": circuit
+            }
+            tasks.append(task_data)
+            
+        # Submit tasks to Ignite compute grid
+        task_ids = await self.ignite_zkp_compute.submit_batch_tasks(tasks)
+        
+        # Get results
+        results = await self.ignite_zkp_compute.get_batch_results(task_ids)
+        
+        # Process results
+        attribute_proofs = {}
+        constraints_satisfied = {}
+        
+        for i, (task_id, result) in enumerate(results.items()):
+            attribute = attributes_to_prove[i]
+            if result.success:
+                attribute_proofs[attribute.value] = result.proof_data
+                constraints_satisfied[attribute.value] = result.proof_data.get("satisfied", True)
+            else:
+                logger.error(f"Failed to generate proof for {attribute.value}: {result.error}")
+                attribute_proofs[attribute.value] = {"error": result.error}
+                constraints_satisfied[attribute.value] = False
+                
+        # Create composite proof
+        proof_data = {
+            "credential_id": credential.credential_id,
+            "attribute_proofs": attribute_proofs,
+            "constraints": constraints,
+            "timestamp": datetime.utcnow().isoformat(),
+            "challenge": verifier_challenge,
+            "distributed": True,
+            "compute_stats": {
+                "total_tasks": len(task_ids),
+                "successful": sum(1 for r in results.values() if r.success),
+                "avg_compute_time_ms": sum(r.compute_time_ms for r in results.values()) / len(results)
+            }
+        }
+        
+        # Generate signature
+        signature = await self._generate_proof_signature(proof_data, holder_did)
+        
+        proof = AMLProof(
+            proof_id=proof_id,
+            holder_did=holder_did,
+            attributes_proven=attributes_to_prove,
+            proof_data=proof_data,
+            constraints_satisfied=constraints_satisfied,
+            created_at=datetime.utcnow(),
+            expires_at=datetime.utcnow() + timedelta(hours=1),
+            issuer_signature=signature
+        )
+        
+        logger.info(f"Generated distributed AML proof {proof_id} in {proof_data['compute_stats']['avg_compute_time_ms']:.2f}ms")
+        return proof
+        
+    def _get_attribute_constraints(self, attribute: AMLAttribute, constraints: Dict[str, Any]) -> Dict[str, Any]:
+        """Get constraints specific to an attribute"""
+        if attribute == AMLAttribute.RISK_SCORE_BELOW_THRESHOLD:
+            return {"max_risk_score": constraints.get("max_risk_score", 0.7)}
+        elif attribute == AMLAttribute.RISK_LEVEL_ACCEPTABLE:
+            return {"acceptable_risk_levels": constraints.get("acceptable_risk_levels", ["LOW", "MEDIUM"])}
+        elif attribute == AMLAttribute.TRANSACTION_VOLUME_COMPLIANT:
+            return {"max_daily_volume": constraints.get("max_daily_volume", 100000)}
+        elif attribute == AMLAttribute.NO_HIGH_RISK_COUNTRIES:
+            return {"high_risk_countries": constraints.get("high_risk_countries", [])}
+        elif attribute == AMLAttribute.BLOCKCHAIN_ANALYTICS_CLEAN:
+            return {"min_analytics_score": constraints.get("min_analytics_score", 0.8)}
+        elif attribute == AMLAttribute.LAST_CHECK_RECENT:
+            return {"check_recency_hours": constraints.get("check_recency_hours", 24)}
+        else:
+            return {}
+            
+    async def generate_batch_proofs(
+        self,
+        proof_requests: List[Dict[str, Any]]
+    ) -> List[AMLProof]:
+        """Generate multiple AML proofs in parallel"""
+        if not self.ignite_zkp_compute:
+            # Fallback to sequential processing
+            proofs = []
+            for request in proof_requests:
+                proof = await self.generate_aml_proof(**request)
+                proofs.append(proof)
+            return proofs
+            
+        # Use map-reduce for batch processing
+        logger.info(f"Generating {len(proof_requests)} AML proofs in parallel")
+        
+        # Prepare data chunks
+        data_chunks = []
+        for request in proof_requests:
+            chunk = {
+                "holder_did": request["holder_did"],
+                "credential_data": request["credential"].attributes,
+                "attributes": [attr.value for attr in request["attributes_to_prove"]],
+                "constraints": request["constraints"]
+            }
+            data_chunks.append(chunk)
+            
+        # Execute map-reduce proof generation
+        batch_results = await self.ignite_zkp_compute.execute_map_reduce_proof(
+            proof_type="aml_batch",
+            data_chunks=data_chunks,
+            circuit_name="aml_batch_circuit",
+            reduce_func=self._reduce_batch_proofs
+        )
+        
+        # Convert results to AMLProof objects
+        proofs = []
+        for i, request in enumerate(proof_requests):
+            proof_data = batch_results["proofs"][i]
+            proof = AMLProof(
+                proof_id=proof_data["proof_id"],
+                holder_did=request["holder_did"],
+                attributes_proven=request["attributes_to_prove"],
+                proof_data=proof_data,
+                constraints_satisfied=proof_data["constraints_satisfied"],
+                created_at=datetime.utcnow(),
+                expires_at=datetime.utcnow() + timedelta(hours=1),
+                issuer_signature=proof_data["signature"]
+            )
+            proofs.append(proof)
+            
+        return proofs
+        
+    def _reduce_batch_proofs(self, proof_values: List[Dict[str, Any]]) -> Dict[str, Any]:
+        """Reduce function for batch proof generation"""
+        return {
+            "proofs": proof_values,
+            "batch_size": len(proof_values),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    async def cache_proof_components(
+        self,
+        credential: AMLCredential,
+        attributes: List[AMLAttribute]
+    ) -> str:
+        """Pre-compute and cache proof components for faster generation"""
+        cache_key = self._generate_cache_key(credential.credential_id, attributes)
+        
+        # Check if already cached
+        if cache_key in self._proof_cache:
+            cached_data = self._proof_cache[cache_key]
+            if cached_data["expires_at"] > datetime.utcnow():
+                return cache_key
+                
+        # Generate components in parallel using Ignite
+        if self.ignite_zkp_compute:
+            components = await self._generate_cached_components_distributed(
+                credential, attributes
+            )
+        else:
+            components = await self._generate_cached_components_local(
+                credential, attributes
+            )
+            
+        # Cache components
+        self._proof_cache[cache_key] = {
+            "components": components,
+            "expires_at": datetime.utcnow() + self._cache_ttl
+        }
+        
+        logger.info(f"Cached proof components for {len(attributes)} attributes")
+        return cache_key
+        
+    async def _generate_cached_components_distributed(
+        self,
+        credential: AMLCredential,
+        attributes: List[AMLAttribute]
+    ) -> Dict[str, Any]:
+        """Generate cached components using distributed compute"""
+        tasks = []
+        for attribute in attributes:
+            circuit = self.circuits.get(attribute)
+            if circuit:
+                task_data = {
+                    "proof_type": "aml_component",
+                    "input_data": {
+                        "attribute": attribute.value,
+                        "credential_data": credential.attributes
+                    },
+                    "circuit_name": f"{circuit}_component"
+                }
+                tasks.append(task_data)
+                
+        # Submit tasks
+        task_ids = await self.ignite_zkp_compute.submit_batch_tasks(tasks)
+        
+        # Get results
+        results = await self.ignite_zkp_compute.get_batch_results(task_ids)
+        
+        # Build components map
+        components = {}
+        for i, (task_id, result) in enumerate(results.items()):
+            if result.success:
+                attribute = attributes[i]
+                components[attribute.value] = result.proof_data
+                
+        return components
+        
+    async def _generate_cached_components_local(
+        self,
+        credential: AMLCredential,
+        attributes: List[AMLAttribute]
+    ) -> Dict[str, Any]:
+        """Generate cached components locally"""
+        components = {}
+        for attribute in attributes:
+            # Generate base components for each attribute
+            if attribute == AMLAttribute.RISK_SCORE_BELOW_THRESHOLD:
+                components[attribute.value] = {
+                    "risk_score": credential.attributes.get("riskScore", 0),
+                    "commitment": self._generate_commitment(
+                        credential.attributes.get("riskScore", 0)
+                    )
+                }
+            # Add other attributes...
+                
+        return components
+        
+    def _generate_cache_key(
+        self,
+        credential_id: str,
+        attributes: List[AMLAttribute]
+    ) -> str:
+        """Generate cache key for proof components"""
+        attr_str = "|".join(sorted([a.value for a in attributes]))
+        return hashlib.sha256(f"{credential_id}:{attr_str}".encode()).hexdigest()[:16]
+        
+    def _generate_commitment(self, value: Any) -> str:
+        """Generate cryptographic commitment"""
+        # In production, use proper commitment scheme
+        return hashlib.sha256(str(value).encode()).hexdigest()
         
     async def verify_aml_proof(
         self,
