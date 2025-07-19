@@ -262,18 +262,83 @@ async def create_feature_view(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/groups/{name}/statistics")
+@router.post("/materialize")
+async def materialize_features(
+    request: Request,
+    feature_group: str = Body(...),
+    start_date: Optional[datetime] = Body(default=None),
+    end_date: Optional[datetime] = Body(default=None),
+    write_to_online: bool = Body(default=True),
+    write_to_offline: bool = Body(default=True),
+    partition_by: Optional[List[str]] = Body(default=None)
+) -> Dict[str, Any]:
+    """Materialize features to online and offline stores"""
+    try:
+        feature_store = request.app.state.feature_store_manager
+        
+        # Get feature group
+        group = await feature_store.registry.get_feature_group(feature_group)
+        if not group:
+            raise HTTPException(status_code=404, detail=f"Feature group not found: {feature_group}")
+        
+        result = await feature_store.materialize_features(
+            feature_group=group,
+            start_date=start_date,
+            end_date=end_date,
+            write_to_online=write_to_online
+        )
+        
+        return result
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/cache/statistics")
+async def get_cache_statistics(request: Request) -> Dict[str, Any]:
+    """Get feature cache statistics"""
+    try:
+        feature_store = request.app.state.feature_store_manager
+        
+        # Get Ignite cache stats
+        cache_stats = await feature_store.ignite_cache.get_statistics()
+        
+        # Get feature server stats
+        server_stats = feature_store.feature_server.cache_stats
+        
+        return {
+            "ignite_cache": cache_stats,
+            "feature_server": server_stats,
+            "total_features_served": feature_store.stats["features_served"]
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/groups/{group_name}/statistics")
 async def get_feature_group_statistics(
     request: Request,
-    name: str
+    group_name: str
 ) -> Dict[str, Any]:
     """Get statistics for a feature group"""
     try:
-        registry = request.app.state.feature_registry
+        feature_store = request.app.state.feature_store_manager
         
-        stats = await registry.get_feature_statistics(name)
+        # Get feature group
+        group = await feature_store.registry.get_feature_group(group_name)
+        if not group:
+            raise HTTPException(status_code=404, detail=f"Feature group not found: {group_name}")
         
-        return stats
+        # Get statistics from the data lake
+        stats = await feature_store.get_feature_statistics(group_name)
+        
+        return {
+            "feature_group": group_name,
+            "statistics": stats,
+            "features": len(group.features),
+            "entity_keys": group.entity_keys
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

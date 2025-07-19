@@ -11,12 +11,12 @@ import asyncio
 from concurrent.futures import ThreadPoolExecutor
 import numpy as np
 
-from platformq_shared.cache.ignite_client import IgniteClient
 import grpc
 from grpc import aio
 
 from .models import FeatureRequest, FeatureResponse, FeatureGroup
 from .feature_registry import FeatureRegistry
+from .ignite_feature_cache import IgniteFeatureCache
 
 logger = logging.getLogger(__name__)
 
@@ -30,10 +30,16 @@ class FeatureServer:
                  max_batch_size: int = 1000,
                  enable_grpc: bool = False):
         self.registry = registry
-        self.cache = IgniteClient()
+        self.cache = IgniteFeatureCache(
+            cache_name="feature_store",
+            ttl_seconds=cache_ttl,
+            enable_sql=True,
+            enable_persistence=False
+        )
         self.cache_ttl = cache_ttl
         self.max_batch_size = max_batch_size
         self.enable_grpc = enable_grpc
+        self._connected = False
         
         # Performance optimizations
         self.feature_cache = {}  # Local in-memory cache
@@ -50,6 +56,13 @@ class FeatureServer:
         self.grpc_server = None
         if enable_grpc:
             self._setup_grpc_server()
+    
+    async def initialize(self) -> None:
+        """Initialize feature server and connect to Ignite"""
+        if not self._connected:
+            await self.cache.connect()
+            self._connected = True
+            logger.info("Feature server initialized with Ignite cache")
             
     async def get_online_features(self,
                                 feature_request: FeatureRequest) -> FeatureResponse:
@@ -272,40 +285,75 @@ class FeatureServer:
                                   group_name: str,
                                   features: List[str],
                                   entities: Dict[str, Any]) -> Dict[str, Any]:
-        """Fetch features for a specific group"""
-        cache_key = self._build_cache_key(group_name, entities)
+        """Fetch features from a specific group"""
+        result = {}
         
-        # Check local cache first
-        if cache_key in self.feature_cache:
-            cached = self.feature_cache[cache_key]
-            if self._is_cache_valid(cached):
+        try:
+            # Get feature group metadata
+            feature_group = await self.registry.get_feature_group(group_name)
+            if not feature_group:
+                logger.warning(f"Feature group not found: {group_name}")
+                return result
+            
+            # Build feature keys
+            feature_keys = [f"{group_name}.{feature}" for feature in features]
+            
+            # Extract entity IDs
+            entity_ids = []
+            if feature_group.entity_keys:
+                # Build composite entity ID from multiple keys
+                entity_values = []
+                for key in feature_group.entity_keys:
+                    if key in entities:
+                        entity_values.append(str(entities[key]))
+                if entity_values:
+                    entity_ids = ["_".join(entity_values)]
+            else:
+                # Use first entity value as ID
+                entity_ids = [str(list(entities.values())[0])]
+            
+            # Try cache first
+            cached_features = await self.cache.get_features_batch(
+                feature_keys=feature_keys,
+                entity_ids=entity_ids
+            )
+            
+            # Process cached results
+            for (feature_key, entity_id), value in cached_features.items():
+                feature_name = feature_key.split(".", 1)[1]
+                result[feature_key] = value
                 self.cache_stats["hits"] += 1
-                return self._extract_features(cached["features"], features)
-                
-        # Check distributed cache
-        cached = await self.cache.get(cache_key)
-        if cached:
-            self.cache_stats["hits"] += 1
-            self.feature_cache[cache_key] = {
-                "features": cached,
-                "timestamp": datetime.utcnow()
-            }
-            return self._extract_features(cached, features)
             
-        # Cache miss - fetch from store
-        self.cache_stats["misses"] += 1
-        
-        features_data = await self._fetch_features_from_store(group_name, entities)
-        
-        if features_data:
-            # Update caches
-            await self.cache.put(cache_key, features_data, ttl=self.cache_ttl)
-            self.feature_cache[cache_key] = {
-                "features": features_data,
-                "timestamp": datetime.utcnow()
-            }
+            # Identify missing features
+            missing_features = []
+            for feature_key in feature_keys:
+                if feature_key not in result:
+                    missing_features.append(feature_key)
+                    self.cache_stats["misses"] += 1
             
-        return self._extract_features(features_data or {}, features)
+            # If features missing, try to fetch from offline store
+            if missing_features:
+                # This would typically involve querying the data lake
+                # For now, we'll use default values
+                for feature_key in missing_features:
+                    feature_name = feature_key.split(".", 1)[1]
+                    # Get feature definition for default value
+                    feature_def = next((f for f in feature_group.features if f.name == feature_name), None)
+                    if feature_def and feature_def.default_value is not None:
+                        result[feature_key] = feature_def.default_value
+                        # Cache the default value
+                        await self.cache.put_feature(
+                            feature_key=feature_key,
+                            entity_id=entity_ids[0],
+                            value=feature_def.default_value
+                        )
+            
+            return result
+            
+        except Exception as e:
+            self.cache_stats["errors"] += 1
+            logger.error(f"Error fetching features from group {group_name}: {e}")
+            return result
         
     async def _fetch_features_from_store(self,
                                        group_name: str,

@@ -260,18 +260,13 @@ async def lifespan(app: FastAPI):
         )
         
         # Initialize feature store
-        feature_registry = FeatureRegistry(
-            elasticsearch_host=os.getenv("ELASTICSEARCH_HOST", "http://elasticsearch:9200")
-        )
-        await feature_registry.initialize()
-        
         feature_store_manager = FeatureStoreManager(
             lake_manager=lake_manager,
             lineage_tracker=lineage_tracker,
             quality_profiler=quality_profiler,
-            cache_manager=cache_manager,
-            registry=feature_registry
+            cache_manager=cache_manager
         )
+        await feature_store_manager.initialize()
         
         # Store instances in app state
         app.state.connection_manager = connection_manager

@@ -36,34 +36,69 @@ from .models import (
     FeatureTransformType
 )
 from .feature_registry import FeatureRegistry
+from .feature_server import FeatureServer
+from .ignite_feature_cache import IgniteFeatureCache
 
 logger = logging.getLogger(__name__)
 
 
 class FeatureStoreManager:
-    """Manages feature store operations"""
+    """
+    Manages feature lifecycle including:
+    - Feature registration and versioning
+    - Feature computation and storage
+    - Time-travel queries
+    - Feature quality monitoring
+    - Online/offline serving coordination
+    """
     
     def __init__(self,
                  lake_manager: MedallionLakeManager,
                  lineage_tracker: DataLineageTracker,
                  quality_profiler: DataQualityProfiler,
                  cache_manager: DataCacheManager,
-                 registry: FeatureRegistry):
+                 feature_zone: str = "gold"):  # Features typically in gold zone
         self.lake_manager = lake_manager
         self.lineage_tracker = lineage_tracker
         self.quality_profiler = quality_profiler
         self.cache_manager = cache_manager
-        self.registry = registry
+        self.feature_zone = feature_zone
         
-        # Feature store paths
-        self.feature_store_base = "feature_store"
-        self.offline_store_path = f"{self.feature_store_base}/offline"
-        self.online_store_config = {
-            "host": "ignite",
-            "port": 10800,
-            "cache_prefix": "features"
+        # Feature registry
+        self.registry = FeatureRegistry()
+        
+        # Feature server for online serving
+        self.feature_server = FeatureServer(
+            registry=self.registry,
+            cache_ttl=300,
+            max_batch_size=1000
+        )
+        
+        # Ignite cache for direct access
+        self.ignite_cache = IgniteFeatureCache(
+            cache_name="feature_store",
+            ttl_seconds=300,
+            enable_sql=True
+        )
+        
+        # Feature paths
+        self.feature_path = f"{self.lake_manager.zone_paths[self.feature_zone]}/features"
+        
+        # Statistics
+        self.stats = {
+            "features_computed": 0,
+            "features_served": 0,
+            "cache_hits": 0,
+            "cache_misses": 0
         }
-        
+    
+    async def initialize(self) -> None:
+        """Initialize feature store components"""
+        await self.registry.initialize()
+        await self.feature_server.initialize()
+        await self.ignite_cache.connect()
+        logger.info("Feature store manager initialized")
+    
     async def create_feature_group(self, feature_group: FeatureGroup) -> Dict[str, Any]:
         """
         Create a new feature group
@@ -334,6 +369,131 @@ class FeatureStoreManager:
         except Exception as e:
             logger.error(f"Failed to create feature view: {e}")
             raise
+            
+    async def materialize_features(self,
+                                 feature_group: FeatureGroup,
+                                 start_date: Optional[datetime] = None,
+                                 end_date: Optional[datetime] = None,
+                                 write_to_online: bool = True) -> Dict[str, Any]:
+        """
+        Materialize features to offline and optionally online store
+        
+        Args:
+            feature_group: Feature group to materialize
+            start_date: Start date for materialization
+            end_date: End date for materialization
+            write_to_online: Whether to write to online store (Ignite)
+            
+        Returns:
+            Materialization result
+        """
+        try:
+            # Compute features
+            df = await self.compute_feature_group(
+                feature_group=feature_group,
+                start_date=start_date,
+                end_date=end_date
+            )
+            
+            # Write to offline store (Iceberg/Delta)
+            offline_path = await self._write_offline_features(
+                df=df,
+                feature_group=feature_group,
+                timestamp=datetime.utcnow()
+            )
+            
+            # Write to online store if requested
+            online_count = 0
+            if write_to_online:
+                online_count = await self._write_online_features(
+                    df=df,
+                    feature_group=feature_group
+                )
+            
+            return {
+                "status": "success",
+                "feature_group": feature_group.name,
+                "offline_path": offline_path,
+                "online_features_written": online_count,
+                "row_count": df.count()
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to materialize features: {e}")
+            raise
+    
+    async def _write_online_features(self,
+                                   df: SparkDataFrame,
+                                   feature_group: FeatureGroup) -> int:
+        """Write features to online store (Ignite)"""
+        try:
+            count = 0
+            batch_size = 1000
+            feature_batch = {}
+            
+            # Collect features in batches
+            for row in df.toLocalIterator():
+                # Build entity ID
+                entity_values = []
+                for key in feature_group.entity_keys:
+                    if key in row:
+                        entity_values.append(str(row[key]))
+                entity_id = "_".join(entity_values) if entity_values else str(row.get("id", "unknown"))
+                
+                # Add each feature to batch
+                for feature in feature_group.features:
+                    if feature.name in row:
+                        feature_key = f"{feature_group.name}.{feature.name}"
+                        feature_batch[(feature_key, entity_id)] = row[feature.name]
+                
+                # Write batch when full
+                if len(feature_batch) >= batch_size:
+                    written = await self.ignite_cache.put_features_batch(
+                        features=feature_batch,
+                        ttl=300  # 5 minutes default TTL
+                    )
+                    count += written
+                    feature_batch = {}
+            
+            # Write remaining features
+            if feature_batch:
+                written = await self.ignite_cache.put_features_batch(
+                    features=feature_batch,
+                    ttl=300
+                )
+                count += written
+            
+            logger.info(f"Wrote {count} features to online store")
+            return count
+            
+        except Exception as e:
+            logger.error(f"Failed to write online features: {e}")
+            raise
+    
+    async def get_online_features(self,
+                                entities: Dict[str, Any],
+                                features: List[str]) -> Dict[str, Any]:
+        """
+        Get features from online store for serving
+        
+        Args:
+            entities: Entity values
+            features: List of features to retrieve
+            
+        Returns:
+            Feature values
+        """
+        from .models import FeatureRequest
+        
+        request = FeatureRequest(
+            entities=entities,
+            features=features
+        )
+        
+        response = await self.feature_server.get_online_features(request)
+        self.stats["features_served"] += len(response.features)
+        
+        return response.features
             
     # Helper methods
     
