@@ -1,0 +1,204 @@
+version: '3.8'
+
+services:
+  # CloudStack Management Server
+  cloudstack-management:
+    image: cloudstack/management:4.18
+    container_name: cloudstack-management
+    hostname: cloudstack-mgmt
+    environment:
+      - MYSQL_HOST=cloudstack-db
+      - MYSQL_USER=cloud
+      - MYSQL_PASSWORD=${CLOUDSTACK_DB_PASSWORD}
+      - MYSQL_DATABASE=cloud
+      - MANAGEMENT_SERVER_IP=cloudstack-management
+      - HYPERVISOR=simulator  # For development/testing
+    ports:
+      - "8080:8080"     # Web UI
+      - "8250:8250"     # System VM communication
+      - "9090:9090"     # Cluster management
+    volumes:
+      - cloudstack-management:/var/cloudstack/management
+      - ./config/cloudstack.properties:/etc/cloudstack/management/cloudstack.properties
+    networks:
+      - platformq
+      - cloudstack-internal
+    depends_on:
+      - cloudstack-db
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8080/client/"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2'
+
+  # CloudStack Database
+  cloudstack-db:
+    image: mysql:8.0
+    container_name: cloudstack-db
+    hostname: cloudstack-db
+    environment:
+      - MYSQL_ROOT_PASSWORD=${CLOUDSTACK_DB_ROOT_PASSWORD}
+      - MYSQL_DATABASE=cloud
+      - MYSQL_USER=cloud
+      - MYSQL_PASSWORD=${CLOUDSTACK_DB_PASSWORD}
+    volumes:
+      - cloudstack-db-data:/var/lib/mysql
+      - ./init-scripts/cloudstack-db-init.sql:/docker-entrypoint-initdb.d/01-init.sql
+    networks:
+      - cloudstack-internal
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  # CloudStack Agent (for KVM hypervisor)
+  cloudstack-agent-1:
+    image: cloudstack/agent:4.18-kvm
+    container_name: cloudstack-agent-1
+    hostname: agent-1
+    privileged: true
+    environment:
+      - MANAGEMENT_SERVER_IP=cloudstack-management
+      - HYPERVISOR=kvm
+      - ZONE_ID=zone-1
+      - POD_ID=pod-1
+      - CLUSTER_ID=cluster-1
+    volumes:
+      - /sys/fs/cgroup:/sys/fs/cgroup:ro
+      - /lib/modules:/lib/modules:ro
+      - cloudstack-agent-1:/var/lib/libvirt
+    networks:
+      - cloudstack-internal
+    depends_on:
+      - cloudstack-management
+    deploy:
+      resources:
+        limits:
+          memory: 8G
+          cpus: '4'
+
+  # CloudStack Secondary Storage VM Simulator
+  cloudstack-ssvm:
+    image: cloudstack/ssvm-simulator:4.18
+    container_name: cloudstack-ssvm
+    hostname: ssvm
+    environment:
+      - MANAGEMENT_SERVER_IP=cloudstack-management
+    volumes:
+      - cloudstack-secondary:/export/secondary
+    networks:
+      - cloudstack-internal
+    depends_on:
+      - cloudstack-management
+
+  # CloudStack Console Proxy VM Simulator
+  cloudstack-cpvm:
+    image: cloudstack/cpvm-simulator:4.18
+    container_name: cloudstack-cpvm
+    hostname: cpvm
+    environment:
+      - MANAGEMENT_SERVER_IP=cloudstack-management
+    ports:
+      - "443:443"  # Console proxy HTTPS
+    networks:
+      - cloudstack-internal
+    depends_on:
+      - cloudstack-management
+
+  # CloudStack Usage Server
+  cloudstack-usage:
+    image: cloudstack/usage:4.18
+    container_name: cloudstack-usage
+    hostname: cloudstack-usage
+    environment:
+      - MYSQL_HOST=cloudstack-db
+      - MYSQL_USER=cloud
+      - MYSQL_PASSWORD=${CLOUDSTACK_DB_PASSWORD}
+      - MYSQL_DATABASE=cloud
+    volumes:
+      - cloudstack-usage:/var/log/cloudstack/usage
+    networks:
+      - cloudstack-internal
+    depends_on:
+      - cloudstack-db
+      - cloudstack-management
+
+  # CloudStack API Gateway (Kong integration)
+  cloudstack-api-gateway:
+    image: kong:3.4-alpine
+    container_name: cloudstack-api-gateway
+    environment:
+      - KONG_DATABASE=off
+      - KONG_DECLARATIVE_CONFIG=/kong/declarative/kong.yml
+      - KONG_PROXY_ACCESS_LOG=/dev/stdout
+      - KONG_ADMIN_ACCESS_LOG=/dev/stdout
+      - KONG_PROXY_ERROR_LOG=/dev/stderr
+      - KONG_ADMIN_ERROR_LOG=/dev/stderr
+    ports:
+      - "8000:8000"   # Proxy port
+      - "8443:8443"   # Proxy SSL port
+      - "8001:8001"   # Admin API
+    volumes:
+      - ./config/kong.yml:/kong/declarative/kong.yml
+    networks:
+      - platformq
+      - cloudstack-internal
+    depends_on:
+      - cloudstack-management
+
+  # Monitoring Exporter for CloudStack
+  cloudstack-exporter:
+    image: platformq/cloudstack-exporter:latest
+    build:
+      context: ./cloudstack-exporter
+      dockerfile: Dockerfile
+    container_name: cloudstack-exporter
+    environment:
+      - CLOUDSTACK_API_URL=http://cloudstack-management:8080/client/api
+      - CLOUDSTACK_API_KEY=${CLOUDSTACK_API_KEY}
+      - CLOUDSTACK_SECRET_KEY=${CLOUDSTACK_SECRET_KEY}
+    ports:
+      - "9100:9100"  # Prometheus metrics
+    networks:
+      - platformq
+      - cloudstack-internal
+    depends_on:
+      - cloudstack-management
+
+  # CloudStack UI (Custom React frontend)
+  cloudstack-ui:
+    image: platformq/cloudstack-ui:latest
+    build:
+      context: ./cloudstack-ui
+      dockerfile: Dockerfile
+    container_name: cloudstack-ui
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+      - REACT_APP_WS_URL=ws://localhost:8000
+    ports:
+      - "3001:80"
+    networks:
+      - platformq
+    depends_on:
+      - cloudstack-api-gateway
+
+networks:
+  platformq:
+    external: true
+  cloudstack-internal:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  cloudstack-management:
+  cloudstack-db-data:
+  cloudstack-agent-1:
+  cloudstack-secondary:
+  cloudstack-usage: 

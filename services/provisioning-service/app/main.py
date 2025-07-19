@@ -1,718 +1,800 @@
 """
 Provisioning Service
 
-Dynamic tenant and resource provisioning with auto-scaling.
+Automated compute resource provisioning for physical settlement of futures contracts.
+Integrates with multiple cloud providers and on-premise resources.
 """
 
-from contextlib import asynccontextmanager
-from fastapi import FastAPI, Depends, HTTPException
-from pydantic import BaseModel
-from cassandra.cluster import Session
-from minio import Minio
-from pulsar.admin import PulsarAdmin
-from openproject import OpenProject
-from typing import Optional, Dict, List, Any
-from datetime import datetime
-import logging
 import asyncio
+import logging
+from typing import Dict, List, Optional, Any, Tuple
+from datetime import datetime, timedelta
+from decimal import Decimal
+from contextlib import asynccontextmanager
+from enum import Enum
 import uuid
+import os
+
+from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from pydantic import BaseModel, Field
+import httpx
 
 from platformq_shared import (
     create_base_app,
     EventProcessor,
-    ServiceClients,
-    add_error_handlers
+    event_handler,
+    ProcessingResult,
+    ProcessingStatus
 )
-from platformq_shared.config import ConfigLoader
 from platformq_shared.event_publisher import EventPublisher
 
-from .api.deps import (
-    get_current_tenant_and_user,
-    get_db_session,
-    get_event_publisher,
-    get_api_key_crud,
-    get_user_crud,
-    get_password_verifier
+from app.models import (
+    ProviderType, ResourceType, AllocationStatus,
+    ResourceSpec, AllocationRequest, ResourceAllocation
 )
-from .repository import (
-    TenantProvisioningRepository,
-    ResourceQuotaRepository,
-    ScalingPolicyRepository,
-    ScalingEventRepository,
-    ResourceMetricsRepository
-)
-from .event_processors import (
-    TenantProvisioningProcessor,
-    ResourceScalingProcessor,
-    QuotaManagementProcessor,
-    ResourceCleanupProcessor,
-    UserProvisioningProcessor
-)
-from .compute_provisioning import (
-    ComputeProvisioningManager,
-    ComputeProvisioningRequest,
-    ComputeResourceType,
-    ProvisioningStatus
-)
-from .dynamic_provisioning import (
-    ResourceMonitor,
-    ScalingEngine,
-    TenantResourceManager,
-    TenantTier
-)
-from .dependencies import (
-    get_cassandra_session,
-    get_minio_client,
-    get_pulsar_admin,
-    get_openproject_client,
-    get_ignite_client,
-    get_elasticsearch_client
-)
+from app.providers.base import ComputeProvider
 
 logger = logging.getLogger(__name__)
 
-# Service components
-tenant_processor = None
-scaling_processor = None
-quota_processor = None
-cleanup_processor = None
-user_processor = None
-resource_monitor = None
-scaling_engine = None
-tenant_manager = None
-service_clients = None
-compute_provisioning_manager = None
 
+# ============= Additional Models =============
+
+
+# ============= Provider Implementations =============
+
+
+class AWSProvider(ComputeProvider):
+    """AWS EC2/EKS provider"""
+    
+    async def check_availability(
+        self,
+        resources: List[ResourceSpec],
+        location: Optional[str] = None
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Check AWS capacity"""
+        # In production, use boto3 to check capacity
+        # For now, simulate availability
+        total_cpus = sum(r.quantity for r in resources if r.resource_type == ResourceType.CPU)
+        total_gpus = sum(r.quantity for r in resources if r.resource_type == ResourceType.GPU)
+        
+        # Simulate capacity limits
+        available = total_cpus <= 1000 and total_gpus <= 100
+        
+        return available, {
+            "region": location or "us-east-1",
+            "available_cpus": 1000 - total_cpus if available else 0,
+            "available_gpus": 100 - total_gpus if available else 0,
+            "instance_types": ["m5.xlarge", "p3.2xlarge"] if available else []
+        }
+        
+    async def allocate_resources(
+        self,
+        allocation: ResourceAllocation
+    ) -> Dict[str, Any]:
+        """Allocate AWS resources"""
+        # In production, use boto3 to create instances/containers
+        # For now, simulate allocation
+        instance_ids = [f"i-{uuid.uuid4().hex[:8]}" for _ in range(3)]
+        
+        return {
+            "instance_ids": instance_ids,
+            "region": "us-east-1",
+            "vpc_id": f"vpc-{uuid.uuid4().hex[:8]}",
+            "security_group_id": f"sg-{uuid.uuid4().hex[:8]}",
+            "ssh_key": "generated-key",
+            "api_endpoint": f"https://compute-{allocation.allocation_id}.us-east-1.elb.amazonaws.com"
+        }
+
+
+class RackspaceProvider(ComputeProvider):
+    """Rackspace bare metal provider"""
+    
+    async def check_availability(
+        self,
+        resources: List[ResourceSpec],
+        location: Optional[str] = None
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Check Rackspace capacity"""
+        # Integrate with Rackspace API
+        return True, {
+            "datacenter": location or "dfw",
+            "available_servers": 50,
+            "server_types": ["gpu-accelerated", "high-memory"]
+        }
+        
+    async def allocate_resources(
+        self,
+        allocation: ResourceAllocation
+    ) -> Dict[str, Any]:
+        """Allocate Rackspace bare metal servers"""
+        server_ids = [f"srv-{uuid.uuid4().hex[:8]}" for _ in range(2)]
+        
+        return {
+            "server_ids": server_ids,
+            "datacenter": "dfw",
+            "ipmi_access": "enabled",
+            "api_endpoint": f"https://{allocation.allocation_id}.rackspace.platformq.io"
+        }
+
+
+class KubernetesProvider(ComputeProvider):
+    """Kubernetes cluster provider for on-premise/edge"""
+    
+    async def check_availability(
+        self,
+        resources: List[ResourceSpec],
+        location: Optional[str] = None
+    ) -> Tuple[bool, Dict[str, Any]]:
+        """Check Kubernetes cluster capacity"""
+        # In production, query Kubernetes metrics
+        return True, {
+            "cluster": location or "main-cluster",
+            "available_nodes": 20,
+            "gpu_nodes": 5
+        }
+        
+    async def allocate_resources(
+        self,
+        allocation: ResourceAllocation
+    ) -> Dict[str, Any]:
+        """Create Kubernetes namespace and resources"""
+        namespace = f"compute-{allocation.allocation_id[:8]}"
+        
+        # In production, create actual K8s resources
+        return {
+            "namespace": namespace,
+            "kubeconfig": "generated-kubeconfig",
+            "ingress_url": f"https://{namespace}.compute.platformq.io",
+            "monitoring_url": f"https://grafana.platformq.io/d/{namespace}"
+        }
+
+
+# ============= Provisioning Engine =============
+
+class ProvisioningEngine:
+    """Main provisioning engine for automated resource allocation"""
+    
+    def __init__(self):
+        self.providers: Dict[ProviderType, ComputeProvider] = {}
+        self.allocations: Dict[str, ResourceAllocation] = {}
+        self.settlement_allocations: Dict[str, str] = {}  # settlement_id -> allocation_id
+        
+        # Initialize providers
+        self._initialize_providers()
+        
+        # Background tasks
+        self._monitoring_task = None
+        self._cleanup_task = None
+        
+    def _initialize_providers(self):
+        """Initialize compute providers"""
+        # AWS Provider
+        self.providers[ProviderType.AWS] = AWSProvider({
+            "name": "AWS",
+            "api_endpoint": "https://ec2.amazonaws.com",
+            "credentials": {
+                # Load from environment/vault
+            }
+        })
+        
+        # Rackspace Provider
+        self.providers[ProviderType.RACKSPACE] = RackspaceProvider({
+            "name": "Rackspace",
+            "api_endpoint": "https://api.rackspace.com",
+            "credentials": {
+                # Load from environment/vault
+            }
+        })
+        
+        # Kubernetes Provider
+        self.providers[ProviderType.ON_PREMISE] = KubernetesProvider({
+            "name": "On-Premise K8s",
+            "api_endpoint": "https://k8s.platformq.internal",
+            "credentials": {
+                # Load from environment/vault
+            }
+        })
+        
+        # CloudStack Provider - Unified management for partners and on-premise
+        from app.providers.cloudstack_provider import CloudStackProvider
+        self.providers[ProviderType.PARTNER] = CloudStackProvider({
+            "name": "CloudStack Unified",
+            "cloudstack": {
+                "api_url": os.getenv("CLOUDSTACK_API_URL", "https://cloudstack.platformq.io/client/api"),
+                "api_key": os.getenv("CLOUDSTACK_API_KEY"),
+                "secret_key": os.getenv("CLOUDSTACK_SECRET_KEY"),
+                "zones": {
+                    "partner-rackspace": {
+                        "description": "Rackspace wholesale capacity",
+                        "location": "us-central",
+                        "provider_type": "partner",
+                        "partner_id": "rackspace"
+                    },
+                    "partner-equinix": {
+                        "description": "Equinix Metal capacity",
+                        "location": "us-east",
+                        "provider_type": "partner",
+                        "partner_id": "equinix"
+                    },
+                    "edge-nyc": {
+                        "description": "NYC edge location",
+                        "location": "us-east-edge",
+                        "provider_type": "edge"
+                    },
+                    "onprem-main": {
+                        "description": "Main datacenter",
+                        "location": "us-west",
+                        "provider_type": "on_premise"
+                    }
+                }
+            }
+        })
+        
+        # Edge Provider (also CloudStack managed)
+        self.providers[ProviderType.EDGE] = CloudStackProvider({
+            "name": "Edge Locations",
+            "cloudstack": {
+                "api_url": os.getenv("CLOUDSTACK_API_URL", "https://cloudstack.platformq.io/client/api"),
+                "api_key": os.getenv("CLOUDSTACK_API_KEY"),
+                "secret_key": os.getenv("CLOUDSTACK_SECRET_KEY"),
+                "default_zone_id": "edge-nyc"
+            }
+        })
+        
+    async def start(self):
+        """Start background tasks"""
+        self._monitoring_task = asyncio.create_task(self._monitor_allocations())
+        self._cleanup_task = asyncio.create_task(self._cleanup_expired())
+        
+    async def stop(self):
+        """Stop background tasks"""
+        if self._monitoring_task:
+            self._monitoring_task.cancel()
+        if self._cleanup_task:
+            self._cleanup_task.cancel()
+            
+    async def allocate_resources(
+        self,
+        request: AllocationRequest
+    ) -> ResourceAllocation:
+        """Allocate resources for settlement"""
+        # Create allocation record
+        allocation = ResourceAllocation(
+            settlement_id=request.settlement_id,
+            provider=ProviderType.AWS,  # Default, will be selected based on requirements
+            resources=request.resources,
+            expires_at=request.start_time + timedelta(hours=request.duration_hours)
+        )
+        
+        # Select best provider
+        provider_type = await self._select_provider(request.resources, request.metadata.get("location"))
+        allocation.provider = provider_type
+        provider = self.providers[provider_type]
+        
+        # Check availability
+        available, details = await provider.check_availability(
+            request.resources,
+            request.metadata.get("location")
+        )
+        
+        if not available:
+            allocation.status = AllocationStatus.FAILED
+            raise HTTPException(
+                status_code=503,
+                detail=f"Resources not available from {provider_type}"
+            )
+            
+        # Allocate resources
+        allocation.status = AllocationStatus.PROVISIONING
+        self.allocations[allocation.allocation_id] = allocation
+        self.settlement_allocations[request.settlement_id] = allocation.allocation_id
+        
+        try:
+            access_details = await provider.allocate_resources(allocation)
+            allocation.access_details = access_details
+            allocation.status = AllocationStatus.ACTIVE
+            allocation.activated_at = datetime.utcnow()
+            
+            # Calculate costs
+            allocation.cost_per_hour = await self._calculate_cost(
+                provider_type,
+                request.resources
+            )
+            allocation.total_cost = allocation.cost_per_hour * request.duration_hours
+            
+            # Set monitoring endpoints
+            allocation.monitoring_endpoints = {
+                "metrics": f"https://metrics.platformq.io/allocation/{allocation.allocation_id}",
+                "logs": f"https://logs.platformq.io/allocation/{allocation.allocation_id}",
+                "traces": f"https://traces.platformq.io/allocation/{allocation.allocation_id}"
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to allocate resources: {e}")
+            allocation.status = AllocationStatus.FAILED
+            raise HTTPException(status_code=500, detail=str(e))
+            
+        return allocation
+        
+    async def deallocate_resources(
+        self,
+        allocation_id: str
+    ) -> bool:
+        """Deallocate resources"""
+        allocation = self.allocations.get(allocation_id)
+        if not allocation:
+            raise HTTPException(status_code=404, detail="Allocation not found")
+            
+        provider = self.providers[allocation.provider]
+        success = await provider.deallocate_resources(allocation_id)
+        
+        if success:
+            allocation.status = AllocationStatus.TERMINATED
+            
+        return success
+        
+    async def get_allocation_metrics(
+        self,
+        allocation_id: str
+    ) -> Dict[str, Any]:
+        """Get metrics for allocation"""
+        allocation = self.allocations.get(allocation_id)
+        if not allocation:
+            raise HTTPException(status_code=404, detail="Allocation not found")
+            
+        provider = self.providers[allocation.provider]
+        metrics = await provider.get_metrics(allocation_id)
+        
+        # Add SLA compliance
+        sla_compliance = self._calculate_sla_compliance(metrics)
+        
+        return {
+            "allocation_id": allocation_id,
+            "status": allocation.status,
+            "metrics": metrics,
+            "sla_compliance": sla_compliance,
+            "uptime_percentage": metrics.get("uptime", 100.0),
+            "performance_score": metrics.get("performance_score", 1.0)
+        }
+        
+    async def _select_provider(
+        self,
+        resources: List[ResourceSpec],
+        location: Optional[str] = None
+    ) -> ProviderType:
+        """Select best provider based on requirements"""
+        # Check GPU requirements
+        has_gpu = any(r.resource_type == ResourceType.GPU for r in resources)
+        
+        if has_gpu:
+            # Prefer providers with GPU capacity
+            return ProviderType.AWS
+        elif location and location.startswith("edge"):
+            # Edge locations
+            return ProviderType.ON_PREMISE
+        else:
+            # Default to Rackspace for bare metal
+            return ProviderType.RACKSPACE
+            
+    async def _calculate_cost(
+        self,
+        provider: ProviderType,
+        resources: List[ResourceSpec]
+    ) -> Decimal:
+        """Calculate hourly cost"""
+        # Simplified pricing model
+        costs = {
+            ResourceType.CPU: Decimal("0.10"),  # per core per hour
+            ResourceType.GPU: Decimal("2.50"),  # per GPU per hour
+            ResourceType.MEMORY: Decimal("0.01"),  # per GB per hour
+            ResourceType.STORAGE: Decimal("0.0001"),  # per GB per hour
+        }
+        
+        total_cost = Decimal("0")
+        for resource in resources:
+            unit_cost = costs.get(resource.resource_type, Decimal("0"))
+            total_cost += unit_cost * resource.quantity
+            
+        # Provider markup
+        provider_markups = {
+            ProviderType.AWS: Decimal("1.2"),
+            ProviderType.AZURE: Decimal("1.15"),
+            ProviderType.RACKSPACE: Decimal("1.0"),
+            ProviderType.ON_PREMISE: Decimal("0.8")
+        }
+        
+        markup = provider_markups.get(provider, Decimal("1.0"))
+        return total_cost * markup
+        
+    def _calculate_sla_compliance(
+        self,
+        metrics: Dict[str, Any]
+    ) -> Dict[str, bool]:
+        """Calculate SLA compliance"""
+        return {
+            "uptime": metrics.get("uptime", 100.0) >= 99.9,
+            "latency": metrics.get("latency_ms", 0) <= 10,
+            "throughput": metrics.get("throughput_gbps", 0) >= 1.0,
+            "availability": metrics.get("availability", 100.0) >= 99.5
+        }
+        
+    async def _monitor_allocations(self):
+        """Monitor active allocations"""
+        while True:
+            try:
+                for allocation in self.allocations.values():
+                    if allocation.status == AllocationStatus.ACTIVE:
+                        # Get metrics
+                        metrics = await self.get_allocation_metrics(allocation.allocation_id)
+                        
+                        # Check SLA compliance
+                        if not all(metrics["sla_compliance"].values()):
+                            logger.warning(
+                                f"SLA violation for allocation {allocation.allocation_id}: "
+                                f"{metrics['sla_compliance']}"
+                            )
+                            
+                        # Check expiration
+                        if datetime.utcnow() >= allocation.expires_at:
+                            await self.deallocate_resources(allocation.allocation_id)
+                            
+                await asyncio.sleep(60)  # Check every minute
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in monitoring: {e}")
+                await asyncio.sleep(60)
+                
+    async def _cleanup_expired(self):
+        """Clean up expired allocations"""
+        while True:
+            try:
+                cutoff = datetime.utcnow() - timedelta(days=7)
+                
+                for allocation_id, allocation in list(self.allocations.items()):
+                    if (allocation.status == AllocationStatus.TERMINATED and
+                        allocation.created_at < cutoff):
+                        del self.allocations[allocation_id]
+                        
+                await asyncio.sleep(3600)  # Run hourly
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in cleanup: {e}")
+                await asyncio.sleep(3600)
+
+
+# ============= Global Services =============
+
+provisioning_engine = None
+event_publisher = None
+
+
+# ============= Lifespan Management =============
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global tenant_processor, scaling_processor, quota_processor, cleanup_processor, user_processor
-    global resource_monitor, scaling_engine, tenant_manager, service_clients, compute_provisioning_manager
+    global provisioning_engine, event_publisher
     
     # Startup
     logger.info("Starting Provisioning Service...")
     
-    # Initialize configuration
-    config_loader = ConfigLoader()
-    settings = config_loader.load_settings()
+    # Initialize services
+    provisioning_engine = ProvisioningEngine()
+    await provisioning_engine.start()
     
-    # Initialize service clients
-    service_clients = ServiceClients(base_timeout=30.0, max_retries=3)
-    app.state.service_clients = service_clients
+    event_publisher = EventPublisher("pulsar://pulsar:6650")
+    event_publisher.connect()
     
-    # Initialize repositories
-    app.state.provisioning_repo = TenantProvisioningRepository(
-        get_cassandra_session,
-        event_publisher=app.state.event_publisher
-    )
-    app.state.quota_repo = ResourceQuotaRepository(
-        get_db_session,
-        event_publisher=app.state.event_publisher
-    )
-    app.state.policy_repo = ScalingPolicyRepository(get_db_session)
-    app.state.scaling_event_repo = ScalingEventRepository(
-        get_db_session,
-        event_publisher=app.state.event_publisher
-    )
-    app.state.metrics_repo = ResourceMetricsRepository(get_db_session)
-    
-    # Initialize dynamic provisioning components
-    k8s_config = {
-        'in_cluster': settings.get('k8s_in_cluster', 'false').lower() == 'true',
-        'namespace': settings.get('k8s_namespace', 'default')
-    }
-    
-    resource_monitor = ResourceMonitor(
-        prometheus_url=settings.get('prometheus_url', 'http://prometheus:9090'),
-        k8s_config=k8s_config
-    )
-    await resource_monitor.start()
-    app.state.resource_monitor = resource_monitor
-    
-    scaling_engine = ScalingEngine(
-        k8s_config=k8s_config,
-        prometheus_url=settings.get('prometheus_url', 'http://prometheus:9090')
-    )
-    await scaling_engine.initialize()
-    app.state.scaling_engine = scaling_engine
-    
-    ignite_host = settings.get('ignite_host', 'ignite')
-    ignite_port = int(settings.get('ignite_port', 10800))
-    
-    tenant_manager = TenantResourceManager(
-        ignite_host=ignite_host,
-        ignite_port=ignite_port,
-        cache_name='tenant_resources'
-    )
-    await tenant_manager.initialize()
-    app.state.tenant_manager = tenant_manager
-    
-    # Initialize compute provisioning manager
-    compute_provisioning_manager = ComputeProvisioningManager(
-        derivatives_engine_url=settings.get('derivatives_engine_url', 'http://derivatives-engine-service:8000'),
-        ignite_client=get_ignite_client(),
-        pulsar_publisher=app.state.event_publisher
-    )
-    app.state.compute_provisioning_manager = compute_provisioning_manager
-    
-    # Initialize event processors
-    tenant_processor = TenantProvisioningProcessor(
-        service_name="provisioning-service",
-        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
-        provisioning_repo=app.state.provisioning_repo,
-        quota_repo=app.state.quota_repo,
-        resource_manager=tenant_manager,
-        service_clients=service_clients
-    )
-    
-    scaling_processor = ResourceScalingProcessor(
-        service_name="provisioning-scaling",
-        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
-        scaling_engine=scaling_engine,
-        policy_repo=app.state.policy_repo,
-        event_repo=app.state.scaling_event_repo,
-        metrics_repo=app.state.metrics_repo,
-        service_clients=service_clients
-    )
-    
-    quota_processor = QuotaManagementProcessor(
-        service_name="provisioning-quota",
-        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
-        quota_repo=app.state.quota_repo,
-        resource_manager=tenant_manager,
-        service_clients=service_clients
-    )
-    
-    cleanup_processor = ResourceCleanupProcessor(
-        service_name="provisioning-cleanup",
-        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
-        service_clients=service_clients
-    )
-    
-    user_processor = UserProvisioningProcessor(
-        service_name="provisioning-user",
-        pulsar_url=settings.get("pulsar_url", "pulsar://pulsar:6650"),
-        service_clients=service_clients
-    )
-    
-    # Start event processors
-    await asyncio.gather(
-        tenant_processor.start(),
-        scaling_processor.start(),
-        quota_processor.start(),
-        cleanup_processor.start(),
-        user_processor.start()
-    )
-    
-    # Start monitoring tasks
-    app.state.monitor_task = asyncio.create_task(
-        resource_monitor.monitor_loop()
-    )
-    app.state.scaling_task = asyncio.create_task(
-        scaling_engine.auto_scaling_loop()
-    )
-    
-    logger.info("Provisioning Service initialized successfully")
+    logger.info("Provisioning Service started successfully")
     
     yield
     
     # Shutdown
     logger.info("Shutting down Provisioning Service...")
     
-    # Cancel monitoring tasks
-    if hasattr(app.state, "monitor_task"):
-        app.state.monitor_task.cancel()
-    if hasattr(app.state, "scaling_task"):
-        app.state.scaling_task.cancel()
-        
-    # Stop event processors
-    await asyncio.gather(
-        tenant_processor.stop() if tenant_processor else asyncio.sleep(0),
-        scaling_processor.stop() if scaling_processor else asyncio.sleep(0),
-        quota_processor.stop() if quota_processor else asyncio.sleep(0),
-        cleanup_processor.stop() if cleanup_processor else asyncio.sleep(0),
-        user_processor.stop() if user_processor else asyncio.sleep(0)
-    )
+    await provisioning_engine.stop()
+    event_publisher.close()
     
-    # Cleanup resources
-    if resource_monitor:
-        await resource_monitor.stop()
-    if scaling_engine:
-        await scaling_engine.cleanup()
-    if tenant_manager:
-        await tenant_manager.cleanup()
-    if compute_provisioning_manager:
-        await compute_provisioning_manager.close()
-        
-    logger.info("Provisioning Service shutdown complete")
+    logger.info("Provisioning Service shut down")
 
 
-# Create app with enhanced patterns
+# ============= Create FastAPI App =============
+
 app = create_base_app(
     service_name="provisioning-service",
-    db_session_dependency=get_db_session,
-    api_key_crud_dependency=get_api_key_crud,
-    user_crud_dependency=get_user_crud,
-    password_verifier_dependency=get_password_verifier,
-    event_processors=[
-        tenant_processor, scaling_processor, quota_processor,
-        cleanup_processor, user_processor
-    ] if all([tenant_processor, scaling_processor, quota_processor, cleanup_processor, user_processor]) else []
+    lifespan=lifespan
 )
 
-# Set lifespan
-app.router.lifespan_context = lifespan
 
-# Service root endpoint
-@app.get("/")
-def read_root():
-    return {
-        "service": "provisioning-service",
-        "version": "2.0",
-        "features": [
-            "tenant-provisioning",
-            "dynamic-scaling",
-            "resource-quotas",
-            "auto-scaling",
-            "multi-tier-support",
-            "event-driven"
-        ]
-    }
+# ============= API Endpoints =============
 
-
-# Request Models
-class TenantProvisioningRequest(BaseModel):
-    tenant_id: str
-    tenant_name: str
-    tier: str = "STARTER"
-
-class ScalingPolicyUpdate(BaseModel):
-    service_name: str
-    min_replicas: Optional[int] = None
-    max_replicas: Optional[int] = None
-    target_cpu_percent: Optional[float] = None
-    target_memory_percent: Optional[float] = None
-    scale_up_cooldown_seconds: Optional[int] = None
-    scale_down_cooldown_seconds: Optional[int] = None
-    enabled: Optional[bool] = None
-
-
-# API Endpoints using new patterns
-@app.post("/api/v1/provision")
-async def provision_tenant_manual(
-    request: TenantProvisioningRequest,
-    context: dict = Depends(get_current_tenant_and_user),
-    publisher: EventPublisher = Depends(get_event_publisher)
-):
-    """Manual tenant provisioning endpoint"""
+@app.post("/api/v1/allocate", response_model=ResourceAllocation)
+async def allocate_resources(
+    request: AllocationRequest,
+    background_tasks: BackgroundTasks
+) -> ResourceAllocation:
+    """Allocate compute resources for settlement"""
+    allocation = await provisioning_engine.allocate_resources(request)
     
-    # Check permissions
-    user = context["user"]
-    if "admin" not in user.get("roles", []):
-        raise HTTPException(status_code=403, detail="Admin role required")
-        
-    # Publish tenant created event to trigger provisioning
-    publisher.publish_event(
-        topic="persistent://platformq/system/tenant-created-events",
-        event={
-            "tenant_id": request.tenant_id,
-            "tenant_name": request.tenant_name,
-            "tier": request.tier,
-            "created_by": user["id"],
-            "created_at": datetime.utcnow().isoformat()
+    # Publish allocation event
+    background_tasks.add_task(
+        event_publisher.publish,
+        "compute.allocation.created",
+        {
+            "allocation_id": allocation.allocation_id,
+            "settlement_id": allocation.settlement_id,
+            "provider": allocation.provider,
+            "status": allocation.status,
+            "cost_per_hour": str(allocation.cost_per_hour)
         }
     )
     
+    return allocation
+
+
+@app.delete("/api/v1/allocate/{allocation_id}")
+async def deallocate_resources(
+    allocation_id: str,
+    background_tasks: BackgroundTasks
+) -> Dict[str, Any]:
+    """Deallocate compute resources"""
+    success = await provisioning_engine.deallocate_resources(allocation_id)
+    
+    # Publish deallocation event
+    background_tasks.add_task(
+        event_publisher.publish,
+        "compute.allocation.terminated",
+        {
+            "allocation_id": allocation_id,
+            "success": success
+        }
+    )
+    
+    return {"success": success, "allocation_id": allocation_id}
+
+
+@app.get("/api/v1/allocate/{allocation_id}")
+async def get_allocation(allocation_id: str) -> ResourceAllocation:
+    """Get allocation details"""
+    allocation = provisioning_engine.allocations.get(allocation_id)
+    if not allocation:
+        raise HTTPException(status_code=404, detail="Allocation not found")
+    return allocation
+
+
+@app.get("/api/v1/allocate/{allocation_id}/metrics")
+async def get_allocation_metrics(allocation_id: str) -> Dict[str, Any]:
+    """Get allocation metrics and SLA compliance"""
+    return await provisioning_engine.get_allocation_metrics(allocation_id)
+
+
+@app.get("/api/v1/settlement/{settlement_id}/allocation")
+async def get_settlement_allocation(settlement_id: str) -> ResourceAllocation:
+    """Get allocation for a settlement"""
+    allocation_id = provisioning_engine.settlement_allocations.get(settlement_id)
+    if not allocation_id:
+        raise HTTPException(status_code=404, detail="No allocation found for settlement")
+        
+    allocation = provisioning_engine.allocations.get(allocation_id)
+    if not allocation:
+        raise HTTPException(status_code=404, detail="Allocation not found")
+        
+    return allocation
+
+
+@app.get("/api/v1/providers")
+async def list_providers() -> Dict[str, List[str]]:
+    """List available compute providers"""
     return {
-        "status": "provisioning_initiated",
-        "tenant_id": request.tenant_id,
-        "message": "Tenant provisioning has been initiated"
+        "providers": list(provisioning_engine.providers.keys()),
+        "capabilities": {
+            ProviderType.AWS: ["cpu", "gpu", "auto-scaling"],
+            ProviderType.RACKSPACE: ["bare-metal", "dedicated", "high-performance"],
+            ProviderType.ON_PREMISE: ["kubernetes", "edge", "custom"]
+        }
     }
+
+
+@app.get("/api/v1/health")
+async def health_check() -> Dict[str, Any]:
+    """Health check endpoint"""
+    return {
+        "status": "healthy",
+        "service": "provisioning-service",
+        "providers": len(provisioning_engine.providers),
+        "active_allocations": sum(
+            1 for a in provisioning_engine.allocations.values()
+            if a.status == AllocationStatus.ACTIVE
+        )
+    }
+
+
+# ============= Compute Futures Integration Endpoints =============
+
+class ComputeProvisionRequest(BaseModel):
+    """Request model for compute futures provisioning"""
+    settlement_id: str
+    resource_type: str
+    quantity: str  # Decimal as string
+    duration_hours: int
+    start_time: str  # ISO format datetime
+    provider_id: str
+    buyer_id: str
+    is_failover: bool = False
 
 
 @app.post("/api/v1/compute/provision")
-async def provision_compute_resources(
-    request: ComputeProvisioningRequest,
-    context: dict = Depends(get_current_tenant_and_user),
-    publisher: EventPublisher = Depends(get_event_publisher)
-):
-    """Provision compute resources"""
-    
-    # Use tenant from context
-    request.tenant_id = context["tenant_id"]
-    
-    # Get compute provisioning manager
-    compute_manager = app.state.compute_provisioning_manager
-    if not compute_manager:
-        raise HTTPException(status_code=503, detail="Compute provisioning not available")
-    
-    # Provision resources
-    result = await compute_manager.provision_compute(request)
-    
-    if result.status == ProvisioningStatus.FAILED:
-        raise HTTPException(status_code=400, detail=result.message or "Provisioning failed")
-    
-    return {
-        "request_id": result.request_id,
-        "allocation_id": result.allocation_id,
-        "status": result.status.value,
-        "provider": result.provider,
-        "access_details": result.access_details,
-        "cost": str(result.cost) if result.cost else None
-    }
-
-
-@app.get("/api/v1/compute/provision/{request_id}")
-async def get_compute_provision_status(
-    request_id: str,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """Get status of compute provisioning request"""
-    
-    compute_manager = app.state.compute_provisioning_manager
-    if not compute_manager:
-        raise HTTPException(status_code=503, detail="Compute provisioning not available")
-    
-    status = await compute_manager.get_provisioning_status(request_id)
-    
-    if status.get("status") == "not_found":
-        raise HTTPException(status_code=404, detail="Provisioning request not found")
-    
-    return status
-
-
-@app.delete("/api/v1/compute/provision/{request_id}")
-async def terminate_compute_provision(
-    request_id: str,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """Terminate provisioned compute resources"""
-    
-    compute_manager = app.state.compute_provisioning_manager
-    if not compute_manager:
-        raise HTTPException(status_code=503, detail="Compute provisioning not available")
-    
-    success = await compute_manager.terminate_provision(request_id)
-    
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to terminate provision")
-    
-    return {
-        "status": "terminated",
-        "request_id": request_id
-    }
-
-
-@app.get("/api/v1/compute/capacity")
-async def get_available_compute_capacity(
-    resource_type: str,
-    region: Optional[str] = None,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """Get available compute capacity"""
-    
-    compute_manager = app.state.compute_provisioning_manager
-    if not compute_manager:
-        raise HTTPException(status_code=503, detail="Compute provisioning not available")
-    
+async def provision_compute_futures(
+    request: ComputeProvisionRequest,
+    background_tasks: BackgroundTasks
+) -> Dict[str, Any]:
+    """
+    Provision compute resources for futures contract settlement.
+    This endpoint is called by the compute futures engine.
+    """
     try:
-        resource_type_enum = ComputeResourceType(resource_type)
-    except ValueError:
-        raise HTTPException(status_code=400, detail=f"Invalid resource type: {resource_type}")
-    
-    capacity = await compute_manager.get_available_capacity(resource_type_enum, region)
-    
-    return capacity
-
-
-@app.get("/api/v1/tenants/{tenant_id}/provisioning-status")
-async def get_provisioning_status(
-    tenant_id: str,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """Get provisioning status for a tenant"""
-    
-    # Check permissions
-    if tenant_id != context["tenant_id"] and "admin" not in context["user"].get("roles", []):
-        raise HTTPException(status_code=403, detail="Access denied")
+        # Convert request to AllocationRequest format
+        resources = []
         
-    provisioning_repo = app.state.provisioning_repo
-    history = provisioning_repo.get_tenant_provisioning_history(
-        uuid.UUID(tenant_id),
-        limit=1
-    )
-    
-    if not history:
-        raise HTTPException(status_code=404, detail="No provisioning record found")
+        # Map resource type to ResourceSpec
+        if request.resource_type.lower() == "gpu":
+            resources.append(ResourceSpec(
+                resource_type=ResourceType.GPU,
+                quantity=Decimal(request.quantity),
+                specifications={"gpu_type": "nvidia-a100"},
+                required_features=["cuda", "tensor-cores"]
+            ))
+        elif request.resource_type.lower() == "cpu":
+            resources.append(ResourceSpec(
+                resource_type=ResourceType.CPU,
+                quantity=Decimal(request.quantity),
+                specifications={"cpu_type": "intel-xeon"},
+                required_features=["avx512"]
+            ))
+        else:
+            # Generic compute resource
+            resources.append(ResourceSpec(
+                resource_type=ResourceType.CPU,
+                quantity=Decimal(request.quantity),
+                specifications={"type": request.resource_type}
+            ))
         
-    return history[0]
-
-
-@app.get("/api/v1/tenants/{tenant_id}/quota")
-async def get_tenant_quota(
-    tenant_id: str,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """Get resource quota for a tenant"""
-    
-    # Check permissions
-    if tenant_id != context["tenant_id"] and "admin" not in context["user"].get("roles", []):
-        raise HTTPException(status_code=403, detail="Access denied")
-        
-    quota_repo = app.state.quota_repo
-    quota_info = quota_repo.get_quota_usage(tenant_id)
-    
-    if not quota_info:
-        raise HTTPException(status_code=404, detail="No quota found for tenant")
-        
-    return quota_info
-
-
-@app.put("/api/v1/tenants/{tenant_id}/quota")
-async def update_tenant_quota(
-    tenant_id: str,
-    updates: Dict[str, Any],
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """Update resource quota for a tenant"""
-    
-    # Check admin permissions
-    if "admin" not in context["user"].get("roles", []):
-        raise HTTPException(status_code=403, detail="Admin role required")
-        
-    quota_repo = app.state.quota_repo
-    updated = quota_repo.update_quota(tenant_id, updates)
-    
-    if not updated:
-        raise HTTPException(status_code=404, detail="Failed to update quota")
-        
-    return updated
-
-
-# Dynamic Provisioning API Endpoints
-@app.get("/api/v1/metrics/{service_name}")
-async def get_service_metrics(
-    service_name: str,
-    tenant_id: Optional[str] = None,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """Get current metrics for a service"""
-    
-    # Check permissions
-    if tenant_id and tenant_id != context["tenant_id"] and "admin" not in context["user"].get("roles", []):
-        raise HTTPException(status_code=403, detail="Access denied")
-        
-    if not resource_monitor:
-        raise HTTPException(status_code=503, detail="Resource monitor not initialized")
-        
-    metrics = resource_monitor.get_current_metrics(service_name)
-    if not metrics:
-        raise HTTPException(status_code=404, detail=f"No metrics found for service {service_name}")
-        
-    return {
-        "service_name": metrics.service_name,
-        "timestamp": metrics.timestamp.isoformat(),
-        "cpu_usage": metrics.cpu_usage,
-        "memory_usage": metrics.memory_usage,
-        "request_rate": metrics.request_rate,
-        "error_rate": metrics.error_rate,
-        "response_time_p99": metrics.response_time_p99,
-        "pod_count": metrics.pod_count
-    }
-
-
-@app.get("/api/v1/metrics/cluster/current")
-async def get_cluster_metrics(
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """Get current cluster-wide metrics"""
-    
-    # Check admin permissions
-    if "admin" not in context["user"].get("roles", []):
-        raise HTTPException(status_code=403, detail="Admin role required")
-        
-    if not resource_monitor:
-        raise HTTPException(status_code=503, detail="Resource monitor not initialized")
-        
-    metrics = resource_monitor.get_cluster_metrics()
-    if not metrics:
-        raise HTTPException(status_code=404, detail="No cluster metrics available")
-        
-    return {
-        "timestamp": metrics.timestamp.isoformat(),
-        "total_cpu_cores": metrics.total_cpu_cores,
-        "used_cpu_cores": metrics.used_cpu_cores,
-        "cpu_utilization": (metrics.used_cpu_cores / metrics.total_cpu_cores * 100) if metrics.total_cpu_cores > 0 else 0,
-        "total_memory_bytes": metrics.total_memory_bytes,
-        "used_memory_bytes": metrics.used_memory_bytes,
-        "memory_utilization": (metrics.used_memory_bytes / metrics.total_memory_bytes * 100) if metrics.total_memory_bytes > 0 else 0,
-        "node_count": metrics.node_count,
-        "pod_count": metrics.pod_count
-    }
-
-
-@app.get("/api/v1/scaling/policies")
-async def list_scaling_policies(
-    enabled_only: bool = True,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """List all scaling policies"""
-    
-    # Check admin permissions
-    if "admin" not in context["user"].get("roles", []):
-        raise HTTPException(status_code=403, detail="Admin role required")
-        
-    policy_repo = app.state.policy_repo
-    policies = policy_repo.get_all_policies(enabled_only=enabled_only)
-    
-    return {
-        "policies": policies,
-        "total": len(policies)
-    }
-
-
-@app.get("/api/v1/scaling/policies/{service_name}")
-async def get_scaling_policy(
-    service_name: str,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """Get scaling policy for a service"""
-    
-    policy_repo = app.state.policy_repo
-    policy = policy_repo.get_policy(service_name)
-    
-    if not policy:
-        raise HTTPException(status_code=404, detail=f"No policy found for service {service_name}")
-        
-    return policy
-
-
-@app.put("/api/v1/scaling/policies/{service_name}")
-async def update_scaling_policy(
-    service_name: str,
-    policy_update: ScalingPolicyUpdate,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """Update scaling policy for a service"""
-    
-    # Check admin permissions
-    if "admin" not in context["user"].get("roles", []):
-        raise HTTPException(status_code=403, detail="Admin role required")
-        
-    policy_repo = app.state.policy_repo
-    
-    # Get existing policy
-    existing = policy_repo.get_policy(service_name)
-    if not existing:
-        # Create new policy
-        policy = policy_repo.create_policy(
-            service_name=service_name,
-            min_replicas=policy_update.min_replicas or 1,
-            max_replicas=policy_update.max_replicas or 10,
-            target_cpu=policy_update.target_cpu_percent or 70.0,
-            target_memory=policy_update.target_memory_percent or 80.0,
-            scale_up_cooldown=policy_update.scale_up_cooldown_seconds or 300,
-            scale_down_cooldown=policy_update.scale_down_cooldown_seconds or 600
+        # Create allocation request
+        allocation_request = AllocationRequest(
+            settlement_id=request.settlement_id,
+            buyer_id=request.buyer_id,
+            provider_id=request.provider_id,
+            resources=resources,
+            start_time=datetime.fromisoformat(request.start_time.replace('Z', '+00:00')),
+            duration_hours=request.duration_hours,
+            metadata={
+                "is_failover": request.is_failover,
+                "original_provider": request.provider_id
+            }
         )
+        
+        # Allocate resources
+        allocation = await provisioning_engine.allocate_resources(allocation_request)
+        
+        # Publish provisioning event
+        background_tasks.add_task(
+            event_publisher.publish,
+            "compute.futures.provisioned",
+            {
+                "settlement_id": request.settlement_id,
+                "allocation_id": allocation.allocation_id,
+                "provider": allocation.provider,
+                "status": allocation.status,
+                "is_failover": request.is_failover
+            }
+        )
+        
+        return {
+            "success": True,
+            "allocation_id": allocation.allocation_id,
+            "status": allocation.status,
+            "provider": allocation.provider,
+            "access_details": allocation.access_details,
+            "monitoring_endpoints": allocation.monitoring_endpoints
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to provision compute: {e}")
+        
+        # Publish failure event
+        background_tasks.add_task(
+            event_publisher.publish,
+            "compute.futures.provisioning_failed",
+            {
+                "settlement_id": request.settlement_id,
+                "error": str(e),
+                "is_failover": request.is_failover
+            }
+        )
+        
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/metrics/compute/{settlement_id}")
+async def get_compute_metrics(settlement_id: str) -> Dict[str, Any]:
+    """
+    Get compute metrics for SLA monitoring.
+    This endpoint is called by the compute futures engine for SLA compliance checks.
+    """
+    # Get allocation for settlement
+    allocation_id = provisioning_engine.settlement_allocations.get(settlement_id)
+    if not allocation_id:
+        # Return default metrics if allocation not found
+        return {
+            "uptime_percent": 100.0,
+            "latency_ms": 5,
+            "performance_score": 1.0,
+            "error_rate": 0.0,
+            "throughput_gbps": 10.0
+        }
+    
+    # Get actual metrics
+    allocation = provisioning_engine.allocations.get(allocation_id)
+    if not allocation or allocation.status != AllocationStatus.ACTIVE:
+        return {
+            "uptime_percent": 0.0,
+            "latency_ms": 9999,
+            "performance_score": 0.0,
+            "error_rate": 1.0,
+            "throughput_gbps": 0.0
+        }
+    
+    # Get provider metrics
+    provider = provisioning_engine.providers.get(allocation.provider)
+    if provider:
+        metrics = await provider.get_metrics(allocation_id)
     else:
-        # Update existing
-        policy = policy_repo.update_policy(
-            service_name,
-            policy_update.dict(exclude_unset=True)
-        )
-        
-    if not policy:
-        raise HTTPException(status_code=500, detail="Failed to update policy")
-        
-    return policy
-
-
-@app.get("/api/v1/scaling/history")
-async def get_scaling_history(
-    service_name: Optional[str] = None,
-    tenant_id: Optional[str] = None,
-    limit: int = 100,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """Get scaling event history"""
+        # Mock metrics
+        metrics = {
+            "cpu_utilization": 45.2,
+            "memory_utilization": 62.1,
+            "network_throughput_gbps": 8.5,
+            "disk_iops": 15000,
+            "uptime": 99.95,
+            "latency_ms": 12,
+            "error_count": 2
+        }
     
-    # Check permissions
-    if tenant_id and tenant_id != context["tenant_id"] and "admin" not in context["user"].get("roles", []):
-        raise HTTPException(status_code=403, detail="Access denied")
-        
-    event_repo = app.state.scaling_event_repo
-    events = event_repo.get_scaling_history(
-        service_name=service_name,
-        tenant_id=tenant_id or (None if "admin" in context["user"].get("roles", []) else context["tenant_id"]),
-        limit=limit
-    )
+    # Calculate SLA-relevant metrics
+    total_time = (datetime.utcnow() - allocation.activated_at).total_seconds() / 3600
+    uptime_hours = total_time * (metrics.get("uptime", 100) / 100)
     
     return {
-        "events": events,
-        "total": len(events)
+        "uptime_percent": metrics.get("uptime", 100.0),
+        "latency_ms": metrics.get("latency_ms", 10),
+        "performance_score": min(1.0, metrics.get("cpu_utilization", 50) / 100 + 0.5),
+        "error_rate": metrics.get("error_count", 0) / max(1, total_time * 3600),
+        "throughput_gbps": metrics.get("network_throughput_gbps", 10.0),
+        "cpu_utilization": metrics.get("cpu_utilization", 50),
+        "memory_utilization": metrics.get("memory_utilization", 60),
+        "total_uptime_hours": uptime_hours,
+        "total_runtime_hours": total_time
     }
 
 
-@app.post("/api/v1/scaling/manual")
-async def manual_scale(
-    service_name: str,
-    target_replicas: int,
-    reason: str = "Manual scaling request",
-    context: dict = Depends(get_current_tenant_and_user),
-    publisher: EventPublisher = Depends(get_event_publisher)
-):
-    """Manually scale a service"""
-    
-    # Check admin permissions
-    if "admin" not in context["user"].get("roles", []):
-        raise HTTPException(status_code=403, detail="Admin role required")
-        
-    # Publish scaling request event
-    publisher.publish_event(
-        topic="persistent://platformq/system/scaling-request-events",
-        event={
-            "service_name": service_name,
-            "target_replicas": target_replicas,
-            "reason": reason,
-            "requested_by": context["user"]["id"],
-            "tenant_id": context["tenant_id"],
-            "requested_at": datetime.utcnow().isoformat()
-        }
-    )
+@app.post("/api/v1/compute/register-failover")
+async def register_failover_provider(
+    provider_id: str,
+    capabilities: List[str],
+    priority: int = 100
+) -> Dict[str, Any]:
+    """Register a provider as failover option for compute futures"""
+    # Store failover provider information
+    # In practice, this would be stored in a database
     
     return {
-        "status": "scaling_requested",
-        "service_name": service_name,
-        "target_replicas": target_replicas
-    }
-
-
-# Health check with resource monitoring
-@app.get("/health/detailed")
-async def detailed_health_check():
-    """Detailed health check including resource monitoring"""
-    health = {
-        "status": "healthy",
-        "checks": {}
-    }
-    
-    # Check resource monitor
-    if hasattr(app.state, "resource_monitor"):
-        health["checks"]["resource_monitor"] = {
-            "status": "active" if app.state.resource_monitor.is_monitoring else "inactive"
-        }
-        
-    # Check scaling engine
-    if hasattr(app.state, "scaling_engine"):
-        health["checks"]["scaling_engine"] = {
-            "status": "active" if app.state.scaling_engine.is_running else "inactive"
-        }
-        
-    # Check tenant manager
-    if hasattr(app.state, "tenant_manager"):
-        health["checks"]["tenant_manager"] = {
-            "status": "connected" if app.state.tenant_manager.is_connected else "disconnected"
-        }
-        
-    return health 
+        "success": True,
+        "provider_id": provider_id,
+        "capabilities": capabilities,
+        "priority": priority,
+        "registered_at": datetime.utcnow().isoformat()
+    } 

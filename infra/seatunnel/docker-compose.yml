@@ -1,0 +1,162 @@
+version: '3.8'
+
+services:
+  # SeaTunnel Master (using Flink engine)
+  seatunnel-master:
+    image: apache/seatunnel:2.3.3-flink-1.17
+    container_name: seatunnel-master
+    hostname: seatunnel-master
+    environment:
+      - ST_ENGINE=flink
+      - FLINK_PROPERTIES=jobmanager.rpc.address=seatunnel-master
+      - JVM_OPTS=-Xmx2g -Xms2g
+    ports:
+      - "8081:8081"  # Flink Web UI
+      - "5070:5070"  # SeaTunnel API
+    volumes:
+      - ./config:/opt/seatunnel/config
+      - ./connectors:/opt/seatunnel/connectors
+      - ./logs:/opt/seatunnel/logs
+    command: ["master"]
+    networks:
+      - platformq
+    depends_on:
+      - pulsar
+      - ignite
+      - cassandra
+      - elasticsearch
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2'
+
+  # SeaTunnel Worker 1
+  seatunnel-worker-1:
+    image: apache/seatunnel:2.3.3-flink-1.17
+    container_name: seatunnel-worker-1
+    hostname: seatunnel-worker-1
+    environment:
+      - ST_ENGINE=flink
+      - FLINK_PROPERTIES=jobmanager.rpc.address=seatunnel-master
+      - JVM_OPTS=-Xmx4g -Xms4g
+    volumes:
+      - ./config:/opt/seatunnel/config
+      - ./connectors:/opt/seatunnel/connectors
+      - ./logs:/opt/seatunnel/logs
+    command: ["worker"]
+    networks:
+      - platformq
+    depends_on:
+      - seatunnel-master
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '4'
+
+  # SeaTunnel Worker 2
+  seatunnel-worker-2:
+    image: apache/seatunnel:2.3.3-flink-1.17
+    container_name: seatunnel-worker-2
+    hostname: seatunnel-worker-2
+    environment:
+      - ST_ENGINE=flink
+      - FLINK_PROPERTIES=jobmanager.rpc.address=seatunnel-master
+      - JVM_OPTS=-Xmx4g -Xms4g
+    volumes:
+      - ./config:/opt/seatunnel/config
+      - ./connectors:/opt/seatunnel/connectors
+      - ./logs:/opt/seatunnel/logs
+    command: ["worker"]
+    networks:
+      - platformq
+    depends_on:
+      - seatunnel-master
+    deploy:
+      resources:
+        limits:
+          memory: 6G
+          cpus: '4'
+
+  # SeaTunnel Web UI
+  seatunnel-web:
+    image: apache/seatunnel-web:1.0.0
+    container_name: seatunnel-web
+    environment:
+      - SEATUNNEL_API_URL=http://seatunnel-master:5070
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/seatunnel
+    ports:
+      - "5071:8080"
+    networks:
+      - platformq
+    depends_on:
+      - seatunnel-master
+      - postgres
+
+  # Connector Downloader (Init Container)
+  connector-init:
+    image: alpine/curl:latest
+    container_name: seatunnel-connector-init
+    volumes:
+      - ./connectors:/connectors
+    command: |
+      sh -c "
+        # Download required connectors
+        echo 'Downloading SeaTunnel connectors...'
+        
+        # Pulsar connector
+        curl -L https://repo1.maven.org/maven2/org/apache/seatunnel/seatunnel-connector-pulsar/2.3.3/seatunnel-connector-pulsar-2.3.3.jar \
+          -o /connectors/seatunnel-connector-pulsar-2.3.3.jar
+        
+        # Ignite connector  
+        curl -L https://repo1.maven.org/maven2/org/apache/seatunnel/seatunnel-connector-ignite/2.3.3/seatunnel-connector-ignite-2.3.3.jar \
+          -o /connectors/seatunnel-connector-ignite-2.3.3.jar
+          
+        # Cassandra connector
+        curl -L https://repo1.maven.org/maven2/org/apache/seatunnel/seatunnel-connector-cassandra/2.3.3/seatunnel-connector-cassandra-2.3.3.jar \
+          -o /connectors/seatunnel-connector-cassandra-2.3.3.jar
+          
+        # Elasticsearch connector
+        curl -L https://repo1.maven.org/maven2/org/apache/seatunnel/seatunnel-connector-elasticsearch/2.3.3/seatunnel-connector-elasticsearch-2.3.3.jar \
+          -o /connectors/seatunnel-connector-elasticsearch-2.3.3.jar
+          
+        # CDC PostgreSQL connector
+        curl -L https://repo1.maven.org/maven2/org/apache/seatunnel/seatunnel-connector-cdc-postgres/2.3.3/seatunnel-connector-cdc-postgres-2.3.3.jar \
+          -o /connectors/seatunnel-connector-cdc-postgres-2.3.3.jar
+          
+        # JDBC connector
+        curl -L https://repo1.maven.org/maven2/org/apache/seatunnel/seatunnel-connector-jdbc/2.3.3/seatunnel-connector-jdbc-2.3.3.jar \
+          -o /connectors/seatunnel-connector-jdbc-2.3.3.jar
+          
+        # PostgreSQL JDBC driver
+        curl -L https://jdbc.postgresql.org/download/postgresql-42.6.0.jar \
+          -o /connectors/postgresql-42.6.0.jar
+          
+        echo 'Connector download complete!'
+      "
+    networks:
+      - platformq
+
+  # Job Submitter (for submitting SeaTunnel jobs)
+  job-submitter:
+    image: apache/seatunnel:2.3.3-flink-1.17
+    container_name: seatunnel-job-submitter
+    volumes:
+      - ./config:/opt/seatunnel/config
+      - ./jobs:/opt/seatunnel/jobs
+      - ./scripts:/opt/seatunnel/scripts
+    entrypoint: ["/opt/seatunnel/scripts/submit-jobs.sh"]
+    networks:
+      - platformq
+    depends_on:
+      - seatunnel-master
+      - connector-init
+
+networks:
+  platformq:
+    external: true
+
+volumes:
+  seatunnel-logs:
+  seatunnel-data: 
