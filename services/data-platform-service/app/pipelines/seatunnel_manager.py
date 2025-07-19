@@ -42,6 +42,10 @@ class ConnectorType(str, Enum):
     CASSANDRA = "cassandra"
     S3 = "s3"
     HTTP = "http"
+    REDIS = "redis"
+    IGNITE = "ignite"
+    CDC_MYSQL = "cdc-mysql"
+    CDC_POSTGRES = "cdc-postgres"
     
     # Sinks
     CONSOLE = "console"
@@ -50,6 +54,7 @@ class ConnectorType(str, Enum):
     DORIS = "doris"
     ICEBERG = "iceberg"
     HUDI = "hudi"
+    DELTA = "delta"
 
 
 class TransformType(str, Enum):
@@ -134,22 +139,47 @@ class SeaTunnelPipelineManager:
             ConnectorType.PULSAR: {
                 "plugin_name": "Pulsar",
                 "required": ["topic", "service-url"],
-                "optional": ["subscription-name", "subscription-type"]
+                "optional": ["subscription-name", "subscription-type", "admin-url"]
             },
             ConnectorType.ELASTICSEARCH: {
                 "plugin_name": "Elasticsearch",
                 "required": ["hosts", "index"],
-                "optional": ["query", "scroll_size", "scroll_time"]
+                "optional": ["query", "scroll_size", "scroll_time", "username", "password"]
             },
             ConnectorType.MONGODB: {
                 "plugin_name": "MongoDB",
                 "required": ["uri", "database", "collection"],
-                "optional": ["projection", "filter"]
+                "optional": ["projection", "filter", "batch_size"]
             },
             ConnectorType.S3: {
                 "plugin_name": "S3File",
                 "required": ["path", "format"],
-                "optional": ["access_key", "secret_key", "endpoint"]
+                "optional": ["access_key", "secret_key", "endpoint", "bucket", "region"]
+            },
+            ConnectorType.CASSANDRA: {
+                "plugin_name": "Cassandra",
+                "required": ["host", "keyspace", "table", "cql"],
+                "optional": ["username", "password", "datacenter", "consistency_level"]
+            },
+            ConnectorType.REDIS: {
+                "plugin_name": "Redis",
+                "required": ["host", "port", "data_type", "keys"],
+                "optional": ["password", "db_num", "key_pattern"]
+            },
+            ConnectorType.IGNITE: {
+                "plugin_name": "Ignite",
+                "required": ["host", "port", "cache_name"],
+                "optional": ["username", "password", "query_sql"]
+            },
+            ConnectorType.CDC_MYSQL: {
+                "plugin_name": "MySQL-CDC",
+                "required": ["hostname", "port", "database-name", "table-name"],
+                "optional": ["username", "password", "server-id", "server-time-zone"]
+            },
+            ConnectorType.CDC_POSTGRES: {
+                "plugin_name": "Postgres-CDC",
+                "required": ["hostname", "port", "database-name", "schema-name", "table-name"],
+                "optional": ["username", "password", "slot.name", "decoding.plugin.name"]
             },
             
             # Sink templates
@@ -161,12 +191,51 @@ class SeaTunnelPipelineManager:
             ConnectorType.ICEBERG: {
                 "plugin_name": "Iceberg",
                 "required": ["catalog_name", "namespace", "table"],
-                "optional": ["catalog_type", "warehouse"]
+                "optional": ["catalog_type", "warehouse", "hadoop_conf_path"]
             },
             ConnectorType.HUDI: {
                 "plugin_name": "Hudi",
                 "required": ["table.name", "hoodie.datasource.write.recordkey.field"],
-                "optional": ["hoodie.datasource.write.precombine.field"]
+                "optional": ["hoodie.datasource.write.precombine.field", "hoodie.datasource.write.partitionpath.field"]
+            },
+            ConnectorType.DELTA: {
+                "plugin_name": "DeltaLake",
+                "required": ["path"],
+                "optional": ["mode", "options", "partition_by"]
+            }
+        }
+        
+        # Transform templates for ETL operations
+        self.transform_templates = {
+            "sql": {
+                "plugin_name": "Sql",
+                "required": ["query"],
+                "optional": ["result_table_name"]
+            },
+            "fieldMapper": {
+                "plugin_name": "FieldMapper",
+                "required": ["field_mapper"],
+                "optional": []
+            },
+            "filter": {
+                "plugin_name": "Filter",
+                "required": ["filters"],
+                "optional": []
+            },
+            "replace": {
+                "plugin_name": "Replace",
+                "required": ["replace_field", "pattern", "replacement"],
+                "optional": ["is_regex", "replace_first"]
+            },
+            "split": {
+                "plugin_name": "Split",
+                "required": ["split_field", "separator"],
+                "optional": ["output_fields"]
+            },
+            "jsonPath": {
+                "plugin_name": "JsonPath",
+                "required": ["columns"],
+                "optional": []
             }
         }
     
@@ -236,20 +305,69 @@ class SeaTunnelPipelineManager:
                               config: PipelineConfig,
                               pipeline_id: str) -> Dict[str, Any]:
         """Build SeaTunnel job configuration"""
+        # Basic job structure
         job_config = {
             "env": {
-                "job.name": pipeline_id,
-                "job.mode": config.env.get("job.mode", "BATCH"),
-                "checkpoint.interval": config.env.get("checkpoint.interval", 10000),
-                **config.env
+                "execution.parallelism": config.parallelism or 2,
+                "job.mode": config.mode.value,
+                "job.name": f"{config.name}_{pipeline_id}",
+                "checkpoint.interval": 10000
             },
-            "source": [await self._build_connector_config(config.source, "source")],
-            "transform": [
-                await self._build_transform_config(t) 
-                for t in config.transforms
-            ],
-            "sink": [await self._build_connector_config(config.sink, "sink")]
+            "source": [],
+            "sink": []
         }
+        
+        # Add transform section if transforms exist
+        if config.transforms:
+            job_config["transform"] = []
+        
+        # Build source configuration
+        source_template = self.connector_templates.get(config.source.connector_type)
+        if not source_template:
+            raise ValueError(f"Unknown source connector: {config.source.connector_type}")
+        
+        source_config = {
+            "plugin_name": source_template["plugin_name"],
+            **config.source.config
+        }
+        
+        # Add result table name for transforms
+        if config.transforms:
+            source_config["result_table_name"] = "source_table"
+        
+        job_config["source"].append(source_config)
+        
+        # Build transform configurations
+        if config.transforms:
+            for i, transform in enumerate(config.transforms):
+                transform_template = self.transform_templates.get(transform.transform_type)
+                if not transform_template:
+                    raise ValueError(f"Unknown transform type: {transform.transform_type}")
+                
+                transform_config = {
+                    "plugin_name": transform_template["plugin_name"],
+                    "source_table_name": f"source_table" if i == 0 else f"transform_{i-1}",
+                    "result_table_name": f"transform_{i}" if i < len(config.transforms) - 1 else "final_table",
+                    **transform.config
+                }
+                
+                job_config["transform"].append(transform_config)
+        
+        # Build sink configuration
+        sink_template = self.connector_templates.get(config.sink.connector_type)
+        if not sink_template:
+            raise ValueError(f"Unknown sink connector: {config.sink.connector_type}")
+        
+        sink_config = {
+            "plugin_name": sink_template["plugin_name"],
+            **config.sink.config
+        }
+        
+        # Set source table for sink
+        if config.transforms:
+            sink_config["source_table_name"] = "final_table"
+        
+        job_config["sink"].append(sink_config)
         
         return job_config
     
@@ -731,8 +849,8 @@ class SeaTunnelPipelineManager:
     
     async def import_pipeline_config(self,
                                    config_str: str,
-                                   format: str = "yaml",
-                                   tenant_id: str) -> Dict[str, Any]:
+                                   tenant_id: str,
+                                   format: str = "yaml") -> Dict[str, Any]:
         """Import pipeline configuration"""
         try:
             if format == "yaml":
@@ -749,6 +867,164 @@ class SeaTunnelPipelineManager:
         except Exception as e:
             logger.error(f"Failed to import pipeline config: {e}")
             raise ValidationError(f"Invalid pipeline configuration: {str(e)}")
+    
+    async def submit_seatunnel_job(self, pipeline_id: str) -> Dict[str, Any]:
+        """Submit SeaTunnel job with enhanced configuration"""
+        try:
+            pipeline = self.pipelines.get(pipeline_id)
+            if not pipeline:
+                raise ValueError(f"Pipeline not found: {pipeline_id}")
+            
+            # Create job configuration file
+            config_path = f"/tmp/seatunnel_{pipeline_id}.conf"
+            with open(config_path, 'w') as f:
+                # Convert to HOCON format
+                hocon_config = self._to_hocon_format(pipeline["job_config"])
+                f.write(hocon_config)
+            
+            # Submit job via SeaTunnel API
+            response = await self.http_client.post(
+                f"{self.seatunnel_api_url}/v2/jobs/submit",
+                json={
+                    "config_path": config_path,
+                    "engine_type": pipeline["config"].get("engine", "spark"),
+                    "execution_mode": pipeline["config"].get("mode", "batch"),
+                    "master": "local[*]" if pipeline["config"].get("engine") == "spark" else None,
+                    "deploy_mode": "client"
+                }
+            )
+            
+            if response.status_code == 200:
+                job_info = response.json()
+                
+                # Update pipeline status
+                pipeline["job_id"] = job_info["job_id"]
+                pipeline["status"] = PipelineStatus.RUNNING
+                pipeline["started_at"] = datetime.utcnow()
+                pipeline["updated_at"] = datetime.utcnow()
+                
+                self.stats["active_pipelines"] += 1
+                
+                # Track lineage if available
+                if self.lineage_tracker:
+                    await self._track_enhanced_lineage(pipeline)
+                
+                return {
+                    "pipeline_id": pipeline_id,
+                    "job_id": job_info["job_id"],
+                    "status": "submitted",
+                    "message": "Pipeline job submitted successfully",
+                    "dashboard_url": job_info.get("dashboard_url")
+                }
+            else:
+                raise ServiceError(f"Failed to submit job: {response.text}")
+                
+        except Exception as e:
+            logger.error(f"Failed to submit SeaTunnel job: {e}")
+            # Update pipeline status
+            if pipeline_id in self.pipelines:
+                self.pipelines[pipeline_id]["status"] = PipelineStatus.FAILED
+                self.pipelines[pipeline_id]["error"] = str(e)
+                self.stats["failed_runs"] += 1
+            raise
+    
+    def _to_hocon_format(self, config: Dict[str, Any]) -> str:
+        """Convert dictionary to HOCON format for SeaTunnel"""
+        lines = []
+        
+        def format_value(value):
+            if isinstance(value, str):
+                return f'"{value}"'
+            elif isinstance(value, bool):
+                return "true" if value else "false"
+            elif isinstance(value, (int, float)):
+                return str(value)
+            elif isinstance(value, list):
+                items = [format_value(v) for v in value]
+                return f"[{', '.join(items)}]"
+            elif isinstance(value, dict):
+                return format_dict(value)
+            else:
+                return f'"{str(value)}"'
+        
+        def format_dict(d, indent=0):
+            lines = ["{"]
+            items = []
+            for k, v in d.items():
+                if isinstance(v, dict):
+                    items.append(f"{'  ' * (indent + 1)}{k} {format_dict(v, indent + 1)}")
+                elif isinstance(v, list) and v and isinstance(v[0], dict):
+                    # Special handling for arrays of objects
+                    list_items = []
+                    for item in v:
+                        list_items.append(f"{'  ' * (indent + 2)}{format_dict(item, indent + 2)}")
+                    items.append(f"{'  ' * (indent + 1)}{k} = [\n{','.join(list_items)}\n{'  ' * (indent + 1)}]")
+                else:
+                    items.append(f"{'  ' * (indent + 1)}{k} = {format_value(v)}")
+            lines.extend(items)
+            lines.append(f"{'  ' * indent}}}")
+            return "\n".join(lines)
+        
+        return format_dict(config)
+    
+    async def _track_enhanced_lineage(self, pipeline: Dict[str, Any]) -> None:
+        """Track enhanced lineage for SeaTunnel pipeline"""
+        try:
+            config = pipeline["config"]
+            
+            # Create pipeline node
+            pipeline_node = await self.lineage_tracker.add_node(
+                node_type="pipeline",
+                node_id=pipeline["pipeline_id"],
+                properties={
+                    "name": pipeline["name"],
+                    "type": "seatunnel",
+                    "engine": config.get("engine", "spark"),
+                    "mode": config.get("mode", "batch"),
+                    "tenant_id": pipeline["tenant_id"]
+                }
+            )
+            
+            # Track source lineage
+            source_config = config.get("source", {})
+            if source_config:
+                source_node = await self.lineage_tracker.add_node(
+                    node_type="datasource",
+                    node_id=f"{pipeline['pipeline_id']}_source",
+                    properties={
+                        "connector": source_config.get("connector_type"),
+                        "config": json.dumps(source_config.get("config", {}))
+                    }
+                )
+                
+                await self.lineage_tracker.add_edge(
+                    from_node=source_node,
+                    to_node=pipeline_node,
+                    edge_type="feeds",
+                    properties={"role": "source"}
+                )
+            
+            # Track sink lineage
+            sink_config = config.get("sink", {})
+            if sink_config:
+                sink_node = await self.lineage_tracker.add_node(
+                    node_type="datasink",
+                    node_id=f"{pipeline['pipeline_id']}_sink",
+                    properties={
+                        "connector": sink_config.get("connector_type"),
+                        "config": json.dumps(sink_config.get("config", {}))
+                    }
+                )
+                
+                await self.lineage_tracker.add_edge(
+                    from_node=pipeline_node,
+                    to_node=sink_node,
+                    edge_type="writes",
+                    properties={"role": "sink"}
+                )
+                
+        except Exception as e:
+            logger.error(f"Failed to track lineage: {e}")
     
     def get_statistics(self) -> Dict[str, Any]:
         """Get pipeline manager statistics"""
