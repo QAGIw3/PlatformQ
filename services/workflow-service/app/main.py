@@ -37,6 +37,7 @@ from platformq_events import (
 
 from .api import endpoints
 from .api import compute_endpoints
+from .api import data_platform_endpoints
 from .api.deps import get_db_session, get_api_key_crud, get_user_crud, get_password_verifier
 from .repository import WorkflowRepository, TaskRepository, ResourceAuthorizationRepository
 from .event_processors import WorkflowEventProcessor, AssetWorkflowProcessor
@@ -185,6 +186,7 @@ app.router.lifespan_context = lifespan
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["workflows"])
 app.include_router(compute_endpoints.router, prefix="/api/v1", tags=["workflow-compute"])
+app.include_router(data_platform_endpoints.router, prefix="/api/v1", tags=["data-platform-workflows"])
 
 # Service root endpoint
 @app.get("/")
@@ -197,7 +199,10 @@ def read_root():
             "verifiable-credentials",
             "event-driven-workflows",
             "dynamic-dag-generation",
-            "federated-simulations"
+            "federated-simulations",
+            "data-platform-integration",
+            "ml-training-workflows",
+            "realtime-analytics-pipelines"
         ]
     }
 

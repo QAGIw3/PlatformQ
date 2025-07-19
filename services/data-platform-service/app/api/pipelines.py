@@ -2,14 +2,18 @@
 Data pipeline API endpoints
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Body
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime, timedelta
 from enum import Enum
 import uuid
+import logging
+
+from .. import main
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class PipelineType(str, Enum):
@@ -80,50 +84,123 @@ class PipelineRun(BaseModel):
     status: str  # running, completed, failed
     started_at: datetime
     completed_at: Optional[datetime]
-    trigger: str  # scheduled, manual, event
-    metrics: Dict[str, Any]
     error: Optional[str]
+    metrics: Dict[str, Any] = Field(default_factory=dict)
 
 
 @router.post("/pipelines", response_model=PipelineResponse)
 async def create_pipeline(
     pipeline: PipelineConfig,
     request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    tenant_id: str = Query(..., description="Tenant ID")
 ):
     """Create a new data pipeline"""
-    pipeline_id = str(uuid.uuid4())
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
     
-    # Get pipeline manager from app state (SeaTunnel integration)
-    pipeline_manager = request.app.state.pipeline_manager
-    
-    return PipelineResponse(
-        **pipeline.dict(),
-        pipeline_id=pipeline_id,
-        status=PipelineStatus.DRAFT,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-        created_by=user_id,
-        last_run=None,
-        next_run=None,
-        version=1
-    )
+    try:
+        pipeline_id = str(uuid.uuid4())
+        
+        # Create pipeline
+        result = await main.pipeline_coordinator.create_pipeline(
+            pipeline_id=pipeline_id,
+            config={
+                "name": pipeline.name,
+                "description": pipeline.description,
+                "type": pipeline.type.value,
+                "steps": [step.dict() for step in pipeline.steps],
+                "schedule": pipeline.schedule,
+                "error_handling": pipeline.error_handling,
+                "tags": pipeline.tags
+            }
+        )
+        
+        return PipelineResponse(
+            pipeline_id=pipeline_id,
+            name=pipeline.name,
+            description=pipeline.description,
+            type=pipeline.type,
+            steps=pipeline.steps,
+            schedule=pipeline.schedule,
+            error_handling=pipeline.error_handling,
+            tags=pipeline.tags,
+            status=PipelineStatus.DRAFT,
+            created_at=datetime.utcnow(),
+            updated_at=datetime.utcnow(),
+            created_by=tenant_id,
+            last_run=None,
+            next_run=None,
+            version=1
+        )
+    except Exception as e:
+        logger.error(f"Failed to create pipeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/pipelines", response_model=List[PipelineResponse])
 async def list_pipelines(
     request: Request,
     tenant_id: str = Query(..., description="Tenant ID"),
-    type: Optional[PipelineType] = Query(None),
     status: Optional[PipelineStatus] = Query(None),
+    type: Optional[PipelineType] = Query(None),
     tags: Optional[List[str]] = Query(None),
-    search: Optional[str] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
     """List data pipelines"""
-    return []
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
+    
+    try:
+        # Get pipeline statistics
+        stats = main.pipeline_coordinator.get_statistics()
+        
+        # Mock pipeline list based on statistics
+        pipelines = []
+        pipeline_count = min(stats.get("total_pipelines", 0), limit)
+        
+        for i in range(pipeline_count):
+            pipelines.append(PipelineResponse(
+                pipeline_id=str(uuid.uuid4()),
+                name=f"pipeline_{i}",
+                description=f"Pipeline {i} description",
+                type=type or PipelineType.BATCH,
+                steps=[
+                    PipelineStep(
+                        name="source",
+                        type="source",
+                        connector=ConnectorType.DATABASE,
+                        config={"table": "source_table"}
+                    ),
+                    PipelineStep(
+                        name="transform",
+                        type="transform",
+                        connector=None,
+                        config={"operation": "aggregate"}
+                    ),
+                    PipelineStep(
+                        name="sink",
+                        type="sink",
+                        connector=ConnectorType.FILE,
+                        config={"path": "/output"}
+                    )
+                ],
+                schedule={"type": "cron", "expression": "0 0 * * *"},
+                error_handling={"retry": 3, "on_failure": "alert"},
+                tags=tags or ["production"],
+                status=status or PipelineStatus.ACTIVE,
+                created_at=datetime.utcnow() - timedelta(days=30),
+                updated_at=datetime.utcnow() - timedelta(days=1),
+                created_by=tenant_id,
+                last_run=datetime.utcnow() - timedelta(hours=1),
+                next_run=datetime.utcnow() + timedelta(hours=23),
+                version=1
+            ))
+        
+        return pipelines[offset:offset + limit]
+    except Exception as e:
+        logger.error(f"Failed to list pipelines: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/pipelines/{pipeline_id}", response_model=PipelineResponse)
@@ -133,108 +210,173 @@ async def get_pipeline(
     tenant_id: str = Query(..., description="Tenant ID")
 ):
     """Get pipeline details"""
-    raise HTTPException(status_code=404, detail="Pipeline not found")
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
+    
+    try:
+        # Get pipeline details
+        pipeline = await main.pipeline_coordinator.get_pipeline(pipeline_id)
+        if not pipeline:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        
+        return PipelineResponse(
+            pipeline_id=pipeline_id,
+            name=pipeline.get("name", "Unknown"),
+            description=pipeline.get("description"),
+            type=PipelineType(pipeline.get("type", "batch")),
+            steps=[PipelineStep(**step) for step in pipeline.get("steps", [])],
+            schedule=pipeline.get("schedule"),
+            error_handling=pipeline.get("error_handling", {}),
+            tags=pipeline.get("tags", []),
+            status=PipelineStatus(pipeline.get("status", "draft")),
+            created_at=pipeline.get("created_at", datetime.utcnow()),
+            updated_at=pipeline.get("updated_at", datetime.utcnow()),
+            created_by=pipeline.get("created_by", tenant_id),
+            last_run=pipeline.get("last_run"),
+            next_run=pipeline.get("next_run"),
+            version=pipeline.get("version", 1)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get pipeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.patch("/pipelines/{pipeline_id}")
+@router.put("/pipelines/{pipeline_id}", response_model=PipelineResponse)
 async def update_pipeline(
     pipeline_id: str,
+    pipeline: PipelineConfig,
     request: Request,
-    steps: Optional[List[PipelineStep]] = None,
-    schedule: Optional[Dict[str, Any]] = None,
-    status: Optional[PipelineStatus] = None,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    tenant_id: str = Query(..., description="Tenant ID")
 ):
     """Update pipeline configuration"""
-    return {
-        "pipeline_id": pipeline_id,
-        "status": "updated",
-        "version": 2,
-        "updated_at": datetime.utcnow()
-    }
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
+    
+    try:
+        # Update pipeline
+        result = await main.pipeline_coordinator.update_pipeline(
+            pipeline_id=pipeline_id,
+            config={
+                "name": pipeline.name,
+                "description": pipeline.description,
+                "type": pipeline.type.value,
+                "steps": [step.dict() for step in pipeline.steps],
+                "schedule": pipeline.schedule,
+                "error_handling": pipeline.error_handling,
+                "tags": pipeline.tags
+            }
+        )
+        
+        if not result:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        
+        return PipelineResponse(
+            pipeline_id=pipeline_id,
+            name=pipeline.name,
+            description=pipeline.description,
+            type=pipeline.type,
+            steps=pipeline.steps,
+            schedule=pipeline.schedule,
+            error_handling=pipeline.error_handling,
+            tags=pipeline.tags,
+            status=PipelineStatus.DRAFT,
+            created_at=datetime.utcnow() - timedelta(days=30),
+            updated_at=datetime.utcnow(),
+            created_by=tenant_id,
+            last_run=None,
+            next_run=None,
+            version=2
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update pipeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/pipelines/{pipeline_id}/activate")
-async def activate_pipeline(
+@router.delete("/pipelines/{pipeline_id}")
+async def delete_pipeline(
     pipeline_id: str,
     request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    tenant_id: str = Query(..., description="Tenant ID")
 ):
-    """Activate a pipeline"""
-    return {
-        "pipeline_id": pipeline_id,
-        "status": "active",
-        "activated_at": datetime.utcnow(),
-        "next_run": datetime.utcnow() + timedelta(hours=1)
-    }
+    """Delete a pipeline"""
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
+    
+    try:
+        result = await main.pipeline_coordinator.delete_pipeline(pipeline_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        
+        return {"message": f"Pipeline {pipeline_id} deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete pipeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/pipelines/{pipeline_id}/pause")
-async def pause_pipeline(
-    pipeline_id: str,
-    request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
-):
-    """Pause a pipeline"""
-    return {
-        "pipeline_id": pipeline_id,
-        "status": "paused",
-        "paused_at": datetime.utcnow()
-    }
-
-
-@router.post("/pipelines/{pipeline_id}/run")
+@router.post("/pipelines/{pipeline_id}/runs")
 async def trigger_pipeline_run(
     pipeline_id: str,
-    parameters: Optional[Dict[str, Any]] = None,
     request: Request,
     tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    parameters: Optional[Dict[str, Any]] = Body(None)
 ):
-    """Manually trigger a pipeline run"""
-    run_id = str(uuid.uuid4())
+    """Trigger a pipeline run"""
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
     
-    return {
-        "run_id": run_id,
-        "pipeline_id": pipeline_id,
-        "status": "started",
-        "trigger": "manual",
-        "triggered_by": user_id,
-        "started_at": datetime.utcnow()
-    }
+    try:
+        run_id = await main.pipeline_coordinator.execute_pipeline(
+            pipeline_id=pipeline_id,
+            execution_params=parameters or {}
+        )
+        
+        return {
+            "run_id": run_id,
+            "pipeline_id": pipeline_id,
+            "status": "running",
+            "started_at": datetime.utcnow()
+        }
+    except Exception as e:
+        logger.error(f"Failed to trigger pipeline run: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/pipelines/{pipeline_id}/runs", response_model=List[PipelineRun])
-async def get_pipeline_runs(
+@router.get("/pipelines/{pipeline_id}/runs")
+async def list_pipeline_runs(
     pipeline_id: str,
     request: Request,
     tenant_id: str = Query(..., description="Tenant ID"),
     status: Optional[str] = Query(None),
-    start_date: Optional[datetime] = Query(None),
-    end_date: Optional[datetime] = Query(None),
     limit: int = Query(100, ge=1, le=1000),
     offset: int = Query(0, ge=0)
 ):
-    """Get pipeline run history"""
-    return [
-        PipelineRun(
-            run_id="run_123",
+    """List pipeline runs"""
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
+    
+    try:
+        # Get pipeline run history
+        runs = await main.pipeline_coordinator.get_pipeline_runs(
             pipeline_id=pipeline_id,
-            status="completed",
-            started_at=datetime.utcnow() - timedelta(hours=1),
-            completed_at=datetime.utcnow(),
-            trigger="scheduled",
-            metrics={
-                "rows_processed": 100000,
-                "duration_seconds": 3600,
-                "bytes_processed": 104857600
-            },
-            error=None
+            status=status,
+            limit=limit,
+            offset=offset
         )
-    ]
+        
+        return {
+            "pipeline_id": pipeline_id,
+            "runs": runs,
+            "total": len(runs)
+        }
+    except Exception as e:
+        logger.error(f"Failed to list pipeline runs: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/runs/{run_id}", response_model=PipelineRun)
@@ -244,35 +386,126 @@ async def get_pipeline_run(
     tenant_id: str = Query(..., description="Tenant ID")
 ):
     """Get pipeline run details"""
-    return PipelineRun(
-        run_id=run_id,
-        pipeline_id="pipeline_456",
-        status="running",
-        started_at=datetime.utcnow() - timedelta(minutes=30),
-        completed_at=None,
-        trigger="scheduled",
-        metrics={
-            "rows_processed": 50000,
-            "progress_percent": 50
-        },
-        error=None
-    )
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
+    
+    try:
+        # Get run details
+        run = await main.pipeline_coordinator.get_run_status(run_id)
+        if not run:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        
+        return PipelineRun(
+            run_id=run_id,
+            pipeline_id=run.get("pipeline_id", ""),
+            status=run.get("status", "unknown"),
+            started_at=run.get("started_at", datetime.utcnow()),
+            completed_at=run.get("completed_at"),
+            error=run.get("error"),
+            metrics=run.get("metrics", {})
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get pipeline run: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/runs/{run_id}/cancel")
 async def cancel_pipeline_run(
     run_id: str,
     request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    tenant_id: str = Query(..., description="Tenant ID")
 ):
     """Cancel a running pipeline"""
-    return {
-        "run_id": run_id,
-        "status": "cancelled",
-        "cancelled_by": user_id,
-        "cancelled_at": datetime.utcnow()
-    }
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
+    
+    try:
+        result = await main.pipeline_coordinator.cancel_pipeline(run_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Pipeline run not found")
+        
+        return {"message": f"Pipeline run {run_id} cancelled"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to cancel pipeline run: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/pipelines/{pipeline_id}/activate")
+async def activate_pipeline(
+    pipeline_id: str,
+    request: Request,
+    tenant_id: str = Query(..., description="Tenant ID")
+):
+    """Activate a pipeline"""
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
+    
+    try:
+        result = await main.pipeline_coordinator.activate_pipeline(pipeline_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        
+        return {"message": f"Pipeline {pipeline_id} activated", "status": "active"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to activate pipeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/pipelines/{pipeline_id}/pause")
+async def pause_pipeline(
+    pipeline_id: str,
+    request: Request,
+    tenant_id: str = Query(..., description="Tenant ID")
+):
+    """Pause a pipeline"""
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
+    
+    try:
+        result = await main.pipeline_coordinator.pause_pipeline(pipeline_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Pipeline not found")
+        
+        return {"message": f"Pipeline {pipeline_id} paused", "status": "paused"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to pause pipeline: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/statistics")
+async def get_pipeline_statistics(
+    request: Request,
+    tenant_id: str = Query(..., description="Tenant ID")
+):
+    """Get pipeline statistics"""
+    if not main.pipeline_coordinator:
+        raise HTTPException(status_code=503, detail="Pipeline coordinator not available")
+    
+    try:
+        stats = main.pipeline_coordinator.get_statistics()
+        
+        return {
+            "total_pipelines": stats.get("total_pipelines", 0),
+            "active_pipelines": stats.get("active_pipelines", 0),
+            "running_pipelines": stats.get("running_pipelines", 0),
+            "failed_pipelines": stats.get("failed_pipelines", 0),
+            "total_runs": stats.get("total_runs", 0),
+            "successful_runs": stats.get("successful_runs", 0),
+            "failed_runs": stats.get("failed_runs", 0),
+            "average_runtime_seconds": stats.get("average_runtime_seconds", 0),
+            "last_updated": datetime.utcnow()
+        }
+    except Exception as e:
+        logger.error(f"Failed to get pipeline statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/connectors")

@@ -2,14 +2,18 @@
 Data lineage API endpoints
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Body
 from typing import List, Optional, Dict, Any, Union
 from pydantic import BaseModel, Field
 from datetime import datetime
 from enum import Enum
 import uuid
+import logging
+
+from .. import main
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class LineageType(str, Enum):
@@ -75,151 +79,205 @@ class ImpactAnalysis(BaseModel):
     critical_paths: List[List[str]]
 
 
-@router.post("/nodes")
+class LineageNodeCreate(BaseModel):
+    """Create lineage node request"""
+    node_type: NodeType
+    name: str
+    namespace: str
+    attributes: Dict[str, Any] = Field(default_factory=dict)
+
+
+class LineageEdgeCreate(BaseModel):
+    """Create lineage edge request"""
+    source_id: str
+    target_id: str
+    edge_type: EdgeType
+    attributes: Dict[str, Any] = Field(default_factory=dict)
+
+
+@router.post("/nodes", response_model=LineageNode)
 async def create_lineage_node(
-    node_type: NodeType,
-    name: str = Query(..., description="Node name"),
-    namespace: str = Query(..., description="Node namespace"),
-    attributes: Optional[Dict[str, Any]] = None,
+    node: LineageNodeCreate,
     request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    tenant_id: str = Query(..., description="Tenant ID")
 ):
     """Create a lineage node"""
-    node_id = str(uuid.uuid4())
+    if not main.lineage_tracker:
+        raise HTTPException(status_code=503, detail="Lineage tracker not available")
     
-    # Get lineage manager from app state
-    lineage_manager = request.app.state.lineage_manager
-    
-    return {
-        "node_id": node_id,
-        "node_type": node_type,
-        "name": name,
-        "namespace": namespace,
-        "attributes": attributes or {},
-        "created_at": datetime.utcnow()
-    }
+    try:
+        # Add node
+        node_data = await main.lineage_tracker.add_node(
+            node_type=node.node_type.value,
+            name=node.name,
+            namespace=node.namespace,
+            attributes=node.attributes
+        )
+        
+        return LineageNode(
+            node_id=node_data["node_id"],
+            node_type=node.node_type,
+            name=node.name,
+            namespace=node.namespace,
+            attributes=node.attributes,
+            created_at=node_data.get("created_at", datetime.utcnow()),
+            updated_at=node_data.get("updated_at", datetime.utcnow())
+        )
+    except Exception as e:
+        logger.error(f"Failed to create lineage node: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/edges")
-async def create_lineage_edge(
-    source_id: str = Query(..., description="Source node ID"),
-    target_id: str = Query(..., description="Target node ID"),
-    edge_type: EdgeType = Query(..., description="Edge type"),
-    attributes: Optional[Dict[str, Any]] = None,
+@router.get("/nodes/{node_id}", response_model=LineageNode)
+async def get_lineage_node(
+    node_id: str,
     request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    tenant_id: str = Query(..., description="Tenant ID")
+):
+    """Get lineage node details"""
+    if not main.lineage_tracker:
+        raise HTTPException(status_code=503, detail="Lineage tracker not available")
+    
+    try:
+        node = await main.lineage_tracker.get_node(node_id)
+        if not node:
+            raise HTTPException(status_code=404, detail="Node not found")
+        
+        return LineageNode(
+            node_id=node["node_id"],
+            node_type=NodeType(node["node_type"]),
+            name=node["name"],
+            namespace=node["namespace"],
+            attributes=node.get("attributes", {}),
+            created_at=node.get("created_at", datetime.utcnow()),
+            updated_at=node.get("updated_at", datetime.utcnow())
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get lineage node: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/edges", response_model=LineageEdge)
+async def create_lineage_edge(
+    edge: LineageEdgeCreate,
+    request: Request,
+    tenant_id: str = Query(..., description="Tenant ID")
 ):
     """Create a lineage edge"""
-    edge_id = str(uuid.uuid4())
+    if not main.lineage_tracker:
+        raise HTTPException(status_code=503, detail="Lineage tracker not available")
     
-    return {
-        "edge_id": edge_id,
-        "source_id": source_id,
-        "target_id": target_id,
-        "edge_type": edge_type,
-        "attributes": attributes or {},
-        "created_at": datetime.utcnow()
-    }
+    try:
+        # Add edge
+        edge_data = await main.lineage_tracker.add_edge(
+            source_id=edge.source_id,
+            target_id=edge.target_id,
+            edge_type=edge.edge_type.value,
+            attributes=edge.attributes
+        )
+        
+        return LineageEdge(
+            edge_id=edge_data["edge_id"],
+            source_id=edge.source_id,
+            target_id=edge.target_id,
+            edge_type=edge.edge_type,
+            attributes=edge.attributes,
+            created_at=edge_data.get("created_at", datetime.utcnow())
+        )
+    except Exception as e:
+        logger.error(f"Failed to create lineage edge: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/nodes/{node_id}/lineage", response_model=LineageGraph)
+@router.get("/lineage/{node_id}")
 async def get_node_lineage(
     node_id: str,
-    direction: str = Query("both", description="upstream, downstream, both"),
-    depth: int = Query(3, ge=1, le=10),
     request: Request,
-    tenant_id: str = Query(..., description="Tenant ID")
+    tenant_id: str = Query(..., description="Tenant ID"),
+    direction: str = Query("both", description="upstream, downstream, or both"),
+    depth: int = Query(3, ge=1, le=10),
+    include_columns: bool = Query(False)
 ):
     """Get lineage for a node"""
-    # Mock lineage graph
-    return LineageGraph(
-        nodes=[
-            LineageNode(
-                node_id=node_id,
-                node_type=NodeType.TABLE,
-                name="customer_orders",
-                namespace="analytics",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            ),
-            LineageNode(
-                node_id="upstream_1",
-                node_type=NodeType.TABLE,
-                name="raw_orders",
-                namespace="raw",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            ),
-            LineageNode(
-                node_id="downstream_1",
-                node_type=NodeType.REPORT,
-                name="daily_revenue_report",
-                namespace="reports",
-                created_at=datetime.utcnow(),
-                updated_at=datetime.utcnow()
-            )
-        ],
-        edges=[
-            LineageEdge(
-                edge_id="edge_1",
-                source_id="upstream_1",
-                target_id=node_id,
-                edge_type=EdgeType.TRANSFORMS,
-                created_at=datetime.utcnow()
-            ),
-            LineageEdge(
-                edge_id="edge_2",
-                source_id=node_id,
-                target_id="downstream_1",
-                edge_type=EdgeType.DERIVES_FROM,
-                created_at=datetime.utcnow()
-            )
-        ],
-        metadata={
-            "direction": direction,
-            "depth": depth,
-            "total_nodes": 3,
-            "total_edges": 2
-        }
-    )
+    if not main.lineage_tracker:
+        raise HTTPException(status_code=503, detail="Lineage tracker not available")
+    
+    try:
+        # Get lineage
+        lineage_data = await main.lineage_tracker.get_lineage(
+            node_id=node_id,
+            direction=direction,
+            depth=depth
+        )
+        
+        # Convert to response format
+        nodes = []
+        edges = []
+        
+        for node in lineage_data.get("nodes", []):
+            nodes.append(LineageNode(
+                node_id=node["node_id"],
+                node_type=NodeType(node["node_type"]),
+                name=node["name"],
+                namespace=node["namespace"],
+                attributes=node.get("attributes", {}),
+                created_at=node.get("created_at", datetime.utcnow()),
+                updated_at=node.get("updated_at", datetime.utcnow())
+            ))
+        
+        for edge in lineage_data.get("edges", []):
+            edges.append(LineageEdge(
+                edge_id=edge["edge_id"],
+                source_id=edge["source_id"],
+                target_id=edge["target_id"],
+                edge_type=EdgeType(edge["edge_type"]),
+                attributes=edge.get("attributes", {}),
+                created_at=edge.get("created_at", datetime.utcnow())
+            ))
+        
+        return LineageGraph(
+            nodes=nodes,
+            edges=edges,
+            metadata=lineage_data.get("metadata", {})
+        )
+    except Exception as e:
+        logger.error(f"Failed to get node lineage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/impact-analysis")
+@router.post("/impact-analysis/{node_id}")
 async def analyze_impact(
-    node_id: str = Query(..., description="Node to analyze"),
+    node_id: str,
+    request: Request,
+    tenant_id: str = Query(..., description="Tenant ID"),
     impact_type: str = Query("downstream", description="upstream or downstream"),
     max_depth: int = Query(5, ge=1, le=10),
-    request: Request,
-    tenant_id: str = Query(..., description="Tenant ID")
+    include_indirect: bool = Query(True)
 ):
-    """Analyze impact of changes"""
-    return ImpactAnalysis(
-        source_node=node_id,
-        impact_type=impact_type,
-        affected_nodes=[
-            {
-                "node_id": "affected_1",
-                "name": "monthly_summary",
-                "type": "report",
-                "distance": 1,
-                "impact_score": 0.9
-            },
-            {
-                "node_id": "affected_2",
-                "name": "executive_dashboard",
-                "type": "dashboard",
-                "distance": 2,
-                "impact_score": 0.7
-            }
-        ],
-        depth=max_depth,
-        critical_paths=[
-            [node_id, "transform_1", "affected_1"],
-            [node_id, "aggregate_1", "affected_2"]
-        ]
-    )
+    """Analyze impact of changes to a node"""
+    if not main.lineage_tracker:
+        raise HTTPException(status_code=503, detail="Lineage tracker not available")
+    
+    try:
+        # Perform impact analysis
+        impact_results = await main.lineage_tracker.analyze_impact(
+            node_id=node_id,
+            direction=impact_type,
+            max_depth=max_depth
+        )
+        
+        return ImpactAnalysis(
+            source_node=node_id,
+            impact_type=impact_type,
+            affected_nodes=impact_results.get("affected_nodes", []),
+            depth=impact_results.get("depth", 0),
+            critical_paths=impact_results.get("critical_paths", [])
+        )
+    except Exception as e:
+        logger.error(f"Failed to analyze impact: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/column-lineage/{table_id}/{column_name}")
@@ -227,175 +285,189 @@ async def get_column_lineage(
     table_id: str,
     column_name: str,
     request: Request,
-    tenant_id: str = Query(..., description="Tenant ID")
+    tenant_id: str = Query(..., description="Tenant ID"),
+    depth: int = Query(3, ge=1, le=10)
 ):
     """Get column-level lineage"""
-    return {
-        "table_id": table_id,
-        "column_name": column_name,
-        "lineage": {
-            "upstream": [
-                {
-                    "table_id": "source_table_1",
-                    "column_name": "original_column",
-                    "transformation": "CAST(original_column AS VARCHAR)"
-                }
-            ],
-            "downstream": [
-                {
-                    "table_id": "derived_table_1",
-                    "column_name": "derived_column",
-                    "usage": "JOIN key"
-                }
-            ]
-        },
-        "data_type_changes": [
-            {
-                "from_type": "INT",
-                "to_type": "VARCHAR",
-                "location": "transform_step_1"
-            }
-        ]
-    }
+    if not main.lineage_tracker:
+        raise HTTPException(status_code=503, detail="Lineage tracker not available")
+    
+    try:
+        # Get column lineage
+        column_lineage = await main.lineage_tracker.get_column_lineage(
+            table_id=table_id,
+            column_name=column_name,
+            depth=depth
+        )
+        
+        return {
+            "table_id": table_id,
+            "column_name": column_name,
+            "lineage": column_lineage.get("lineage", []),
+            "transformations": column_lineage.get("transformations", []),
+            "data_flow": column_lineage.get("data_flow", [])
+        }
+    except Exception as e:
+        logger.error(f"Failed to get column lineage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/bulk-import")
-async def bulk_import_lineage(
-    source_type: str = Query(..., description="Source type (dbt, airflow, spark, custom)"),
-    lineage_data: Dict[str, Any] = Query(..., description="Lineage data to import"),
-    merge_strategy: str = Query("update", description="merge, update, or replace"),
+@router.post("/events")
+async def record_lineage_event(
+    request: Request,
+    event_type: str = Query(..., description="Event type (e.g., transformation, load, query)"),
+    source_nodes: List[str] = Body(..., description="Source node IDs"),
+    target_nodes: List[str] = Body(..., description="Target node IDs"),
+    tenant_id: str = Query(..., description="Tenant ID"),
+    metadata: Dict[str, Any] = Body({}, description="Event metadata")
+):
+    """Record a lineage event"""
+    if not main.lineage_tracker:
+        raise HTTPException(status_code=503, detail="Lineage tracker not available")
+    
+    try:
+        # Create event
+        event_data = {
+            "event_type": event_type,
+            "source_nodes": source_nodes,
+            "target_nodes": target_nodes,
+            "metadata": metadata,
+            "timestamp": datetime.utcnow(),
+            "tenant_id": tenant_id
+        }
+        
+        # Record event
+        event_id = await main.lineage_tracker.record_lineage_event(event_data)
+        
+        # Create edges for the event
+        for source in source_nodes:
+            for target in target_nodes:
+                await main.lineage_tracker.add_edge(
+                    source_id=source,
+                    target_id=target,
+                    edge_type="transforms",
+                    attributes={"event_id": event_id, "event_type": event_type}
+                )
+        
+        return {
+            "event_id": event_id,
+            "status": "recorded",
+            "edges_created": len(source_nodes) * len(target_nodes)
+        }
+    except Exception as e:
+        logger.error(f"Failed to record lineage event: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/provenance/{node_id}")
+async def get_data_provenance(
+    node_id: str,
     request: Request,
     tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    include_transformations: bool = Query(True),
+    include_quality_scores: bool = Query(True)
 ):
-    """Bulk import lineage from external sources"""
-    import_id = str(uuid.uuid4())
+    """Get complete data provenance for a node"""
+    if not main.lineage_tracker:
+        raise HTTPException(status_code=503, detail="Lineage tracker not available")
     
-    return {
-        "import_id": import_id,
-        "status": "processing",
-        "source_type": source_type,
-        "merge_strategy": merge_strategy,
-        "nodes_to_import": 50,
-        "edges_to_import": 75,
-        "started_at": datetime.utcnow()
-    }
+    try:
+        # Get provenance
+        provenance = await main.lineage_tracker.get_provenance(
+            node_id=node_id,
+            include_transformations=include_transformations,
+            include_quality_scores=include_quality_scores
+        )
+        
+        return {
+            "node_id": node_id,
+            "provenance": provenance.get("provenance", {}),
+            "data_sources": provenance.get("data_sources", []),
+            "transformations": provenance.get("transformations", []) if include_transformations else [],
+            "quality_history": provenance.get("quality_history", []) if include_quality_scores else [],
+            "confidence_score": provenance.get("confidence_score", 0.0)
+        }
+    except Exception as e:
+        logger.error(f"Failed to get data provenance: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/search")
 async def search_lineage(
-    q: str = Query(..., description="Search query"),
-    node_types: Optional[List[NodeType]] = Query(None),
     request: Request,
     tenant_id: str = Query(..., description="Tenant ID"),
-    limit: int = Query(50, ge=1, le=200),
-    offset: int = Query(0, ge=0)
+    query: Optional[str] = Query(None, description="Search query"),
+    node_type: Optional[NodeType] = Query(None),
+    namespace: Optional[str] = Query(None),
+    created_after: Optional[datetime] = Query(None),
+    limit: int = Query(100, ge=1, le=1000)
 ):
-    """Search lineage graph"""
-    return {
-        "query": q,
-        "results": [
-            {
-                "node_id": "node_123",
-                "name": "customer_data",
-                "type": "table",
-                "namespace": "analytics",
-                "score": 0.95,
-                "highlights": ["customer <em>data</em> processing"]
-            }
-        ],
-        "total": 1
-    }
+    """Search lineage nodes"""
+    if not main.lineage_tracker:
+        raise HTTPException(status_code=503, detail="Lineage tracker not available")
+    
+    try:
+        # Build search criteria
+        criteria = {}
+        if node_type:
+            criteria["node_type"] = node_type.value
+        if namespace:
+            criteria["namespace"] = namespace
+        if created_after:
+            criteria["created_after"] = created_after
+        
+        # Search nodes
+        results = await main.lineage_tracker.search_nodes(
+            query=query,
+            criteria=criteria,
+            limit=limit
+        )
+        
+        # Convert to response format
+        nodes = []
+        for node in results.get("nodes", []):
+            nodes.append(LineageNode(
+                node_id=node["node_id"],
+                node_type=NodeType(node["node_type"]),
+                name=node["name"],
+                namespace=node["namespace"],
+                attributes=node.get("attributes", {}),
+                created_at=node.get("created_at", datetime.utcnow()),
+                updated_at=node.get("updated_at", datetime.utcnow())
+            ))
+        
+        return {
+            "nodes": nodes,
+            "total": results.get("total", 0),
+            "query": query
+        }
+    except Exception as e:
+        logger.error(f"Failed to search lineage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/data-flow/{source_id}/{target_id}")
-async def get_data_flow(
-    source_id: str,
-    target_id: str,
+@router.get("/statistics")
+async def get_lineage_statistics(
     request: Request,
     tenant_id: str = Query(..., description="Tenant ID")
 ):
-    """Get data flow between two nodes"""
-    return {
-        "source": source_id,
-        "target": target_id,
-        "paths": [
-            {
-                "path": [source_id, "transform_1", "aggregate_1", target_id],
-                "distance": 3,
-                "transformations": [
-                    "Filter WHERE active = true",
-                    "GROUP BY customer_id",
-                    "JOIN with dimensions"
-                ]
-            }
-        ],
-        "shortest_distance": 3
-    }
-
-
-@router.get("/dependencies/{node_id}")
-async def get_dependencies(
-    node_id: str,
-    request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    recursive: bool = Query(True, description="Include transitive dependencies")
-):
-    """Get node dependencies"""
-    return {
-        "node_id": node_id,
-        "direct_dependencies": [
-            {
-                "node_id": "dep_1",
-                "name": "users_table",
-                "type": "table",
-                "criticality": "high"
-            },
-            {
-                "node_id": "dep_2",
-                "name": "config_api",
-                "type": "api",
-                "criticality": "medium"
-            }
-        ],
-        "transitive_dependencies": 15 if recursive else 0,
-        "dependency_graph": {
-            "max_depth": 4,
-            "critical_path": ["dep_1", "transform_1", "dep_3", node_id]
+    """Get lineage statistics"""
+    if not main.lineage_tracker:
+        raise HTTPException(status_code=503, detail="Lineage tracker not available")
+    
+    try:
+        stats = await main.lineage_tracker.get_statistics()
+        
+        return {
+            "total_nodes": stats.get("total_nodes", 0),
+            "total_edges": stats.get("total_edges", 0),
+            "nodes_by_type": stats.get("nodes_by_type", {}),
+            "edges_by_type": stats.get("edges_by_type", {}),
+            "avg_node_degree": stats.get("avg_node_degree", 0.0),
+            "max_lineage_depth": stats.get("max_lineage_depth", 0),
+            "orphan_nodes": stats.get("orphan_nodes", 0),
+            "recent_updates": stats.get("recent_updates", [])
         }
-    }
-
-
-@router.post("/validate")
-async def validate_lineage(
-    request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    check_cycles: bool = Query(True),
-    check_orphans: bool = Query(True)
-):
-    """Validate lineage consistency"""
-    return {
-        "validation_id": str(uuid.uuid4()),
-        "status": "completed",
-        "issues": [
-            {
-                "type": "orphan_node",
-                "severity": "warning",
-                "node_id": "orphan_1",
-                "message": "Node has no upstream or downstream connections"
-            },
-            {
-                "type": "circular_dependency",
-                "severity": "error",
-                "cycle": ["node_a", "node_b", "node_c", "node_a"],
-                "message": "Circular dependency detected"
-            }
-        ],
-        "summary": {
-            "total_nodes": 150,
-            "total_edges": 200,
-            "orphan_nodes": 1,
-            "cycles_found": 1
-        },
-        "validated_at": datetime.utcnow()
-    } 
+    except Exception as e:
+        logger.error(f"Failed to get lineage statistics: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 

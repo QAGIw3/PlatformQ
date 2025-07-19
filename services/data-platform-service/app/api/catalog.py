@@ -2,14 +2,18 @@
 Data catalog API endpoints
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
+from fastapi import APIRouter, Depends, HTTPException, Query, Request, Body
 from typing import List, Optional, Dict, Any
 from pydantic import BaseModel, Field
 from datetime import datetime
 from enum import Enum
 import uuid
+import logging
+
+from .. import main
 
 router = APIRouter()
+logger = logging.getLogger(__name__)
 
 
 class AssetType(str, Enum):
@@ -58,10 +62,10 @@ class AssetResponse(AssetMetadata):
     created_at: datetime
     updated_at: datetime
     version: int
+    usage_count: int = 0
+    quality_score: Optional[float] = None
     lineage_upstream: List[str] = Field(default_factory=list)
     lineage_downstream: List[str] = Field(default_factory=list)
-    quality_score: Optional[float] = None
-    usage_count: int = 0
 
 
 class ColumnMetadata(BaseModel):
@@ -79,62 +83,48 @@ class ColumnMetadata(BaseModel):
 async def register_asset(
     asset: AssetMetadata,
     request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    tenant_id: str = Query(..., description="Tenant ID")
 ):
     """Register a new data asset"""
-    asset_id = str(uuid.uuid4())
+    if not main.catalog_manager:
+        raise HTTPException(status_code=503, detail="Catalog manager not available")
     
-    # Get catalog manager from app state
-    catalog_manager = request.app.state.catalog_manager
-    
-    # In production, would register in catalog
-    
-    return AssetResponse(
-        **asset.dict(),
-        asset_id=asset_id,
-        status=AssetStatus.ACTIVE,
-        created_at=datetime.utcnow(),
-        updated_at=datetime.utcnow(),
-        version=1
-    )
-
-
-@router.get("/assets", response_model=List[AssetResponse])
-async def list_assets(
-    request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    asset_type: Optional[AssetType] = Query(None),
-    classification: Optional[DataClassification] = Query(None),
-    owner: Optional[str] = Query(None),
-    tags: Optional[List[str]] = Query(None),
-    search: Optional[str] = Query(None, description="Search in name/description"),
-    include_deprecated: bool = Query(False),
-    limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0)
-):
-    """List data assets with filtering"""
-    # Mock response
-    return [
-        AssetResponse(
-            asset_id="asset_123",
-            name="customer_orders",
-            description="Customer order data",
-            asset_type=AssetType.TABLE,
-            location="hive.analytics.customer_orders",
-            owner="data_team",
-            team="analytics",
-            classification=DataClassification.INTERNAL,
-            tags=["orders", "customers"],
-            custom_properties={"refresh_frequency": "daily"},
+    try:
+        # Register asset
+        result = await main.catalog_manager.register_asset(
+            name=asset.name,
+            asset_type=asset.asset_type.value,
+            location=asset.location,
+            owner=asset.owner,
+            description=asset.description,
+            tags=asset.tags,
+            custom_properties=asset.custom_properties,
+            classification=asset.classification.value
+        )
+        
+        return AssetResponse(
+            asset_id=result["asset_id"],
+            name=asset.name,
+            description=asset.description,
+            asset_type=asset.asset_type,
+            location=asset.location,
+            owner=asset.owner,
+            team=asset.team,
+            classification=asset.classification,
+            tags=asset.tags,
+            custom_properties=asset.custom_properties,
             status=AssetStatus.ACTIVE,
             created_at=datetime.utcnow(),
             updated_at=datetime.utcnow(),
             version=1,
-            quality_score=0.95,
-            usage_count=150
+            lineage_upstream=[],
+            lineage_downstream=[],
+            quality_score=None,
+            usage_count=0
         )
-    ]
+    except Exception as e:
+        logger.error(f"Failed to register asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/assets/{asset_id}", response_model=AssetResponse)
@@ -144,110 +134,321 @@ async def get_asset(
     tenant_id: str = Query(..., description="Tenant ID")
 ):
     """Get asset details"""
-    # In production, would fetch from catalog
-    raise HTTPException(status_code=404, detail="Asset not found")
+    if not main.catalog_manager:
+        raise HTTPException(status_code=503, detail="Catalog manager not available")
+    
+    try:
+        asset = await main.catalog_manager.get_asset(asset_id)
+        if not asset:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        
+        return AssetResponse(
+            asset_id=asset["asset_id"],
+            name=asset["name"],
+            description=asset.get("description"),
+            asset_type=AssetType(asset["asset_type"]),
+            location=asset["location"],
+            owner=asset["owner"],
+            team=asset.get("team"),
+            classification=DataClassification(asset.get("classification", "internal")),
+            tags=asset.get("tags", []),
+            custom_properties=asset.get("custom_properties", {}),
+            status=AssetStatus(asset.get("status", "active")),
+            created_at=asset.get("created_at", datetime.utcnow()),
+            updated_at=asset.get("updated_at", datetime.utcnow()),
+            version=asset.get("version", 1),
+            lineage_upstream=asset.get("lineage_upstream", []),
+            lineage_downstream=asset.get("lineage_downstream", []),
+            quality_score=asset.get("quality_score"),
+            usage_count=asset.get("usage_count", 0)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to get asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.patch("/assets/{asset_id}")
+@router.put("/assets/{asset_id}", response_model=AssetResponse)
 async def update_asset(
     asset_id: str,
+    asset: AssetMetadata,
     request: Request,
-    description: Optional[str] = Query(None),
+    tenant_id: str = Query(..., description="Tenant ID")
+):
+    """Update asset metadata"""
+    if not main.catalog_manager:
+        raise HTTPException(status_code=503, detail="Catalog manager not available")
+    
+    try:
+        # Update asset
+        updates = {
+            "name": asset.name,
+            "description": asset.description,
+            "asset_type": asset.asset_type.value,
+            "location": asset.location,
+            "owner": asset.owner,
+            "team": asset.team,
+            "classification": asset.classification.value,
+            "tags": asset.tags,
+            "custom_properties": asset.custom_properties
+        }
+        
+        result = await main.catalog_manager.update_asset(asset_id, updates)
+        if not result:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        
+        # Get updated asset
+        updated_asset = await main.catalog_manager.get_asset(asset_id)
+        
+        return AssetResponse(
+            asset_id=updated_asset["asset_id"],
+            name=updated_asset["name"],
+            description=updated_asset.get("description"),
+            asset_type=AssetType(updated_asset["asset_type"]),
+            location=updated_asset["location"],
+            owner=updated_asset["owner"],
+            team=updated_asset.get("team"),
+            classification=DataClassification(updated_asset.get("classification", "internal")),
+            tags=updated_asset.get("tags", []),
+            custom_properties=updated_asset.get("custom_properties", {}),
+            status=AssetStatus(updated_asset.get("status", "active")),
+            created_at=updated_asset.get("created_at", datetime.utcnow()),
+            updated_at=datetime.utcnow(),
+            version=updated_asset.get("version", 1) + 1,
+            lineage_upstream=updated_asset.get("lineage_upstream", []),
+            lineage_downstream=updated_asset.get("lineage_downstream", []),
+            quality_score=updated_asset.get("quality_score"),
+            usage_count=updated_asset.get("usage_count", 0)
+        )
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to update asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.delete("/assets/{asset_id}")
+async def delete_asset(
+    asset_id: str,
+    request: Request,
+    tenant_id: str = Query(..., description="Tenant ID")
+):
+    """Delete an asset"""
+    if not main.catalog_manager:
+        raise HTTPException(status_code=503, detail="Catalog manager not available")
+    
+    try:
+        result = await main.catalog_manager.delete_asset(asset_id)
+        if not result:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        
+        return {"message": f"Asset {asset_id} deleted successfully"}
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to delete asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/assets", response_model=List[AssetResponse])
+async def search_assets(
+    request: Request,
+    tenant_id: str = Query(..., description="Tenant ID"),
+    query: Optional[str] = Query(None, description="Search query"),
+    asset_type: Optional[AssetType] = Query(None),
     owner: Optional[str] = Query(None),
     classification: Optional[DataClassification] = Query(None),
     tags: Optional[List[str]] = Query(None),
-    custom_properties: Optional[Dict[str, Any]] = None,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    limit: int = Query(100, ge=1, le=1000),
+    offset: int = Query(0, ge=0)
 ):
-    """Update asset metadata"""
-    return {
-        "asset_id": asset_id,
-        "status": "updated",
-        "version": 2,
-        "updated_at": datetime.utcnow()
-    }
+    """Search data assets"""
+    if not main.catalog_manager:
+        raise HTTPException(status_code=503, detail="Catalog manager not available")
+    
+    try:
+        # Build filters
+        filters = {}
+        if asset_type:
+            filters["asset_type"] = asset_type.value
+        if owner:
+            filters["owner"] = owner
+        if classification:
+            filters["classification"] = classification.value
+        if tags:
+            filters["tags"] = tags
+        
+        # Search assets
+        results = await main.catalog_manager.search_assets(
+            query=query,
+            filters=filters,
+            limit=limit,
+            offset=offset
+        )
+        
+        # Convert to response format
+        assets = []
+        for asset in results.get("assets", []):
+            assets.append(AssetResponse(
+                asset_id=asset["asset_id"],
+                name=asset["name"],
+                description=asset.get("description"),
+                asset_type=AssetType(asset["asset_type"]),
+                location=asset["location"],
+                owner=asset["owner"],
+                team=asset.get("team"),
+                classification=DataClassification(asset.get("classification", "internal")),
+                tags=asset.get("tags", []),
+                custom_properties=asset.get("custom_properties", {}),
+                status=AssetStatus(asset.get("status", "active")),
+                created_at=asset.get("created_at", datetime.utcnow()),
+                updated_at=asset.get("updated_at", datetime.utcnow()),
+                version=asset.get("version", 1),
+                lineage_upstream=asset.get("lineage_upstream", []),
+                lineage_downstream=asset.get("lineage_downstream", []),
+                quality_score=asset.get("quality_score"),
+                usage_count=asset.get("usage_count", 0)
+            ))
+        
+        return assets
+    except Exception as e:
+        logger.error(f"Failed to search assets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/assets/{asset_id}/columns")
+@router.post("/assets/{asset_id}/columns", response_model=List[ColumnMetadata])
 async def add_columns(
     asset_id: str,
     columns: List[ColumnMetadata],
     request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    tenant_id: str = Query(..., description="Tenant ID")
 ):
-    """Add or update column metadata"""
-    return {
-        "asset_id": asset_id,
-        "columns_added": len(columns),
-        "status": "success"
-    }
+    """Add column metadata to an asset"""
+    if not main.catalog_manager:
+        raise HTTPException(status_code=503, detail="Catalog manager not available")
+    
+    try:
+        # Add columns to asset
+        for column in columns:
+            await main.catalog_manager.add_column_metadata(
+                asset_id=asset_id,
+                column_name=column.name,
+                data_type=column.data_type,
+                nullable=column.nullable,
+                description=column.description,
+                classification=column.classification.value if column.classification else None,
+                tags=column.tags,
+                statistics=column.statistics
+            )
+        
+        return columns
+    except Exception as e:
+        logger.error(f"Failed to add columns: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.get("/assets/{asset_id}/columns")
+@router.get("/assets/{asset_id}/columns", response_model=List[ColumnMetadata])
 async def get_columns(
     asset_id: str,
     request: Request,
     tenant_id: str = Query(..., description="Tenant ID")
 ):
-    """Get column metadata"""
-    return {
-        "asset_id": asset_id,
-        "columns": [
-            {
-                "name": "id",
-                "data_type": "bigint",
-                "nullable": False,
-                "description": "Unique identifier",
-                "classification": "internal",
-                "tags": ["primary_key"],
-                "statistics": {
-                    "distinct_count": 1000000,
-                    "null_count": 0
-                }
-            },
-            {
-                "name": "email",
-                "data_type": "varchar(255)",
-                "nullable": True,
-                "description": "Customer email",
-                "classification": "pii",
-                "tags": ["email", "pii"],
-                "statistics": {
-                    "distinct_count": 950000,
-                    "null_count": 50000
-                }
-            }
+    """Get column metadata for an asset"""
+    if not main.catalog_manager:
+        raise HTTPException(status_code=503, detail="Catalog manager not available")
+    
+    try:
+        columns = await main.catalog_manager.get_column_metadata(asset_id)
+        
+        return [
+            ColumnMetadata(
+                name=col["name"],
+                data_type=col["data_type"],
+                nullable=col.get("nullable", True),
+                description=col.get("description"),
+                classification=DataClassification(col["classification"]) if col.get("classification") else None,
+                tags=col.get("tags", []),
+                statistics=col.get("statistics")
+            )
+            for col in columns
         ]
-    }
+    except Exception as e:
+        logger.error(f"Failed to get columns: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/discover")
+async def discover_assets(
+    request: Request,
+    tenant_id: str = Query(..., description="Tenant ID"),
+    source_type: str = Query(..., description="Source type (database, file, api)"),
+    connection_params: Dict[str, Any] = Body(..., description="Connection parameters")
+):
+    """Discover assets from a data source"""
+    if not main.catalog_manager:
+        raise HTTPException(status_code=503, detail="Catalog manager not available")
+    
+    try:
+        # Run discovery
+        discovered_assets = await main.catalog_manager.discover_assets(
+            source_type=source_type,
+            connection_params=connection_params
+        )
+        
+        return {
+            "discovered_count": len(discovered_assets),
+            "assets": discovered_assets
+        }
+    except Exception as e:
+        logger.error(f"Failed to discover assets: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/assets/{asset_id}/deprecate")
 async def deprecate_asset(
     asset_id: str,
-    reason: str = Query(..., description="Deprecation reason"),
-    replacement_asset_id: Optional[str] = Query(None),
-    deprecation_date: Optional[datetime] = Query(None),
     request: Request,
+    reason: str = Query(..., description="Deprecation reason"),
     tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    replacement_asset_id: Optional[str] = Query(None),
+    deprecation_date: Optional[datetime] = Query(None)
 ):
     """Mark asset as deprecated"""
-    return {
-        "asset_id": asset_id,
-        "status": "deprecated",
-        "reason": reason,
-        "replacement_asset_id": replacement_asset_id,
-        "deprecation_date": deprecation_date or datetime.utcnow(),
-        "deprecated_by": user_id
-    }
+    if not main.catalog_manager:
+        raise HTTPException(status_code=503, detail="Catalog manager not available")
+    
+    try:
+        # Update asset status to deprecated
+        updates = {
+            "status": "deprecated",
+            "deprecation_reason": reason,
+            "replacement_asset_id": replacement_asset_id,
+            "deprecation_date": deprecation_date or datetime.utcnow()
+        }
+        
+        result = await main.catalog_manager.update_asset(asset_id, updates)
+        if not result:
+            raise HTTPException(status_code=404, detail="Asset not found")
+        
+        return {
+            "asset_id": asset_id,
+            "status": "deprecated",
+            "reason": reason,
+            "replacement_asset_id": replacement_asset_id,
+            "deprecation_date": deprecation_date or datetime.utcnow()
+        }
+    except HTTPException:
+        raise
+    except Exception as e:
+        logger.error(f"Failed to deprecate asset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/search")
 async def search_catalog(
-    q: str = Query(..., description="Search query"),
     request: Request,
+    q: str = Query(..., description="Search query"),
     tenant_id: str = Query(..., description="Tenant ID"),
     asset_types: Optional[List[AssetType]] = Query(None),
     classifications: Optional[List[DataClassification]] = Query(None),
@@ -255,34 +456,34 @@ async def search_catalog(
     offset: int = Query(0, ge=0)
 ):
     """Search across all catalog assets"""
-    return {
-        "query": q,
-        "results": [
-            {
-                "asset_id": "asset_123",
-                "name": "customer_orders",
-                "asset_type": "table",
-                "description": "Customer order data",
-                "score": 0.95,
-                "highlights": {
-                    "description": ["Customer <em>order</em> data"]
-                }
-            }
-        ],
-        "total": 1,
-        "facets": {
-            "asset_type": {
-                "table": 15,
-                "view": 5,
-                "dataset": 3
-            },
-            "classification": {
-                "internal": 10,
-                "pii": 8,
-                "public": 5
-            }
+    if not main.catalog_manager:
+        raise HTTPException(status_code=503, detail="Catalog manager not available")
+    
+    try:
+        # Build filters
+        filters = {}
+        if asset_types:
+            filters["asset_type"] = [at.value for at in asset_types]
+        if classifications:
+            filters["classification"] = [cl.value for cl in classifications]
+        
+        # Search assets
+        results = await main.catalog_manager.search_assets(
+            query=q,
+            filters=filters,
+            limit=limit,
+            offset=offset
+        )
+        
+        return {
+            "query": q,
+            "results": results.get("assets", []),
+            "total": results.get("total", 0),
+            "facets": results.get("facets", {})
         }
-    }
+    except Exception as e:
+        logger.error(f"Failed to search catalog: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/tags")
@@ -328,22 +529,30 @@ async def list_owners(
 
 @router.post("/bulk-import")
 async def bulk_import_assets(
-    source_type: str = Query(..., description="Source type (hive, glue, custom)"),
-    source_config: Dict[str, Any] = Query(..., description="Source configuration"),
     request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
+    source_type: str = Query(..., description="Source type (hive, glue, custom)"),
+    source_config: Dict[str, Any] = Body(..., description="Source configuration"),
+    tenant_id: str = Query(..., description="Tenant ID")
 ):
     """Bulk import assets from external catalog"""
-    job_id = str(uuid.uuid4())
+    if not main.catalog_manager:
+        raise HTTPException(status_code=503, detail="Catalog manager not available")
     
-    return {
-        "job_id": job_id,
-        "status": "started",
-        "source_type": source_type,
-        "estimated_assets": 100,
-        "started_at": datetime.utcnow()
-    }
+    try:
+        job_id = str(uuid.uuid4())
+        
+        # In a real implementation, this would trigger an async job
+        # For now, we'll just return a job ID
+        return {
+            "job_id": job_id,
+            "status": "started",
+            "source_type": source_type,
+            "estimated_assets": 100,
+            "started_at": datetime.utcnow()
+        }
+    except Exception as e:
+        logger.error(f"Failed to start bulk import: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/statistics")

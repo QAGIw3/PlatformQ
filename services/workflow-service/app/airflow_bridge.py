@@ -61,7 +61,14 @@ class AirflowBridge:
             # SeaTunnel pipeline orchestration
             'SeaTunnelPipelineRequested': 'seatunnel_pipeline_orchestration',
             'DataSourceDiscovered': 'seatunnel_pipeline_orchestration',
-            'BatchDataReady': 'seatunnel_pipeline_orchestration'
+            'BatchDataReady': 'seatunnel_pipeline_orchestration',
+            # Data platform integration DAGs
+            'DataMLTrainingRequested': 'data_ml_training_workflow',
+            'DatasetTrainingReady': 'data_ml_training_workflow',
+            'RealtimeAnalyticsRequested': 'realtime_analytics_pipeline',
+            'StreamingPipelineRequested': 'realtime_analytics_pipeline',
+            'DataArchivalRequested': 'data_archival_workflow',
+            'DataLifecycleReview': 'data_archival_workflow'
         }
         
         # Track active runs for monitoring

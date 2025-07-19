@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, BackgroundTasks, Request
 from cassandra.cluster import Session
 from typing import Dict, Any, List, Optional
 from pydantic import BaseModel, Field
@@ -14,6 +14,11 @@ router = APIRouter()
 
 # Initialize Spark integration
 spark_analytics = SparkGraphAnalytics()
+
+
+def get_graph_processor(request: Request):
+    """Get graph processor from app state"""
+    return request.app.state.graph_processor
 
 
 class PageRankRequest(BaseModel):
@@ -664,7 +669,8 @@ async def get_job_result(
 @router.get("/insights/influencers")
 async def get_top_influencers(
     limit: int = 10,
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    graph_processor = Depends(get_graph_processor)
 ):
     """
     Get top influencers based on PageRank scores
@@ -674,8 +680,7 @@ async def get_top_influencers(
     # This assumes PageRank has already been computed
     # In production, check if analysis is up-to-date
     try:
-        # TODO: Initialize janusgraph client properly
-        enhanced_queries = GraphXEnhancedQueries(None, spark_analytics)
+        enhanced_queries = GraphXEnhancedQueries(graph_processor, spark_analytics)
         influencers = await enhanced_queries.get_top_influencers(tenant_id, limit)
         return {"influencers": influencers}
     except Exception as e:
@@ -685,7 +690,8 @@ async def get_top_influencers(
 @router.get("/insights/communities/{community_id}/members")
 async def get_community_members(
     community_id: int,
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    graph_processor = Depends(get_graph_processor)
 ):
     """
     Get all members of a specific community
@@ -693,8 +699,7 @@ async def get_community_members(
     tenant_id = context["tenant_id"]
     
     try:
-        # TODO: Initialize janusgraph client properly
-        enhanced_queries = GraphXEnhancedQueries(None, spark_analytics)
+        enhanced_queries = GraphXEnhancedQueries(graph_processor, spark_analytics)
         members = await enhanced_queries.get_community_members(tenant_id, community_id)
         return {"community_id": community_id, "members": members}
     except Exception as e:
@@ -705,7 +710,8 @@ async def get_community_members(
 async def get_influence_path(
     source_id: str,
     target_id: str,
-    context: dict = Depends(get_current_tenant_and_user)
+    context: dict = Depends(get_current_tenant_and_user),
+    graph_processor = Depends(get_graph_processor)
 ):
     """
     Get the influence path between two nodes
@@ -713,8 +719,7 @@ async def get_influence_path(
     tenant_id = context["tenant_id"]
     
     try:
-        # TODO: Initialize janusgraph client properly
-        enhanced_queries = GraphXEnhancedQueries(None, spark_analytics)
+        enhanced_queries = GraphXEnhancedQueries(graph_processor, spark_analytics)
         path = await enhanced_queries.get_influence_path(tenant_id, source_id, target_id)
         return {"source": source_id, "target": target_id, "path": path}
     except Exception as e:
