@@ -38,6 +38,8 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 
 import com.platformq.flink.quality.models.*;
+import com.platformq.flink.quality.processors.*;
+import com.platformq.flink.quality.sinks.*;
 
 import java.time.Duration;
 import java.time.Instant;
@@ -128,6 +130,12 @@ public class DataPlatformQualityMonitor {
             .window(TumblingEventTimeWindows.of(Time.minutes(5)))
             .process(new QualityAggregator());
         
+        // Auto-remediation pipeline
+        DataStream<RemediationRequest> remediationRequests = anomalies
+            .filter(anomaly -> anomaly.getSeverity().equals("CRITICAL") || anomaly.getSeverity().equals("HIGH"))
+            .keyBy(QualityAnomaly::getDatasetId)
+            .process(new RemediationDecisionMaker());
+        
         // Write to various sinks
         
         // 1. Send quality assessments back to data platform service
@@ -144,6 +152,11 @@ public class DataPlatformQualityMonitor {
         anomalies.filter(anomaly -> anomaly.getSeverity().equals("CRITICAL"))
             .map(anomaly -> objectMapper.writeValueAsString(anomaly))
             .print("CRITICAL QUALITY ISSUE");
+        
+        // 4. Trigger automated remediation workflows
+        remediationRequests.addSink(new RemediationWorkflowSink(
+            params.get("workflow.service.url", "http://workflow-service:8000")
+        ));
         
         // Execute job
         env.execute("Data Platform Quality Monitor");
