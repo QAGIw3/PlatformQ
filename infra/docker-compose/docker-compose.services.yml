@@ -1,0 +1,78 @@
+version: '3.8'
+
+# This Docker Compose file sets up the refactored collaboration, state management, and compute allocation services
+
+services:
+  #################################
+  # State Management Service
+  #################################
+  state-management-service:
+    build:
+      context: ../../services/state-management-service
+      dockerfile: Dockerfile
+    container_name: state-management-service
+    networks:
+      - platformq_net
+    ports:
+      - "8015:8000"
+    environment:
+      - IGNITE_NODES=ignite:10800
+      - LOG_LEVEL=INFO
+    depends_on:
+      - ignite
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  #################################
+  # Compute Allocation Service
+  #################################
+  compute-allocation-service:
+    build:
+      context: ../../services/compute-allocation-service
+      dockerfile: Dockerfile
+    container_name: compute-allocation-service
+    networks:
+      - platformq_net
+    ports:
+      - "8016:8000"
+    environment:
+      - LOG_LEVEL=INFO
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  #################################
+  # Collaboration Platform Service
+  #################################
+  collaboration-platform-service:
+    build:
+      context: ../../services/collaboration-platform-service
+      dockerfile: Dockerfile
+    container_name: collaboration-platform-service
+    networks:
+      - platformq_net
+    ports:
+      - "8017:8000"
+    environment:
+      - STATE_SERVICE_URL=http://state-management-service:8000
+      - COMPUTE_SERVICE_URL=http://compute-allocation-service:8000
+      - PULSAR_URL=pulsar://pulsar:6650
+      - LOG_LEVEL=INFO
+    depends_on:
+      - state-management-service
+      - compute-allocation-service
+      - pulsar
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  platformq_net:
+    external: true 

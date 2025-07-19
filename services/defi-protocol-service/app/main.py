@@ -7,8 +7,12 @@ yield farming, liquidity pools, and auction mechanisms.
 
 import logging
 from contextlib import asynccontextmanager
-from typing import Dict, Any, Optional
+from typing import Dict, Any, Optional, List
 import asyncio
+import os
+from decimal import Decimal
+from datetime import datetime
+import json
 
 from fastapi import FastAPI, Depends, HTTPException, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -39,6 +43,9 @@ from .services.risk_calculator import RiskCalculator
 from .services.price_oracle import PriceOracle
 from .api import lending, auctions, yield_farming, liquidity, analytics
 
+# Import Vault/Consul integration
+from .vault_consul_integration import VaultConsulIntegration
+
 logger = logging.getLogger(__name__)
 
 # Metrics
@@ -48,9 +55,9 @@ DEFI_TRANSACTIONS = Counter(
     ['chain', 'protocol', 'operation']
 )
 TRANSACTION_LATENCY = Histogram(
-    'defi_transaction_latency_seconds',
-    'DeFi transaction latency',
-    ['chain', 'protocol']
+    'defi_transaction_duration_seconds',
+    'DeFi transaction duration',
+    ['chain', 'protocol', 'operation']
 )
 TVL_GAUGE = Gauge(
     'defi_tvl_usd',
@@ -66,116 +73,136 @@ APY_GAUGE = Gauge(
 # Global instances
 connection_pool: Optional[ConnectionPool] = None
 defi_manager: Optional[DeFiManager] = None
-lending_protocol: Optional[LendingProtocol] = None
-auction_protocol: Optional[AuctionProtocol] = None
-yield_farming_protocol: Optional[YieldFarmingProtocol] = None
-liquidity_protocol: Optional[LiquidityProtocol] = None
-risk_calculator: Optional[RiskCalculator] = None
 price_oracle: Optional[PriceOracle] = None
+risk_calculator: Optional[RiskCalculator] = None
+vault_consul: Optional[VaultConsulIntegration] = None
 
+# Protocol instances with secure key management
+lending_protocols: Dict[str, LendingProtocol] = {}
+auction_protocols: Dict[str, AuctionProtocol] = {}
+yield_protocols: Dict[str, YieldFarmingProtocol] = {}
+liquidity_protocols: Dict[str, LiquidityProtocol] = {}
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
-    global connection_pool, defi_manager, lending_protocol
-    global auction_protocol, yield_farming_protocol, liquidity_protocol
-    global risk_calculator, price_oracle
+    """Application lifespan with Vault/Consul integration"""
+    global connection_pool, defi_manager, price_oracle, risk_calculator, vault_consul
+    global lending_protocols, auction_protocols, yield_protocols, liquidity_protocols
     
-    # Startup
     logger.info("Starting DeFi Protocol Service...")
     
-    # Initialize configuration
-    config_loader = ConfigLoader()
-    config = config_loader.load_settings()
+    # Initialize Vault/Consul integration
+    vault_consul = VaultConsulIntegration({
+        "vault_addr": os.getenv("VAULT_ADDR", "http://vault:8200"),
+        "vault_token": os.getenv("VAULT_TOKEN"),
+        "consul_addr": os.getenv("CONSUL_ADDR", "http://consul:8500")
+    })
     
-    # Initialize connection pool
-    connection_pool = ConnectionPool(
-        max_connections_per_chain=int(config.get("max_connections_per_chain", 5))
+    await vault_consul.initialize()
+    
+    # Register service with Consul
+    await vault_consul.register_service(
+        tags=["defi", "lending", "amm", "yield-farming"],
+        meta={
+            "version": "1.0.0",
+            "supported_chains": "ethereum,polygon,arbitrum,optimism"
+        }
     )
-    await connection_pool.initialize()
     
-    # Register supported chains
-    for chain_config in settings.SUPPORTED_CHAINS:
-        chain_cfg = ChainConfig(
-            chain_type=ChainType(chain_config["type"]),
-            rpc_url=chain_config["rpc_url"],
-            chain_id=chain_config.get("chain_id"),
-            extras=chain_config.get("extras", {})
+    # Initialize blockchain connection pool with secure keys
+    connection_pool = ConnectionPool()
+    
+    # Add chain configurations with deployment keys
+    for chain in ["ethereum", "polygon", "arbitrum", "optimism"]:
+        deployment_key = await vault_consul.get_contract_deployment_key(chain)
+        
+        config = ChainConfig(
+            chain_type=ChainType[chain.upper()],
+            rpc_url=settings.get_chain_rpc(chain),
+            private_key=deployment_key["private_key"],
+            contract_addresses=settings.get_chain_contracts(chain)
         )
-        connection_pool.register_chain(chain_cfg)
+        await connection_pool.add_chain(config)
     
-    app.state.connection_pool = connection_pool
-    
-    # Initialize price oracle
+    # Initialize price oracle with signing keys
+    oracle_key = await vault_consul.get_amm_pricing_key("main-oracle")
     price_oracle = PriceOracle(
-        providers=config.get("price_providers", ["coingecko", "chainlink"]),
-        cache_ttl=int(config.get("price_cache_ttl", 300))
+        connection_pool=connection_pool,
+        oracle_key=oracle_key,
+        vault_consul=vault_consul
     )
-    await price_oracle.initialize()
-    app.state.price_oracle = price_oracle
     
     # Initialize risk calculator
     risk_calculator = RiskCalculator(
         price_oracle=price_oracle,
-        volatility_window=int(config.get("volatility_window", 30))
+        vault_consul=vault_consul
     )
-    app.state.risk_calculator = risk_calculator
     
     # Initialize DeFi manager
     defi_manager = DeFiManager(
         connection_pool=connection_pool,
         price_oracle=price_oracle,
-        risk_calculator=risk_calculator
+        risk_calculator=risk_calculator,
+        vault_consul=vault_consul
     )
-    await defi_manager.initialize()
-    app.state.defi_manager = defi_manager
     
-    # Initialize protocols
-    lending_protocol = LendingProtocol(defi_manager)
-    await lending_protocol.initialize()
-    app.state.lending_protocol = lending_protocol
+    # Initialize protocols with secure configuration
+    protocol_params = await vault_consul.get_protocol_parameters()
     
-    auction_protocol = AuctionProtocol(defi_manager)
-    await auction_protocol.initialize()
-    app.state.auction_protocol = auction_protocol
+    # Initialize lending protocols
+    for chain in connection_pool.chains:
+        lending_key = await vault_consul.get_liquidity_provider_keys(f"lending-{chain}")
+        lending_protocols[chain] = LendingProtocol(
+            chain=chain,
+            connection_pool=connection_pool,
+            risk_calculator=risk_calculator,
+            protocol_key=lending_key,
+            params=protocol_params.get("lending", {})
+        )
     
-    yield_farming_protocol = YieldFarmingProtocol(defi_manager)
-    await yield_farming_protocol.initialize()
-    app.state.yield_farming_protocol = yield_farming_protocol
+    # Initialize auction protocols
+    for chain in connection_pool.chains:
+        auction_protocols[chain] = AuctionProtocol(
+            chain=chain,
+            connection_pool=connection_pool,
+            vault_consul=vault_consul
+        )
     
-    liquidity_protocol = LiquidityProtocol(defi_manager)
-    await liquidity_protocol.initialize()
-    app.state.liquidity_protocol = liquidity_protocol
+    # Initialize yield farming protocols
+    for chain in connection_pool.chains:
+        yield_protocols[chain] = YieldFarmingProtocol(
+            chain=chain,
+            connection_pool=connection_pool,
+            price_oracle=price_oracle,
+            vault_consul=vault_consul
+        )
+    
+    # Initialize liquidity protocols
+    for chain in connection_pool.chains:
+        lp_key = await vault_consul.get_liquidity_provider_keys(f"amm-{chain}")
+        liquidity_protocols[chain] = LiquidityProtocol(
+            chain=chain,
+            connection_pool=connection_pool,
+            price_oracle=price_oracle,
+            lp_key=lp_key,
+            params=protocol_params.get("amm", {})
+        )
     
     # Start background tasks
-    asyncio.create_task(defi_manager.monitor_positions())
-    asyncio.create_task(price_oracle.update_prices_loop())
-    asyncio.create_task(_update_metrics_loop())
+    asyncio.create_task(monitor_protocol_health())
+    asyncio.create_task(update_oracle_prices())
+    asyncio.create_task(monitor_governance_proposals())
     
-    logger.info("DeFi Protocol Service initialized successfully")
+    logger.info("DeFi Protocol Service started successfully")
     
     yield
     
-    # Shutdown
+    # Cleanup
     logger.info("Shutting down DeFi Protocol Service...")
     
-    # Stop protocols
-    if lending_protocol:
-        await lending_protocol.shutdown()
-    if auction_protocol:
-        await auction_protocol.shutdown()
-    if yield_farming_protocol:
-        await yield_farming_protocol.shutdown()
-    if liquidity_protocol:
-        await liquidity_protocol.shutdown()
-        
-    # Stop core services
-    if defi_manager:
-        await defi_manager.shutdown()
-    if price_oracle:
-        await price_oracle.shutdown()
-    if connection_pool:
-        await connection_pool.close()
+    await connection_pool.close()
+    await vault_consul.deregister_service()
+    await vault_consul.shutdown()
     
     logger.info("DeFi Protocol Service shutdown complete")
 
@@ -246,22 +273,313 @@ async def root():
         ]
     }
 
-# Health check endpoint
-@app.get("/health")
-async def health_check():
+# Oracle and Governance Endpoints
+
+from pydantic import BaseModel
+
+class OracleDataRequest(BaseModel):
+    data_type: str  # price, volume, liquidity
+    asset_pair: str
+    value: str
+    timestamp: Optional[int] = None
+
+@app.post("/api/oracle/sign")
+async def sign_oracle_data(request: OracleDataRequest):
+    """Sign oracle data for on-chain verification"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
     try:
-        # Check connection pool
-        pool_stats = connection_pool.get_pool_stats()
+        oracle_data = {
+            "pair": request.asset_pair,
+            "value": request.value,
+            "decimals": 18,
+            "timestamp": request.timestamp or int(datetime.utcnow().timestamp())
+        }
         
-        # Check price oracle
-        oracle_status = await price_oracle.health_check()
+        signed_data = await vault_consul.sign_oracle_data(
+            oracle_data,
+            request.data_type
+        )
+        
+        return signed_data
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/oracle/verify")
+async def verify_oracle_signature(signed_data: Dict[str, Any]):
+    """Verify oracle signature"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        valid = await vault_consul.verify_oracle_signature(signed_data)
+        return {"valid": valid}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+class GovernanceProposal(BaseModel):
+    proposal_type: str  # parameter_change, upgrade, emergency
+    title: str
+    description: str
+    changes: Dict[str, Any]
+    execution_delay: int = 172800  # 48 hours
+
+@app.post("/api/governance/propose")
+async def create_governance_proposal(proposal: GovernanceProposal):
+    """Create and sign governance proposal"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        signed_proposal = await vault_consul.sign_governance_proposal(
+            proposal.dict()
+        )
+        
+        return signed_proposal
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Cross-chain Bridge Endpoints
+
+class BridgeTransfer(BaseModel):
+    source_chain: str
+    target_chain: str
+    token_address: str
+    amount: str
+    recipient: str
+    user_address: str
+
+@app.post("/api/bridge/initiate")
+async def initiate_bridge_transfer(transfer: BridgeTransfer):
+    """Initiate cross-chain bridge transfer"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        # Validate transaction limits
+        validation = await vault_consul.validate_transaction_limits(
+            "bridge",
+            Decimal(transfer.amount),
+            transfer.user_address
+        )
+        
+        if not validation["valid"]:
+            raise HTTPException(status_code=400, detail=validation["reason"])
+        
+        # Get bridge validator key
+        validator_key = await vault_consul.get_bridge_validator_key(
+            f"{transfer.source_chain}-{transfer.target_chain}",
+            transfer.source_chain
+        )
+        
+        # Sign bridge message
+        bridge_message = {
+            "token": transfer.token_address,
+            "amount": transfer.amount,
+            "recipient": transfer.recipient,
+            "user": transfer.user_address
+        }
+        
+        signed_message = await vault_consul.sign_cross_chain_message(
+            bridge_message,
+            transfer.source_chain,
+            transfer.target_chain
+        )
+        
+        # Initiate transfer on source chain
+        # ... blockchain interaction code ...
         
         return {
-            "status": "healthy",
-            "connection_pool": pool_stats,
-            "price_oracle": oracle_status,
-            "timestamp": time.time()
+            "transfer_id": signed_message["message_hash"],
+            "status": "initiated",
+            "signed_message": signed_message
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Protocol Configuration Endpoints
+
+@app.get("/api/protocol/parameters")
+async def get_protocol_parameters():
+    """Get current protocol parameters"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        params = await vault_consul.get_protocol_parameters()
+        return params
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/protocol/flash-loan-config")
+async def get_flash_loan_config():
+    """Get flash loan protection configuration"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        config = await vault_consul.get_flash_loan_protection_config()
+        return config
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Yield Strategy Management
+
+class YieldStrategy(BaseModel):
+    strategy_id: str
+    protocol: str
+    assets: List[str]
+    weights: List[float]
+    expected_apy: str
+    risk_level: str
+
+@app.post("/api/strategies/create")
+async def create_yield_strategy(strategy: YieldStrategy):
+    """Create new yield farming strategy"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        await vault_consul.store_yield_strategy(
+            strategy.strategy_id,
+            strategy.dict()
+        )
+        
+        return {
+            "strategy_id": strategy.strategy_id,
+            "status": "created"
         }
     except Exception as e:
-        logger.error(f"Health check failed: {e}")
-        raise HTTPException(status_code=503, detail="Service unhealthy") 
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Background Tasks
+
+async def monitor_protocol_health():
+    """Monitor protocol health and TVL"""
+    while True:
+        try:
+            if defi_manager and vault_consul:
+                for chain in connection_pool.chains:
+                    # Get TVL for each protocol
+                    lending_tvl = await lending_protocols[chain].get_tvl()
+                    liquidity_tvl = await liquidity_protocols[chain].get_tvl()
+                    
+                    # Update metrics
+                    TVL_GAUGE.labels(chain=chain, protocol="lending").set(lending_tvl)
+                    TVL_GAUGE.labels(chain=chain, protocol="liquidity").set(liquidity_tvl)
+                    
+                    # Store in Consul for monitoring
+                    await vault_consul.consul.kv.put(
+                        f"defi/metrics/{chain}/tvl",
+                        json.dumps({
+                            "lending": str(lending_tvl),
+                            "liquidity": str(liquidity_tvl),
+                            "timestamp": datetime.utcnow().isoformat()
+                        })
+                    )
+            
+            await asyncio.sleep(60)  # Update every minute
+        except Exception as e:
+            logger.error(f"Protocol monitoring error: {e}")
+            await asyncio.sleep(60)
+
+async def update_oracle_prices():
+    """Update oracle price feeds"""
+    while True:
+        try:
+            if price_oracle and vault_consul:
+                # Get price updates
+                prices = await price_oracle.get_latest_prices()
+                
+                # Sign and submit to chain
+                for asset_pair, price_data in prices.items():
+                    signed_price = await vault_consul.sign_oracle_data(
+                        price_data,
+                        "price"
+                    )
+                    
+                    # Submit to blockchain
+                    # ... blockchain interaction code ...
+                    
+            await asyncio.sleep(30)  # Update every 30 seconds
+        except Exception as e:
+            logger.error(f"Oracle update error: {e}")
+            await asyncio.sleep(60)
+
+async def monitor_governance_proposals():
+    """Monitor and execute governance proposals"""
+    while True:
+        try:
+            if vault_consul:
+                # Check for proposals ready to execute
+                _, proposals = await vault_consul.consul.kv.get(
+                    "defi/governance/proposals",
+                    recurse=True
+                )
+                
+                if proposals:
+                    for proposal_kv in proposals:
+                        if proposal_kv["Value"]:
+                            proposal = json.loads(proposal_kv["Value"])
+                            
+                            # Check if timelock passed
+                            proposed_at = datetime.fromisoformat(
+                                proposal["proposed_at"]
+                            )
+                            
+                            if (datetime.utcnow() - proposed_at).total_seconds() > proposal.get("execution_delay", 172800):
+                                # Execute proposal
+                                logger.info(f"Executing proposal: {proposal['title']}")
+                                # ... execution logic ...
+                                
+            await asyncio.sleep(300)  # Check every 5 minutes
+        except Exception as e:
+            logger.error(f"Governance monitoring error: {e}")
+            await asyncio.sleep(60)
+
+# Enhanced Health Check
+
+@app.get("/health")
+async def health_check():
+    """Enhanced health check with protocol status"""
+    health = {
+        "status": "healthy",
+        "timestamp": datetime.utcnow().isoformat(),
+        "checks": {}
+    }
+    
+    # Check Vault/Consul
+    if vault_consul:
+        health["checks"]["vault"] = await vault_consul.check_vault_health()
+        health["checks"]["consul"] = await vault_consul.check_consul_health()
+    else:
+        health["status"] = "unhealthy"
+        health["checks"]["vault"] = {"status": "not_initialized"}
+        health["checks"]["consul"] = {"status": "not_initialized"}
+    
+    # Check blockchain connections
+    if connection_pool:
+        chain_health = {}
+        for chain in connection_pool.chains:
+            try:
+                # Check connection
+                adapter = await connection_pool.get_adapter(chain)
+                chain_health[chain] = {"status": "healthy"}
+            except Exception:
+                chain_health[chain] = {"status": "unhealthy"}
+                health["status"] = "degraded"
+        
+        health["checks"]["chains"] = chain_health
+    
+    # Check protocols
+    if defi_manager:
+        health["checks"]["protocols"] = {
+            "lending": len(lending_protocols),
+            "liquidity": len(liquidity_protocols),
+            "yield": len(yield_protocols),
+            "auction": len(auction_protocols)
+        }
+    
+    return health 

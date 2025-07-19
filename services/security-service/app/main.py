@@ -2,7 +2,7 @@
 Security Service
 
 Orchestrates security operations including secrets rotation, policy management,
-and security monitoring for PlatformQ.
+security monitoring, and Zero-Trust architecture enforcement for PlatformQ.
 """
 
 import os
@@ -13,18 +13,29 @@ from typing import Dict, Any, List, Optional
 from datetime import datetime, timedelta
 from fastapi import FastAPI, HTTPException, Depends, status, Header
 from fastapi.responses import JSONResponse
+import consul
+import json
 
 from platformq_shared import create_base_app
 from platformq_shared.vault.vault_client import VaultClient, VaultConfig
 from platformq_shared.consul.consul_client import ConsulClient, ConsulConfig
 from platformq_shared.event_publisher import EventPublisher
 from platformq_shared.authorization.opa_client import OPAClient, OPAConfig
+from platformq_shared.security_middleware import (
+    VaultConsulMiddleware,
+    SecureServiceRegistry,
+    DistributedLockManager,
+    SecretManager
+)
 
 from .secrets_rotation import SecretsRotationService, RotationPolicy, SecretType
 from .api.endpoints import router as api_router
 from .models import SecurityEvent, PolicyUpdate, SecretRotationStatus
 from .monitoring import SecurityMonitor
 from .compliance import ComplianceChecker
+from .service_mesh import ServiceMeshCoordinator, mTLSManager
+from .kong_integration import KongAPIGatewayManager
+from .zero_trust import ZeroTrustPolicyEngine
 
 logger = logging.getLogger(__name__)
 
@@ -35,6 +46,10 @@ compliance_checker = None
 vault_client = None
 consul_client = None
 opa_client = None
+service_mesh_coordinator = None
+kong_manager = None
+zero_trust_engine = None
+mtls_manager = None
 
 
 @asynccontextmanager
@@ -42,6 +57,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global secrets_rotation_service, security_monitor, compliance_checker
     global vault_client, consul_client, opa_client
+    global service_mesh_coordinator, kong_manager, zero_trust_engine, mtls_manager
     
     # Startup
     logger.info("Starting Security Service...")
@@ -52,7 +68,8 @@ async def lifespan(app: FastAPI):
         port=int(os.getenv("VAULT_PORT", 8200)),
         token=os.getenv("VAULT_TOKEN"),
         role_id=os.getenv("VAULT_ROLE_ID"),
-        secret_id=os.getenv("VAULT_SECRET_ID")
+        secret_id=os.getenv("VAULT_SECRET_ID"),
+        namespace=os.getenv("VAULT_NAMESPACE", "")
     ))
     await vault_client.initialize()
     app.state.vault_client = vault_client
@@ -61,14 +78,16 @@ async def lifespan(app: FastAPI):
         host=os.getenv("CONSUL_ADDR", "localhost"),
         port=int(os.getenv("CONSUL_PORT", 8500)),
         token=os.getenv("CONSUL_TOKEN"),
-        datacenter=os.getenv("CONSUL_DATACENTER", "dc1")
+        datacenter=os.getenv("CONSUL_DATACENTER", "dc1"),
+        enable_service_mesh=True
     ))
     await consul_client.initialize()
     app.state.consul_client = consul_client
     
     opa_client = OPAClient(OPAConfig(
         host=os.getenv("OPA_ADDR", "localhost"),
-        port=int(os.getenv("OPA_PORT", 8181))
+        port=int(os.getenv("OPA_PORT", 8181)),
+        policy_path="/v1/data/platformq/security"
     ))
     await opa_client.initialize()
     app.state.opa_client = opa_client
@@ -81,11 +100,51 @@ async def lifespan(app: FastAPI):
     await event_publisher.initialize()
     app.state.event_publisher = event_publisher
     
+    # Initialize service mesh coordinator
+    service_mesh_coordinator = ServiceMeshCoordinator(
+        consul_client=consul_client,
+        vault_client=vault_client,
+        service_name="security-service"
+    )
+    await service_mesh_coordinator.initialize()
+    app.state.service_mesh = service_mesh_coordinator
+    
+    # Initialize mTLS manager
+    mtls_manager = mTLSManager(
+        vault_client=vault_client,
+        consul_client=consul_client,
+        ca_path=os.getenv("CA_PATH", "pki"),
+        intermediate_path=os.getenv("INTERMEDIATE_PATH", "pki_int")
+    )
+    await mtls_manager.initialize()
+    app.state.mtls_manager = mtls_manager
+    
+    # Initialize Kong API Gateway manager
+    kong_manager = KongAPIGatewayManager(
+        kong_admin_url=os.getenv("KONG_ADMIN_URL", "http://kong-admin:8001"),
+        vault_client=vault_client,
+        consul_client=consul_client
+    )
+    await kong_manager.initialize()
+    app.state.kong_manager = kong_manager
+    
+    # Initialize Zero-Trust policy engine
+    zero_trust_engine = ZeroTrustPolicyEngine(
+        opa_client=opa_client,
+        vault_client=vault_client,
+        consul_client=consul_client,
+        event_publisher=event_publisher
+    )
+    await zero_trust_engine.initialize()
+    app.state.zero_trust_engine = zero_trust_engine
+    
     # Initialize secrets rotation service
     secrets_rotation_service = SecretsRotationService(
         vault_client=vault_client,
         consul_client=consul_client,
-        event_publisher=event_publisher
+        event_publisher=event_publisher,
+        kong_manager=kong_manager,
+        service_mesh_coordinator=service_mesh_coordinator
     )
     await secrets_rotation_service.start()
     app.state.secrets_rotation = secrets_rotation_service
@@ -95,7 +154,8 @@ async def lifespan(app: FastAPI):
         vault_client=vault_client,
         consul_client=consul_client,
         opa_client=opa_client,
-        event_publisher=event_publisher
+        event_publisher=event_publisher,
+        zero_trust_engine=zero_trust_engine
     )
     await security_monitor.start()
     app.state.security_monitor = security_monitor
@@ -104,13 +164,22 @@ async def lifespan(app: FastAPI):
     compliance_checker = ComplianceChecker(
         vault_client=vault_client,
         consul_client=consul_client,
-        opa_client=opa_client
+        opa_client=opa_client,
+        zero_trust_engine=zero_trust_engine
     )
     await compliance_checker.initialize()
     app.state.compliance_checker = compliance_checker
     
     # Load initial security policies
     await load_initial_policies()
+    
+    # Register with Consul service mesh
+    await register_service_mesh()
+    
+    # Start background tasks
+    asyncio.create_task(monitor_certificate_expiry())
+    asyncio.create_task(sync_kong_configurations())
+    asyncio.create_task(enforce_zero_trust_policies())
     
     logger.info("Security Service started successfully")
     
@@ -125,6 +194,18 @@ async def lifespan(app: FastAPI):
     if security_monitor:
         await security_monitor.stop()
         
+    if zero_trust_engine:
+        await zero_trust_engine.shutdown()
+        
+    if kong_manager:
+        await kong_manager.shutdown()
+        
+    if mtls_manager:
+        await mtls_manager.shutdown()
+        
+    if service_mesh_coordinator:
+        await service_mesh_coordinator.shutdown()
+        
     if event_publisher:
         await event_publisher.close()
         
@@ -134,11 +215,20 @@ async def lifespan(app: FastAPI):
     logger.info("Security Service shutdown complete")
 
 
-# Create FastAPI app
+# Create FastAPI app with security middleware
 app = create_base_app(
     service_name="security-service",
-    version="1.0.0",
-    description="Security orchestration service for PlatformQ"
+    version="2.0.0",
+    description="Zero-Trust security orchestration service for PlatformQ"
+)
+
+# Add security middleware
+app.add_middleware(
+    VaultConsulMiddleware,
+    service_name="security-service",
+    enable_mtls=True,
+    enable_rate_limiting=True,
+    enable_audit_logging=True
 )
 
 # Set lifespan
@@ -154,14 +244,20 @@ async def root():
     """Root endpoint"""
     return {
         "service": "security-service",
-        "version": "1.0.0",
+        "version": "2.0.0",
         "status": "operational",
         "features": [
             "secrets-rotation",
             "policy-management",
             "security-monitoring",
             "compliance-checking",
-            "audit-logging"
+            "audit-logging",
+            "mtls-enforcement",
+            "service-mesh-integration",
+            "kong-api-gateway",
+            "zero-trust-architecture",
+            "dynamic-credentials",
+            "certificate-management"
         ]
     }
 
@@ -169,14 +265,17 @@ async def root():
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
+    """Comprehensive health check endpoint"""
     health_status = {
         "service": "healthy",
         "vault": "unknown",
         "consul": "unknown",
         "opa": "unknown",
         "secrets_rotation": "unknown",
-        "security_monitor": "unknown"
+        "security_monitor": "unknown",
+        "service_mesh": "unknown",
+        "kong_gateway": "unknown",
+        "zero_trust": "unknown"
     }
     
     # Check Vault
@@ -199,336 +298,338 @@ async def health_check():
     if opa_client:
         try:
             opa_health = await opa_client.health_check()
-            health_status["opa"] = "healthy" if opa_health.get("healthy") else "unhealthy"
+            health_status["opa"] = "healthy" if opa_health else "unhealthy"
         except Exception:
             health_status["opa"] = "unhealthy"
             
+    # Check Service Mesh
+    if service_mesh_coordinator:
+        try:
+            mesh_status = await service_mesh_coordinator.get_mesh_status()
+            health_status["service_mesh"] = "healthy" if mesh_status.get("connected") else "unhealthy"
+        except Exception:
+            health_status["service_mesh"] = "unhealthy"
+            
+    # Check Kong Gateway
+    if kong_manager:
+        try:
+            kong_status = await kong_manager.health_check()
+            health_status["kong_gateway"] = "healthy" if kong_status else "unhealthy"
+        except Exception:
+            health_status["kong_gateway"] = "unhealthy"
+            
+    # Check Zero Trust Engine
+    if zero_trust_engine:
+        try:
+            zt_status = await zero_trust_engine.get_status()
+            health_status["zero_trust"] = "healthy" if zt_status.get("active") else "unhealthy"
+        except Exception:
+            health_status["zero_trust"] = "unhealthy"
+            
     # Check secrets rotation
     if secrets_rotation_service:
-        try:
-            rotation_health = await secrets_rotation_service.health_check()
-            health_status["secrets_rotation"] = "healthy" if rotation_health.get("healthy") else "unhealthy"
-        except Exception:
-            health_status["secrets_rotation"] = "unhealthy"
-            
+        health_status["secrets_rotation"] = "healthy" if secrets_rotation_service._running else "stopped"
+        
     # Check security monitor
     if security_monitor:
-        try:
-            monitor_health = await security_monitor.health_check()
-            health_status["security_monitor"] = "healthy" if monitor_health.get("healthy") else "unhealthy"
-        except Exception:
-            health_status["security_monitor"] = "unhealthy"
-            
-    # Overall health
-    all_healthy = all(status == "healthy" for status in health_status.values() if status != "unknown")
+        health_status["security_monitor"] = "healthy" if security_monitor.is_running else "stopped"
+        
+    # Determine overall health
+    health_status["overall"] = "healthy" if all(
+        status == "healthy" for key, status in health_status.items() 
+        if key not in ["service", "overall"]
+    ) else "degraded"
     
-    return JSONResponse(
-        status_code=200 if all_healthy else 503,
-        content=health_status
-    )
+    return health_status
 
 
+# Consul health check endpoint
+@app.get("/health/consul")
+async def consul_health():
+    """Consul-specific health check"""
+    try:
+        if service_mesh_coordinator:
+            mesh_status = await service_mesh_coordinator.get_mesh_status()
+            return {"status": "healthy", "mesh": mesh_status}
+        return {"status": "unhealthy", "error": "Service mesh not initialized"}
+    except Exception as e:
+        return {"status": "unhealthy", "error": str(e)}
+
+
+# Policy management endpoints
+@app.post("/api/v1/policies/zero-trust")
+async def create_zero_trust_policy(policy: Dict[str, Any]):
+    """Create a new zero-trust policy"""
+    if not zero_trust_engine:
+        raise HTTPException(status_code=503, detail="Zero-trust engine not available")
+    
+    try:
+        result = await zero_trust_engine.create_policy(policy)
+        return {"status": "created", "policy_id": result["id"]}
+    except Exception as e:
+        logger.error(f"Failed to create policy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/policies/zero-trust/{policy_id}")
+async def get_zero_trust_policy(policy_id: str):
+    """Get a zero-trust policy by ID"""
+    if not zero_trust_engine:
+        raise HTTPException(status_code=503, detail="Zero-trust engine not available")
+    
+    try:
+        policy = await zero_trust_engine.get_policy(policy_id)
+        if not policy:
+            raise HTTPException(status_code=404, detail="Policy not found")
+        return policy
+    except Exception as e:
+        logger.error(f"Failed to get policy: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Certificate management endpoints
+@app.post("/api/v1/certificates/issue")
+async def issue_certificate(
+    common_name: str,
+    ttl: str = "720h",
+    alt_names: Optional[List[str]] = None
+):
+    """Issue a new TLS certificate"""
+    if not mtls_manager:
+        raise HTTPException(status_code=503, detail="mTLS manager not available")
+    
+    try:
+        cert_data = await mtls_manager.issue_certificate(
+            common_name=common_name,
+            ttl=ttl,
+            alt_names=alt_names or []
+        )
+        return {
+            "certificate": cert_data["certificate"],
+            "private_key": cert_data["private_key"],
+            "ca_chain": cert_data["ca_chain"],
+            "serial_number": cert_data["serial_number"],
+            "expiry": cert_data["expiry"]
+        }
+    except Exception as e:
+        logger.error(f"Failed to issue certificate: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/certificates/rotate/{service_name}")
+async def rotate_service_certificate(service_name: str):
+    """Rotate TLS certificate for a service"""
+    if not mtls_manager:
+        raise HTTPException(status_code=503, detail="mTLS manager not available")
+    
+    try:
+        result = await mtls_manager.rotate_service_certificate(service_name)
+        return {
+            "status": "rotated",
+            "service": service_name,
+            "new_serial": result["serial_number"],
+            "expiry": result["expiry"]
+        }
+    except Exception as e:
+        logger.error(f"Failed to rotate certificate: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Kong API Gateway management
+@app.post("/api/v1/kong/services")
+async def register_kong_service(service_config: Dict[str, Any]):
+    """Register a service with Kong API Gateway"""
+    if not kong_manager:
+        raise HTTPException(status_code=503, detail="Kong manager not available")
+    
+    try:
+        result = await kong_manager.register_service(service_config)
+        return {"status": "registered", "service": result}
+    except Exception as e:
+        logger.error(f"Failed to register Kong service: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/kong/plugins/{service_name}")
+async def configure_kong_plugins(service_name: str, plugins: List[Dict[str, Any]]):
+    """Configure Kong plugins for a service"""
+    if not kong_manager:
+        raise HTTPException(status_code=503, detail="Kong manager not available")
+    
+    try:
+        results = []
+        for plugin in plugins:
+            result = await kong_manager.configure_plugin(service_name, plugin)
+            results.append(result)
+        return {"status": "configured", "plugins": results}
+    except Exception as e:
+        logger.error(f"Failed to configure Kong plugins: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Service mesh operations
+@app.get("/api/v1/mesh/services")
+async def get_mesh_services():
+    """Get all services in the service mesh"""
+    if not service_mesh_coordinator:
+        raise HTTPException(status_code=503, detail="Service mesh not available")
+    
+    try:
+        services = await service_mesh_coordinator.get_services()
+        return {"services": services}
+    except Exception as e:
+        logger.error(f"Failed to get mesh services: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/mesh/intentions")
+async def create_service_intention(
+    source: str,
+    destination: str,
+    action: str = "allow",
+    description: Optional[str] = None
+):
+    """Create service mesh intention (allow/deny traffic)"""
+    if not service_mesh_coordinator:
+        raise HTTPException(status_code=503, detail="Service mesh not available")
+    
+    try:
+        result = await service_mesh_coordinator.create_intention(
+            source=source,
+            destination=destination,
+            action=action,
+            description=description
+        )
+        return {"status": "created", "intention": result}
+    except Exception as e:
+        logger.error(f"Failed to create intention: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Security metrics endpoint
+@app.get("/api/v1/metrics/security")
+async def get_security_metrics():
+    """Get comprehensive security metrics"""
+    metrics = {
+        "timestamp": datetime.utcnow().isoformat(),
+        "secrets_rotation": {},
+        "certificates": {},
+        "policy_violations": {},
+        "service_mesh": {},
+        "api_gateway": {}
+    }
+    
+    # Get secrets rotation metrics
+    if secrets_rotation_service:
+        metrics["secrets_rotation"] = await secrets_rotation_service.get_metrics()
+    
+    # Get certificate metrics
+    if mtls_manager:
+        metrics["certificates"] = await mtls_manager.get_certificate_metrics()
+    
+    # Get policy violation metrics
+    if zero_trust_engine:
+        metrics["policy_violations"] = await zero_trust_engine.get_violation_metrics()
+    
+    # Get service mesh metrics
+    if service_mesh_coordinator:
+        metrics["service_mesh"] = await service_mesh_coordinator.get_metrics()
+    
+    # Get API gateway metrics
+    if kong_manager:
+        metrics["api_gateway"] = await kong_manager.get_metrics()
+    
+    return metrics
+
+
+# Helper functions
 async def load_initial_policies():
-    """Load initial security policies into OPA"""
-    logger.info("Loading initial security policies...")
-    
-    # Platform-wide security policies
-    policies = {
-        "platform_security": """
-        package platformq.security
-        
-        # Enforce encryption for sensitive data
-        encryption_required {
-            input.data_classification == "sensitive"
-            not input.encrypted
-        }
-        
-        # Require MFA for admin actions
-        mfa_required {
-            input.context.roles[_] == "admin"
-            input.action in ["delete", "modify_policy", "access_secrets"]
-            not input.context.mfa_verified
-        }
-        
-        # Audit logging requirements
-        audit_required {
-            input.resource in ["secrets", "policies", "compliance_data"]
-        }
-        
-        # IP allowlist for admin access
-        ip_allowed {
-            input.context.roles[_] == "admin"
-            input.context.ip in data.admin_ip_allowlist
-        }
-        """,
-        
-        "secret_access": """
-        package platformq.secrets
-        
-        # Secret access control
-        allow {
-            input.action == "read"
-            input.context.service_name == data.secret_permissions[input.secret_path].allowed_services[_]
-        }
-        
-        allow {
-            input.action == "rotate"
-            input.context.roles[_] == "security_admin"
-        }
-        
-        # Prevent access to expired secrets
-        deny {
-            data.secret_metadata[input.secret_path].expired
-        }
-        """,
-        
-        "compliance": """
-        package platformq.compliance
-        
-        # Data residency requirements
-        data_residency_compliant {
-            input.data_location in data.allowed_regions[input.tenant_id]
-        }
-        
-        # GDPR compliance
-        gdpr_compliant {
-            input.action == "delete_user_data"
-            input.context.verified_identity
-            input.context.request_timestamp < data.gdpr_deadline
-        }
-        
-        # SOC2 requirements
-        soc2_compliant {
-            input.encryption_at_rest
-            input.encryption_in_transit
-            input.access_logged
-            input.data_backup_enabled
-        }
-        """
-    }
-    
-    # Load policies into OPA
-    for name, policy in policies.items():
-        try:
-            await opa_client.update_policy(name, policy)
-            logger.info(f"Loaded policy: {name}")
-        except Exception as e:
-            logger.error(f"Failed to load policy {name}: {e}")
-            
-    # Load initial data
-    initial_data = {
-        "admin_ip_allowlist": [
-            "10.0.0.0/8",
-            "172.16.0.0/12",
-            "192.168.0.0/16"
-        ],
-        "allowed_regions": {
-            "default": ["us-east-1", "eu-west-1"],
-            "eu_tenants": ["eu-west-1", "eu-central-1"]
-        },
-        "secret_permissions": {},
-        "gdpr_deadline": 2592000  # 30 days in seconds
-    }
-    
-    await opa_client.update_data("platformq/security", initial_data)
-    
-    logger.info("Initial security policies loaded")
-
-
-# API Endpoints
-
-@app.post("/api/v1/policies/{policy_name}")
-async def update_policy(
-    policy_name: str,
-    policy_update: PolicyUpdate,
-    current_user: Dict = Depends(get_current_user)
-):
-    """Update a security policy"""
-    # Check authorization
-    if "security_admin" not in current_user.get("roles", []):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permissions to update policies"
-        )
-        
+    """Load initial security policies from Consul"""
     try:
-        # Validate policy syntax
-        test_results = await opa_client.test_policy(
-            policy_update.policy,
-            policy_update.test_cases or []
-        )
+        # Load Zero-Trust policies
+        if zero_trust_engine:
+            await zero_trust_engine.load_policies_from_consul()
         
-        if test_results["failed"] > 0:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"Policy validation failed: {test_results}"
+        # Load OPA policies
+        if opa_client:
+            policies_path = "platformq/security/policies"
+            _, policies = await consul_client.kv.get(policies_path, recurse=True)
+            if policies:
+                for policy in policies:
+                    await opa_client.put_policy(
+                        policy['Key'].split('/')[-1],
+                        policy['Value']
+                    )
+        
+        logger.info("Loaded initial security policies")
+    except Exception as e:
+        logger.error(f"Failed to load initial policies: {e}")
+
+
+async def register_service_mesh():
+    """Register security service with Consul Connect"""
+    try:
+        if service_mesh_coordinator:
+            await service_mesh_coordinator.register_service(
+                name="security-service",
+                port=8000,
+                tags=["security", "critical", "zero-trust"],
+                meta={
+                    "version": "2.0.0",
+                    "protocol": "http",
+                    "secure": "true"
+                }
             )
-            
-        # Update policy
-        await opa_client.update_policy(policy_name, policy_update.policy)
-        
-        # Audit log
-        await app.state.event_publisher.publish_event(
-            "platformq.security.policy-updated",
-            {
-                "policy_name": policy_name,
-                "updated_by": current_user["user_id"],
-                "timestamp": datetime.utcnow().isoformat()
-            }
-        )
-        
-        return {"status": "success", "policy": policy_name}
-        
+        logger.info("Registered with service mesh")
     except Exception as e:
-        logger.error(f"Failed to update policy: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to update policy: {str(e)}"
-        )
+        logger.error(f"Failed to register with service mesh: {e}")
 
 
-@app.get("/api/v1/rotation/status")
-async def get_rotation_status(
-    current_user: Dict = Depends(get_current_user)
-) -> List[SecretRotationStatus]:
-    """Get status of all secret rotations"""
-    if not secrets_rotation_service:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Secrets rotation service not available"
-        )
+async def monitor_certificate_expiry():
+    """Monitor TLS certificate expiry"""
+    while True:
+        try:
+            if mtls_manager:
+                expiring_certs = await mtls_manager.get_expiring_certificates(days=30)
+                for cert in expiring_certs:
+                    logger.warning(f"Certificate expiring soon: {cert}")
+                    # Trigger rotation if auto-rotation enabled
+                    if cert.get("auto_rotate"):
+                        await mtls_manager.rotate_service_certificate(cert["service"])
+        except Exception as e:
+            logger.error(f"Certificate monitoring error: {e}")
         
-    rotation_history = secrets_rotation_service.rotation_history
-    status_list = []
-    
-    for secret_path, history in rotation_history.items():
-        if history:
-            latest = history[-1]
-            status_list.append(SecretRotationStatus(
-                secret_path=secret_path,
-                last_rotated=latest.rotated_at,
-                next_rotation=latest.rotated_at + timedelta(days=30),  # Default
-                rotation_count=latest.rotation_count,
-                status="active"
-            ))
-            
-    return status_list
+        await asyncio.sleep(3600)  # Check every hour
 
 
-@app.post("/api/v1/rotation/trigger/{secret_path:path}")
-async def trigger_rotation(
-    secret_path: str,
-    current_user: Dict = Depends(get_current_user)
-):
-    """Manually trigger secret rotation"""
-    if "security_admin" not in current_user.get("roles", []):
-        raise HTTPException(
-            status_code=status.HTTP_403_FORBIDDEN,
-            detail="Insufficient permissions to trigger rotation"
-        )
+async def sync_kong_configurations():
+    """Sync Kong configurations with Consul"""
+    while True:
+        try:
+            if kong_manager and consul_client:
+                # Get service configurations from Consul
+                _, services = await consul_client.kv.get("kong/services", recurse=True)
+                if services:
+                    for service_data in services:
+                        service_config = json.loads(service_data['Value'])
+                        await kong_manager.sync_service_config(service_config)
+        except Exception as e:
+            logger.error(f"Kong sync error: {e}")
         
-    # Find matching policy
-    policy = None
-    for name, pol in secrets_rotation_service.rotation_policies.items():
-        if pol.secret_type == SecretType.DATABASE_PASSWORD and "database" in secret_path:
-            policy = pol
-            break
-            
-    if not policy:
-        raise HTTPException(
-            status_code=status.HTTP_404_NOT_FOUND,
-            detail=f"No rotation policy found for {secret_path}"
-        )
+        await asyncio.sleep(300)  # Sync every 5 minutes
+
+
+async def enforce_zero_trust_policies():
+    """Continuously enforce zero-trust policies"""
+    while True:
+        try:
+            if zero_trust_engine:
+                violations = await zero_trust_engine.check_policy_violations()
+                for violation in violations:
+                    logger.warning(f"Policy violation detected: {violation}")
+                    # Take enforcement action
+                    await zero_trust_engine.enforce_policy(violation)
+        except Exception as e:
+            logger.error(f"Policy enforcement error: {e}")
         
-    try:
-        await secrets_rotation_service._rotate_secret(secret_path, policy)
-        return {"status": "success", "message": f"Rotation triggered for {secret_path}"}
-    except Exception as e:
-        logger.error(f"Failed to trigger rotation: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to trigger rotation: {str(e)}"
-        )
-
-
-@app.get("/api/v1/compliance/status")
-async def get_compliance_status(
-    current_user: Dict = Depends(get_current_user)
-):
-    """Get compliance status"""
-    if not compliance_checker:
-        raise HTTPException(
-            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
-            detail="Compliance checker not available"
-        )
-        
-    try:
-        status = await compliance_checker.get_compliance_status(
-            tenant_id=current_user.get("tenant_id")
-        )
-        return status
-    except Exception as e:
-        logger.error(f"Failed to get compliance status: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get compliance status: {str(e)}"
-        )
-
-
-@app.get("/api/v1/security/events")
-async def get_security_events(
-    start_time: Optional[datetime] = None,
-    end_time: Optional[datetime] = None,
-    event_type: Optional[str] = None,
-    limit: int = 100,
-    current_user: Dict = Depends(get_current_user)
-) -> List[SecurityEvent]:
-    """Get security events"""
-    if "security_admin" not in current_user.get("roles", []):
-        # Filter events by tenant for non-admins
-        tenant_filter = current_user.get("tenant_id")
-    else:
-        tenant_filter = None
-        
-    try:
-        events = await security_monitor.get_events(
-            start_time=start_time,
-            end_time=end_time,
-            event_type=event_type,
-            tenant_id=tenant_filter,
-            limit=limit
-        )
-        return events
-    except Exception as e:
-        logger.error(f"Failed to get security events: {e}")
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Failed to get security events: {str(e)}"
-        )
-
-
-# Utility functions
-
-async def get_current_user(
-    authorization: str = Header(None),
-    x_user_id: str = Header(None),
-    x_tenant_id: str = Header(None),
-    x_roles: str = Header(None)
-) -> Dict[str, Any]:
-    """Get current user from headers"""
-    if not all([x_user_id, x_tenant_id]):
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail="Missing authentication headers"
-        )
-        
-    return {
-        "user_id": x_user_id,
-        "tenant_id": x_tenant_id,
-        "roles": x_roles.split(",") if x_roles else []
-    }
-
-
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+        await asyncio.sleep(60)  # Check every minute 

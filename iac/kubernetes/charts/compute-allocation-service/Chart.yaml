@@ -1,0 +1,7 @@
+apiVersion: v2
+name: compute-allocation-service
+description: Multi-provider compute resource allocation service
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+dependencies: [] 

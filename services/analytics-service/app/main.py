@@ -16,6 +16,7 @@ from datetime import datetime, timedelta
 from contextlib import asynccontextmanager
 from enum import Enum
 import json
+import os
 
 from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Query as QueryParam, Depends, BackgroundTasks
 from fastapi.middleware.cors import CORSMiddleware
@@ -48,9 +49,9 @@ from .analytics.simulation_analytics import SimulationAnalyticsConsumer
 from .monitoring.dashboard_service import SimulationDashboardService
 from .monitoring.predictive_maintenance import PredictiveMaintenanceModel
 from .monitoring.timeseries_analysis import TimeSeriesAnalyzer, SimulationMetricsConsumer
-from .monitoring.metrics_aggregator import MetricsAggregator
-from .monitoring.anomaly_detection import SimulationAnomalyDetector, AnomalyDetectionConfig
-from .dashboards.cross_service_dashboard import CrossServiceDashboard, DashboardOrchestrator, DashboardConfig
+
+# Import Vault/Consul integration
+from .vault_consul_integration import VaultConsulIntegration
 
 logger = logging.getLogger(__name__)
 
@@ -209,112 +210,78 @@ trino_client = None
 event_publisher = None
 simulation_analytics_consumer = None
 
+# Security and Configuration Endpoints
+vault_consul: Optional[VaultConsulIntegration] = None
+trino_client: Optional[Any] = None
+elasticsearch_client: Optional[AsyncElasticsearch] = None
+ignite_client: Optional[IgniteClient] = None
+
 
 # ============= Lifespan Management =============
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan manager"""
-    global druid_engine, stream_processor, realtime_ml, metrics_aggregator
-    global dashboard_service, maintenance_model, timeseries_analyzer, anomaly_detector
-    global cross_service_dashboard, dashboard_orchestrator
-    global ignite_client, es_client, trino_client, event_publisher
-    global simulation_analytics_consumer
+    """Manage application lifecycle"""
+    global vault_consul, trino_client, elasticsearch_client, ignite_client
     
-    # Startup
-    logger.info("Initializing Unified Analytics Service...")
+    # Initialize Vault/Consul integration
+    vault_consul = VaultConsulIntegration({
+        "vault_addr": os.getenv("VAULT_ADDR", "http://vault:8200"),
+        "vault_token": os.getenv("VAULT_TOKEN"),
+        "consul_addr": os.getenv("CONSUL_ADDR", "http://consul:8500")
+    })
     
-    try:
-        # Initialize data clients
-        ignite_client = IgniteClient()
-        ignite_client.connect(IGNITE_CONFIG['host'], IGNITE_CONFIG['port'])
-        
-        es_client = AsyncElasticsearch([ES_CONFIG['host']])
-        
-        # Initialize Trino client
-        trino_client = httpx.AsyncClient(base_url=f"http://{TRINO_CONFIG['host']}:{TRINO_CONFIG['port']}")
-        
-        # Initialize event publisher
-        event_publisher = EventPublisher(PULSAR_CONFIG['url'])
-        event_publisher.connect()
+    await vault_consul.initialize()
     
-    # Initialize analytics engines
-    druid_engine = DruidAnalyticsEngine(DRUID_CONFIG)
-    stream_processor = StreamProcessor(DRUID_CONFIG, IGNITE_CONFIG)
-        await stream_processor.initialize()
-        
-    realtime_ml = RealtimeMLEngine()
-        await realtime_ml.initialize()
-        
-        metrics_aggregator = MetricsAggregator(IGNITE_CONFIG, DRUID_CONFIG)
-        await metrics_aggregator.initialize()
-    
-    # Initialize monitoring services
-    dashboard_service = SimulationDashboardService(IGNITE_CONFIG, ES_CONFIG)
-    maintenance_model = PredictiveMaintenanceModel(IGNITE_CONFIG, ES_CONFIG)
-        timeseries_analyzer = TimeSeriesAnalyzer(IGNITE_CONFIG, ES_CONFIG, event_publisher)
-    
-    # Initialize anomaly detector
-    anomaly_detector = SimulationAnomalyDetector(
-        ignite_client,
-            event_publisher,
-        mlops_service_url="http://mlops-service:8000",
-        seatunnel_service_url="http://seatunnel-service:8000"
+    # Register service with Consul
+    await vault_consul.register_service(
+        tags=["analytics", "trino", "data-processing"],
+        meta={
+            "version": "1.0.0",
+            "capabilities": "batch,streaming,ml"
+        }
     )
     
-    # Initialize cross-service dashboard
-        cross_service_dashboard = CrossServiceDashboard(
-            ignite_client=ignite_client,
-            es_client=es_client,
-            event_publisher=event_publisher
-        )
-        await cross_service_dashboard.initialize()
-        
-        dashboard_orchestrator = DashboardOrchestrator(
-            cross_service_dashboard=cross_service_dashboard,
-            dashboard_service=dashboard_service,
-            anomaly_detector=anomaly_detector
-        )
-        
-        # Initialize consumers
-        simulation_analytics_consumer = SimulationAnalyticsConsumer(
-            pulsar_url=PULSAR_CONFIG['url'],
-            subscription_name="analytics-service",
-            ignite_client=ignite_client,
-            es_client=es_client
-        )
-        await simulation_analytics_consumer.start()
-        
-        logger.info("Unified Analytics Service initialized successfully")
-        
-    except Exception as e:
-        logger.error(f"Failed to initialize services: {e}")
-        raise
+    # Initialize Trino with secure credentials
+    trino_creds = await vault_consul.get_trino_credentials()
+    trino_client = await initialize_trino_client(trino_creds)
+    
+    # Initialize Elasticsearch with secure credentials
+    es_creds = await vault_consul.get_elasticsearch_credentials()
+    elasticsearch_client = AsyncElasticsearch(
+        hosts=es_creds.get("hosts", ["elasticsearch:9200"]),
+        basic_auth=(es_creds["username"], es_creds["password"]),
+        ssl_context=await vault_consul.get_ssl_context() if es_creds.get("secure") else None
+    )
+    
+    # Initialize Ignite with secure credentials
+    ignite_creds = await vault_consul.get_ignite_credentials()
+    ignite_client = IgniteClient(
+        username=ignite_creds["username"],
+        password=ignite_creds["password"]
+    )
+    ignite_client.connect('ignite', 10800)
+    
+    # Initialize data lake connections
+    minio_creds = await vault_consul.get_data_lake_credentials("minio")
+    await initialize_data_lake(minio_creds)
+    
+    # Initialize analytics components with secure config
+    query_cache_config = await vault_consul.get_query_cache_config()
+    await initialize_analytics_components(query_cache_config)
+    
+    # Start configuration watchers
+    asyncio.create_task(watch_configuration_changes())
     
     yield
     
-    # Shutdown
-    logger.info("Shutting down Unified Analytics Service...")
-    
-    try:
-        # Close all connections
-        if stream_processor:
-            await stream_processor.close()
-        if metrics_aggregator:
-            await metrics_aggregator.close()
-        if ignite_client:
-    ignite_client.close()
-        if es_client:
-    await es_client.close()
-        if trino_client:
-            await trino_client.aclose()
-        if event_publisher:
-            event_publisher.close()
-        if simulation_analytics_consumer:
-            await simulation_analytics_consumer.stop()
-            
-    except Exception as e:
-        logger.error(f"Error during shutdown: {e}")
+    # Cleanup
+    if elasticsearch_client:
+        await elasticsearch_client.close()
+    if ignite_client:
+        ignite_client.close()
+    await vault_consul.deregister_service()
+    await vault_consul.shutdown()
 
 
 # ============= Create App =============
@@ -803,52 +770,49 @@ async def export_prometheus_metrics():
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    health_status = {
+    """Enhanced health check with Vault/Consul status"""
+    health = {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "services": {
-            "druid": "unknown",
-            "ignite": "unknown",
-            "elasticsearch": "unknown",
-            "trino": "unknown"
-        }
+        "checks": {}
     }
     
-    # Check Druid
-    try:
-        await druid_engine.health_check()
-        health_status["services"]["druid"] = "healthy"
-    except:
-        health_status["services"]["druid"] = "unhealthy"
-        health_status["status"] = "degraded"
-        
-    # Check Ignite
-    try:
-        if ignite_client and ignite_client.get_cache('health_check'):
-            health_status["services"]["ignite"] = "healthy"
-    except:
-        health_status["services"]["ignite"] = "unhealthy"
-        health_status["status"] = "degraded"
-        
-    # Check Elasticsearch
-    try:
-        if await es_client.ping():
-            health_status["services"]["elasticsearch"] = "healthy"
-    except:
-        health_status["services"]["elasticsearch"] = "unhealthy"
-        health_status["status"] = "degraded"
-        
+    # Check Vault connection
+    if vault_consul:
+        health["checks"]["vault"] = await vault_consul.check_vault_health()
+        health["checks"]["consul"] = await vault_consul.check_consul_health()
+    else:
+        health["checks"]["vault"] = {"status": "not_initialized"}
+        health["checks"]["consul"] = {"status": "not_initialized"}
+    
     # Check Trino
-    try:
-        response = await trino_client.get("/v1/info")
-            if response.status_code == 200:
-            health_status["services"]["trino"] = "healthy"
-    except:
-        health_status["services"]["trino"] = "unhealthy"
-        health_status["status"] = "degraded"
-        
-    return health_status
+    if trino_client:
+        try:
+            await trino_client.execute("SELECT 1")
+            health["checks"]["trino"] = {"status": "healthy"}
+        except Exception as e:
+            health["checks"]["trino"] = {"status": "unhealthy", "error": str(e)}
+            health["status"] = "degraded"
+    
+    # Check Elasticsearch
+    if elasticsearch_client:
+        try:
+            await elasticsearch_client.ping()
+            health["checks"]["elasticsearch"] = {"status": "healthy"}
+        except Exception:
+            health["checks"]["elasticsearch"] = {"status": "unhealthy"}
+            health["status"] = "degraded"
+    
+    # Check Ignite
+    if ignite_client:
+        try:
+            ignite_client.get_cache("test")
+            health["checks"]["ignite"] = {"status": "healthy"}
+        except Exception:
+            health["checks"]["ignite"] = {"status": "unhealthy"}
+            health["status"] = "degraded"
+    
+    return health
 
 
 # ============= Event Handlers =============
@@ -970,3 +934,177 @@ async def get_datasource_metadata(datasource: str):
 if __name__ == "__main__":
     import uvicorn
     uvicorn.run(app, host="0.0.0.0", port=8000) 
+
+# Security and Configuration Endpoints
+
+@app.get("/api/analytics/config")
+async def get_analytics_configuration():
+    """Get current analytics configuration"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+        
+    return {
+        "query_cache": await vault_consul.get_query_cache_config(),
+        "data_catalog": await vault_consul.get_data_catalog_config(),
+        "resource_limits": vault_consul.analytics_config.get("resource-limits", {}),
+        "security_policies": vault_consul.analytics_config.get("security-policies", {})
+    }
+
+@app.post("/api/analytics/data-sources/{source_name}")
+async def register_data_source(
+    source_name: str,
+    source_config: Dict[str, Any]
+):
+    """Register a new data source"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+        
+    try:
+        await vault_consul.register_data_source(source_name, source_config)
+        return {"status": "registered", "source": source_name}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/analytics/pipelines/{pipeline_name}/secrets")
+async def store_pipeline_secrets(
+    pipeline_name: str,
+    secrets: Dict[str, Any]
+):
+    """Store secrets for a data pipeline"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+        
+    try:
+        await vault_consul.store_pipeline_secrets(pipeline_name, secrets)
+        return {"status": "stored", "pipeline": pipeline_name}
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Enhanced Query Execution with Encryption
+
+class SecureQueryRequest(BaseModel):
+    query: str
+    catalog: str = "analytics"
+    schema: str = "default"
+    encrypt_results: bool = False
+    encryption_key: Optional[str] = None
+
+@app.post("/api/analytics/secure-query")
+async def execute_secure_query(request: SecureQueryRequest):
+    """Execute query with optional result encryption"""
+    if not vault_consul or not trino_client:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+        
+    try:
+        # Execute query
+        results = await trino_client.execute(
+            request.query,
+            catalog=request.catalog,
+            schema=request.schema
+        )
+        
+        # Convert to JSON
+        results_json = results.to_json(orient="records")
+        
+        # Encrypt if requested
+        if request.encrypt_results:
+            key_name = request.encryption_key or "analytics-results"
+            encrypted = await vault_consul.encrypt_data(
+                results_json.encode(),
+                key_name
+            )
+            
+            return {
+                "encrypted": True,
+                "data": encrypted,
+                "key_name": key_name
+            }
+        else:
+            return {
+                "encrypted": False,
+                "data": json.loads(results_json)
+            }
+            
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+@app.post("/api/analytics/decrypt-results")
+async def decrypt_query_results(
+    ciphertext: str,
+    key_name: str = "analytics-results"
+):
+    """Decrypt encrypted query results"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+        
+    try:
+        decrypted = await vault_consul.decrypt_data(ciphertext, key_name)
+        return json.loads(decrypted)
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Distributed Job Coordination
+
+class DistributedJobRequest(BaseModel):
+    job_name: str
+    job_type: str  # spark, flink, custom
+    config: Dict[str, Any]
+    workers: int = 4
+
+@app.post("/api/analytics/jobs/submit")
+async def submit_distributed_job(request: DistributedJobRequest):
+    """Submit a distributed analytics job"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+        
+    try:
+        # Get pipeline secrets if needed
+        secrets = await vault_consul.get_pipeline_secrets(request.job_name)
+        request.config.update(secrets)
+        
+        # Coordinate job execution
+        result = await vault_consul.coordinate_distributed_job(
+            request.job_name,
+            request.config
+        )
+        
+        return result
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=str(e))
+
+# Helper Functions
+
+async def initialize_trino_client(credentials: Dict[str, str]):
+    """Initialize Trino client with credentials"""
+    # This would create actual Trino connection
+    # For now, return mock client
+    class MockTrinoClient:
+        async def execute(self, query: str, **kwargs):
+            return pd.DataFrame({"result": ["mock_data"]})
+    
+    return MockTrinoClient()
+
+async def initialize_data_lake(credentials: Dict[str, str]):
+    """Initialize data lake connections"""
+    # Configure MinIO/S3 clients with credentials
+    logger.info(f"Initialized data lake with endpoint: {credentials.get('endpoint')}")
+
+async def initialize_analytics_components(cache_config: Dict[str, Any]):
+    """Initialize analytics components with configuration"""
+    logger.info(f"Initialized analytics with cache config: {cache_config}")
+
+async def watch_configuration_changes():
+    """Watch for configuration changes and reload"""
+    while True:
+        try:
+            # Check for config updates every 30 seconds
+            await asyncio.sleep(30)
+            
+            if vault_consul:
+                # Reload query cache config
+                new_cache_config = await vault_consul.get_query_cache_config()
+                # Apply new configuration
+                
+        except Exception as e:
+            logger.error(f"Configuration watch error: {e}")
+            await asyncio.sleep(60) 

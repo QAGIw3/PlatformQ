@@ -137,13 +137,22 @@ jobs:
 
 
 
-  build-and-deploy-simulation-service:
+  build-and-deploy-collaboration-services:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
     needs: lint-and-test
     runs-on: ubuntu-latest
     permissions:
       contents: 'read'
       id-token: 'write'
+    strategy:
+      matrix:
+        service:
+          - name: state-management-service
+            path: ./services/state-management-service
+          - name: compute-allocation-service
+            path: ./services/compute-allocation-service
+          - name: collaboration-platform-service
+            path: ./services/collaboration-platform-service
     steps:
       - name: Checkout
         uses: actions/checkout@v3
@@ -159,8 +168,8 @@ jobs:
       - name: Build and Push Docker Image
         run: |
           IMAGE_TAG=${{ github.sha }}
-          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/simulation-service:${IMAGE_TAG} ./services/simulation-service
-          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/simulation-service:${IMAGE_TAG}
+          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/${{ matrix.service.name }}:${IMAGE_TAG} ${{ matrix.service.path }}
+          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/${{ matrix.service.name }}:${IMAGE_TAG}
       - name: Deploy to GKE
         run: |
           IMAGE_TAG=${{ github.sha }}
@@ -168,8 +177,8 @@ jobs:
           helm dependency update iac/kubernetes/charts/platformq-stack
           helm upgrade --install platformq iac/kubernetes/charts/platformq-stack \
             --namespace platformq --create-namespace \
-            --set simulation-service.image.tag=${IMAGE_TAG} \
-            --set simulation-service.image.repository=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/simulation-service
+            --set ${{ matrix.service.name }}.image.tag=${IMAGE_TAG} \
+            --set ${{ matrix.service.name }}.image.repository=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/${{ matrix.service.name }}
 
   build-and-deploy-verifiable-credential-service:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'

@@ -1,0 +1,104 @@
+replicaCount: 2
+
+image:
+  repository: collaboration-platform-service
+  pullPolicy: IfNotPresent
+  tag: "latest"
+
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  allowPrivilegeEscalation: false
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+  capabilities:
+    drop:
+    - ALL
+
+service:
+  type: ClusterIP
+  port: 8000
+
+ingress:
+  enabled: false
+  className: ""
+  annotations: {}
+  hosts:
+    - host: state-management.local
+      paths:
+        - path: /
+          pathType: ImplementationSpecific
+  tls: []
+
+resources:
+  limits:
+    cpu: 1000m
+    memory: 2Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+      - weight: 100
+        podAffinityTerm:
+          labelSelector:
+            matchExpressions:
+              - key: app.kubernetes.io/name
+                operator: In
+                values:
+                  - collaboration-platform-service
+          topologyKey: kubernetes.io/hostname
+
+env:
+  - name: STATE_SERVICE_URL
+    value: "http://state-management-service:8000"
+  - name: COMPUTE_SERVICE_URL
+    value: "http://compute-allocation-service:8000"
+  - name: PULSAR_URL
+    value: "pulsar://pulsar:6650"
+  - name: LOG_LEVEL
+    value: "INFO"
+
+configMap:
+  enabled: false
+
+persistence:
+  enabled: false
+
+vault:
+  enabled: true
+  role: "collaboration-platform-service"
+  path: "secret/data/collaboration-platform"
+
+consul:
+  enabled: true
+  service:
+    name: "collaboration-platform"
+    port: 8000 

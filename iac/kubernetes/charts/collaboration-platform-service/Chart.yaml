@@ -1,0 +1,7 @@
+apiVersion: v2
+name: collaboration-platform-service
+description: Unified real-time collaboration platform for multiple domains
+type: application
+version: 1.0.0
+appVersion: "1.0.0"
+dependencies: [] 

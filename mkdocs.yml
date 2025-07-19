@@ -17,7 +17,9 @@ nav:
       - "Connector Service": "services/connector-service/README.md"
       - "Functions Service": "services/functions-service/README.md"
       - "Graph Intelligence Service": "services/graph-intelligence-service/README.md"
-      - "Simulation Service": "services/simulation-service/README.md"
+      - "Collaboration Platform Service": "services/collaboration-platform-service/README.md"
+  - "State Management Service": "services/state-management-service/README.md"
+  - "Compute Allocation Service": "services/compute-allocation-service/README.md"
       - "Verifiable Credential Service": "services/verifiable-credential-service/README.md"
   - "Operator Guides":
     - "Infrastructure (Terraform)": "iac/terraform/README.md"

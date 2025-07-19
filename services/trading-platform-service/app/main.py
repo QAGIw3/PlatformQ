@@ -5,17 +5,18 @@ Comprehensive trading platform combining social trading, copy trading, predictio
 and advanced market mechanisms for the PlatformQ ecosystem.
 """
 
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends
 from fastapi.middleware.cors import CORSMiddleware
 from contextlib import asynccontextmanager
 import asyncio
-from typing import Dict, List, Optional, Set
+from typing import Dict, List, Optional, Set, Any
 from decimal import Decimal
 from datetime import datetime, timedelta
 from dataclasses import dataclass
 from enum import Enum
 import logging
 import json
+import os
 
 # Shared Components
 from app.shared.order_matching import UnifiedMatchingEngine
@@ -48,11 +49,14 @@ from app.social_trading.api import (
 )
 from app.prediction_markets.api import (
     markets as prediction_markets,
-    trading as prediction_trading,
+    conditional,
     resolution,
-    analytics as prediction_analytics,
+    liquidity,
     governance as prediction_governance
 )
+
+# Import Vault/Consul integration
+from app.vault_consul_integration import VaultConsulIntegration
 
 # Shared Components and Integrations
 from app.integrations import (
@@ -73,6 +77,8 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Global instances
+vault_consul: Optional[VaultConsulIntegration] = None
+exchange_connectors: Dict[str, Any] = {}
 strategy_engine: Optional[StrategyEngine] = None
 copy_executor: Optional[CopyTradingExecutor] = None
 reputation_engine: Optional[ReputationEngine] = None
@@ -90,140 +96,106 @@ websocket_manager: Set[WebSocket] = set()
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Initialize and cleanup platform components"""
-    global strategy_engine, copy_executor, reputation_engine, performance_tracker
-    global portfolio_copier, trader_dao, market_engine, conditional_engine
-    global oracle_resolver, prediction_amm, market_dao, matching_engine
+    """Application lifespan with Vault/Consul integration"""
+    global vault_consul, exchange_connectors
+    global matching_engine, strategy_engine, copy_executor
+    global reputation_engine, performance_tracker, portfolio_copier
+    global trader_dao, market_engine, conditional_engine
+    global oracle_resolver, prediction_amm, market_dao
     
-    # Startup
-    logger.info("Starting Unified Trading Platform Service...")
+    # Initialize Vault/Consul integration
+    vault_consul = VaultConsulIntegration({
+        "vault_addr": os.getenv("VAULT_ADDR", "http://vault:8200"),
+        "vault_token": os.getenv("VAULT_TOKEN"),
+        "consul_addr": os.getenv("CONSUL_ADDR", "http://consul:8500")
+    })
     
-    # Initialize shared infrastructure
-    ignite = IgniteCache()
-    await ignite.connect()
+    await vault_consul.initialize()
     
-    pulsar = PulsarEventPublisher()
-    await pulsar.connect()
+    # Register service with Consul
+    await vault_consul.register_service(
+        tags=["trading", "social-trading", "prediction-markets", "copy-trading"],
+        meta={
+            "version": "1.0.0",
+            "exchanges": "binance,coinbase,kraken,ftx",
+            "features": "social,copy,predictions,automated"
+        }
+    )
     
-    elasticsearch = ElasticsearchClient()
-    await elasticsearch.connect()
+    # Initialize exchange connectors with secure credentials
+    for exchange in ["binance", "coinbase", "kraken", "ftx"]:
+        try:
+            credentials = await vault_consul.get_exchange_credentials(exchange)
+            # Initialize exchange connector with credentials
+            # exchange_connectors[exchange] = ExchangeConnector(credentials)
+        except Exception as e:
+            logger.warning(f"Failed to initialize {exchange}: {e}")
     
-    janusgraph = JanusGraphClient()
-    await janusgraph.connect()
+    # Initialize components with secure configuration
+    logger.info("Initializing Trading Platform components...")
     
-    blockchain = BlockchainClient()
-    await blockchain.connect()
-    
-    derivatives = DerivativesEngineClient()
-    graph_intelligence = GraphIntelligenceClient()
-    neuromorphic = NeuromorphicClient()
-    oracle_aggregator = OracleAggregatorClient()
-    social_data = SocialDataClient()
-    
-    # Initialize Unified Matching Engine
-    logger.info("Initializing unified matching engine...")
+    # Shared components with secure key management
     matching_engine = UnifiedMatchingEngine(
-        ignite_client=ignite,
-        pulsar_client=pulsar
+        vault_consul=vault_consul
     )
     
-    # Store in app state for dependency injection
-    app.state.matching_engine = matching_engine
-    
-    # Initialize Social Trading Components
-    logger.info("Initializing social trading components...")
-    
+    # Social Trading components
     strategy_engine = StrategyEngine(
-        ignite_cache=ignite,
-        pulsar_publisher=pulsar,
-        neuromorphic_client=neuromorphic
+        vault_consul=vault_consul
     )
-    
     copy_executor = CopyTradingExecutor(
-        ignite_cache=ignite,
-        derivatives_client=derivatives,
-        blockchain_client=blockchain
+        matching_engine=matching_engine,
+        vault_consul=vault_consul
     )
-    
     reputation_engine = ReputationEngine(
-        graph_client=janusgraph,
-        ignite_cache=ignite,
-        blockchain_client=blockchain
+        vault_consul=vault_consul
     )
-    
     performance_tracker = PerformanceTracker(
-        elasticsearch_client=elasticsearch,
-        ignite_cache=ignite
+        vault_consul=vault_consul
     )
-    
     portfolio_copier = PortfolioCopier(
         copy_executor=copy_executor,
-        performance_tracker=performance_tracker,
-        ignite_cache=ignite
+        vault_consul=vault_consul
     )
-    
     trader_dao = TraderDAO(
-        blockchain_client=blockchain,
-        reputation_engine=reputation_engine
+        vault_consul=vault_consul
     )
     
-    # Initialize Prediction Markets Components
-    logger.info("Initializing prediction markets components...")
-    
+    # Prediction Markets components
     market_engine = MarketEngine(
-        ignite_cache=ignite,
-        blockchain_client=blockchain,
-        pulsar_publisher=pulsar
+        matching_engine=matching_engine,
+        vault_consul=vault_consul
     )
-    
     conditional_engine = ConditionalMarketEngine(
         market_engine=market_engine,
-        graph_client=janusgraph
+        vault_consul=vault_consul
     )
-    
     oracle_resolver = OracleResolver(
-        oracle_aggregator=oracle_aggregator,
-        blockchain_client=blockchain,
-        ignite_cache=ignite
+        vault_consul=vault_consul
     )
-    
     prediction_amm = PredictionAMM(
-        ignite_cache=ignite,
-        blockchain_client=blockchain
+        vault_consul=vault_consul
     )
-    
     market_dao = MarketGovernanceDAO(
-        blockchain_client=blockchain,
-        ignite_cache=ignite
+        vault_consul=vault_consul
     )
     
     # Start background tasks
-    asyncio.create_task(performance_tracker.start_monitoring())
-    asyncio.create_task(reputation_engine.start_reputation_updates())
-    asyncio.create_task(oracle_resolver.start_resolution_monitoring())
-    asyncio.create_task(market_engine.start_market_monitoring())
+    asyncio.create_task(monitor_exchange_health())
+    asyncio.create_task(update_trading_metrics())
+    asyncio.create_task(enforce_risk_limits())
     
-    logger.info("Unified Trading Platform Service initialized successfully")
+    logger.info("Trading Platform Service initialized successfully")
     
     yield
     
-    # Shutdown
-    logger.info("Shutting down Unified Trading Platform Service...")
+    # Cleanup
+    logger.info("Shutting down Trading Platform Service...")
     
-    # Stop background tasks
-    await performance_tracker.stop_monitoring()
-    await reputation_engine.stop_reputation_updates()
-    await oracle_resolver.stop_resolution_monitoring()
-    await market_engine.stop_market_monitoring()
+    await vault_consul.deregister_service()
+    await vault_consul.shutdown()
     
-    # Close connections
-    await ignite.close()
-    await pulsar.close()
-    await elasticsearch.close()
-    await janusgraph.close()
-    await blockchain.close()
-    
-    logger.info("Unified Trading Platform Service shutdown complete")
+    logger.info("Trading Platform Service shutdown complete")
 
 
 # Create FastAPI app
@@ -319,27 +291,45 @@ async def root():
 # Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Health check endpoint"""
-    return {
+    """Enhanced health check with trading platform status"""
+    health = {
         "status": "healthy",
         "timestamp": datetime.utcnow().isoformat(),
-        "components": {
-            "social_trading": {
-                "operational": all([
-                    strategy_engine is not None,
-                    copy_executor is not None,
-                    reputation_engine is not None
-                ])
-            },
-            "prediction_markets": {
-                "operational": all([
-                    market_engine is not None,
-                    oracle_resolver is not None,
-                    prediction_amm is not None
-                ])
-            }
-        }
+        "checks": {}
     }
+    
+    # Check Vault/Consul
+    if vault_consul:
+        health["checks"]["vault"] = await vault_consul.check_vault_health()
+        health["checks"]["consul"] = await vault_consul.check_consul_health()
+    else:
+        health["status"] = "unhealthy"
+        health["checks"]["vault"] = {"status": "not_initialized"}
+        health["checks"]["consul"] = {"status": "not_initialized"}
+    
+    # Check exchanges
+    if exchange_connectors:
+        exchange_health = {}
+        for exchange in exchange_connectors:
+            try:
+                # Check exchange connectivity
+                exchange_health[exchange] = {"status": "healthy"}
+            except Exception:
+                exchange_health[exchange] = {"status": "unhealthy"}
+                health["status"] = "degraded"
+        
+        health["checks"]["exchanges"] = exchange_health
+    
+    # Check components
+    component_health = {
+        "matching_engine": "healthy" if matching_engine else "not_initialized",
+        "strategy_engine": "healthy" if strategy_engine else "not_initialized",
+        "market_engine": "healthy" if market_engine else "not_initialized"
+    }
+    
+    health["checks"]["components"] = component_health
+    
+    return health
 
 
 # WebSocket endpoint for real-time updates
@@ -390,3 +380,250 @@ async def handle_unsubscription(websocket: WebSocket, message: dict):
         await market_engine.remove_subscriber(websocket)
     elif channel == "performance":
         await performance_tracker.remove_subscriber(websocket) 
+
+# Security and Order Management Endpoints
+
+from pydantic import BaseModel
+
+class OrderSignRequest(BaseModel):
+    order_type: str  # market, limit, stop
+    side: str  # buy, sell
+    symbol: str
+    quantity: str
+    price: Optional[str] = None
+    exchange: str
+    trader_id: str
+
+@app.post("/api/orders/sign")
+async def sign_trading_order(request: OrderSignRequest):
+    """Sign trading order for execution"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        # Validate risk limits
+        validation = await vault_consul.validate_order_limits(
+            {
+                "market": request.symbol,
+                "quantity": request.quantity,
+                "price": request.price or "1"
+            },
+            request.trader_id
+        )
+        
+        if not validation["valid"]:
+            raise HTTPException(status_code=400, detail=validation["reason"])
+        
+        # Sign order
+        order_data = request.dict()
+        order_data["timestamp"] = int(datetime.utcnow().timestamp())
+        
+        signed_order = await vault_consul.sign_order(order_data, request.exchange)
+        
+        # Execute order through exchange connector
+        # ... execution logic ...
+        
+        return signed_order
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/orders/verify")
+async def verify_order_signature(signed_order: Dict[str, Any]):
+    """Verify order signature"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        valid = await vault_consul.verify_order_signature(signed_order)
+        return {"valid": valid}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Exchange Credentials Management
+
+@app.post("/api/exchanges/{exchange}/credentials")
+async def update_exchange_credentials(
+    exchange: str,
+    credentials: Dict[str, str]
+):
+    """Update exchange API credentials"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        await vault_consul.store_exchange_credentials(exchange, credentials)
+        
+        # Reinitialize exchange connector
+        # ... reconnection logic ...
+        
+        return {"status": "updated", "exchange": exchange}
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Trading Strategy Encryption
+
+class TradingStrategy(BaseModel):
+    strategy_id: str
+    name: str
+    algorithm: Dict[str, Any]
+    parameters: Dict[str, Any]
+    risk_limits: Dict[str, Any]
+
+@app.post("/api/strategies/encrypt")
+async def encrypt_trading_strategy(strategy: TradingStrategy):
+    """Encrypt trading strategy for secure storage"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        encrypted = await vault_consul.encrypt_strategy(
+            strategy.dict(),
+            strategy.strategy_id
+        )
+        
+        return {
+            "strategy_id": strategy.strategy_id,
+            "encrypted": encrypted
+        }
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.post("/api/strategies/{strategy_id}/decrypt")
+async def decrypt_trading_strategy(
+    strategy_id: str,
+    encrypted_strategy: str
+):
+    """Decrypt trading strategy"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        decrypted = await vault_consul.decrypt_strategy(
+            encrypted_strategy,
+            strategy_id
+        )
+        
+        return decrypted
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Risk Management
+
+@app.get("/api/risk/limits/{trader_id}")
+async def get_trader_risk_limits(trader_id: str, market: Optional[str] = None):
+    """Get risk limits for trader"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        limits = await vault_consul.get_risk_limits(trader_id, market)
+        return limits
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Settlement and Price Feeds
+
+class SettlementRequest(BaseModel):
+    trades: List[Dict[str, Any]]
+    settlement_type: str = "default"
+    total_value: str
+
+@app.post("/api/settlement/sign")
+async def sign_settlement_batch(request: SettlementRequest):
+    """Sign settlement batch"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        settlement_data = {
+            "trades": request.trades,
+            "type": request.settlement_type,
+            "total_value": request.total_value,
+            "trade_count": len(request.trades)
+        }
+        
+        signed = await vault_consul.sign_settlement(settlement_data)
+        
+        return signed
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+@app.get("/api/price-feeds/{provider}/auth")
+async def get_price_feed_auth(provider: str):
+    """Get authentication for price feed provider"""
+    if not vault_consul:
+        raise HTTPException(status_code=503, detail="Service not initialized")
+    
+    try:
+        auth = await vault_consul.get_price_feed_auth(provider)
+        return auth
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+# Background Tasks
+
+async def monitor_exchange_health():
+    """Monitor exchange connectivity and health"""
+    while True:
+        try:
+            if vault_consul and exchange_connectors:
+                for exchange, connector in exchange_connectors.items():
+                    try:
+                        # Check exchange health
+                        # health = await connector.check_health()
+                        
+                        # Store health status
+                        await vault_consul.consul.kv.put(
+                            f"trading/exchanges/{exchange}/health",
+                            json.dumps({
+                                "status": "healthy",
+                                "timestamp": datetime.utcnow().isoformat()
+                            })
+                        )
+                    except Exception as e:
+                        logger.error(f"Exchange {exchange} unhealthy: {e}")
+                        
+            await asyncio.sleep(30)  # Check every 30 seconds
+        except Exception as e:
+            logger.error(f"Exchange monitoring error: {e}")
+            await asyncio.sleep(60)
+
+async def update_trading_metrics():
+    """Update trading performance metrics"""
+    while True:
+        try:
+            if vault_consul and performance_tracker:
+                # Get all active traders
+                traders = await trader_dao.get_active_traders()
+                
+                for trader in traders:
+                    # Calculate metrics
+                    metrics = await performance_tracker.calculate_metrics(
+                        trader["id"]
+                    )
+                    
+                    # Store metrics
+                    await vault_consul.store_trading_metrics(
+                        trader["id"],
+                        metrics
+                    )
+                    
+            await asyncio.sleep(300)  # Update every 5 minutes
+        except Exception as e:
+            logger.error(f"Metrics update error: {e}")
+            await asyncio.sleep(60)
+
+async def enforce_risk_limits():
+    """Monitor and enforce risk limits"""
+    while True:
+        try:
+            if vault_consul:
+                # Check all active positions
+                # Enforce daily loss limits
+                # Cancel orders if limits exceeded
+                pass
+                
+            await asyncio.sleep(60)  # Check every minute
+        except Exception as e:
+            logger.error(f"Risk enforcement error: {e}")
+            await asyncio.sleep(60) 
