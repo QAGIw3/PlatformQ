@@ -16,7 +16,7 @@ def create_pulsar_namespace(pulsar_admin: PulsarAdmin, tenant_id: str):
     # Grant permissions to the services that need to access this namespace.
     # In a real app, you would have a more sophisticated way of managing
     # these roles and permissions.
-    roles = ["auth-service", "digital-asset-service", "proposals-service", "projects-service"]
+    roles = ["auth-service", "digital-asset-service", "governance-service", "projects-service"]
     for role in roles:
         try:
             pulsar_admin.grant_permission(namespace, role, ["produce", "consume"])

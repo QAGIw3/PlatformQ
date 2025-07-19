@@ -1,0 +1,12 @@
+apiVersion: v2
+name: analytics-service
+description: Unified Analytics Service for platformQ with batch and real-time capabilities
+type: application
+version: 1.0.0
+appVersion: "3.0.0"
+
+dependencies:
+  - name: common
+    version: "1.x.x"
+    repository: "https://charts.bitnami.com/bitnami"
+    condition: common.enabled 

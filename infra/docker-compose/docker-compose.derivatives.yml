@@ -246,10 +246,10 @@ services:
     volumes:
       - elasticsearch-data:/usr/share/elasticsearch/data
 
-  # Apache SeaTunnel for Data Integration
-  seatunnel:
+  # Data Platform Service (includes SeaTunnel integration)
+  data-platform:
     build:
-      context: ../../services/seatunnel-service
+      context: ../../services/data-platform-service
       dockerfile: Dockerfile
     environment:
       - PULSAR_URL=pulsar://pulsar:6650

@@ -19,9 +19,9 @@ receivers:
               - mlops-service:8003
               - graph-intelligence-service:8004
               - search-service:8005
-              - data-governance-service:8006
+              - unified-data-service:8006
               - federated-learning-service:8007
-              - realtime-analytics-service:8008
+              - analytics-service:8008
               - compute-marketplace:8009
               - dataset-marketplace:8010
 

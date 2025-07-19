@@ -10,18 +10,26 @@ This directory contains all the microservices that make up the platformQ ecosyst
 ### Digital Asset Management
 - **[digital-asset-service](./digital-asset-service/)**: Central service for managing all digital assets including 3D models, documents, images, and metadata from various tools.
 
-### Data Integration
+### Data Platform
+- **[data-platform-service](./data-platform-service/)**: Comprehensive data management platform consolidating:
+  - Federated query execution (Apache Trino)
+  - Medallion architecture data lake (Bronze/Silver/Gold)
+  - Data governance, quality, and compliance
+  - ETL/ELT pipeline orchestration (SeaTunnel)
+  - Connection pooling and caching
 - **[connector-service](./connector-service/)**: Plugin-based data ingestion framework supporting file processors, API connectors, and webhook handlers.
-- **[seatunnel-service](./seatunnel-service/)**: Unified data integration layer with 100+ connectors for batch, streaming, and CDC data synchronization.
+
+### Machine Learning Platform
+- **[unified-ml-platform-service](./unified-ml-platform-service/)**: Unified ML platform consolidating:
+  - Model training, serving, and lifecycle management
+  - MLOps and model marketplace
+  - Federated learning capabilities
+  - Neuromorphic computing
+  - Feature store and model registry
 
 ### Search & Analytics
 - **[search-service](./search-service/)**: Elasticsearch-powered unified search across all platform data with full-text search, facets, and autocomplete.
-- **[realtime-analytics-service](./realtime-analytics-service/)**: Apache Ignite-based real-time analytics with sub-millisecond queries and live dashboards.
-- **[analytics-service](./analytics-service/)**: Business intelligence and reporting service for complex analytical queries.
-
-### Collaboration & Projects
-- **[projects-service](./projects-service/)**: Integrated project management orchestrating Nextcloud, OpenProject, and Zulip for seamless collaboration.
-- **[notification-service](./notification-service/)**: Multi-channel notification delivery system supporting email, Zulip, and webhooks.
+- **[analytics-service](./analytics-service/)**: Unified analytics platform with batch processing (Trino), real-time analytics (Druid/Ignite), ML operations, and cross-service monitoring.
 
 ### Advanced Processing
 - **[graph-intelligence-service](./graph-intelligence-service/)**: JanusGraph-powered service for relationship discovery and graph analytics.
@@ -29,15 +37,26 @@ This directory contains all the microservices that make up the platformQ ecosyst
 - **[functions-service](./functions-service/)**: WebAssembly runtime for custom data transformations and automation workflows.
 
 ### Document & Storage
-- **[storage-proxy-service](./storage-proxy-service/)**: Unified interface for MinIO object storage with multi-tenancy support and document conversion capabilities (PDF, DOCX, etc.).
+- **[storage-service](./storage-service/)**: Enhanced storage platform providing object storage (MinIO/S3), document conversion, preview generation, and license-based access control.
 
-### Trust & Verification
+### Trading & Markets
+- **[trading-platform-service](./trading-platform-service/)**: Unified trading platform combining social trading, copy trading, prediction markets, and advanced order matching.
+- **[derivatives-engine-service](./derivatives-engine-service/)**: Advanced derivatives trading with compute futures, options, and structured products.
+
+### Blockchain & Trust
+- **[blockchain-gateway-service](./blockchain-gateway-service/)**: Unified blockchain abstraction layer for multi-chain operations.
 - **[verifiable-credential-service](./verifiable-credential-service/)**: Issues and verifies W3C Verifiable Credentials with blockchain anchoring.
+- **[compliance-service](./compliance-service/)**: KYC/AML and regulatory compliance with privacy-preserving features.
+- **[defi-protocol-service](./defi-protocol-service/)**: DeFi protocols including lending, liquidity pools, and yield farming.
 
-### Workflow & Proposals
-- **[workflow-service](./workflow-service/)**: Airflow-based workflow orchestration for complex data pipelines.
-- **[proposals-service](./proposals-service/)**: DAO proposal management integrated with smart contracts.
+### Workflow & Governance
+- **[workflow-service](./workflow-service/)**: Airflow-based workflow orchestration for complex data pipelines and project orchestration.
+- **[governance-service](./governance-service/)**: Unified governance system with DAO management, proposals, multi-chain support, and advanced voting strategies.
 - **[provisioning-service](./provisioning-service/)**: Automated tenant provisioning and resource allocation.
+
+### Specialized Services
+- **[cad-collaboration-service](./cad-collaboration-service/)**: Real-time collaborative CAD editing with CRDT-based conflict resolution.
+- **[quantum-optimization-service](./quantum-optimization-service/)**: Quantum-inspired algorithms for complex optimization problems.
 
 ## Service Architecture Patterns
 
@@ -160,6 +179,20 @@ Services are packaged as Docker containers and deployed to Kubernetes:
 - GDPR compliance features
 - Audit logging for all data access
 
+## Shared Libraries
+
+The platform includes several shared libraries to promote code reuse:
+
+### Core Libraries
+- **[platformq-shared](../libs/platformq-shared/)**: Base service utilities, event processing, resilience patterns
+- **[platformq-events](../libs/platformq-events/)**: Shared event schemas for inter-service communication
+- **[platformq-blockchain-common](../libs/platformq-blockchain-common/)**: Blockchain types, interfaces, and adapters
+- **[platformq-unified-data](../libs/platformq-unified-data/)**: Unified data access patterns
+
+### Feature Libraries
+- **[platformq-notifications](../libs/platformq-notifications/)**: Multi-channel notification capabilities (replaces notification-service)
+- **[platformq-event-framework](../libs/platformq-event-framework/)**: Advanced event processing framework
+
 ## Best Practices
 
 1. **API Design**: Follow REST conventions and use OpenAPI specification
@@ -169,4 +202,5 @@ Services are packaged as Docker containers and deployed to Kubernetes:
 5. **Testing**: Maintain >80% code coverage
 6. **Performance**: Profile and optimize critical paths
 7. **Security**: Follow OWASP guidelines
-8. **Deployment**: Use GitOps for configuration management 
+8. **Deployment**: Use GitOps for configuration management
+9. **Consolidation**: Prefer shared libraries over duplicate service functionality 

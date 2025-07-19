@@ -106,13 +106,13 @@ class CrossChainLiquidityAggregator:
         self.compliance_bridge = ComplianceBridge()
         
         self.blockchain_client = ServiceClient(
-            service_name="blockchain-event-bridge",
+            service_name="blockchain-gateway-service",
             circuit_breaker_threshold=5,
             rate_limit=100.0
         )
         
         self.oracle_client = ServiceClient(
-            service_name="oracle-aggregator-service",
+            service_name="blockchain-gateway-service",
             circuit_breaker_threshold=5,
             rate_limit=100.0
         )

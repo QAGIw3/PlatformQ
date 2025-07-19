@@ -128,7 +128,7 @@ class CrossServiceCapacityCoordinator:
             ServiceType.GRAPH_INTELLIGENCE: "http://graph-intelligence-service:8000",
             ServiceType.QUANTUM_OPTIMIZATION: "http://quantum-optimization-service:8000",
             ServiceType.NEUROMORPHIC: "http://neuromorphic-service:8000",
-            ServiceType.REALTIME_ANALYTICS: "http://realtime-analytics-service:8000",
+            ServiceType.REALTIME_ANALYTICS: "http://analytics-service:8000",
             ServiceType.DATA_PROCESSING: "http://analytics-service:8000"
         }
         

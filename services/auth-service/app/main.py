@@ -19,7 +19,7 @@ from platformq_shared import (
 )
 from platformq_events import UserCreatedEvent, UserUpdatedEvent, TenantCreatedEvent
 
-from .api import endpoints, siwe_endpoints, s2s
+from .api import endpoints, siwe_endpoints, s2s, policy_endpoints
 from .api.deps import (
     get_db_session, 
     get_api_key_crud, 
@@ -81,6 +81,7 @@ app.router.lifespan_context = lifespan
 app.include_router(endpoints.router, prefix="/api/v1", tags=["Users"])
 app.include_router(siwe_endpoints.router, prefix="/api/v1", tags=["SIWE"])
 app.include_router(s2s.router, prefix="/api/v1", tags=["S2S"])
+app.include_router(policy_endpoints.router, prefix="/api/v1", tags=["Policy"])
 
 # Service-specific root endpoint
 @app.get("/")
@@ -88,5 +89,5 @@ def read_root():
     return {
         "service": "auth-service",
         "version": "2.0",
-        "features": ["oidc", "sso", "api-keys", "event-driven"]
+        "features": ["oidc", "sso", "api-keys", "event-driven", "policy-evaluation", "unified-authorization"]
     }

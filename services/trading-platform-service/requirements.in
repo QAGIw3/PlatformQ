@@ -1,0 +1,61 @@
+# Core dependencies
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+
+# Async support
+asyncio
+aiohttp
+
+# Caching and state management
+pyignite[async]
+
+# Messaging
+pulsar-client
+aiopulsar
+
+# Database
+sqlalchemy
+psycopg2-binary
+motor  # MongoDB for order history
+
+# Search and analytics
+elasticsearch-async
+elasticsearch
+
+# Graph database
+gremlinpython
+
+# Blockchain integration
+web3
+eth-account
+
+# Data processing
+pandas
+numpy
+scipy
+
+# Real-time features
+websockets
+python-socketio[asyncio]
+
+# Machine learning
+scikit-learn
+xgboost
+
+# Shared libraries
+platformq-shared
+platformq-events
+
+# Monitoring
+prometheus-client
+
+# Date/time handling
+python-dateutil
+
+# Logging
+structlog
+
+# API documentation
+python-multipart 

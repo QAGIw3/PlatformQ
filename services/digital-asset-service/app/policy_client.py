@@ -28,4 +28,4 @@ class PolicyClient:
             logger.error(f"Error checking permission: {e}")
             return False
 
-policy_client = PolicyClient("http://policy-service:8000") 
+policy_client = PolicyClient("http://auth-service:8000") 

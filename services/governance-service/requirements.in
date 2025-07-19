@@ -1,0 +1,37 @@
+# Core dependencies
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+
+# Blockchain dependencies
+platformq-blockchain-common
+
+# Caching and state management
+pyignite[async]
+
+# Messaging
+pulsar-client
+
+# Database
+sqlalchemy
+psycopg2-binary
+alembic
+
+# Shared libraries
+platformq-shared
+platformq-events
+
+# Date/time handling
+python-dateutil
+
+# Logging
+structlog
+
+# API documentation
+python-multipart
+
+# File handling
+python-docx
+
+# Nextcloud integration (from shared library) 

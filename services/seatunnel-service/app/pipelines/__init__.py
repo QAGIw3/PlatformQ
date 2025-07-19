@@ -1,1 +1,0 @@
-# SeaTunnel Pipeline Definitions 

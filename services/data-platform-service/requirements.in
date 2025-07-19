@@ -1,0 +1,95 @@
+# Base dependencies
+-r ../../requirements/base.in
+
+# Shared libraries
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+-e ../../libs/platformq-unified-data
+
+# API Framework
+fastapi
+uvicorn[standard]
+pydantic
+httpx
+
+# Apache Trino (Federated Queries)
+trino>=0.320.0
+
+# Apache Spark (Data Processing)
+pyspark>=3.4.0
+delta-spark>=2.4.0
+petastorm>=0.12.0
+
+# Apache SeaTunnel (ETL/ELT)
+# Note: SeaTunnel is typically run as external service/job
+
+# Storage
+minio>=7.1.0
+s3fs>=2023.6.0
+pyarrow>=12.0.0
+
+# Apache Ignite (Caching)
+pyignite[async]>=0.5.0
+
+# Data Quality
+great-expectations>=0.17.0
+pandas-profiling>=3.6.0
+pyod>=1.1.0  # Outlier detection
+deequ>=1.1.0  # Spark data quality
+
+# Data Governance
+# Apache Atlas client (if available)
+# apache-atlas>=0.0.5
+# Apache Ranger client (if available)
+# ranger-python-client>=0.1.0
+
+# Compliance
+presidio-analyzer>=2.2.0  # PII detection
+presidio-anonymizer>=2.2.0
+
+# Data Lineage
+networkx>=3.1
+graphviz>=0.20.0
+sqllineage>=1.4.0
+
+# Databases
+sqlalchemy>=2.0.0
+asyncpg>=0.28.0  # PostgreSQL async
+motor>=3.3.0  # MongoDB async
+cassandra-driver>=3.28.0
+elasticsearch>=8.9.0
+influxdb-client>=1.37.0
+
+# Task Scheduling
+apscheduler>=3.10.0
+
+# Data Processing
+pandas>=2.0.0
+numpy>=1.24.0
+polars>=0.18.0
+dask[complete]>=2023.5.0
+
+# Monitoring & Logging
+prometheus-client>=0.17.0
+opentelemetry-api>=1.19.0
+opentelemetry-sdk>=1.19.0
+opentelemetry-instrumentation-fastapi>=0.40b0
+structlog>=23.1.0
+
+# Utilities
+python-dateutil>=2.8.0
+pytz>=2023.3
+orjson>=3.9.0
+ujson>=5.8.0
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.11.0
+pytest-cov>=4.1.0
+
+# Development
+black>=23.7.0
+ruff>=0.0.285
+mypy>=1.5.0
+pre-commit>=3.3.0 

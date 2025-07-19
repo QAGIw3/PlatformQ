@@ -32,7 +32,7 @@ with DAG(
     }
 ) as dag:
     # Define common parameters for DAO operators
-    DAO_SERVICE_URL = "http://proposals-service:8000" # Assuming proposals-service handles DAO interactions
+    DAO_SERVICE_URL = "http://governance-service:8000" # Unified governance service
     TENANT_ID = "{{ dag_run.conf.tenant_id or params.tenant_id }}"
     DAO_ID = "{{ dag_run.conf.dao_id or params.dao_id }}"
 

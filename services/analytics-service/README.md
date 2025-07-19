@@ -1,348 +1,319 @@
 # Unified Analytics Service
 
-A high-performance analytics service that provides both batch and real-time analytics capabilities for the PlatformQ ecosystem.
+The Unified Analytics Service provides comprehensive analytics capabilities for platformQ, combining batch analytics, real-time processing, machine learning, and cross-service monitoring into a single powerful platform.
 
 ## Overview
 
-The Unified Analytics Service combines:
-- **Batch Analytics**: Complex queries via Trino/Hive for historical analysis
-- **Real-time Analytics**: Low-latency queries via Druid/Ignite for live data
-- **Automatic Mode Selection**: Intelligently routes queries based on characteristics
-- **ML-Powered Predictions**: Time series forecasting and anomaly detection
-- **WebSocket Streaming**: Real-time metric updates for dashboards
+This service consolidates:
+- **Batch Analytics**: Complex queries via Apache Trino
+- **Real-time Analytics**: Time-series analysis via Apache Druid and Apache Ignite
+- **Machine Learning**: Anomaly detection, forecasting, and predictive maintenance
+- **Stream Processing**: Real-time event processing with Apache Flink integration
+- **Cross-Service Monitoring**: Platform-wide dashboards and insights
+- **WebSocket Streaming**: Real-time data streaming for dashboards and alerts
+
+## Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                   Unified Analytics Service                  │
+├─────────────────────────────────────────────────────────────┤
+│                      Query Router                            │
+│  ┌─────────────┬──────────────┬─────────────┬────────────┐ │
+│  │   Batch     │  Real-time   │    Cache    │     ML     │ │
+│  │  (Trino)    │   (Druid)    │  (Ignite)   │  (MLflow)  │ │
+│  └─────────────┴──────────────┴─────────────┴────────────┘ │
+├─────────────────────────────────────────────────────────────┤
+│                    Stream Processing                         │
+│  ┌─────────────────────┬─────────────────────────────────┐ │
+│  │   Apache Pulsar     │      Apache Flink               │ │
+│  └─────────────────────┴─────────────────────────────────┘ │
+├─────────────────────────────────────────────────────────────┤
+│                 Monitoring & Dashboards                      │
+│  ┌──────────────┬────────────────┬───────────────────────┐ │
+│  │   Anomaly    │   Predictive   │  Cross-Service        │ │
+│  │  Detection   │  Maintenance   │   Dashboards          │ │
+│  └──────────────┴────────────────┴───────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
 
 ## Features
 
-### Query Execution Modes
+### 1. Unified Query Interface
+- **Intelligent Routing**: Automatically routes queries to the optimal engine
+- **Multi-Engine Support**: Seamlessly switches between Trino, Druid, and Ignite
+- **Query Optimization**: Caches results and optimizes execution paths
+- **Federated Queries**: Split queries across engines for best performance
 
-1. **Batch Mode** (Trino)
-   - Complex SQL queries
-   - Historical data analysis
-   - Large-scale aggregations
-   - Data quality assessments
+### 2. Real-time Analytics
+- **Time-Series Analysis**: Powered by Apache Druid
+- **In-Memory Computing**: Sub-millisecond queries with Apache Ignite
+- **Stream Processing**: Real-time event processing and aggregation
+- **WebSocket Streaming**: Live data updates for dashboards
 
-2. **Real-time Mode** (Druid/Ignite)
-   - Sub-second query response
-   - Live metric monitoring
-   - Stream processing
-   - In-memory caching
+### 3. Machine Learning Operations
+- **Anomaly Detection**: Real-time anomaly detection with multiple algorithms
+- **Forecasting**: Time-series forecasting with Prophet and custom models
+- **Predictive Maintenance**: Predict component failures before they occur
+- **Online Learning**: Continuously update models with streaming data
 
-3. **Auto Mode**
-   - Automatically selects optimal engine
-   - Based on time range and query complexity
-   - Transparent to the user
-
-### Analytics Capabilities
-
-- **Asset Analytics**: Summary statistics, lineage impact, quality scores
-- **User Behavior**: Activity patterns, engagement metrics
-- **Quality Trends**: Data quality over time, anomaly detection
-- **Simulation Metrics**: Real-time performance monitoring
-- **Predictive Analytics**: ML-based forecasting
-- **Anomaly Detection**: Automated outlier identification
+### 4. Monitoring & Dashboards
+- **Platform Overview**: Cross-service health and performance metrics
+- **Service Comparison**: Compare metrics across different services
+- **Resource Utilization**: Monitor CPU, memory, and other resources
+- **Custom Dashboards**: Create and manage custom dashboards
 
 ## API Endpoints
 
-### Query Execution
+### Query Endpoints
+- `POST /api/v1/query` - Unified query interface
+- `POST /api/v1/query/timeseries` - Time-series specific queries
 
-```http
-POST /api/v1/query
-Content-Type: application/json
+### Monitoring Endpoints
+- `GET /api/v1/monitor/{scope}` - Unified monitoring (platform/service/simulation/resource)
+- `GET /api/v1/dashboards/{type}` - Get dashboard by type
+- `POST /api/v1/dashboards` - Create new dashboard
 
-{
-  "query": "SELECT * FROM assets WHERE created_at > '2024-01-01'",  // Optional: raw SQL
-  "query_type": "asset_summary",  // Optional: predefined query
-  "mode": "auto",  // auto, batch, or realtime
-  "filters": {
-    "asset_type": "3d_model"
-  },
-  "time_range": "7d",  // 1h, 1d, 7d, 30d, 90d
-  "limit": 1000
-}
-```
+### ML Operations
+- `POST /api/v1/ml/{operation}` - ML operations (detect-anomalies/forecast/predict-maintenance/train-online)
 
-Response:
-```json
-{
-  "mode": "batch",
-  "query_type": "asset_summary",
-  "data": [...],
-  "summary": {
-    "asset_count": {
-      "mean": 150.5,
-      "min": 10,
-      "max": 500,
-      "std": 45.2
-    }
-  },
-  "metadata": {
-    "row_count": 1000,
-    "execution_time_ms": 234.5,
-    "engine": "trino"
-  },
-  "execution_time_ms": 234.5
-}
-```
+### WebSocket Endpoints
+- `WS /api/v1/ws/{stream_type}/{stream_id}` - Real-time streaming (dashboard/metrics/anomalies/analytics)
 
-### Dashboards
+### Data Ingestion
+- `POST /api/v1/metrics/ingest` - Ingest metrics into the pipeline
 
-#### Platform Overview
-```http
-GET /api/v1/dashboards/overview?time_range=7d
-```
+### Export Endpoints
+- `GET /api/v1/export/prometheus` - Export metrics in Prometheus format
 
-Returns aggregated metrics across assets, users, quality, and real-time data.
-
-#### Simulation Dashboard
-```http
-GET /api/v1/dashboards/simulation/{simulation_id}
-```
-
-Real-time dashboard for specific simulation monitoring.
-
-### Real-time Streaming
-
-```javascript
-// WebSocket connection for live metrics
-const ws = new WebSocket('ws://analytics-service:8000/api/v1/ws/metrics/{simulation_id}');
-
-ws.onmessage = (event) => {
-  const metrics = JSON.parse(event.data);
-  // Update dashboard
-};
-```
-
-### Machine Learning
-
-#### Metric Prediction
-```http
-POST /api/v1/analytics/ml/predict
-{
-  "simulation_id": "sim-123",
-  "metric_name": "cpu_usage",
-  "horizon": 10  // Predict next 10 time points
-}
-```
-
-#### Anomaly Detection
-```http
-GET /api/v1/analytics/anomalies?time_range=1h
-```
-
-### Report Generation
-
-```http
-POST /api/v1/analytics/reports/generate
-{
-  "report_type": "executive_summary",
-  "parameters": {
-    "include_predictions": true
-  }
-}
-```
-
-Supported report types:
-- `executive_summary`
-- `performance_analysis`
-- `quality_assessment`
-- `user_engagement`
-- `simulation_performance`
+### Utility Endpoints
+- `GET /health` - Health check
+- `GET /api/v1/analytics/capabilities` - Get service capabilities
+- `GET /api/v1/analytics/metadata/{datasource}` - Get datasource metadata
 
 ## Configuration
 
 ### Environment Variables
 
 ```bash
-# Pulsar
+# Service Configuration
+SERVICE_NAME=analytics-service
+LOG_LEVEL=INFO
+
+# Apache Pulsar
 PULSAR_URL=pulsar://pulsar:6650
 
-# Druid
-DRUID_COORDINATOR_URL=http://druid-coordinator:8081
+# Apache Druid
 DRUID_BROKER_URL=http://druid-broker:8082
+DRUID_COORDINATOR_URL=http://druid-coordinator:8081
 DRUID_OVERLORD_URL=http://druid-overlord:8090
 
-# Ignite
+# Apache Ignite
 IGNITE_HOST=ignite
 IGNITE_PORT=10800
 
 # Elasticsearch
 ELASTICSEARCH_HOST=http://elasticsearch:9200
 
-# Service URLs
-UNIFIED_DATA_SERVICE_URL=http://unified-data-service:8000
-MLOPS_SERVICE_URL=http://mlops-service:8000
+# Apache Trino
+TRINO_HOST=trino
+TRINO_PORT=8080
+
+# MLflow
+MLFLOW_TRACKING_URI=http://mlflow:5000
 ```
 
-## Query Types
+## Query Examples
 
-### Predefined Query Types
-
-1. **asset_summary**: Asset distribution and statistics
-2. **user_behavior**: User activity and engagement metrics
-3. **quality_trends**: Data quality trends over time
-4. **simulation_stats**: Simulation performance statistics
-5. **current_metrics**: Real-time metric snapshot
-
-### Custom Queries
-
-For batch mode, you can provide raw SQL queries that will be executed via Trino:
-
-```sql
-WITH monthly_assets AS (
-  SELECT 
-    DATE_TRUNC('month', created_at) as month,
-    asset_type,
-    COUNT(*) as asset_count
-  FROM cassandra.platformq.digital_assets
-  WHERE created_at >= CURRENT_DATE - INTERVAL '6' MONTH
-  GROUP BY 1, 2
-)
-SELECT * FROM monthly_assets
-ORDER BY month DESC, asset_count DESC
+### 1. Unified Query (Auto-routing)
+```json
+POST /api/v1/query
+{
+    "metrics": ["cpu_usage", "memory_usage"],
+    "time_range": "1h",
+    "group_by": ["service_name"],
+    "mode": "auto"
+}
 ```
 
-## Performance Optimization
-
-### Query Routing Logic
-
-The service automatically routes queries based on:
-
-1. **Time Range**
-   - < 1 hour: Real-time (Ignite)
-   - 1-24 hours: Real-time (Druid)
-   - > 24 hours: Batch (Trino)
-
-2. **Query Complexity**
-   - Simple aggregations: Real-time
-   - Complex joins: Batch
-   - Historical analysis: Batch
-
-3. **Data Volume**
-   - Small datasets: Real-time
-   - Large datasets: Batch
-
-### Caching Strategy
-
-- **Ignite**: In-memory cache for hot data
-- **Druid**: Time-series optimized storage
-- **Result Cache**: 60-second TTL for dashboard queries
-
-## Monitoring
-
-### Health Check
-
-```http
-GET /api/v1/analytics/health
+### 2. Time-Series Query
+```json
+POST /api/v1/query/timeseries
+{
+    "datasource": "platform_metrics",
+    "metrics": ["request_rate", "error_rate"],
+    "intervals": ["2024-01-01/2024-01-02"],
+    "granularity": "hour"
+}
 ```
 
-Returns status of all dependencies:
-- Druid
-- Ignite
-- Elasticsearch
-- Unified Data Service
+### 3. Anomaly Detection
+```json
+POST /api/v1/ml/detect-anomalies
+{
+    "simulation_id": "sim-123",
+    "metrics": {
+        "cpu": 95.0,
+        "memory": 87.5,
+        "disk_io": 1200
+    },
+    "config": {
+        "method": "isolation_forest",
+        "sensitivity": 0.95
+    }
+}
+```
 
-### Metrics
+### 4. Create Dashboard
+```json
+POST /api/v1/dashboards
+{
+    "name": "Service Performance",
+    "type": "service-metrics",
+    "config": {
+        "services": ["auth-service", "analytics-service"],
+        "metrics": ["latency", "throughput", "error_rate"],
+        "time_range": "24h"
+    },
+    "refresh_interval": 30
+}
+```
 
-The service exposes Prometheus metrics:
-- Query execution times
-- Cache hit rates
-- Error rates by query type
-- Active WebSocket connections
+## WebSocket Streaming
+
+### Connect to Real-time Metrics
+```javascript
+const ws = new WebSocket('ws://analytics.platformq.local/api/v1/ws/metrics/my-stream');
+
+ws.onmessage = (event) => {
+    const data = JSON.parse(event.data);
+    console.log('Metrics update:', data);
+};
+```
+
+### Subscribe to Anomaly Alerts
+```javascript
+const ws = new WebSocket('ws://analytics.platformq.local/api/v1/ws/anomalies/sim-123');
+
+ws.onmessage = (event) => {
+    const alert = JSON.parse(event.data);
+    console.log('Anomaly detected:', alert);
+};
+```
 
 ## Development
 
-### Running Locally
-
+### Local Development
 ```bash
 # Install dependencies
 pip install -r requirements.txt
 
-# Start dependencies
-docker-compose up -d druid ignite elasticsearch
-
-# Run service
-uvicorn app.main:app --reload --port 8000
+# Run the service
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Testing
-
+### Running Tests
 ```bash
-# Unit tests
-pytest tests/unit
+# Run unit tests
+pytest tests/
 
-# Integration tests
-pytest tests/integration
-
-# Load tests
-locust -f tests/load/locustfile.py
+# Run with coverage
+pytest --cov=app tests/
 ```
 
-### Adding New Query Types
-
-1. Add query builder in `AnalyticsQueryRouter`:
-```python
-@staticmethod
-def _build_my_query_sql(query: AnalyticsQuery) -> str:
-    # Build SQL
-    return sql
+### Building Docker Image
+```bash
+docker build -t platformq/analytics-service:latest .
 ```
 
-2. Register in `_build_sql_from_query_type`:
-```python
-query_builders = {
-    "my_query": AnalyticsQueryRouter._build_my_query_sql,
-    # ...
-}
+## Deployment
+
+### Kubernetes Deployment
+```bash
+# Deploy using Helm
+helm install analytics-service ./iac/kubernetes/charts/analytics-service
+
+# Upgrade deployment
+helm upgrade analytics-service ./iac/kubernetes/charts/analytics-service
+
+# Check status
+kubectl get pods -l app.kubernetes.io/name=analytics-service
 ```
 
-3. Update documentation
+### Scaling
+The service supports horizontal scaling:
+- Minimum replicas: 2
+- Maximum replicas: 10
+- Auto-scaling based on CPU/Memory utilization
 
-## Architecture
+## Performance Optimization
 
-```
-┌─────────────────┐     ┌──────────────┐     ┌─────────────┐
-│   API Gateway   │────▶│  Analytics   │────▶│   Trino     │
-└─────────────────┘     │   Service    │     └─────────────┘
-                        │              │     
-                        │  ┌────────┐  │     ┌─────────────┐
-                        │  │ Router │  │────▶│    Druid    │
-                        │  └────────┘  │     └─────────────┘
-                        │              │     
-                        │              │     ┌─────────────┐
-                        └──────────────┘────▶│   Ignite    │
-                                             └─────────────┘
-```
+### Caching Strategy
+- **Query Results**: Cached in Ignite with configurable TTL
+- **ML Predictions**: 5-minute TTL for real-time predictions
+- **Dashboard Data**: 30-second TTL for live dashboards
+- **Anomaly Results**: Permanently cached for historical analysis
+
+### Query Optimization
+- **Automatic Mode Selection**: Routes to optimal engine
+- **Federated Execution**: Splits queries across engines
+- **Result Aggregation**: Merges results from multiple sources
+- **Parallel Processing**: Executes independent queries in parallel
+
+## Monitoring
+
+### Metrics
+- Query execution times by engine
+- Cache hit/miss rates
+- ML model performance metrics
+- Stream processing lag
+- WebSocket connection counts
+
+### Alerts
+- High query latency (> 5s for batch, > 500ms for real-time)
+- Low cache hit rate (< 70%)
+- Anomaly detection rate spike
+- Stream processing backlog
+- Engine connection failures
+
+## Integration
+
+### With Other Services
+- **MLOps Service**: Model management and deployment
+- **Seatunnel Service**: Data synchronization
+- **Digital Asset Service**: Asset metadata
+- **Simulation Service**: Real-time simulation metrics
+
+### Event Topics
+- `simulation.metrics.*` - Incoming simulation metrics
+- `anomalies.*` - Outgoing anomaly alerts
+- `predictions.*` - ML prediction results
+- `dashboard.updates.*` - Dashboard update events
 
 ## Troubleshooting
 
 ### Common Issues
 
 1. **Slow Queries**
-   - Check query execution plan
-   - Verify appropriate mode selection
-   - Consider adding indexes
+   - Check if using correct mode (batch vs real-time)
+   - Verify Ignite cache is operational
+   - Review query complexity
 
-2. **WebSocket Disconnections**
-   - Check network stability
-   - Verify subscription limits
-   - Monitor memory usage
+2. **Missing Real-time Data**
+   - Verify Pulsar connection
+   - Check stream processor status
+   - Ensure Druid ingestion is running
 
-3. **Mode Selection Issues**
-   - Explicitly specify mode
-   - Check time range format
-   - Verify query complexity
+3. **ML Operations Failing**
+   - Check MLflow connectivity
+   - Verify model registration
+   - Review input data format
 
-### Debug Mode
+4. **WebSocket Disconnections**
+   - Check nginx timeout settings
+   - Verify ingress WebSocket support
+   - Monitor connection limits
 
-Enable debug logging:
-```python
-import logging
-logging.getLogger("analytics-service").setLevel(logging.DEBUG)
-```
+## License
 
-## Contributing
-
-1. Follow the standardized service structure
-2. Add comprehensive tests
-3. Update documentation
-4. Ensure backwards compatibility 
+This service is part of the platformQ project and follows the project's licensing terms. 

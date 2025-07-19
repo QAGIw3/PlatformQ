@@ -108,7 +108,7 @@ PULSAR_URL=pulsar://pulsar:6650
 IGNITE_HOST=ignite
 CASSANDRA_HOSTS=cassandra
 MILVUS_HOST=milvus
-ORACLE_SERVICE_URL=http://oracle-aggregator-service:8000
+ORACLE_SERVICE_URL=http://blockchain-gateway-service:8000
 ```
 
 ## Integration with Other Services

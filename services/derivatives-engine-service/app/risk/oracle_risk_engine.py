@@ -56,7 +56,7 @@ class OracleRiskEngine:
     
     def __init__(self):
         self.oracle_client = ServiceClient(
-            service_name="oracle-aggregator-service",
+            service_name="blockchain-gateway-service",
             circuit_breaker_threshold=5,
             rate_limit=100.0
         )

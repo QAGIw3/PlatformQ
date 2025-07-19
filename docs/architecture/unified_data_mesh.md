@@ -239,7 +239,7 @@ curl http://seatunnel-service:8000/api/v1/pipelines/health
 ### 3. Register Data Asset
 ```bash
 # Register a new data asset in the catalog
-curl -X POST http://data-governance-service:8000/api/v1/assets \
+curl -X POST http://unified-data-service:8000/api/v1/assets \
   -H "Content-Type: application/json" \
   -d '{
     "asset_name": "Customer Orders",
@@ -255,7 +255,7 @@ curl -X POST http://data-governance-service:8000/api/v1/assets \
 ### 4. Analyze Impact
 ```bash
 # Get impact analysis for an asset
-curl http://data-governance-service:8000/api/v1/lineage/impact/cassandra.platformq.orders
+curl http://unified-data-service:8000/api/v1/lineage/impact/cassandra.platformq.orders
 ```
 
 ## Monitoring and Operations

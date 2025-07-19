@@ -1,0 +1,166 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="
+       http://www.springframework.org/schema/beans
+       http://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean class="org.apache.ignite.configuration.IgniteConfiguration">
+        <!-- Set cluster name -->
+        <property name="igniteInstanceName" value="platformq-analytics"/>
+        
+        <!-- Enable peer class loading -->
+        <property name="peerClassLoadingEnabled" value="true"/>
+        
+        <!-- Memory configuration -->
+        <property name="dataStorageConfiguration">
+            <bean class="org.apache.ignite.configuration.DataStorageConfiguration">
+                <!-- Default memory region configuration -->
+                <property name="defaultDataRegionConfiguration">
+                    <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                        <property name="name" value="Default_Region"/>
+                        <!-- 2GB initial size -->
+                        <property name="initialSize" value="#{2L * 1024 * 1024 * 1024}"/>
+                        <!-- 4GB maximum size -->
+                        <property name="maxSize" value="#{4L * 1024 * 1024 * 1024}"/>
+                        <!-- Enable persistence -->
+                        <property name="persistenceEnabled" value="true"/>
+                        <!-- Enable metrics -->
+                        <property name="metricsEnabled" value="true"/>
+                    </bean>
+                </property>
+                
+                <!-- Set storage path -->
+                <property name="storagePath" value="/persistence/storage"/>
+                <property name="walPath" value="/persistence/wal"/>
+                <property name="walArchivePath" value="/persistence/wal-archive"/>
+            </bean>
+        </property>
+        
+        <!-- Cache configurations -->
+        <property name="cacheConfiguration">
+            <list>
+                <!-- Query results cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="query_cache"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="writeSynchronizationMode" value="PRIMARY_SYNC"/>
+                    <property name="partitionLossPolicy" value="READ_WRITE_SAFE"/>
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="SECONDS"/>
+                                    <constructor-arg value="300"/> <!-- 5 minutes TTL -->
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                    <property name="statisticsEnabled" value="true"/>
+                    <property name="queryIndexEnabled" value="true"/>
+                </bean>
+                
+                <!-- Real-time metrics cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="realtime_metrics"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="writeSynchronizationMode" value="PRIMARY_SYNC"/>
+                    <property name="partitionLossPolicy" value="READ_WRITE_SAFE"/>
+                    <property name="statisticsEnabled" value="true"/>
+                    <property name="queryIndexEnabled" value="true"/>
+                    <property name="sqlSchema" value="PUBLIC"/>
+                </bean>
+                
+                <!-- Stream aggregations cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="stream_aggregations"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="writeSynchronizationMode" value="FULL_SYNC"/>
+                    <property name="statisticsEnabled" value="true"/>
+                </bean>
+                
+                <!-- ML model cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="ml_models"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="writeSynchronizationMode" value="FULL_SYNC"/>
+                    <property name="statisticsEnabled" value="true"/>
+                </bean>
+                
+                <!-- Feature store cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="feature_store"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="writeSynchronizationMode" value="PRIMARY_SYNC"/>
+                    <property name="partitionLossPolicy" value="READ_WRITE_SAFE"/>
+                    <property name="statisticsEnabled" value="true"/>
+                    <property name="queryIndexEnabled" value="true"/>
+                    <property name="sqlSchema" value="FEATURES"/>
+                </bean>
+            </list>
+        </property>
+        
+        <!-- Discovery configuration -->
+        <property name="discoverySpi">
+            <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+                <property name="ipFinder">
+                    <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.vm.TcpDiscoveryVmIpFinder">
+                        <property name="addresses">
+                            <list>
+                                <value>ignite-1:47500</value>
+                                <value>ignite-2:47500</value>
+                            </list>
+                        </property>
+                    </bean>
+                </property>
+            </bean>
+        </property>
+        
+        <!-- Communication SPI -->
+        <property name="communicationSpi">
+            <bean class="org.apache.ignite.spi.communication.tcp.TcpCommunicationSpi">
+                <property name="messageQueueLimit" value="1024"/>
+                <property name="socketWriteTimeout" value="10000"/>
+            </bean>
+        </property>
+        
+        <!-- Enable SQL -->
+        <property name="sqlConfiguration">
+            <bean class="org.apache.ignite.configuration.SqlConfiguration">
+                <property name="sqlSchemas">
+                    <list>
+                        <value>PUBLIC</value>
+                        <value>ANALYTICS</value>
+                        <value>FEATURES</value>
+                    </list>
+                </property>
+            </bean>
+        </property>
+        
+        <!-- Client connector configuration (for JDBC/ODBC) -->
+        <property name="clientConnectorConfiguration">
+            <bean class="org.apache.ignite.configuration.ClientConnectorConfiguration">
+                <property name="port" value="10800"/>
+                <property name="portRange" value="10"/>
+                <property name="threadPoolSize" value="16"/>
+            </bean>
+        </property>
+        
+        <!-- Enable metrics -->
+        <property name="metricsLogFrequency" value="60000"/> <!-- Log metrics every minute -->
+        
+        <!-- Failure detection timeout -->
+        <property name="failureDetectionTimeout" value="10000"/>
+        
+        <!-- Work directory -->
+        <property name="workDirectory" value="/persistence/work"/>
+    </bean>
+</beans> 

@@ -1,0 +1,10 @@
+apiVersion: v2
+name: unified-data-service
+description: Comprehensive data management platform with federated queries, governance, quality, and compliance
+type: application
+version: 1.0.0
+appVersion: "2.0.0"
+dependencies:
+  - name: common
+    version: 1.x.x
+    repository: "file://../common" 

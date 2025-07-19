@@ -8,8 +8,8 @@ const apiClient = axios.create({
 });
 
 // Proposals Service
-export const getProposals = () => apiClient.get('/proposals-service/proposals');
-export const createProposal = (proposalData) => apiClient.post('/proposals-service/proposals', proposalData);
+export const getProposals = () => apiClient.get('/governance-service/api/v1/proposals');
+export const createProposal = (proposalData) => apiClient.post('/governance-service/api/v1/proposals', proposalData);
 
 // Projects Service
 export const getProjects = () => apiClient.get('/projects-service/');

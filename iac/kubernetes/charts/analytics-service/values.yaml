@@ -1,0 +1,147 @@
+replicaCount: 2
+
+image:
+  repository: platformq/analytics-service
+  pullPolicy: IfNotPresent
+  tag: "3.0.0"
+
+imagePullSecrets: []
+nameOverride: ""
+fullnameOverride: ""
+
+serviceAccount:
+  create: true
+  annotations: {}
+  name: ""
+
+podAnnotations: {}
+
+podSecurityContext:
+  runAsNonRoot: true
+  runAsUser: 1000
+  fsGroup: 1000
+
+securityContext:
+  capabilities:
+    drop:
+    - ALL
+  readOnlyRootFilesystem: true
+  runAsNonRoot: true
+  runAsUser: 1000
+
+service:
+  type: ClusterIP
+  port: 8000
+  targetPort: 8000
+
+ingress:
+  enabled: true
+  className: "nginx"
+  annotations:
+    nginx.ingress.kubernetes.io/websocket-services: "analytics-service"
+    nginx.ingress.kubernetes.io/proxy-read-timeout: "3600"
+    nginx.ingress.kubernetes.io/proxy-send-timeout: "3600"
+  hosts:
+    - host: analytics.platformq.local
+      paths:
+        - path: /
+          pathType: Prefix
+  tls: []
+
+resources:
+  limits:
+    cpu: 2000m
+    memory: 4Gi
+  requests:
+    cpu: 500m
+    memory: 1Gi
+
+autoscaling:
+  enabled: true
+  minReplicas: 2
+  maxReplicas: 10
+  targetCPUUtilizationPercentage: 80
+  targetMemoryUtilizationPercentage: 80
+
+nodeSelector: {}
+
+tolerations: []
+
+affinity:
+  podAntiAffinity:
+    preferredDuringSchedulingIgnoredDuringExecution:
+    - weight: 100
+      podAffinityTerm:
+        labelSelector:
+          matchExpressions:
+          - key: app.kubernetes.io/name
+            operator: In
+            values:
+            - analytics-service
+        topologyKey: kubernetes.io/hostname
+
+env:
+  - name: SERVICE_NAME
+    value: "analytics-service"
+  - name: LOG_LEVEL
+    value: "INFO"
+  - name: PULSAR_URL
+    value: "pulsar://pulsar:6650"
+  - name: DRUID_BROKER_URL
+    value: "http://druid-broker:8082"
+  - name: DRUID_COORDINATOR_URL
+    value: "http://druid-coordinator:8081"
+  - name: DRUID_OVERLORD_URL
+    value: "http://druid-overlord:8090"
+  - name: IGNITE_HOST
+    value: "ignite"
+  - name: IGNITE_PORT
+    value: "10800"
+  - name: ELASTICSEARCH_HOST
+    value: "http://elasticsearch:9200"
+  - name: TRINO_HOST
+    value: "trino"
+  - name: TRINO_PORT
+    value: "8080"
+  - name: MLFLOW_TRACKING_URI
+    value: "http://mlflow:5000"
+
+livenessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 30
+  periodSeconds: 30
+  timeoutSeconds: 10
+  failureThreshold: 3
+
+readinessProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 20
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 3
+
+startupProbe:
+  httpGet:
+    path: /health
+    port: 8000
+  initialDelaySeconds: 10
+  periodSeconds: 10
+  timeoutSeconds: 5
+  failureThreshold: 30
+
+# Additional configurations for analytics engines
+druid:
+  enabled: false  # Set to true if deploying Druid with this chart
+
+ignite:
+  enabled: false  # Set to true if deploying Ignite with this chart
+
+elasticsearch:
+  enabled: false  # Set to true if deploying Elasticsearch with this chart
+
+trino:
+  enabled: false  # Set to true if deploying Trino with this chart 

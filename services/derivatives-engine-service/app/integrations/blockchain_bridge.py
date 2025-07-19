@@ -13,7 +13,7 @@ logger = logging.getLogger(__name__)
 class BlockchainEventBridgeClient:
     """Client for interacting with blockchain event bridge service"""
     
-    def __init__(self, base_url: str = "http://blockchain-event-bridge:8000"):
+    def __init__(self, base_url: str = "http://blockchain-gateway-service:8000"):
         self.base_url = base_url
         self.client = httpx.AsyncClient(timeout=30.0)
         

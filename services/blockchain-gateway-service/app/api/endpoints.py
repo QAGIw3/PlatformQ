@@ -6,13 +6,20 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from pydantic import BaseModel, Field
 from typing import Dict, Any, Optional, List
 from decimal import Decimal
+import logging
 
+from app.core import BlockchainGateway, get_gateway
 from platformq_blockchain_common import (
     ChainType, GasStrategy, SmartContract,
-    ChainNotSupportedError
+    ChainNotSupportedError,
+    TransactionRequest,
+    TransactionResult,
+    TransactionStatus
 )
 
-router = APIRouter()
+logger = logging.getLogger(__name__)
+
+router = APIRouter(tags=["blockchain"])
 
 
 # Request/Response models
@@ -247,3 +254,203 @@ async def get_chain_metadata(
 async def health_check():
     """Health check endpoint"""
     return {"status": "healthy", "service": "blockchain-gateway"} 
+
+
+# Oracle endpoints
+@router.get("/oracle/price/{asset}")
+async def get_oracle_price(
+    asset: str,
+    chains: Optional[List[str]] = Query(None),
+    gateway: BlockchainGateway = Depends(get_gateway)
+):
+    """Get aggregated price for an asset across multiple oracles"""
+    try:
+        price_aggregator = gateway.app.state.price_aggregator
+        if not price_aggregator:
+            raise HTTPException(status_code=503, detail="Oracle aggregator not available")
+            
+        price_data = await price_aggregator.get_price(
+            asset=asset,
+            chains=chains or ["ethereum", "polygon", "arbitrum"]
+        )
+        
+        return {
+            "asset": asset,
+            "price": str(price_data["median_price"]),
+            "sources": price_data["sources"],
+            "timestamp": price_data["timestamp"]
+        }
+    except Exception as e:
+        logger.error(f"Error fetching oracle price: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/oracle/feed/create")
+async def create_price_feed(
+    asset: str,
+    chains: List[str],
+    update_interval: int = 300,
+    gateway: BlockchainGateway = Depends(get_gateway)
+):
+    """Create a new price feed for an asset"""
+    try:
+        price_aggregator = gateway.app.state.price_aggregator
+        feed_id = await price_aggregator.create_feed(
+            asset=asset,
+            chains=chains,
+            update_interval=update_interval
+        )
+        
+        return {
+            "feed_id": feed_id,
+            "asset": asset,
+            "chains": chains,
+            "update_interval": update_interval
+        }
+    except Exception as e:
+        logger.error(f"Error creating price feed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Cross-chain bridge endpoints
+@router.post("/bridge/transfer")
+async def bridge_transfer(
+    from_chain: str,
+    to_chain: str,
+    asset: str,
+    amount: str,
+    recipient: str,
+    gateway: BlockchainGateway = Depends(get_gateway)
+):
+    """Initiate a cross-chain bridge transfer"""
+    try:
+        bridge = gateway.app.state.cross_chain_bridge
+        if not bridge:
+            raise HTTPException(status_code=503, detail="Cross-chain bridge not available")
+            
+        transfer_id = await bridge.initiate_transfer(
+            from_chain=from_chain,
+            to_chain=to_chain,
+            asset=asset,
+            amount=Decimal(amount),
+            recipient=recipient
+        )
+        
+        return {
+            "transfer_id": transfer_id,
+            "status": "initiated",
+            "from_chain": from_chain,
+            "to_chain": to_chain,
+            "asset": asset,
+            "amount": amount
+        }
+    except Exception as e:
+        logger.error(f"Error initiating bridge transfer: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/bridge/transfer/{transfer_id}")
+async def get_bridge_transfer_status(
+    transfer_id: str,
+    gateway: BlockchainGateway = Depends(get_gateway)
+):
+    """Get status of a bridge transfer"""
+    try:
+        bridge = gateway.app.state.cross_chain_bridge
+        status = await bridge.get_transfer_status(transfer_id)
+        
+        return {
+            "transfer_id": transfer_id,
+            "status": status["status"],
+            "from_tx": status.get("from_tx"),
+            "to_tx": status.get("to_tx"),
+            "confirmations": status.get("confirmations", 0)
+        }
+    except Exception as e:
+        logger.error(f"Error getting transfer status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# Proposal execution endpoints
+@router.post("/proposals/execute")
+async def execute_proposal(
+    proposal_id: str,
+    chains: List[str],
+    execution_strategy: str = "sequential",
+    gateway: BlockchainGateway = Depends(get_gateway)
+):
+    """Execute a cross-chain proposal"""
+    try:
+        executor = gateway.app.state.proposal_executor
+        if not executor:
+            raise HTTPException(status_code=503, detail="Proposal executor not available")
+            
+        execution_id = await executor.execute_proposal(
+            proposal_id=proposal_id,
+            chains=chains,
+            strategy=execution_strategy
+        )
+        
+        return {
+            "execution_id": execution_id,
+            "proposal_id": proposal_id,
+            "chains": chains,
+            "strategy": execution_strategy,
+            "status": "executing"
+        }
+    except Exception as e:
+        logger.error(f"Error executing proposal: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/proposals/execution/{execution_id}")
+async def get_proposal_execution_status(
+    execution_id: str,
+    gateway: BlockchainGateway = Depends(get_gateway)
+):
+    """Get status of proposal execution"""
+    try:
+        executor = gateway.app.state.proposal_executor
+        status = await executor.get_execution_status(execution_id)
+        
+        return {
+            "execution_id": execution_id,
+            "status": status["overall_status"],
+            "chain_statuses": status["chain_statuses"],
+            "errors": status.get("errors", [])
+        }
+    except Exception as e:
+        logger.error(f"Error getting execution status: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+# KYC/AML endpoints
+@router.post("/compliance/check")
+async def check_compliance(
+    address: str,
+    chain: str,
+    check_type: str = "basic",
+    gateway: BlockchainGateway = Depends(get_gateway)
+):
+    """Check KYC/AML compliance for an address"""
+    try:
+        kyc_aml = gateway.app.state.kyc_aml_service
+        if not kyc_aml:
+            raise HTTPException(status_code=503, detail="KYC/AML service not available")
+            
+        result = await kyc_aml.check_address(
+            address=address,
+            chain=chain,
+            check_type=check_type
+        )
+        
+        return {
+            "address": address,
+            "chain": chain,
+            "risk_score": result["risk_score"],
+            "flags": result["flags"],
+            "compliant": result["compliant"]
+        }
+    except Exception as e:
+        logger.error(f"Error checking compliance: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 

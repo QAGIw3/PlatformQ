@@ -135,39 +135,7 @@ jobs:
             --set provisioning-service.image.tag=${IMAGE_TAG} \
             --set provisioning-service.image.repository=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/provisioning-service
 
-  build-and-deploy-projects-service:
-    if: github.event_name == 'push' && github.ref == 'refs/heads/main'
-    needs: lint-and-test
-    runs-on: ubuntu-latest
-    permissions:
-      contents: 'read'
-      id-token: 'write'
-    steps:
-      - name: Checkout
-        uses: actions/checkout@v3
-      - name: Authenticate to Google Cloud
-        uses: 'google-github-actions/auth@v1'
-        with:
-          workload_identity_provider: ${{ secrets.GCP_WIF_PROVIDER }}
-          service_account: ${{ secrets.GCP_WIF_SERVICE_ACCOUNT }}
-      - name: Set up Cloud SDK
-        uses: 'google-github-actions/setup-gcloud@v1'
-      - name: Configure Docker
-        run: gcloud auth configure-docker ${{ env.GCP_REGION }}-docker.pkg.dev
-      - name: Build and Push Docker Image
-        run: |
-          IMAGE_TAG=${{ github.sha }}
-          docker build -t ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/projects-service:${IMAGE_TAG} ./services/projects-service
-          docker push ${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/projects-service:${IMAGE_TAG}
-      - name: Deploy to GKE
-        run: |
-          IMAGE_TAG=${{ github.sha }}
-          gcloud container clusters get-credentials ${{ env.GKE_CLUSTER_NAME }} --region ${{ env.GCP_REGION }}
-          helm dependency update iac/kubernetes/charts/platformq-stack
-          helm upgrade --install platformq iac/kubernetes/charts/platformq-stack \
-            --namespace platformq --create-namespace \
-            --set projects-service.image.tag=${IMAGE_TAG} \
-            --set projects-service.image.repository=${{ env.GCP_REGION }}-docker.pkg.dev/${{ secrets.GCP_PROJECT_ID }}/${{ env.ARTIFACT_REGISTRY }}/projects-service
+
 
   build-and-deploy-simulation-service:
     if: github.event_name == 'push' && github.ref == 'refs/heads/main'
