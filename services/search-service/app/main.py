@@ -41,6 +41,7 @@ from .indexer import AssetIndexer, SimulationIndexer, ProjectIndexer, DocumentIn
 from .query_parser import QueryParser
 from .graph_search_integration import GraphEnrichedSearchEngine, GraphSearchOrchestrator, GraphSearchConfig
 from .services.vector_search import VectorSearchService
+from .services.es_vector_search import ESVectorSearchService
 from .core.index_mapping import INDEX_MAPPING
 from .core.config import settings
 
@@ -72,9 +73,24 @@ async def lifespan(app: FastAPI):
     service_clients = ServiceClients(base_timeout=30.0, max_retries=3)
     app.state.service_clients = service_clients
     
-    # Initialize Elasticsearch
-    es_client = AsyncElasticsearch([settings_dict.get("elasticsearch_url", "http://elasticsearch:9200")])
+    # Initialize Elasticsearch v8
+    es_config = {
+        "hosts": [settings_dict.get("elasticsearch_url", "http://elasticsearch:9200")],
+        "verify_certs": settings.ES_VERIFY_CERTS,
+        "ssl_show_warn": False
+    }
+    if settings.ES_USE_SSL:
+        es_config["use_ssl"] = True
+        
+    es_client = AsyncElasticsearch(**es_config)
     app.state.es_client = es_client
+    
+    # Verify Elasticsearch v8
+    info = await es_client.info()
+    es_version = info["version"]["number"]
+    logger.info(f"Connected to Elasticsearch v{es_version}")
+    if not es_version.startswith("8"):
+        logger.warning(f"Expected Elasticsearch v8, got v{es_version}")
     
     # Create indices if they don't exist
     indices = ["assets", "simulations", "projects", "documents", "users"]
@@ -103,6 +119,14 @@ async def lifespan(app: FastAPI):
         )
         await vector_service.initialize()
         app.state.vector_service = vector_service
+    
+    # Initialize native Elasticsearch v8 vector search
+    es_vector_service = None
+    if settings.ENABLE_ES_VECTOR_SEARCH:
+        es_vector_service = ESVectorSearchService(es_client)
+        await es_vector_service.initialize()
+        app.state.es_vector_service = es_vector_service
+        logger.info("Initialized native Elasticsearch v8 vector search")
     
     # Initialize indexers
     app.state.asset_indexer = AssetIndexer(es_client, vector_service)

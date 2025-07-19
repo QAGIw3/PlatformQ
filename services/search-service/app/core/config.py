@@ -13,10 +13,13 @@ class Settings(BaseSettings):
     SERVICE_NAME: str = "search-service"
     VERSION: str = "2.0.0"
     
-    # Elasticsearch
+    # Elasticsearch v8
     ES_HOST: str = os.getenv("ELASTICSEARCH_HOST", "elasticsearch:9200")
     ES_INDEX_NAME: str = os.getenv("ES_INDEX_NAME", "platformq_search")
+    ES_INDEX_PREFIX: str = os.getenv("ES_INDEX_PREFIX", "platformq")
     ES_TIMEOUT: int = 30
+    ES_USE_SSL: bool = os.getenv("ES_USE_SSL", "false").lower() == "true"
+    ES_VERIFY_CERTS: bool = os.getenv("ES_VERIFY_CERTS", "false").lower() == "true"
     
     # Milvus vector database
     MILVUS_HOST: str = os.getenv("MILVUS_HOST", "milvus")
@@ -61,6 +64,17 @@ class Settings(BaseSettings):
     ENABLE_QUERY_UNDERSTANDING: bool = True
     ENABLE_MULTI_MODAL_SEARCH: bool = True
     ENABLE_SEARCH_ANALYTICS: bool = True
+    ENABLE_ES_VECTOR_SEARCH: bool = True  # Native ES v8 vector search
+    ENABLE_RAG: bool = True  # Retrieval Augmented Generation
+    ENABLE_CODE_SEARCH: bool = True
+    ENABLE_MULTILINGUAL: bool = True
+    ENABLE_GRAPH_SEARCH: bool = True
+    
+    # RAG (Retrieval Augmented Generation)
+    OPENAI_API_KEY: str = os.getenv("OPENAI_API_KEY", "")
+    RAG_MODEL: str = os.getenv("RAG_MODEL", "gpt-3.5-turbo")
+    RAG_MAX_TOKENS: int = int(os.getenv("RAG_MAX_TOKENS", "500"))
+    RAG_TEMPERATURE: float = float(os.getenv("RAG_TEMPERATURE", "0.2"))
     
     # Logging
     LOG_LEVEL: str = os.getenv("LOG_LEVEL", "INFO")

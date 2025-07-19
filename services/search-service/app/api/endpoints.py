@@ -1,4 +1,4 @@
-from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, BackgroundTasks
+from fastapi import APIRouter, Depends, HTTPException, Query, UploadFile, File, BackgroundTasks, Body
 from typing import List, Optional, Dict, Any
 from elasticsearch import AsyncElasticsearch
 from pydantic import BaseModel, Field
@@ -7,6 +7,7 @@ import os
 
 from ..dependencies import get_es_client
 from ..services.vector_search import get_vector_search_service, VectorSearchService
+from ..services.es_vector_search import ESVectorSearchService
 from ..services.hybrid_search import HybridSearchService
 from ..services.query_understanding import QueryUnderstandingService
 from ..core.config import settings
@@ -453,6 +454,253 @@ async def get_collection_stats(
                 stats[collection_name] = {"status": "not_available"}
         
         return stats
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/search/knn")
+async def knn_search(
+    request: SearchRequest,
+    es_client: AsyncElasticsearch = Depends(get_es_client)
+):
+    """Native Elasticsearch k-NN vector search"""
+    try:
+        es_vector_service = ESVectorSearchService(es_client)
+        
+        results = await es_vector_service.knn_search(
+            query_vector=request.query,
+            index=request.filters.get("index", "unified") if request.filters else "unified",
+            field=request.filters.get("vector_field", "text_embedding") if request.filters else "text_embedding",
+            k=request.size,
+            filters=request.filters,
+            tenant_id=request.tenant_id
+        )
+        
+        return {
+            "search_type": "knn",
+            "total": len(results),
+            "results": results
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/search/semantic")
+async def semantic_search(
+    request: SearchRequest,
+    es_client: AsyncElasticsearch = Depends(get_es_client)
+):
+    """Semantic search across multiple vector fields"""
+    try:
+        es_vector_service = ESVectorSearchService(es_client)
+        
+        results = await es_vector_service.semantic_search(
+            query=request.query,
+            index=request.filters.get("index", "unified") if request.filters else "unified",
+            k=request.size,
+            filters=request.filters,
+            tenant_id=request.tenant_id,
+            include_explanations=request.include_metadata
+        )
+        
+        return {
+            "search_type": "semantic",
+            "total": len(results),
+            "results": results
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/search/hybrid-v8")
+async def hybrid_search_v8(
+    request: SearchRequest,
+    es_client: AsyncElasticsearch = Depends(get_es_client)
+):
+    """Hybrid search using native Elasticsearch v8 text + vector"""
+    try:
+        es_vector_service = ESVectorSearchService(es_client)
+        
+        # Extract weights from filters
+        text_boost = float(request.filters.get("text_boost", 1.0)) if request.filters else 1.0
+        vector_boost = float(request.filters.get("vector_boost", 1.0)) if request.filters else 1.0
+        
+        results = await es_vector_service.hybrid_search(
+            query=request.query,
+            index=request.filters.get("index", "unified") if request.filters else "unified",
+            k=request.size,
+            filters=request.filters,
+            tenant_id=request.tenant_id,
+            text_boost=text_boost,
+            vector_boost=vector_boost
+        )
+        
+        return {
+            "search_type": "hybrid-v8",
+            "total": len(results),
+            "results": results
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class RAGRequest(BaseModel):
+    """RAG search request model"""
+    question: str = Field(..., description="Question to answer")
+    index: str = Field("documents", description="Index to search")
+    k: int = Field(5, description="Number of documents to retrieve")
+    chunk_size: int = Field(3, description="Number of chunks per document")
+    filters: Optional[Dict[str, Any]] = Field(None, description="Additional filters")
+    tenant_id: Optional[str] = Field(None, description="Tenant ID")
+    include_sources: bool = Field(True, description="Include source documents")
+
+
+@router.post("/search/rag")
+async def rag_search(
+    request: RAGRequest,
+    es_client: AsyncElasticsearch = Depends(get_es_client)
+):
+    """Retrieval Augmented Generation search for Q&A"""
+    try:
+        if not settings.ENABLE_RAG:
+            raise HTTPException(
+                status_code=400, 
+                detail="RAG is not enabled. Set ENABLE_RAG=true and provide OPENAI_API_KEY"
+            )
+        
+        es_vector_service = ESVectorSearchService(es_client)
+        
+        result = await es_vector_service.rag_search(
+            question=request.question,
+            index=request.index,
+            k=request.k,
+            chunk_size=request.chunk_size,
+            filters=request.filters,
+            tenant_id=request.tenant_id,
+            include_sources=request.include_sources
+        )
+        
+        return result
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+class IndexDocumentsRequest(BaseModel):
+    """Request for indexing documents with embeddings"""
+    documents: List[Dict[str, Any]] = Field(..., description="Documents to index")
+    index: str = Field("unified", description="Target index")
+    generate_embeddings: bool = Field(True, description="Generate embeddings for documents")
+
+
+@router.post("/index/documents")
+async def index_documents_with_embeddings(
+    request: IndexDocumentsRequest,
+    background_tasks: BackgroundTasks,
+    es_client: AsyncElasticsearch = Depends(get_es_client)
+):
+    """Index documents with generated embeddings"""
+    try:
+        if not request.generate_embeddings:
+            # Direct indexing without embeddings
+            raise HTTPException(
+                status_code=400,
+                detail="Use standard indexing endpoint for documents without embeddings"
+            )
+        
+        es_vector_service = ESVectorSearchService(es_client)
+        
+        # Start indexing in background
+        background_tasks.add_task(
+            es_vector_service.index_with_embeddings,
+            documents=request.documents,
+            index=request.index
+        )
+        
+        return {
+            "status": "accepted",
+            "message": f"Indexing {len(request.documents)} documents with embeddings",
+            "index": request.index
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/indices/stats")
+async def get_index_statistics(
+    es_client: AsyncElasticsearch = Depends(get_es_client)
+):
+    """Get statistics for all search indices"""
+    try:
+        # Get all indices
+        indices = await es_client.cat.indices(format="json")
+        
+        # Filter platform indices
+        platform_indices = [
+            idx for idx in indices 
+            if idx["index"].startswith(settings.ES_INDEX_PREFIX)
+        ]
+        
+        # Get detailed stats
+        stats = {}
+        for idx in platform_indices:
+            index_name = idx["index"]
+            
+            # Get mapping to check for vector fields
+            mapping = await es_client.indices.get_mapping(index=index_name)
+            properties = mapping[index_name]["mappings"]["properties"]
+            
+            vector_fields = []
+            for field, config in properties.items():
+                if config.get("type") == "dense_vector":
+                    vector_fields.append({
+                        "field": field,
+                        "dims": config.get("dims"),
+                        "similarity": config.get("similarity", "l2")
+                    })
+            
+            stats[index_name] = {
+                "health": idx["health"],
+                "status": idx["status"],
+                "docs_count": int(idx["docs.count"] or 0),
+                "store_size": idx["store.size"],
+                "vector_fields": vector_fields,
+                "vector_enabled": len(vector_fields) > 0
+            }
+        
+        return {
+            "total_indices": len(platform_indices),
+            "indices": stats,
+            "elasticsearch_version": (await es_client.info())["version"]["number"]
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/embeddings/generate")
+async def generate_embeddings(
+    texts: List[str] = Body(..., description="Texts to generate embeddings for"),
+    model_type: str = Body("text", description="Model type: text, code, multilingual"),
+    es_client: AsyncElasticsearch = Depends(get_es_client)
+):
+    """Generate embeddings for given texts"""
+    try:
+        es_vector_service = ESVectorSearchService(es_client)
+        
+        embeddings = await es_vector_service.embed_text(texts, model_type=model_type)
+        
+        return {
+            "embeddings": embeddings.tolist(),
+            "model_type": model_type,
+            "dimensions": embeddings.shape[1] if len(embeddings.shape) > 1 else len(embeddings),
+            "count": len(texts)
+        }
         
     except Exception as e:
         raise HTTPException(status_code=500, detail=str(e))

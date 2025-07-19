@@ -6,7 +6,8 @@
 -e ../../libs/platformq-events
 fastapi
 uvicorn
-elasticsearch
+elasticsearch>=8.0.0,<9.0.0  # Elasticsearch v8
+elasticsearch-async  # For async operations
 pydantic
 
 # Vector search and embeddings
