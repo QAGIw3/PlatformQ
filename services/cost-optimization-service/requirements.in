@@ -1,0 +1,42 @@
+# Base requirements
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.4.2
+pydantic-settings==2.0.3
+
+# Cloud provider SDKs
+boto3==1.28.84  # AWS
+kubernetes==28.1.0  # Kubernetes
+
+# Data storage
+cassandra-driver==3.28.0
+pyignite==0.6.1
+
+# Messaging
+pulsar-client==3.3.0
+
+# Monitoring and metrics
+prometheus-client==0.18.0
+prometheus-api-client==0.5.3
+
+# Service discovery
+python-consul==1.1.0
+
+# HTTP client
+aiohttp==3.9.0
+
+# Data analysis and ML
+numpy==1.24.3
+pandas==2.1.3
+scikit-learn==1.3.2
+scipy==1.11.4
+
+# Scheduling
+apscheduler==3.10.4
+
+# Shared libraries
+platformq-cost-common
+platformq-resource-common
+
+# Development
+python-dotenv==1.0.0 

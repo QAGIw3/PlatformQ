@@ -1,0 +1,24 @@
+{
+  "service": {
+    "name": "quota-management-service",
+    "tags": ["quota", "resource-management", "limits"],
+    "port": 8005,
+    "meta": {
+      "version": "1.0.0",
+      "description": "Manages resource quotas for tenants",
+      "endpoints": {
+        "quotas": "/api/v1/quotas/{tenant_id}",
+        "usage": "/api/v1/usage/{tenant_id}",
+        "allocations": "/api/v1/allocations"
+      }
+    },
+    "check": {
+      "id": "quota-management-health",
+      "name": "HTTP API Health",
+      "http": "http://quota-management-service:8005/health",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "enable_tag_override": false
+  }
+} 

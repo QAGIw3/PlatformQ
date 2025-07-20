@@ -1,0 +1,24 @@
+{
+  "service": {
+    "name": "resource-monitoring-service",
+    "tags": ["monitoring", "metrics", "observability"],
+    "port": 8002,
+    "meta": {
+      "version": "1.0.0",
+      "description": "Monitors resource usage across the platform",
+      "endpoints": {
+        "service_metrics": "/api/v1/metrics/service/{service_name}",
+        "cluster_metrics": "/api/v1/metrics/cluster",
+        "anomalies": "/api/v1/anomalies"
+      }
+    },
+    "check": {
+      "id": "resource-monitoring-health",
+      "name": "HTTP API Health",
+      "http": "http://resource-monitoring-service:8002/health",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "enable_tag_override": false
+  }
+} 

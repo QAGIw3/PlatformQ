@@ -1,16 +1,10 @@
-"""Compute Provisioning Service
+"""Resource Monitoring Service
 
-Handles compute resource provisioning across multiple cloud providers.
-This service has been refactored to focus solely on compute provisioning.
-Other functionality has been moved to:
-- tenant-provisioning-service: Orchestrates all tenant resource provisioning
-- resource-monitoring-service: Monitors resource usage
-- resource-scaling-service: Handles auto-scaling
-- cost-optimization-service: Provides cost analysis and optimization
-- quota-management-service: Manages resource quotas
+Monitors resource usage across all services and infrastructure components.
 """
 
 from contextlib import asynccontextmanager
+from typing import Optional
 import logging
 
 from fastapi import FastAPI, HTTPException, Depends
@@ -20,7 +14,7 @@ from prometheus_client import generate_latest
 from platformq_shared.security import get_current_user_from_trusted_header as get_current_user
 
 from .config import settings
-from .compute_provisioning import ComputeProvisioner
+from .monitor import ResourceMonitor
 from .api import router as api_router
 
 # Configure logging
@@ -28,33 +22,34 @@ logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Global instances
-compute_provisioner = None
+monitor: Optional[ResourceMonitor] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global compute_provisioner
+    global monitor
     
-    # Initialize compute provisioner
-    compute_provisioner = ComputeProvisioner(settings)
-    await compute_provisioner.initialize()
+    # Initialize monitor
+    monitor = ResourceMonitor(settings)
+    await monitor.initialize()
+    await monitor.start()
     
-    logger.info("Compute Provisioning Service started")
+    logger.info("Resource Monitoring Service started")
     
     yield
     
     # Cleanup
-    await compute_provisioner.shutdown()
+    await monitor.stop()
     
-    logger.info("Compute Provisioning Service stopped")
+    logger.info("Resource Monitoring Service stopped")
 
 
 # Create FastAPI app
 app = FastAPI(
-    title="Compute Provisioning Service",
-    description="Handles compute resource provisioning across cloud providers",
-    version="2.0.0",
+    title="Resource Monitoring Service",
+    description="Monitors resource usage across the platform",
+    version="1.0.0",
     lifespan=lifespan
 )
 
@@ -77,8 +72,7 @@ async def health_check():
     return {
         "status": "healthy",
         "service": settings.service_name,
-        "version": "2.0.0",
-        "refactored": True
+        "version": "1.0.0"
     }
 
 

@@ -1,0 +1,24 @@
+{
+  "service": {
+    "name": "cost-optimization-service",
+    "tags": ["cost", "optimization", "finops"],
+    "port": 8004,
+    "meta": {
+      "version": "1.0.0",
+      "description": "Analyzes costs and provides optimization recommendations",
+      "endpoints": {
+        "analysis": "/api/v1/analysis/{service_name}",
+        "recommendations": "/api/v1/recommendations",
+        "reports": "/api/v1/reports"
+      }
+    },
+    "check": {
+      "id": "cost-optimization-health",
+      "name": "HTTP API Health",
+      "http": "http://cost-optimization-service:8004/health",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "enable_tag_override": false
+  }
+} 

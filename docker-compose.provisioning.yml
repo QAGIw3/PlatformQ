@@ -1,0 +1,112 @@
+version: '3.8'
+
+services:
+  # Orchestrator for tenant provisioning
+  tenant-provisioning-service:
+    build: ./services/tenant-provisioning-service
+    ports:
+      - "8001:8001"
+    environment:
+      - CASSANDRA_HOSTS=cassandra
+      - MINIO_ENDPOINT=minio:9000
+      - PULSAR_URL=pulsar://pulsar:6650
+      - IGNITE_HOST=ignite
+      - CONSUL_HOST=consul
+      - VAULT_ADDR=http://vault:8200
+      - OPENPROJECT_URL=http://openproject:8080
+      - KUBERNETES_NAMESPACE=platformq
+    depends_on:
+      - cassandra
+      - minio
+      - pulsar
+      - ignite
+      - consul
+      - vault
+    networks:
+      - platformq-network
+
+  # Resource monitoring
+  resource-monitoring-service:
+    build: ./services/resource-monitoring-service
+    ports:
+      - "8002:8002"
+    environment:
+      - PROMETHEUS_URL=http://prometheus:9090
+      - IGNITE_HOST=ignite
+      - PULSAR_URL=pulsar://pulsar:6650
+      - KUBERNETES_NAMESPACE=platformq
+    depends_on:
+      - prometheus
+      - ignite
+      - pulsar
+    networks:
+      - platformq-network
+
+  # Auto-scaling
+  resource-scaling-service:
+    build: ./services/resource-scaling-service
+    ports:
+      - "8003:8003"
+    environment:
+      - IGNITE_HOST=ignite
+      - CONSUL_HOST=consul
+      - PULSAR_URL=pulsar://pulsar:6650
+      - MONITORING_SERVICE_URL=http://resource-monitoring-service:8002
+      - KUBERNETES_NAMESPACE=platformq
+    depends_on:
+      - resource-monitoring-service
+      - ignite
+      - consul
+      - pulsar
+    networks:
+      - platformq-network
+
+  # Cost optimization
+  cost-optimization-service:
+    build: ./services/cost-optimization-service
+    ports:
+      - "8004:8004"
+    environment:
+      - IGNITE_HOST=ignite
+      - MONITORING_SERVICE_URL=http://resource-monitoring-service:8002
+    depends_on:
+      - resource-monitoring-service
+      - ignite
+    networks:
+      - platformq-network
+
+  # Quota management
+  quota-management-service:
+    build: ./services/quota-management-service
+    ports:
+      - "8005:8005"
+    environment:
+      - IGNITE_HOST=ignite
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/platformq
+    depends_on:
+      - ignite
+      - postgres
+    networks:
+      - platformq-network
+
+  # Compute provisioning (original service, refactored)
+  provisioning-service:
+    build: ./services/provisioning-service
+    ports:
+      - "8000:8000"
+    environment:
+      - CONSUL_HOST=consul
+      - VAULT_ADDR=http://vault:8200
+      - PULSAR_URL=pulsar://pulsar:6650
+      - DATABASE_URL=postgresql://postgres:postgres@postgres:5432/platformq
+    depends_on:
+      - consul
+      - vault
+      - pulsar
+      - postgres
+    networks:
+      - platformq-network
+
+networks:
+  platformq-network:
+    external: true 

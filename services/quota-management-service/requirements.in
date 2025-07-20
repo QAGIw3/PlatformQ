@@ -1,0 +1,27 @@
+# Base requirements
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.4.2
+pydantic-settings==2.0.3
+
+# Data storage
+cassandra-driver==3.28.0
+pyignite==0.6.1
+
+# Messaging
+pulsar-client==3.3.0
+
+# Monitoring and metrics
+prometheus-client==0.18.0
+
+# Service discovery
+python-consul==1.1.0
+
+# Scheduling
+apscheduler==3.10.4
+
+# Shared libraries
+platformq-resource-common
+
+# Development
+python-dotenv==1.0.0 

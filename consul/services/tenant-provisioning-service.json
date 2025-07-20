@@ -1,0 +1,24 @@
+{
+  "service": {
+    "name": "tenant-provisioning-service",
+    "tags": ["provisioning", "orchestration", "tenant"],
+    "port": 8001,
+    "meta": {
+      "version": "1.0.0",
+      "description": "Orchestrates tenant resource provisioning",
+      "endpoints": {
+        "provision": "/api/v1/tenants/provision",
+        "deprovision": "/api/v1/tenants/{tenant_id}/deprovision",
+        "status": "/api/v1/provisioning/{request_id}"
+      }
+    },
+    "check": {
+      "id": "tenant-provisioning-health",
+      "name": "HTTP API Health",
+      "http": "http://tenant-provisioning-service:8001/health",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "enable_tag_override": false
+  }
+} 

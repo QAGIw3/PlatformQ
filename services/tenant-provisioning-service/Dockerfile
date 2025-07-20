@@ -1,13 +1,10 @@
-# Use an official Python runtime as a parent image
 FROM python:3.11-slim
 
 WORKDIR /app
 
-# Install system dependencies for cloud provider SDKs
+# Install system dependencies
 RUN apt-get update && apt-get install -y \
     gcc \
-    g++ \
-    libssl-dev \
     && rm -rf /var/lib/apt/lists/*
 
 # Copy requirements
@@ -24,7 +21,7 @@ RUN useradd -m -u 1000 appuser && chown -R appuser:appuser /app
 USER appuser
 
 # Expose port
-EXPOSE 8000
+EXPOSE 8001
 
 # Run the application
-CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8000"] 
+CMD ["uvicorn", "app.main:app", "--host", "0.0.0.0", "--port", "8001"] 

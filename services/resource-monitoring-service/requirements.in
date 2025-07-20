@@ -1,0 +1,24 @@
+# Core dependencies
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+httpx>=0.24.0
+
+# Messaging
+pulsar-client>=3.2.0
+apache-avro>=1.11.0
+
+# Caching
+pyignite>=0.6.0
+
+# Kubernetes
+kubernetes>=27.2.0
+
+# Monitoring
+prometheus-client>=0.17.0
+prometheus-api-client>=0.5.0
+
+# Internal libraries
+../../libs/platformq-shared
+../../libs/platformq-resource-common
+../../libs/platformq-events 
