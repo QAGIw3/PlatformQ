@@ -1,0 +1,21 @@
+{
+  "service": {
+    "name": "janusgraph",
+    "tags": [
+      "infrastructure",
+      "http"
+    ],
+    "port": 8182,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http"
+    },
+    "check": {
+      "id": "janusgraph-health",
+      "name": "TCP Check",
+      "tcp": "localhost:8182",
+      "interval": "10s",
+      "timeout": "5s"
+    }
+  }
+}

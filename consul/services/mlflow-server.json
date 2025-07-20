@@ -1,0 +1,89 @@
+{
+  "service": {
+    "name": "mlflow-server",
+    "tags": [
+      "mlflow",
+      "ml-tracking",
+      "experiments",
+      "api"
+    ],
+    "port": 5000,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http",
+      "ml_frameworks": "tensorflow,pytorch,sklearn"
+    },
+    "check": {
+      "id": "mlflow-server-health",
+      "name": "HTTP Health Check",
+      "http": "http://localhost:5000/health",
+      "method": "GET",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "connect": {
+      "sidecar_service": {
+        "port": 21035,
+        "proxy": {
+          "local_service_address": "127.0.0.1",
+          "local_service_port": 5000,
+          "config": {
+            "protocol": "http",
+            "envoy_prometheus_bind_addr": "0.0.0.0:9137"
+          },
+          "upstreams": [
+            {
+              "destination_name": "auth-service",
+              "local_bind_port": 5035,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "storage-service",
+              "local_bind_port": 5036,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "minio",
+              "local_bind_port": 5037,
+              "config": {
+                "protocol": "http"
+              }
+            },
+            {
+              "destination_name": "cassandra",
+              "local_bind_port": 5038,
+              "config": {
+                "protocol": "tcp"
+              }
+            }
+          ]
+        },
+        "checks": [
+          {
+            "name": "Connect Sidecar Listening",
+            "tcp": "127.0.0.1:21035",
+            "interval": "10s"
+          },
+          {
+            "name": "Connect Sidecar Alive",
+            "alias_service": "mlflow-server"
+          }
+        ]
+      }
+    }
+  }
+}

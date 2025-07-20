@@ -1,0 +1,108 @@
+{
+  "service": {
+    "name": "defi-protocol-service",
+    "tags": [
+      "defi",
+      "protocol",
+      "liquidity",
+      "api"
+    ],
+    "port": 8000,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http",
+      "protocols": "lending,staking,yield_farming"
+    },
+    "check": {
+      "id": "defi-protocol-service-health",
+      "name": "HTTP Health Check",
+      "http": "http://localhost:8000/health",
+      "method": "GET",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "connect": {
+      "sidecar_service": {
+        "port": 21026,
+        "proxy": {
+          "local_service_address": "127.0.0.1",
+          "local_service_port": 8000,
+          "config": {
+            "protocol": "http",
+            "envoy_prometheus_bind_addr": "0.0.0.0:9128"
+          },
+          "upstreams": [
+            {
+              "destination_name": "auth-service",
+              "local_bind_port": 5026,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "blockchain-gateway-service",
+              "local_bind_port": 5027,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "amm-service",
+              "local_bind_port": 5028,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "ignite-cache",
+              "local_bind_port": 5029,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "pulsar",
+              "local_bind_port": 5030,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "cassandra",
+              "local_bind_port": 5031,
+              "config": {
+                "protocol": "tcp"
+              }
+            }
+          ]
+        },
+        "checks": [
+          {
+            "name": "Connect Sidecar Listening",
+            "tcp": "127.0.0.1:21026",
+            "interval": "10s"
+          },
+          {
+            "name": "Connect Sidecar Alive",
+            "alias_service": "defi-protocol-service"
+          }
+        ]
+      }
+    }
+  }
+}

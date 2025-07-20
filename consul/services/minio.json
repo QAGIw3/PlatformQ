@@ -1,0 +1,21 @@
+{
+  "service": {
+    "name": "minio",
+    "tags": [
+      "infrastructure",
+      "http"
+    ],
+    "port": 9000,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http"
+    },
+    "check": {
+      "id": "minio-health",
+      "name": "TCP Check",
+      "tcp": "localhost:9000",
+      "interval": "10s",
+      "timeout": "5s"
+    }
+  }
+}

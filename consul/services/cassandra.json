@@ -1,0 +1,21 @@
+{
+  "service": {
+    "name": "cassandra",
+    "tags": [
+      "infrastructure",
+      "tcp"
+    ],
+    "port": 9042,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "tcp"
+    },
+    "check": {
+      "id": "cassandra-health",
+      "name": "TCP Check",
+      "tcp": "localhost:9042",
+      "interval": "10s",
+      "timeout": "5s"
+    }
+  }
+}

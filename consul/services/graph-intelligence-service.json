@@ -1,0 +1,104 @@
+{
+  "service": {
+    "name": "graph-intelligence-service",
+    "tags": [
+      "graph",
+      "intelligence",
+      "analytics",
+      "api"
+    ],
+    "port": 8000,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http",
+      "graph_db": "janusgraph",
+      "algorithms": "pagerank,community,pathfinding"
+    },
+    "check": {
+      "id": "graph-intelligence-service-health",
+      "name": "HTTP Health Check",
+      "http": "http://localhost:8000/health",
+      "method": "GET",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "connect": {
+      "sidecar_service": {
+        "port": 21033,
+        "proxy": {
+          "local_service_address": "127.0.0.1",
+          "local_service_port": 8000,
+          "config": {
+            "protocol": "http",
+            "envoy_prometheus_bind_addr": "0.0.0.0:9135"
+          },
+          "upstreams": [
+            {
+              "destination_name": "auth-service",
+              "local_bind_port": 5033,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "data-platform-service",
+              "local_bind_port": 5034,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "janusgraph",
+              "local_bind_port": 5035,
+              "config": {
+                "protocol": "http"
+              }
+            },
+            {
+              "destination_name": "ignite-cache",
+              "local_bind_port": 5036,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "pulsar",
+              "local_bind_port": 5037,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "elasticsearch",
+              "local_bind_port": 5038,
+              "config": {
+                "protocol": "http"
+              }
+            }
+          ]
+        },
+        "checks": [
+          {
+            "name": "Connect Sidecar Listening",
+            "tcp": "127.0.0.1:21033",
+            "interval": "10s"
+          },
+          {
+            "name": "Connect Sidecar Alive",
+            "alias_service": "graph-intelligence-service"
+          }
+        ]
+      }
+    }
+  }
+}

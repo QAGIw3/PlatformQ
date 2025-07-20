@@ -1,0 +1,21 @@
+{
+  "service": {
+    "name": "pulsar",
+    "tags": [
+      "infrastructure",
+      "tcp"
+    ],
+    "port": 6650,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "tcp"
+    },
+    "check": {
+      "id": "pulsar-health",
+      "name": "TCP Check",
+      "tcp": "localhost:6650",
+      "interval": "10s",
+      "timeout": "5s"
+    }
+  }
+}

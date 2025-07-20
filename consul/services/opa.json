@@ -1,0 +1,21 @@
+{
+  "service": {
+    "name": "opa",
+    "tags": [
+      "infrastructure",
+      "http"
+    ],
+    "port": 8181,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http"
+    },
+    "check": {
+      "id": "opa-health",
+      "name": "TCP Check",
+      "tcp": "localhost:8181",
+      "interval": "10s",
+      "timeout": "5s"
+    }
+  }
+}

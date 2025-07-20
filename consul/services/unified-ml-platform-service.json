@@ -1,0 +1,120 @@
+{
+  "service": {
+    "name": "unified-ml-platform-service",
+    "tags": [
+      "ml",
+      "ai",
+      "platform",
+      "api"
+    ],
+    "port": 8000,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http",
+      "ml_capabilities": "training,inference,automl,federated"
+    },
+    "check": {
+      "id": "unified-ml-platform-service-health",
+      "name": "HTTP Health Check",
+      "http": "http://localhost:8000/health",
+      "method": "GET",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "connect": {
+      "sidecar_service": {
+        "port": 21048,
+        "proxy": {
+          "local_service_address": "127.0.0.1",
+          "local_service_port": 8000,
+          "config": {
+            "protocol": "http",
+            "envoy_prometheus_bind_addr": "0.0.0.0:9150"
+          },
+          "upstreams": [
+            {
+              "destination_name": "auth-service",
+              "local_bind_port": 5048,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "compute-allocation-service",
+              "local_bind_port": 5049,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "storage-service",
+              "local_bind_port": 5050,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "mlflow-server",
+              "local_bind_port": 5051,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "ignite-cache",
+              "local_bind_port": 5052,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "pulsar",
+              "local_bind_port": 5053,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "minio",
+              "local_bind_port": 5054,
+              "config": {
+                "protocol": "http"
+              }
+            }
+          ]
+        },
+        "checks": [
+          {
+            "name": "Connect Sidecar Listening",
+            "tcp": "127.0.0.1:21048",
+            "interval": "10s"
+          },
+          {
+            "name": "Connect Sidecar Alive",
+            "alias_service": "unified-ml-platform-service"
+          }
+        ]
+      }
+    }
+  }
+}

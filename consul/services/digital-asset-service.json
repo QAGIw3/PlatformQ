@@ -1,0 +1,115 @@
+{
+  "service": {
+    "name": "digital-asset-service",
+    "tags": [
+      "digital-assets",
+      "nft",
+      "tokenization",
+      "api"
+    ],
+    "port": 8000,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http",
+      "asset_types": "nft,rwa,synthetic"
+    },
+    "check": {
+      "id": "digital-asset-service-health",
+      "name": "HTTP Health Check",
+      "http": "http://localhost:8000/health",
+      "method": "GET",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "connect": {
+      "sidecar_service": {
+        "port": 21028,
+        "proxy": {
+          "local_service_address": "127.0.0.1",
+          "local_service_port": 8000,
+          "config": {
+            "protocol": "http",
+            "envoy_prometheus_bind_addr": "0.0.0.0:9130"
+          },
+          "upstreams": [
+            {
+              "destination_name": "auth-service",
+              "local_bind_port": 5028,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "blockchain-gateway-service",
+              "local_bind_port": 5029,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "storage-service",
+              "local_bind_port": 5030,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "ignite-cache",
+              "local_bind_port": 5031,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "pulsar",
+              "local_bind_port": 5032,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "cassandra",
+              "local_bind_port": 5033,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "minio",
+              "local_bind_port": 5034,
+              "config": {
+                "protocol": "http"
+              }
+            }
+          ]
+        },
+        "checks": [
+          {
+            "name": "Connect Sidecar Listening",
+            "tcp": "127.0.0.1:21028",
+            "interval": "10s"
+          },
+          {
+            "name": "Connect Sidecar Alive",
+            "alias_service": "digital-asset-service"
+          }
+        ]
+      }
+    }
+  }
+}

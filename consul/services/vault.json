@@ -1,0 +1,21 @@
+{
+  "service": {
+    "name": "vault",
+    "tags": [
+      "infrastructure",
+      "http"
+    ],
+    "port": 8200,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http"
+    },
+    "check": {
+      "id": "vault-health",
+      "name": "TCP Check",
+      "tcp": "localhost:8200",
+      "interval": "10s",
+      "timeout": "5s"
+    }
+  }
+}

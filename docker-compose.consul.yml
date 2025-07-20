@@ -1,0 +1,244 @@
+version: '3.8'
+
+services:
+  # Consul Server 1 (Bootstrap)
+  consul-server-1:
+    image: consul:1.16
+    container_name: consul-server-1
+    restart: unless-stopped
+    volumes:
+      - ./consul/config/consul.hcl:/consul/config/consul.hcl:ro
+      - consul-server-1-data:/consul/data
+    networks:
+      - consul
+    ports:
+      - "8500:8500"
+      - "8600:8600/tcp"
+      - "8600:8600/udp"
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -server -ui -node=consul-server-1 -bootstrap-expect=3 -config-file=/consul/config/consul.hcl
+
+  # Consul Server 2
+  consul-server-2:
+    image: consul:1.16
+    container_name: consul-server-2
+    restart: unless-stopped
+    volumes:
+      - ./consul/config/consul.hcl:/consul/config/consul.hcl:ro
+      - consul-server-2-data:/consul/data
+    networks:
+      - consul
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -server -node=consul-server-2 -bootstrap-expect=3 -retry-join=consul-server-1 -config-file=/consul/config/consul.hcl
+
+  # Consul Server 3
+  consul-server-3:
+    image: consul:1.16
+    container_name: consul-server-3
+    restart: unless-stopped
+    volumes:
+      - ./consul/config/consul.hcl:/consul/config/consul.hcl:ro
+      - consul-server-3-data:/consul/data
+    networks:
+      - consul
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -server -node=consul-server-3 -bootstrap-expect=3 -retry-join=consul-server-1 -config-file=/consul/config/consul.hcl
+
+  # Market Data Service with Consul Agent and Envoy Sidecar
+  market-data-service:
+    build:
+      context: ./services/market-data-service
+      dockerfile: Dockerfile
+    container_name: market-data-service
+    restart: unless-stopped
+    networks:
+      - consul
+    environment:
+      - CONSUL_HTTP_ADDR=consul-agent-market-data:8500
+      - SERVICE_NAME=market-data-service
+      - SERVICE_PORT=8000
+    depends_on:
+      - consul-agent-market-data
+
+  # Consul Agent for Market Data Service
+  consul-agent-market-data:
+    image: consul:1.16
+    container_name: consul-agent-market-data
+    restart: unless-stopped
+    volumes:
+      - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+      - ./consul/services/market-data-service.json:/consul/config/market-data-service.json:ro
+    networks:
+      - consul
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=market-data-node -config-file=/consul/config/consul-client.hcl -config-file=/consul/config/market-data-service.json
+
+  # Envoy Sidecar for Market Data Service
+  market-data-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: market-data-sidecar
+    restart: unless-stopped
+    networks:
+      - consul
+    environment:
+      - CONSUL_HTTP_ADDR=consul-agent-market-data:8500
+      - SERVICE_NAME=market-data-service
+      - SERVICE_PORT=8000
+    command: |
+      sh -c "
+        consul connect envoy -sidecar-for market-data-service -admin-bind 0.0.0.0:19000
+      "
+    depends_on:
+      - consul-agent-market-data
+      - market-data-service
+
+  # AMM Service with Consul Agent and Envoy Sidecar
+  amm-service:
+    build:
+      context: ./services/amm-service
+      dockerfile: Dockerfile
+    container_name: amm-service
+    restart: unless-stopped
+    networks:
+      - consul
+    environment:
+      - CONSUL_HTTP_ADDR=consul-agent-amm:8500
+      - SERVICE_NAME=amm-service
+      - SERVICE_PORT=8000
+    depends_on:
+      - consul-agent-amm
+
+  # Consul Agent for AMM Service
+  consul-agent-amm:
+    image: consul:1.16
+    container_name: consul-agent-amm
+    restart: unless-stopped
+    volumes:
+      - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+      - ./consul/services/amm-service.json:/consul/config/amm-service.json:ro
+    networks:
+      - consul
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=amm-node -config-file=/consul/config/consul-client.hcl -config-file=/consul/config/amm-service.json
+
+  # Envoy Sidecar for AMM Service
+  amm-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: amm-sidecar
+    restart: unless-stopped
+    networks:
+      - consul
+    environment:
+      - CONSUL_HTTP_ADDR=consul-agent-amm:8500
+      - SERVICE_NAME=amm-service
+      - SERVICE_PORT=8000
+    command: |
+      sh -c "
+        consul connect envoy -sidecar-for amm-service -admin-bind 0.0.0.0:19001
+      "
+    depends_on:
+      - consul-agent-amm
+      - amm-service
+
+  # Social Trading Service with Consul Agent and Envoy Sidecar
+  social-trading-service:
+    build:
+      context: ./services/social-trading-service
+      dockerfile: Dockerfile
+    container_name: social-trading-service
+    restart: unless-stopped
+    networks:
+      - consul
+    environment:
+      - CONSUL_HTTP_ADDR=consul-agent-social:8500
+      - SERVICE_NAME=social-trading-service
+      - SERVICE_PORT=8000
+    depends_on:
+      - consul-agent-social
+
+  # Consul Agent for Social Trading Service
+  consul-agent-social:
+    image: consul:1.16
+    container_name: consul-agent-social
+    restart: unless-stopped
+    volumes:
+      - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+      - ./consul/services/social-trading-service.json:/consul/config/social-trading-service.json:ro
+    networks:
+      - consul
+    environment:
+      - CONSUL_BIND_INTERFACE=eth0
+      - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=social-trading-node -config-file=/consul/config/consul-client.hcl -config-file=/consul/config/social-trading-service.json
+
+  # Envoy Sidecar for Social Trading Service
+  social-trading-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: social-trading-sidecar
+    restart: unless-stopped
+    networks:
+      - consul
+    environment:
+      - CONSUL_HTTP_ADDR=consul-agent-social:8500
+      - SERVICE_NAME=social-trading-service
+      - SERVICE_PORT=8000
+    command: |
+      sh -c "
+        consul connect envoy -sidecar-for social-trading-service -admin-bind 0.0.0.0:19002
+      "
+    depends_on:
+      - consul-agent-social
+      - social-trading-service
+
+  # Infrastructure Services
+  ignite:
+    image: apacheignite/ignite:2.15.0
+    container_name: ignite
+    networks:
+      - consul
+    environment:
+      - IGNITE_QUIET=false
+    ports:
+      - "10800:10800"
+      - "11211:11211"
+
+  pulsar:
+    image: apachepulsar/pulsar:3.1.0
+    container_name: pulsar
+    networks:
+      - consul
+    ports:
+      - "6650:6650"
+      - "8080:8080"
+    command: bin/pulsar standalone
+
+  cassandra:
+    image: cassandra:4.1
+    container_name: cassandra
+    networks:
+      - consul
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=platformq
+      - CASSANDRA_DC=dc1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+
+networks:
+  consul:
+    driver: bridge
+
+volumes:
+  consul-server-1-data:
+  consul-server-2-data:
+  consul-server-3-data: 

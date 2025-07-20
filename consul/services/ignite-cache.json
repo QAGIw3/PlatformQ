@@ -1,0 +1,21 @@
+{
+  "service": {
+    "name": "ignite-cache",
+    "tags": [
+      "infrastructure",
+      "tcp"
+    ],
+    "port": 10800,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "tcp"
+    },
+    "check": {
+      "id": "ignite-cache-health",
+      "name": "TCP Check",
+      "tcp": "localhost:10800",
+      "interval": "10s",
+      "timeout": "5s"
+    }
+  }
+}

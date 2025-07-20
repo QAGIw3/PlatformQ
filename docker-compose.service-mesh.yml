@@ -1,0 +1,1888 @@
+version: '3.8'
+services:
+  consul-server-1:
+    image: consul:1.16
+    container_name: consul-server-1
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul.hcl:/consul/config/consul.hcl:ro
+    - consul-server-1-data:/consul/data
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    ports:
+    - 8500:8500
+    - 8600:8600/tcp
+    - 8600:8600/udp
+    command: agent -server -ui -node=consul-server-1 -bootstrap-expect=3 -config-file=/consul/config/consul.hcl
+  consul-server-2:
+    image: consul:1.16
+    container_name: consul-server-2
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul.hcl:/consul/config/consul.hcl:ro
+    - consul-server-2-data:/consul/data
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -server -node=consul-server-2 -bootstrap-expect=3 -retry-join=consul-server-1
+      -config-file=/consul/config/consul.hcl
+  consul-server-3:
+    image: consul:1.16
+    container_name: consul-server-3
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul.hcl:/consul/config/consul.hcl:ro
+    - consul-server-3-data:/consul/data
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -server -node=consul-server-3 -bootstrap-expect=3 -retry-join=consul-server-1
+      -config-file=/consul/config/consul.hcl
+  vault:
+    image: vault:1.14
+    container_name: vault
+    restart: unless-stopped
+    networks:
+    - consul
+    ports:
+    - 8200:8200
+    environment:
+    - VAULT_DEV_ROOT_TOKEN_ID=root
+    - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    cap_add:
+    - IPC_LOCK
+  ignite:
+    image: apacheignite/ignite:2.15.0
+    container_name: ignite
+    restart: unless-stopped
+    networks:
+    - consul
+    ports:
+    - 10800:10800
+    - 11211:11211
+    environment:
+    - IGNITE_QUIET=false
+    volumes:
+    - ./infra/ignite:/opt/ignite/config:ro
+  pulsar:
+    image: apachepulsar/pulsar:3.1.0
+    container_name: pulsar
+    restart: unless-stopped
+    networks:
+    - consul
+    ports:
+    - 6650:6650
+    - 8080:8080
+    command: bin/pulsar standalone
+  cassandra:
+    image: cassandra:4.1
+    container_name: cassandra
+    restart: unless-stopped
+    networks:
+    - consul
+    ports:
+    - 9042:9042
+    environment:
+    - CASSANDRA_CLUSTER_NAME=platformq
+    - CASSANDRA_DC=dc1
+    - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+  elasticsearch:
+    image: elasticsearch:8.10.2
+    container_name: elasticsearch
+    restart: unless-stopped
+    networks:
+    - consul
+    ports:
+    - 9200:9200
+    - 9300:9300
+    environment:
+    - discovery.type=single-node
+    - xpack.security.enabled=false
+    - ES_JAVA_OPTS=-Xms512m -Xmx512m
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    restart: unless-stopped
+    networks:
+    - consul
+    ports:
+    - 9000:9000
+    - 9001:9001
+    environment:
+    - MINIO_ROOT_USER=minioadmin
+    - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+  janusgraph:
+    image: janusgraph/janusgraph:latest
+    container_name: janusgraph
+    restart: unless-stopped
+    networks:
+    - consul
+    ports:
+    - 8182:8182
+    environment:
+    - janusgraph.storage.backend=cassandra
+    - janusgraph.storage.hostname=cassandra
+    - janusgraph.index.search.backend=elasticsearch
+    - janusgraph.index.search.hostname=elasticsearch
+    depends_on:
+    - cassandra
+    - elasticsearch
+  opa:
+    image: openpolicyagent/opa:latest
+    container_name: opa
+    restart: unless-stopped
+    networks:
+    - consul
+    ports:
+    - 8181:8181
+    command: run --server --addr :8181
+    volumes:
+    - ./infra/docker-compose/opa:/policies:ro
+  amm-service:
+    build:
+      context: ./services/amm-service
+      dockerfile: Dockerfile
+    container_name: amm-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-amm:8500
+    - SERVICE_NAME=amm-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-amm
+  consul-agent-amm:
+    image: consul:1.16
+    container_name: consul-agent-amm
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/amm-service.json:/consul/config/amm-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=amm-node -config-file=/consul/config/consul-client.hcl -config-file=/consul/config/amm-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  amm-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: amm-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-amm:8500
+    - SERVICE_NAME=amm-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for amm-service -admin-bind 0.0.0.0:19001"
+    depends_on:
+    - consul-agent-amm
+    - amm-service
+  analytics-service:
+    build:
+      context: ./services/analytics-service
+      dockerfile: Dockerfile
+    container_name: analytics-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-analytics:8500
+    - SERVICE_NAME=analytics-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-analytics
+  consul-agent-analytics:
+    image: consul:1.16
+    container_name: consul-agent-analytics
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/analytics-service.json:/consul/config/analytics-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=analytics-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/analytics-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  analytics-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: analytics-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-analytics:8500
+    - SERVICE_NAME=analytics-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for analytics-service -admin-bind
+      0.0.0.0:19020"
+    depends_on:
+    - consul-agent-analytics
+    - analytics-service
+  auth-service:
+    build:
+      context: ./services/auth-service
+      dockerfile: Dockerfile
+    container_name: auth-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-auth:8500
+    - SERVICE_NAME=auth-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-auth
+  consul-agent-auth:
+    image: consul:1.16
+    container_name: consul-agent-auth
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/auth-service.json:/consul/config/auth-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=auth-node -config-file=/consul/config/consul-client.hcl -config-file=/consul/config/auth-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  auth-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: auth-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-auth:8500
+    - SERVICE_NAME=auth-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for auth-service -admin-bind 0.0.0.0:19000"
+    depends_on:
+    - consul-agent-auth
+    - auth-service
+  blockchain-gateway-service:
+    build:
+      context: ./services/blockchain-gateway-service
+      dockerfile: Dockerfile
+    container_name: blockchain-gateway-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-blockchain-gateway:8500
+    - SERVICE_NAME=blockchain-gateway-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-blockchain-gateway
+  consul-agent-blockchain-gateway:
+    image: consul:1.16
+    container_name: consul-agent-blockchain-gateway
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/blockchain-gateway-service.json:/consul/config/blockchain-gateway-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=blockchain-gateway-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/blockchain-gateway-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  blockchain-gateway-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: blockchain-gateway-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-blockchain-gateway:8500
+    - SERVICE_NAME=blockchain-gateway-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for blockchain-gateway-service -admin-bind
+      0.0.0.0:19010"
+    depends_on:
+    - consul-agent-blockchain-gateway
+    - blockchain-gateway-service
+  collaboration-platform-service:
+    build:
+      context: ./services/collaboration-platform-service
+      dockerfile: Dockerfile
+    container_name: collaboration-platform-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-collaboration-platform:8500
+    - SERVICE_NAME=collaboration-platform-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-collaboration-platform
+  consul-agent-collaboration-platform:
+    image: consul:1.16
+    container_name: consul-agent-collaboration-platform
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/collaboration-platform-service.json:/consul/config/collaboration-platform-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=collaboration-platform-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/collaboration-platform-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  collaboration-platform-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: collaboration-platform-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-collaboration-platform:8500
+    - SERVICE_NAME=collaboration-platform-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for collaboration-platform-service
+      -admin-bind 0.0.0.0:19051"
+    depends_on:
+    - consul-agent-collaboration-platform
+    - collaboration-platform-service
+  compliance-service:
+    build:
+      context: ./services/compliance-service
+      dockerfile: Dockerfile
+    container_name: compliance-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-compliance:8500
+    - SERVICE_NAME=compliance-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-compliance
+  consul-agent-compliance:
+    image: consul:1.16
+    container_name: consul-agent-compliance
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/compliance-service.json:/consul/config/compliance-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=compliance-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/compliance-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  compliance-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: compliance-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-compliance:8500
+    - SERVICE_NAME=compliance-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for compliance-service -admin-bind
+      0.0.0.0:19021"
+    depends_on:
+    - consul-agent-compliance
+    - compliance-service
+  compute-allocation-service:
+    build:
+      context: ./services/compute-allocation-service
+      dockerfile: Dockerfile
+    container_name: compute-allocation-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-compute-allocation:8500
+    - SERVICE_NAME=compute-allocation-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-compute-allocation
+  consul-agent-compute-allocation:
+    image: consul:1.16
+    container_name: consul-agent-compute-allocation
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/compute-allocation-service.json:/consul/config/compute-allocation-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=compute-allocation-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/compute-allocation-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  compute-allocation-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: compute-allocation-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-compute-allocation:8500
+    - SERVICE_NAME=compute-allocation-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for compute-allocation-service -admin-bind
+      0.0.0.0:19022"
+    depends_on:
+    - consul-agent-compute-allocation
+    - compute-allocation-service
+  connector-service:
+    build:
+      context: ./services/connector-service
+      dockerfile: Dockerfile
+    container_name: connector-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-connector:8500
+    - SERVICE_NAME=connector-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-connector
+  consul-agent-connector:
+    image: consul:1.16
+    container_name: consul-agent-connector
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/connector-service.json:/consul/config/connector-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=connector-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/connector-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  connector-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: connector-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-connector:8500
+    - SERVICE_NAME=connector-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for connector-service -admin-bind
+      0.0.0.0:19023"
+    depends_on:
+    - consul-agent-connector
+    - connector-service
+  data-platform-service:
+    build:
+      context: ./services/data-platform-service
+      dockerfile: Dockerfile
+    container_name: data-platform-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-data-platform:8500
+    - SERVICE_NAME=data-platform-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-data-platform
+  consul-agent-data-platform:
+    image: consul:1.16
+    container_name: consul-agent-data-platform
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/data-platform-service.json:/consul/config/data-platform-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=data-platform-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/data-platform-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  data-platform-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: data-platform-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-data-platform:8500
+    - SERVICE_NAME=data-platform-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for data-platform-service -admin-bind
+      0.0.0.0:19024"
+    depends_on:
+    - consul-agent-data-platform
+    - data-platform-service
+  dataset-marketplace:
+    build:
+      context: ./services/dataset-marketplace
+      dockerfile: Dockerfile
+    container_name: dataset-marketplace
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-dataset-marketplace:8500
+    - SERVICE_NAME=dataset-marketplace
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-dataset-marketplace
+  consul-agent-dataset-marketplace:
+    image: consul:1.16
+    container_name: consul-agent-dataset-marketplace
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/dataset-marketplace.json:/consul/config/dataset-marketplace.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=dataset-marketplace-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/dataset-marketplace.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  dataset-marketplace-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: dataset-marketplace-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-dataset-marketplace:8500
+    - SERVICE_NAME=dataset-marketplace
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for dataset-marketplace -admin-bind
+      0.0.0.0:19025"
+    depends_on:
+    - consul-agent-dataset-marketplace
+    - dataset-marketplace
+  defi-protocol-service:
+    build:
+      context: ./services/defi-protocol-service
+      dockerfile: Dockerfile
+    container_name: defi-protocol-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-defi-protocol:8500
+    - SERVICE_NAME=defi-protocol-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-defi-protocol
+  consul-agent-defi-protocol:
+    image: consul:1.16
+    container_name: consul-agent-defi-protocol
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/defi-protocol-service.json:/consul/config/defi-protocol-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=defi-protocol-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/defi-protocol-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  defi-protocol-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: defi-protocol-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-defi-protocol:8500
+    - SERVICE_NAME=defi-protocol-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for defi-protocol-service -admin-bind
+      0.0.0.0:19026"
+    depends_on:
+    - consul-agent-defi-protocol
+    - defi-protocol-service
+  derivatives-engine-service:
+    build:
+      context: ./services/derivatives-engine-service
+      dockerfile: Dockerfile
+    container_name: derivatives-engine-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-derivatives-engine:8500
+    - SERVICE_NAME=derivatives-engine-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-derivatives-engine
+  consul-agent-derivatives-engine:
+    image: consul:1.16
+    container_name: consul-agent-derivatives-engine
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/derivatives-engine-service.json:/consul/config/derivatives-engine-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=derivatives-engine-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/derivatives-engine-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  derivatives-engine-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: derivatives-engine-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-derivatives-engine:8500
+    - SERVICE_NAME=derivatives-engine-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for derivatives-engine-service -admin-bind
+      0.0.0.0:19027"
+    depends_on:
+    - consul-agent-derivatives-engine
+    - derivatives-engine-service
+  digital-asset-service:
+    build:
+      context: ./services/digital-asset-service
+      dockerfile: Dockerfile
+    container_name: digital-asset-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-digital-asset:8500
+    - SERVICE_NAME=digital-asset-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-digital-asset
+  consul-agent-digital-asset:
+    image: consul:1.16
+    container_name: consul-agent-digital-asset
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/digital-asset-service.json:/consul/config/digital-asset-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=digital-asset-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/digital-asset-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  digital-asset-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: digital-asset-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-digital-asset:8500
+    - SERVICE_NAME=digital-asset-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for digital-asset-service -admin-bind
+      0.0.0.0:19028"
+    depends_on:
+    - consul-agent-digital-asset
+    - digital-asset-service
+  event-router-service:
+    build:
+      context: ./services/event-router-service
+      dockerfile: Dockerfile
+    container_name: event-router-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-event-router:8500
+    - SERVICE_NAME=event-router-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-event-router
+  consul-agent-event-router:
+    image: consul:1.16
+    container_name: consul-agent-event-router
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/event-router-service.json:/consul/config/event-router-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=event-router-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/event-router-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  event-router-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: event-router-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-event-router:8500
+    - SERVICE_NAME=event-router-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for event-router-service -admin-bind
+      0.0.0.0:19029"
+    depends_on:
+    - consul-agent-event-router
+    - event-router-service
+  functions-service:
+    build:
+      context: ./services/functions-service
+      dockerfile: Dockerfile
+    container_name: functions-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-functions:8500
+    - SERVICE_NAME=functions-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-functions
+  consul-agent-functions:
+    image: consul:1.16
+    container_name: consul-agent-functions
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/functions-service.json:/consul/config/functions-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=functions-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/functions-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  functions-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: functions-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-functions:8500
+    - SERVICE_NAME=functions-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for functions-service -admin-bind
+      0.0.0.0:19030"
+    depends_on:
+    - consul-agent-functions
+    - functions-service
+  futures-service:
+    build:
+      context: ./services/futures-service
+      dockerfile: Dockerfile
+    container_name: futures-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-futures:8500
+    - SERVICE_NAME=futures-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-futures
+  consul-agent-futures:
+    image: consul:1.16
+    container_name: consul-agent-futures
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/futures-service.json:/consul/config/futures-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=futures-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/futures-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  futures-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: futures-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-futures:8500
+    - SERVICE_NAME=futures-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for futures-service -admin-bind
+      0.0.0.0:19031"
+    depends_on:
+    - consul-agent-futures
+    - futures-service
+  governance-service:
+    build:
+      context: ./services/governance-service
+      dockerfile: Dockerfile
+    container_name: governance-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-governance:8500
+    - SERVICE_NAME=governance-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-governance
+  consul-agent-governance:
+    image: consul:1.16
+    container_name: consul-agent-governance
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/governance-service.json:/consul/config/governance-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=governance-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/governance-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  governance-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: governance-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-governance:8500
+    - SERVICE_NAME=governance-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for governance-service -admin-bind
+      0.0.0.0:19032"
+    depends_on:
+    - consul-agent-governance
+    - governance-service
+  graph-intelligence-service:
+    build:
+      context: ./services/graph-intelligence-service
+      dockerfile: Dockerfile
+    container_name: graph-intelligence-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-graph-intelligence:8500
+    - SERVICE_NAME=graph-intelligence-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-graph-intelligence
+  consul-agent-graph-intelligence:
+    image: consul:1.16
+    container_name: consul-agent-graph-intelligence
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/graph-intelligence-service.json:/consul/config/graph-intelligence-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=graph-intelligence-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/graph-intelligence-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  graph-intelligence-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: graph-intelligence-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-graph-intelligence:8500
+    - SERVICE_NAME=graph-intelligence-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for graph-intelligence-service -admin-bind
+      0.0.0.0:19033"
+    depends_on:
+    - consul-agent-graph-intelligence
+    - graph-intelligence-service
+  insurance-pool-service:
+    build:
+      context: ./services/insurance-pool-service
+      dockerfile: Dockerfile
+    container_name: insurance-pool-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-insurance-pool:8500
+    - SERVICE_NAME=insurance-pool-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-insurance-pool
+  consul-agent-insurance-pool:
+    image: consul:1.16
+    container_name: consul-agent-insurance-pool
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/insurance-pool-service.json:/consul/config/insurance-pool-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=insurance-pool-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/insurance-pool-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  insurance-pool-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: insurance-pool-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-insurance-pool:8500
+    - SERVICE_NAME=insurance-pool-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for insurance-pool-service -admin-bind
+      0.0.0.0:19034"
+    depends_on:
+    - consul-agent-insurance-pool
+    - insurance-pool-service
+  market-data-service:
+    build:
+      context: ./services/market-data-service
+      dockerfile: Dockerfile
+    container_name: market-data-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-market-data:8500
+    - SERVICE_NAME=market-data-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-market-data
+  consul-agent-market-data:
+    image: consul:1.16
+    container_name: consul-agent-market-data
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/market-data-service.json:/consul/config/market-data-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=market-data-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/market-data-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  market-data-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: market-data-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-market-data:8500
+    - SERVICE_NAME=market-data-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for market-data-service -admin-bind
+      0.0.0.0:19000"
+    depends_on:
+    - consul-agent-market-data
+    - market-data-service
+  mlflow-server:
+    build:
+      context: ./services/mlflow-server
+      dockerfile: Dockerfile
+    container_name: mlflow-server
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-mlflow-server:8500
+    - SERVICE_NAME=mlflow-server
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-mlflow-server
+  consul-agent-mlflow-server:
+    image: consul:1.16
+    container_name: consul-agent-mlflow-server
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/mlflow-server.json:/consul/config/mlflow-server.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=mlflow-server-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/mlflow-server.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  mlflow-server-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: mlflow-server-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-mlflow-server:8500
+    - SERVICE_NAME=mlflow-server
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for mlflow-server -admin-bind 0.0.0.0:19035"
+    depends_on:
+    - consul-agent-mlflow-server
+    - mlflow-server
+  options-service:
+    build:
+      context: ./services/options-service
+      dockerfile: Dockerfile
+    container_name: options-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-options:8500
+    - SERVICE_NAME=options-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-options
+  consul-agent-options:
+    image: consul:1.16
+    container_name: consul-agent-options
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/options-service.json:/consul/config/options-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=options-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/options-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  options-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: options-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-options:8500
+    - SERVICE_NAME=options-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for options-service -admin-bind
+      0.0.0.0:19036"
+    depends_on:
+    - consul-agent-options
+    - options-service
+  order-matching-service:
+    build:
+      context: ./services/order-matching-service
+      dockerfile: Dockerfile
+    container_name: order-matching-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-order-matching:8500
+    - SERVICE_NAME=order-matching-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-order-matching
+  consul-agent-order-matching:
+    image: consul:1.16
+    container_name: consul-agent-order-matching
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/order-matching-service.json:/consul/config/order-matching-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=order-matching-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/order-matching-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  order-matching-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: order-matching-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-order-matching:8500
+    - SERVICE_NAME=order-matching-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for order-matching-service -admin-bind
+      0.0.0.0:19037"
+    depends_on:
+    - consul-agent-order-matching
+    - order-matching-service
+  provisioning-service:
+    build:
+      context: ./services/provisioning-service
+      dockerfile: Dockerfile
+    container_name: provisioning-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-provisioning:8500
+    - SERVICE_NAME=provisioning-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-provisioning
+  consul-agent-provisioning:
+    image: consul:1.16
+    container_name: consul-agent-provisioning
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/provisioning-service.json:/consul/config/provisioning-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=provisioning-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/provisioning-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  provisioning-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: provisioning-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-provisioning:8500
+    - SERVICE_NAME=provisioning-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for provisioning-service -admin-bind
+      0.0.0.0:19038"
+    depends_on:
+    - consul-agent-provisioning
+    - provisioning-service
+  quantum-optimization-service:
+    build:
+      context: ./services/quantum-optimization-service
+      dockerfile: Dockerfile
+    container_name: quantum-optimization-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-quantum-optimization:8500
+    - SERVICE_NAME=quantum-optimization-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-quantum-optimization
+  consul-agent-quantum-optimization:
+    image: consul:1.16
+    container_name: consul-agent-quantum-optimization
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/quantum-optimization-service.json:/consul/config/quantum-optimization-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=quantum-optimization-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/quantum-optimization-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  quantum-optimization-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: quantum-optimization-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-quantum-optimization:8500
+    - SERVICE_NAME=quantum-optimization-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for quantum-optimization-service
+      -admin-bind 0.0.0.0:19039"
+    depends_on:
+    - consul-agent-quantum-optimization
+    - quantum-optimization-service
+  risk-engine-service:
+    build:
+      context: ./services/risk-engine-service
+      dockerfile: Dockerfile
+    container_name: risk-engine-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-risk-engine:8500
+    - SERVICE_NAME=risk-engine-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-risk-engine
+  consul-agent-risk-engine:
+    image: consul:1.16
+    container_name: consul-agent-risk-engine
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/risk-engine-service.json:/consul/config/risk-engine-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=risk-engine-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/risk-engine-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  risk-engine-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: risk-engine-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-risk-engine:8500
+    - SERVICE_NAME=risk-engine-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for risk-engine-service -admin-bind
+      0.0.0.0:19040"
+    depends_on:
+    - consul-agent-risk-engine
+    - risk-engine-service
+  risk-management-service:
+    build:
+      context: ./services/risk-management-service
+      dockerfile: Dockerfile
+    container_name: risk-management-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-risk-management:8500
+    - SERVICE_NAME=risk-management-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-risk-management
+  consul-agent-risk-management:
+    image: consul:1.16
+    container_name: consul-agent-risk-management
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/risk-management-service.json:/consul/config/risk-management-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=risk-management-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/risk-management-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  risk-management-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: risk-management-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-risk-management:8500
+    - SERVICE_NAME=risk-management-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for risk-management-service -admin-bind
+      0.0.0.0:19041"
+    depends_on:
+    - consul-agent-risk-management
+    - risk-management-service
+  search-service:
+    build:
+      context: ./services/search-service
+      dockerfile: Dockerfile
+    container_name: search-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-search:8500
+    - SERVICE_NAME=search-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-search
+  consul-agent-search:
+    image: consul:1.16
+    container_name: consul-agent-search
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/search-service.json:/consul/config/search-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=search-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/search-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  search-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: search-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-search:8500
+    - SERVICE_NAME=search-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for search-service -admin-bind 0.0.0.0:19042"
+    depends_on:
+    - consul-agent-search
+    - search-service
+  security-service:
+    build:
+      context: ./services/security-service
+      dockerfile: Dockerfile
+    container_name: security-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-security:8500
+    - SERVICE_NAME=security-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-security
+  consul-agent-security:
+    image: consul:1.16
+    container_name: consul-agent-security
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/security-service.json:/consul/config/security-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=security-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/security-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  security-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: security-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-security:8500
+    - SERVICE_NAME=security-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for security-service -admin-bind
+      0.0.0.0:19043"
+    depends_on:
+    - consul-agent-security
+    - security-service
+  social-trading-service:
+    build:
+      context: ./services/social-trading-service
+      dockerfile: Dockerfile
+    container_name: social-trading-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-social-trading:8500
+    - SERVICE_NAME=social-trading-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-social-trading
+  consul-agent-social-trading:
+    image: consul:1.16
+    container_name: consul-agent-social-trading
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/social-trading-service.json:/consul/config/social-trading-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=social-trading-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/social-trading-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  social-trading-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: social-trading-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-social-trading:8500
+    - SERVICE_NAME=social-trading-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for social-trading-service -admin-bind
+      0.0.0.0:19002"
+    depends_on:
+    - consul-agent-social-trading
+    - social-trading-service
+  state-management-service:
+    build:
+      context: ./services/state-management-service
+      dockerfile: Dockerfile
+    container_name: state-management-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-state-management:8500
+    - SERVICE_NAME=state-management-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-state-management
+  consul-agent-state-management:
+    image: consul:1.16
+    container_name: consul-agent-state-management
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/state-management-service.json:/consul/config/state-management-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=state-management-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/state-management-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  state-management-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: state-management-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-state-management:8500
+    - SERVICE_NAME=state-management-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for state-management-service -admin-bind
+      0.0.0.0:19044"
+    depends_on:
+    - consul-agent-state-management
+    - state-management-service
+  storage-service:
+    build:
+      context: ./services/storage-service
+      dockerfile: Dockerfile
+    container_name: storage-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-storage:8500
+    - SERVICE_NAME=storage-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-storage
+  consul-agent-storage:
+    image: consul:1.16
+    container_name: consul-agent-storage
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/storage-service.json:/consul/config/storage-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=storage-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/storage-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  storage-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: storage-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-storage:8500
+    - SERVICE_NAME=storage-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for storage-service -admin-bind
+      0.0.0.0:19045"
+    depends_on:
+    - consul-agent-storage
+    - storage-service
+  structured-products-service:
+    build:
+      context: ./services/structured-products-service
+      dockerfile: Dockerfile
+    container_name: structured-products-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-structured-products:8500
+    - SERVICE_NAME=structured-products-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-structured-products
+  consul-agent-structured-products:
+    image: consul:1.16
+    container_name: consul-agent-structured-products
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/structured-products-service.json:/consul/config/structured-products-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=structured-products-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/structured-products-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  structured-products-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: structured-products-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-structured-products:8500
+    - SERVICE_NAME=structured-products-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for structured-products-service
+      -admin-bind 0.0.0.0:19046"
+    depends_on:
+    - consul-agent-structured-products
+    - structured-products-service
+  trading-platform-service:
+    build:
+      context: ./services/trading-platform-service
+      dockerfile: Dockerfile
+    container_name: trading-platform-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-trading-platform:8500
+    - SERVICE_NAME=trading-platform-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-trading-platform
+  consul-agent-trading-platform:
+    image: consul:1.16
+    container_name: consul-agent-trading-platform
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/trading-platform-service.json:/consul/config/trading-platform-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=trading-platform-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/trading-platform-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  trading-platform-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: trading-platform-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-trading-platform:8500
+    - SERVICE_NAME=trading-platform-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for trading-platform-service -admin-bind
+      0.0.0.0:19047"
+    depends_on:
+    - consul-agent-trading-platform
+    - trading-platform-service
+  unified-ml-platform-service:
+    build:
+      context: ./services/unified-ml-platform-service
+      dockerfile: Dockerfile
+    container_name: unified-ml-platform-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-unified-ml-platform:8500
+    - SERVICE_NAME=unified-ml-platform-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-unified-ml-platform
+  consul-agent-unified-ml-platform:
+    image: consul:1.16
+    container_name: consul-agent-unified-ml-platform
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/unified-ml-platform-service.json:/consul/config/unified-ml-platform-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=unified-ml-platform-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/unified-ml-platform-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  unified-ml-platform-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: unified-ml-platform-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-unified-ml-platform:8500
+    - SERVICE_NAME=unified-ml-platform-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for unified-ml-platform-service
+      -admin-bind 0.0.0.0:19048"
+    depends_on:
+    - consul-agent-unified-ml-platform
+    - unified-ml-platform-service
+  verifiable-credential-service:
+    build:
+      context: ./services/verifiable-credential-service
+      dockerfile: Dockerfile
+    container_name: verifiable-credential-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-verifiable-credential:8500
+    - SERVICE_NAME=verifiable-credential-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-verifiable-credential
+  consul-agent-verifiable-credential:
+    image: consul:1.16
+    container_name: consul-agent-verifiable-credential
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/verifiable-credential-service.json:/consul/config/verifiable-credential-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=verifiable-credential-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/verifiable-credential-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  verifiable-credential-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: verifiable-credential-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-verifiable-credential:8500
+    - SERVICE_NAME=verifiable-credential-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for verifiable-credential-service
+      -admin-bind 0.0.0.0:19049"
+    depends_on:
+    - consul-agent-verifiable-credential
+    - verifiable-credential-service
+  workflow-service:
+    build:
+      context: ./services/workflow-service
+      dockerfile: Dockerfile
+    container_name: workflow-service
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-workflow:8500
+    - SERVICE_NAME=workflow-service
+    - SERVICE_PORT=8000
+    depends_on:
+    - consul-agent-workflow
+  consul-agent-workflow:
+    image: consul:1.16
+    container_name: consul-agent-workflow
+    restart: unless-stopped
+    volumes:
+    - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
+    - ./consul/services/workflow-service.json:/consul/config/workflow-service.json:ro
+    networks:
+    - consul
+    environment:
+    - CONSUL_BIND_INTERFACE=eth0
+    - CONSUL_CLIENT_INTERFACE=eth0
+    command: agent -node=workflow-node -config-file=/consul/config/consul-client.hcl
+      -config-file=/consul/config/workflow-service.json
+    depends_on:
+    - consul-server-1
+    - consul-server-2
+    - consul-server-3
+  workflow-sidecar:
+    image: envoyproxy/envoy-alpine:v1.27.0
+    container_name: workflow-sidecar
+    restart: unless-stopped
+    networks:
+    - consul
+    environment:
+    - CONSUL_HTTP_ADDR=consul-agent-workflow:8500
+    - SERVICE_NAME=workflow-service
+    - SERVICE_PORT=8000
+    command: sh -c "consul connect envoy -sidecar-for workflow-service -admin-bind
+      0.0.0.0:19050"
+    depends_on:
+    - consul-agent-workflow
+    - workflow-service
+networks:
+  consul:
+    driver: bridge
+volumes:
+  consul-server-1-data: null
+  consul-server-2-data: null
+  consul-server-3-data: null

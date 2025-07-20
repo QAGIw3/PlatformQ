@@ -1,0 +1,37 @@
+# Social Trading Service dependencies
+
+# Core
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# Apache Pulsar
+pulsar-client==3.3.0
+
+# Apache Ignite
+pyignite==0.5.2
+
+# Database
+cassandra-driver==3.28.0
+
+# Graph database
+gremlinpython==3.7.0
+
+# HTTP client
+httpx==0.25.2
+
+# Scientific computing
+numpy==1.26.2
+
+# Metrics
+prometheus-client==0.19.0
+prometheus-fastapi-instrumentator==6.1.0
+
+# PlatformQ shared libraries
+platformq-trading-common==0.1.0
+platformq-events==0.1.0
+
+# Testing (optional)
+pytest==7.4.3
+pytest-asyncio==0.21.1 

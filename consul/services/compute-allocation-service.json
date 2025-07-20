@@ -1,0 +1,108 @@
+{
+  "service": {
+    "name": "compute-allocation-service",
+    "tags": [
+      "compute",
+      "resource-management",
+      "scheduling",
+      "api"
+    ],
+    "port": 8000,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http",
+      "compute_types": "cpu,gpu,tpu,quantum"
+    },
+    "check": {
+      "id": "compute-allocation-service-health",
+      "name": "HTTP Health Check",
+      "http": "http://localhost:8000/health",
+      "method": "GET",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "connect": {
+      "sidecar_service": {
+        "port": 21022,
+        "proxy": {
+          "local_service_address": "127.0.0.1",
+          "local_service_port": 8000,
+          "config": {
+            "protocol": "http",
+            "envoy_prometheus_bind_addr": "0.0.0.0:9124"
+          },
+          "upstreams": [
+            {
+              "destination_name": "auth-service",
+              "local_bind_port": 5022,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "provisioning-service",
+              "local_bind_port": 5023,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "ignite-cache",
+              "local_bind_port": 5024,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "pulsar",
+              "local_bind_port": 5025,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "cassandra",
+              "local_bind_port": 5026,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "workflow-service",
+              "local_bind_port": 5027,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            }
+          ]
+        },
+        "checks": [
+          {
+            "name": "Connect Sidecar Listening",
+            "tcp": "127.0.0.1:21022",
+            "interval": "10s"
+          },
+          {
+            "name": "Connect Sidecar Alive",
+            "alias_service": "compute-allocation-service"
+          }
+        ]
+      }
+    }
+  }
+}

@@ -1,0 +1,123 @@
+{
+  "service": {
+    "name": "social-trading-service",
+    "tags": [
+      "social",
+      "copy-trading",
+      "reputation",
+      "api"
+    ],
+    "port": 8000,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http",
+      "features": "copy-trading,reputation,social-feed"
+    },
+    "check": {
+      "id": "social-trading-health",
+      "name": "HTTP Health Check",
+      "http": "http://localhost:8000/health",
+      "method": "GET",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "connect": {
+      "sidecar_service": {
+        "port": 21002,
+        "proxy": {
+          "local_service_address": "127.0.0.1",
+          "local_service_port": 8000,
+          "config": {
+            "protocol": "http",
+            "envoy_prometheus_bind_addr": "0.0.0.0:9102"
+          },
+          "upstreams": [
+            {
+              "destination_name": "order-matching-service",
+              "local_bind_port": 5020,
+              "config": {
+                "limits": {
+                  "max_connections": 200,
+                  "max_pending_requests": 100,
+                  "max_concurrent_requests": 100
+                }
+              }
+            },
+            {
+              "destination_name": "risk-service",
+              "local_bind_port": 5021,
+              "config": {
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 50,
+                  "max_concurrent_requests": 50
+                }
+              }
+            },
+            {
+              "destination_name": "blockchain-gateway",
+              "local_bind_port": 5022,
+              "config": {
+                "limits": {
+                  "max_connections": 50,
+                  "max_pending_requests": 25,
+                  "max_concurrent_requests": 25
+                }
+              }
+            },
+            {
+              "destination_name": "graph-intelligence",
+              "local_bind_port": 5023,
+              "config": {
+                "limits": {
+                  "max_connections": 50,
+                  "max_pending_requests": 25,
+                  "max_concurrent_requests": 25
+                }
+              }
+            },
+            {
+              "destination_name": "ignite-cache",
+              "local_bind_port": 5024,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "pulsar",
+              "local_bind_port": 5025,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "cassandra",
+              "local_bind_port": 5026,
+              "config": {
+                "protocol": "tcp"
+              }
+            },
+            {
+              "destination_name": "janusgraph",
+              "local_bind_port": 5027,
+              "config": {
+                "protocol": "tcp"
+              }
+            }
+          ]
+        },
+        "checks": [
+          {
+            "name": "Connect Sidecar Listening",
+            "tcp": "127.0.0.1:21002",
+            "interval": "10s"
+          },
+          {
+            "name": "Connect Sidecar Alive",
+            "alias_service": "social-trading-service"
+          }
+        ]
+      }
+    }
+  }
+} 

@@ -1,0 +1,21 @@
+{
+  "service": {
+    "name": "elasticsearch",
+    "tags": [
+      "infrastructure",
+      "http"
+    ],
+    "port": 9200,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http"
+    },
+    "check": {
+      "id": "elasticsearch-health",
+      "name": "TCP Check",
+      "tcp": "localhost:9200",
+      "interval": "10s",
+      "timeout": "5s"
+    }
+  }
+}
