@@ -29,6 +29,7 @@ from .vault_consul_integration import (
 from .models import Asset, AssetMetadata, AssetUploadResponse, AssetSearchQuery
 from .storage import StorageManager
 from .processing import AssetProcessor
+from .integrations.event_driven_assets import EventDrivenAssetIntegration, AssetEventType
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -44,6 +45,7 @@ class DigitalAssetService:
         self.consul_integration: Optional[DigitalAssetConsulIntegration] = None
         self.storage_manager: Optional[StorageManager] = None
         self.asset_processor: Optional[AssetProcessor] = None
+        self.event_integration: Optional[EventDrivenAssetIntegration] = None
         
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
@@ -95,6 +97,12 @@ class DigitalAssetService:
                 processing_config=processing_config
             )
             await self.asset_processor.initialize()
+
+            # Initialize event-driven integration
+            self.event_integration = EventDrivenAssetIntegration(
+                vault_consul_integration=self.vault_integration
+            )
+            await self.event_integration.initialize()
             
             # Set up routes
             self._setup_routes()
@@ -179,107 +187,144 @@ class DigitalAssetService:
                 logger.error(f"Health check failed: {e}")
                 raise HTTPException(status_code=503, detail="Service unhealthy")
                 
-        @self.app.post("/api/v1/assets", response_model=AssetUploadResponse)
+        @self.app.post("/api/v1/assets/upload", response_model=AssetUploadResponse)
         async def upload_asset(
             file: UploadFile = File(...),
-            name: Optional[str] = Form(None),
-            tags: Optional[List[str]] = Form([]),
-            encrypt: bool = Form(True),
-            request: Request = None
+            metadata: str = Form(...),
+            parent_asset_id: Optional[str] = Form(None)
         ):
-            """Upload a digital asset"""
-            # Get storage config
-            storage_config = await self.consul_integration.get_storage_config()
-            
-            # Validate file size
-            file_size = 0
-            content = await file.read()
-            file_size = len(content)
-            
-            if file_size > storage_config.max_file_size_mb * 1024 * 1024:
-                raise HTTPException(400, f"File size exceeds limit of {storage_config.max_file_size_mb}MB")
+            """Upload a new digital asset"""
+            try:
+                # Parse metadata
+                asset_metadata = AssetMetadata.parse_raw(metadata)
                 
-            # Validate mime type
-            mime_type = file.content_type or mimetypes.guess_type(file.filename)[0]
-            if storage_config.allowed_mime_types and mime_type not in storage_config.allowed_mime_types:
-                raise HTTPException(400, f"File type {mime_type} not allowed")
-                
-            # Generate asset ID
-            asset_id = hashlib.sha256(
-                f"{file.filename}-{datetime.utcnow().isoformat()}".encode()
-            ).hexdigest()[:16]
-            
-            # Calculate file hash
-            file_hash = hashlib.sha256(content).hexdigest()
-            
-            # Check for duplicates
-            existing = await self._check_duplicate_asset(file_hash)
-            if existing:
-                return AssetUploadResponse(
-                    asset_id=existing["id"],
-                    message="Asset already exists",
-                    duplicate=True
+                # Process and store asset
+                asset_id = await self.storage_manager.store_asset(
+                    file=file,
+                    metadata=asset_metadata
                 )
                 
-            # Encrypt if requested
-            if encrypt and storage_config.encryption_enabled:
-                content = await self.vault_integration.encrypt_asset_data(content, asset_id)
+                # Publish asset created event
+                await self.event_integration.publish_asset_event(
+                    AssetEventType.ASSET_CREATED,
+                    {
+                        "asset_metadata": {
+                            "asset_id": asset_id,
+                            "cid": asset_metadata.cid,
+                            "name": asset_metadata.name,
+                            "type": asset_metadata.asset_type,
+                            "owner_id": asset_metadata.owner_id,
+                            "size_bytes": asset_metadata.size_bytes,
+                            "format": asset_metadata.format,
+                            "version": asset_metadata.version,
+                            "tags": asset_metadata.tags,
+                            "license_type": asset_metadata.license_type,
+                            "price": asset_metadata.price
+                        },
+                        "source_service": "digital-asset-service",
+                        "parent_asset_id": parent_asset_id,
+                        "creation_metadata": {
+                            "description": asset_metadata.description,
+                            "derivation_type": "derived" if parent_asset_id else None
+                        }
+                    }
+                )
                 
-            # Upload to storage
-            storage_path = await self.storage_manager.upload_asset(
-                asset_id=asset_id,
-                content=content,
-                filename=file.filename,
-                mime_type=mime_type,
-                provider=storage_config.primary_provider
-            )
-            
-            # Create metadata
-            metadata = {
-                "name": name or file.filename,
-                "original_filename": file.filename,
-                "mime_type": mime_type,
-                "size_bytes": file_size,
-                "hash": file_hash,
-                "storage_provider": storage_config.primary_provider.value,
-                "storage_path": storage_path,
-                "encryption_enabled": encrypt and storage_config.encryption_enabled,
-                "created_at": datetime.utcnow().isoformat(),
-                "created_by": request.state.user_id if hasattr(request.state, "user_id") else "anonymous",
-                "tags": tags,
-                "processing_status": "pending"
-            }
-            
-            # Sign metadata
-            metadata["metadata_signature"] = await self.vault_integration.sign_asset_metadata(
-                metadata, asset_id
-            )
-            
-            # Register asset
-            await self.consul_integration.register_asset(asset_id, metadata)
-            
-            # Update metrics
-            asset_type = self._determine_asset_type(mime_type)
-            await self.consul_integration.update_storage_metrics(
-                asset_type.value,
-                file_size,
-                storage_config.primary_provider.value,
-                "add"
-            )
-            
-            # Queue for processing
-            if await self.consul_integration.acquire_processing_slot(asset_id):
-                asyncio.create_task(self._process_asset(asset_id))
+                return AssetUploadResponse(
+                    asset_id=asset_id,
+                    cid=asset_metadata.cid,
+                    status="uploaded",
+                    message="Asset uploaded successfully"
+                )
                 
-            return AssetUploadResponse(
-                asset_id=asset_id,
-                name=metadata["name"],
-                size_bytes=file_size,
-                mime_type=mime_type,
-                storage_provider=storage_config.primary_provider.value,
-                encryption_enabled=metadata["encryption_enabled"],
-                processing_status="queued"
-            )
+            except Exception as e:
+                logger.error(f"Error uploading asset: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/v1/assets/{asset_id}/reviews")
+        async def submit_review(
+            asset_id: str,
+            review_data: Dict[str, Any]
+        ):
+            """Submit a review for an asset"""
+            try:
+                # Process review
+                review_id = await self.process_review(asset_id, review_data)
+                
+                # Publish review completed event
+                await self.event_integration.publish_asset_event(
+                    AssetEventType.REVIEW_COMPLETED,
+                    {
+                        "event_type": AssetEventType.REVIEW_COMPLETED.value,
+                        "asset_id": asset_id,
+                        "review_id": review_id,
+                        "reviewer_id": review_data.get("reviewer_id"),
+                        "rating": review_data.get("rating"),
+                        "review_type": review_data.get("review_type", "quality"),
+                        "comments": review_data.get("comments"),
+                        "metadata": {
+                            "verified": review_data.get("verified", False)
+                        }
+                    }
+                )
+                
+                return {"review_id": review_id, "status": "submitted"}
+                
+            except Exception as e:
+                logger.error(f"Error submitting review: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.post("/api/v1/marketplace/purchase")
+        async def purchase_asset(
+            purchase_data: Dict[str, Any]
+        ):
+            """Purchase an asset from the marketplace"""
+            try:
+                # Process purchase
+                transaction_id = await self.process_purchase(purchase_data)
+                
+                # Publish purchase event
+                await self.event_integration.publish_asset_event(
+                    AssetEventType.ASSET_PURCHASED,
+                    {
+                        "event_type": AssetEventType.ASSET_PURCHASED.value,
+                        "asset_id": purchase_data.get("asset_id"),
+                        "transaction_id": transaction_id,
+                        "buyer_id": purchase_data.get("buyer_id"),
+                        "seller_id": purchase_data.get("seller_id"),
+                        "price": purchase_data.get("price"),
+                        "currency": purchase_data.get("currency", "USD"),
+                        "transaction_type": "purchase",
+                        "blockchain_tx_hash": purchase_data.get("blockchain_tx_hash"),
+                        "royalty_distributions": purchase_data.get("royalty_distributions", [])
+                    }
+                )
+                
+                return {"transaction_id": transaction_id, "status": "completed"}
+                
+            except Exception as e:
+                logger.error(f"Error processing purchase: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/v1/assets/{asset_id}/lineage")
+        async def get_asset_lineage(asset_id: str, depth: int = 3):
+            """Get asset lineage information"""
+            try:
+                lineage = await self.event_integration.get_asset_lineage(asset_id, depth)
+                return lineage
+            except Exception as e:
+                logger.error(f"Error getting asset lineage: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
+
+        @self.app.get("/api/v1/users/{user_id}/reputation")
+        async def get_user_reputation(user_id: str):
+            """Get user reputation score"""
+            try:
+                reputation = await self.event_integration.get_user_reputation(user_id)
+                return reputation
+            except Exception as e:
+                logger.error(f"Error getting user reputation: {e}")
+                raise HTTPException(status_code=500, detail=str(e))
             
         @self.app.get("/api/v1/assets/{asset_id}")
         async def get_asset_metadata(asset_id: str):

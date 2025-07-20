@@ -1,198 +1,396 @@
 # Data Platform Service
 
-A comprehensive data platform service providing unified data management, analytics, and governance capabilities with Apache Druid integration for time-series analytics.
+Comprehensive data management platform for the platformQ ecosystem with advanced trading data lake capabilities.
 
-## Features
+## Overview
 
-### Core Capabilities
-- **Unified Data Lake**: Medallion architecture (Bronze/Silver/Gold zones) with Iceberg and Delta Lake support
-- **Time-Series Analytics**: Apache Druid integration for OLAP queries and real-time analytics
-- **Data Catalog**: Comprehensive metadata management and discovery
+The Data Platform Service provides a unified data infrastructure with:
+
+- **Query Federation**: Unified SQL interface across multiple data sources via Apache Trino
+- **Data Catalog**: Centralized metadata management with discovery and lineage tracking
+- **Data Governance**: Policy-based access control with GDPR/CCPA/HIPAA compliance
 - **Data Quality**: Automated profiling, validation, and remediation
-- **Data Governance**: Policy enforcement, access control, and compliance tracking
-- **Feature Store**: ML feature management with online/offline serving
-- **Data Lineage**: End-to-end data flow tracking and impact analysis
-- **Pipeline Management**: SeaTunnel-based ETL/ELT pipelines
-
-### Integrations
-- **Apache Druid**: Time-series analytics and OLAP queries
-- **Apache Ignite**: In-memory computing and caching
-- **Apache Spark**: Large-scale data processing
-- **Apache Pulsar**: Event streaming and messaging
-- **Elasticsearch**: Full-text search and analytics
-- **JanusGraph**: Graph database for relationships
-- **MinIO**: Object storage for data lake
+- **Data Lake Management**: Medallion architecture (Bronze/Silver/Gold) with MinIO storage
+- **Trading Data Lake**: Specialized medallion architecture for trading data
+- **Pipeline Orchestration**: ETL/ELT management with Apache SeaTunnel
+- **Feature Store**: ML feature management and serving
+- **Real-time Analytics**: Integration with Druid for time-series analytics
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  Data Platform Service                   │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐ │
-│  │   Data Lake  │  │   Analytics   │  │  Governance  │ │
-│  │  (Iceberg/   │  │   (Druid)     │  │   & Quality  │ │
-│  │   Delta)     │  └──────────────┘  └──────────────┘ │
-│  └─────────────┘                                       │
-│                                                         │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐ │
-│  │  Feature     │  │   Pipeline    │  │   Lineage    │ │
-│  │   Store      │  │  (SeaTunnel)  │  │   Tracking   │ │
-│  └─────────────┘  └──────────────┘  └──────────────┘ │
-│                                                         │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────┐
+│                  Data Platform Service                       │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┬──────────────┬─────────────┬────────────┐ │
+│  │   Query     │    Data      │    Data     │  Feature   │ │
+│  │ Federation  │   Catalog    │ Governance  │   Store    │ │
+│  └─────────────┴──────────────┴─────────────┴────────────┘ │
+├─────────────────────────────────────────────────────────────┤
+│                  Data Lake (Medallion)                       │
+│  ┌─────────────┬──────────────┬─────────────────────────┐  │
+│  │   Bronze    │    Silver    │      Gold               │  │
+│  │    (Raw)    │  (Cleaned)   │  (Analytics-Ready)      │  │
+│  └─────────────┴──────────────┴─────────────────────────┘  │
+├─────────────────────────────────────────────────────────────┤
+│                   Trading Data Lake                          │
+│  ┌─────────────┬──────────────┬─────────────────────────┐  │
+│  │   Market    │   Trader     │     Risk                │  │
+│  │    Data     │  Behavior    │  Indicators             │  │
+│  └─────────────┴──────────────┴─────────────────────────┘  │
+└─────────────────────────────────────────────────────────────┘
 ```
 
-## Druid Analytics Integration
+## Features
 
-The service includes Apache Druid for advanced time-series analytics:
+### Query Federation
+- Execute SQL queries across PostgreSQL, Cassandra, Elasticsearch, and more
+- Query optimization and caching
+- Result materialization for performance
+- Cross-database joins
 
-### Time-Series Queries
-```python
-# Query time-series data
-POST /api/v1/analytics/timeseries
-{
-    "datasource": "user_events",
-    "metrics": ["page_views", "clicks"],
-    "granularity": "hour",
-    "filter": {"country": "US"},
-    "start_time": "2024-01-01T00:00:00Z",
-    "end_time": "2024-01-02T00:00:00Z"
-}
-```
+### Data Catalog
+- Asset discovery with full-text search
+- Column-level metadata and statistics
+- Data lineage visualization
+- Tagging and classification
+- Quality scores and metrics
 
-### Group-By Analytics
-```python
-# Aggregate by dimensions
-POST /api/v1/analytics/groupby
-{
-    "datasource": "sales_data",
-    "dimensions": ["product", "region"],
-    "metrics": ["revenue", "quantity"],
-    "limit": 100
-}
-```
+### Data Governance
+- Fine-grained access control
+- Compliance frameworks (GDPR, CCPA, HIPAA)
+- Data privacy controls (masking, encryption)
+- Access request workflows
+- Audit logging
 
-### Data Ingestion
-```python
-# Ingest data into Druid
-POST /api/v1/analytics/ingest
-{
-    "datasource": "events",
-    "data": [
-        {"timestamp": "2024-01-01T10:00:00Z", "user_id": 123, "event": "click"},
-        {"timestamp": "2024-01-01T10:01:00Z", "user_id": 456, "event": "view"}
-    ],
-    "timestamp_column": "timestamp"
-}
-```
+### Trading Data Lake
+- **Bronze Layer**: Raw trading events (trades, orderbook, positions)
+- **Silver Layer**: Validated and enriched trading data
+- **Gold Layer**: ML-ready features and aggregations
+- **Real-time Ingestion**: Stream processing for market data
+- **Quality Validation**: Automated data quality checks
+
+### Trading Features
+- **Market Microstructure**: Spread, depth, liquidity metrics
+- **Trader Behavior**: Win rate, holding period, strategy consistency
+- **Risk Indicators**: VaR, CVaR, concentration risk
+- **Technical Indicators**: Price-based technical analysis
 
 ## API Endpoints
 
-### Analytics APIs
-- `POST /api/v1/analytics/timeseries` - Query time-series data
-- `POST /api/v1/analytics/groupby` - Execute group-by queries
-- `POST /api/v1/analytics/ingest` - Ingest data into Druid
-- `GET /api/v1/analytics/datasources` - List available datasources
+### Query Federation
+- `POST /api/v1/query/execute` - Execute federated query
+- `GET /api/v1/query/{query_id}/status` - Check query status
+- `GET /api/v1/query/{query_id}/results` - Get query results
 
-### Data Lake APIs
-- `POST /api/v1/lake/datasets` - Create dataset
-- `GET /api/v1/lake/datasets` - List datasets
-- `POST /api/v1/lake/ingest` - Ingest data
-- `POST /api/v1/lake/query` - Query data
-
-### Catalog APIs
-- `POST /api/v1/catalog/assets` - Register data asset
+### Data Catalog
 - `GET /api/v1/catalog/search` - Search catalog
-- `GET /api/v1/catalog/lineage/{asset_id}` - Get lineage
+- `POST /api/v1/catalog/assets` - Register new asset
+- `GET /api/v1/catalog/assets/{asset_id}` - Get asset details
+- `PUT /api/v1/catalog/assets/{asset_id}/tags` - Update tags
 
-### Feature Store APIs
-- `POST /api/v1/features/groups` - Create feature group
-- `POST /api/v1/features/serve` - Get online features
-- `POST /api/v1/features/historical` - Get historical features
+### Data Governance
+- `POST /api/v1/governance/policies` - Create access policy
+- `GET /api/v1/governance/compliance/report` - Compliance report
+- `POST /api/v1/governance/access-requests` - Request access
+
+### Trading Data Lake
+- `POST /api/v1/lake/trading/ingest` - Ingest trading events
+- `POST /api/v1/lake/trading/process/silver` - Process to Silver
+- `POST /api/v1/lake/trading/generate/features` - Generate Gold features
+- `GET /api/v1/lake/trading/quality/report` - Data quality report
+- `GET /api/v1/lake/trading/features/available` - List available features
+
+### Feature Store
+- `POST /api/v1/features/register` - Register feature set
+- `POST /api/v1/features/serve` - Get feature values
+- `POST /api/v1/features/compute` - Compute features
+
+## Trading Data Types
+
+```python
+ORDER_BOOK = "order_book"      # Orderbook snapshots
+TRADES = "trades"              # Executed trades
+MARKET_DATA = "market_data"    # Price/volume data
+POSITIONS = "positions"        # Open positions
+RISK_METRICS = "risk_metrics"  # Risk calculations
+TRADER_ACTIVITY = "trader_activity"  # Trader actions
+STRATEGY_SIGNALS = "strategy_signals"  # Trading signals
+```
 
 ## Configuration
 
 ### Environment Variables
+
 ```bash
-# Vault Integration
-VAULT_ADDR=http://vault:8200
-VAULT_ROLE_ID=your-role-id
-VAULT_SECRET_ID=your-secret-id
-
-# Consul Integration
-CONSUL_HOST=consul
-CONSUL_PORT=8500
-
-# Druid Configuration
-DRUID_BROKER_URL=http://druid-broker:8082
-DRUID_COORDINATOR_URL=http://druid-coordinator:8081
-DRUID_OVERLORD_URL=http://druid-overlord:8090
-
-# Spark Configuration
-SPARK_MASTER=spark://spark-master:7077
-SPARK_EXECUTOR_MEMORY=4g
+# Database Connections
+TRINO_HOST=trino-coordinator:8080
+POSTGRES_URL=postgresql://user:pass@postgres:5432/db
+CASSANDRA_HOSTS=cassandra-0,cassandra-1
+ELASTICSEARCH_URL=http://elasticsearch:9200
 
 # Storage
 MINIO_ENDPOINT=minio:9000
-MINIO_ACCESS_KEY=minioadmin
-MINIO_SECRET_KEY=minioadmin
+MINIO_ACCESS_KEY=minio
+MINIO_SECRET_KEY=minio123
+
+# Analytics
+DRUID_BROKER_URL=http://druid-broker:8082
+SPARK_MASTER=spark://spark-master:7077
+
+# Service Configuration
+SERVICE_NAME=data-platform-service
+LOG_LEVEL=INFO
+
+# Trading Lake Configuration
+BRONZE_RETENTION_DAYS=90
+SILVER_RETENTION_DAYS=365
+GOLD_RETENTION_DAYS=730
 ```
 
-## Quick Start
+## Usage Examples
 
-1. **Install Dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Ingest Trading Data
 
-2. **Start Services**
-   ```bash
-   docker-compose up -d
-   ```
+```python
+import httpx
 
-3. **Initialize Platform**
-   ```bash
-   python scripts/bootstrap_platform.py
-   ```
+# Ingest trade events
+events = [
+    {
+        "trade_id": "T-123",
+        "market_id": "BTC-USD",
+        "trader_id": "trader123",
+        "price": 45000,
+        "quantity": 0.5,
+        "side": "BUY",
+        "timestamp": "2024-01-15T10:30:00Z"
+    }
+]
 
-4. **Access API**
-   ```
-   http://localhost:8000/docs
-   ```
+response = httpx.post(
+    "http://data-platform:8000/api/v1/lake/trading/ingest",
+    json={
+        "events": events,
+        "event_type": "trades"
+    }
+)
+```
 
-## Security
+### Generate Trading Features
 
-- **Vault Integration**: Dynamic credentials and encryption
-- **Consul Integration**: Service discovery and configuration
-- **mTLS**: Service-to-service encryption
-- **RBAC**: Role-based access control
-- **Data Encryption**: At-rest and in-transit
+```python
+# Generate market microstructure features
+response = httpx.post(
+    "http://data-platform:8000/api/v1/lake/trading/generate/features",
+    json={
+        "feature_sets": ["market_microstructure", "trader_behavior"],
+        "start_date": "2024-01-01T00:00:00Z",
+        "end_date": "2024-01-15T23:59:59Z"
+    }
+)
+
+# Response includes features like:
+# - avg_spread, spread_volatility
+# - trade_frequency, win_rate
+# - kyle_lambda, amihud_illiquidity
+```
+
+### Query Federated Data
+
+```python
+# Query across multiple data sources
+query = {
+    "sql": """
+        SELECT 
+            t.trader_id,
+            t.total_volume,
+            r.risk_score,
+            f.win_rate
+        FROM postgres.trading.traders t
+        JOIN cassandra.risk.scores r ON t.trader_id = r.trader_id
+        JOIN features.trader_behavior f ON t.trader_id = f.trader_id
+        WHERE t.total_volume > 1000000
+    """,
+    "limit": 100
+}
+
+response = httpx.post(
+    "http://data-platform:8000/api/v1/query/execute",
+    json=query
+)
+```
+
+## Data Quality
+
+### Quality Metrics
+- **Completeness**: Percentage of non-null required fields
+- **Accuracy**: Data validation against business rules
+- **Timeliness**: Data freshness and latency
+- **Consistency**: Cross-dataset consistency checks
+
+### Quality Thresholds
+- Bronze → Silver: 95% completeness required
+- Silver → Gold: 99% accuracy required
+- Real-time data: < 5 second latency
 
 ## Monitoring
 
-- **Metrics**: Prometheus metrics exposed at `/metrics`
-- **Tracing**: OpenTelemetry integration
-- **Health Check**: Available at `/health`
-- **Druid Monitoring**: Analytics performance metrics
+### Metrics
+- Query execution time and throughput
+- Data ingestion rate and latency
+- Storage usage by layer
+- Feature computation time
+- Quality score trends
+
+### Alerts
+- Data quality threshold breaches
+- Pipeline failures
+- Storage capacity warnings
+- Query timeout alerts
 
 ## Development
 
-### Running Tests
+### Running Locally
+
 ```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Start dependencies
+docker-compose up -d postgres cassandra elasticsearch minio
+
+# Run service
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### Testing
+
+```bash
+# Run tests
 pytest tests/
+
+# Run integration tests
+pytest tests/integration/
 ```
 
-### Code Quality
+## Integration
+
+The Data Platform Service integrates with:
+- **ML Platform Service**: Provides training data and features
+- **Event Router Service**: Ingests real-time event streams
+- **Analytics Service**: Federated analytics queries
+- **Trading Platform Service**: Receives trading data for processing
+- **Storage Service**: Uses MinIO for object storage 
+
+### Trading Data Lake Features
+- **Real-time Ingestion**: Stream trading data from multiple sources
+- **Medallion Architecture**: Bronze → Silver → Gold data refinement
+- **Time-series Optimization**: Specialized storage for tick data
+- **Feature Engineering**: Automated technical indicator calculation
+- **Quality Monitoring**: Track data quality metrics
+- **Batch Processing**: Daily aggregations and rollups
+
+### Trading Lake API
 ```bash
-# Linting
-flake8 app/
+# Ingest trading data
+POST /api/v1/trading-lake/ingest
 
-# Type checking
-mypy app/
+# Process to Silver layer
+POST /api/v1/trading-lake/process-silver
+
+# Generate Gold features
+POST /api/v1/trading-lake/generate-features
+
+# Query trading data
+POST /api/v1/trading-lake/query
+
+# Get quality report
+GET /api/v1/trading-lake/quality/{dataset_id}
 ```
 
-## License
+## ML Data Lake
 
-Proprietary - All rights reserved 
+Specialized medallion architecture for ML workloads:
+
+### ML Data Layers
+- **Raw Data**: Original training datasets
+- **Processed Data**: Cleaned and normalized data
+- **Feature Data**: Engineered features
+- **Training Data**: Train/val/test splits
+- **Model Artifacts**: Trained model storage
+- **Predictions**: Model output tracking
+- **Metrics**: Performance metrics aggregation
+
+### ML Lake Features
+- **Dataset Versioning**: Track dataset versions and lineage
+- **Feature Engineering**: Automated feature generation
+  - Polynomial features
+  - Interaction features
+  - Time-based features
+  - Statistical features
+- **Data Processing**: Configurable processing pipeline
+  - Missing value handling
+  - Normalization
+  - Categorical encoding
+  - Outlier removal
+- **Training Splits**: Automated train/val/test splitting
+- **Model Artifact Management**: Store and version models
+- **Prediction Tracking**: Monitor model predictions
+- **Metrics Aggregation**: Track model performance over time
+
+### ML Lake API
+```bash
+# Ingest training dataset
+POST /api/v1/ml-lake/datasets/ingest
+
+# Process dataset
+POST /api/v1/ml-lake/datasets/{dataset_id}/process
+
+# Engineer features
+POST /api/v1/ml-lake/features/engineer
+
+# Create training splits
+POST /api/v1/ml-lake/training/splits
+
+# Save model artifact
+POST /api/v1/ml-lake/models/artifacts
+
+# Track predictions
+POST /api/v1/ml-lake/predictions/track
+
+# Get model metrics
+GET /api/v1/ml-lake/models/{model_id}/metrics
+
+# Query ML data
+POST /api/v1/ml-lake/query
+
+# Get dataset info
+GET /api/v1/ml-lake/datasets/{dataset_id}
+
+# Get feature set info
+GET /api/v1/ml-lake/features/{feature_set_id}
+```
+
+### Data Processing Configuration
+```json
+{
+  "handle_missing": true,
+  "missing_strategy": "mean",
+  "normalize": true,
+  "encode_categorical": true,
+  "remove_outliers": false,
+  "outlier_threshold": 3.0
+}
+```
+
+### Feature Engineering Configuration
+```json
+{
+  "polynomial_features": true,
+  "interaction_features": true,
+  "time_features": false,
+  "statistical_features": true,
+  "custom_features": []
+}
+``` 

@@ -26,6 +26,14 @@ from .vault_consul_integration import (
 )
 from .models import Query, QueryResult, Dataset, DataQualityReport
 from .analytics import DruidAnalyticsEngine
+from .api import query, catalog, governance, quality, lake, pipelines, features, lineage, admin, integrations, dih_router, trading_lake
+from .api.v1 import quality_remediation
+from .lake.medallion_architecture import MedallionArchitecture
+from .lake.ingestion_engine import IngestionEngine
+from .lake.transformation_engine import TransformationEngine
+from .lake.trading_medallion import TradingMedallionArchitecture
+from .lake.ml_medallion import MLMedallionArchitecture
+from .lake.data_compaction import DataCompactionService
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -41,6 +49,10 @@ class DataPlatformService:
         self.consul_integration: Optional[DataServiceConsulIntegration] = None
         self._query_cache: Dict[str, Any] = {}
         self.druid_engine: Optional[DruidAnalyticsEngine] = None
+        # Trading components will be initialized if needed
+        self.trading_medallion: Optional[TradingMedallionArchitecture] = None
+        self.ml_medallion_architecture: Optional[MLMedallionArchitecture] = None
+        self.compaction_service: Optional[DataCompactionService] = None
         
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
@@ -86,8 +98,33 @@ class DataPlatformService:
             self.druid_engine = DruidAnalyticsEngine(druid_config)
             logger.info("Initialized Druid analytics engine")
             
+            # Initialize Trading Medallion Architecture
+            self.trading_medallion = TradingMedallionArchitecture(
+                minio_client=vault_client.minio_client,
+                ignite_client=vault_client.ignite_client,
+                bucket_prefix="trading"
+            )
+            self.app.state.trading_medallion = self.trading_medallion
+            
+            # Initialize ML Medallion Architecture
+            self.ml_medallion_architecture = MLMedallionArchitecture(
+                minio_client=vault_client.minio_client,
+                bucket_prefix="ml"
+            )
+            self.app.state.ml_medallion_architecture = self.ml_medallion_architecture
+            
+            # Initialize Compaction Service
+            self.compaction_service = DataCompactionService(
+                minio_client=vault_client.minio_client,
+                consul_client=consul_client
+            )
+            self.app.state.compaction_service = self.compaction_service
+            
             # Set up routes
             self._setup_routes()
+            
+            # Include trading lake router
+            self.app.include_router(trading_lake.router, prefix="/api/v1/lake")
             
             # Add security middleware
             security_middleware = SecurityMiddleware(

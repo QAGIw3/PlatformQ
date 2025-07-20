@@ -52,6 +52,7 @@ from .api import (
 
 # Import event handlers
 from .event_handlers import UnifiedMLEventHandler
+from .integrations.event_driven_ml import EventDrivenMLIntegration, MLEventType
 
 logger = logging.getLogger(__name__)
 
@@ -68,6 +69,7 @@ neuromorphic_engine: Optional[NeuromorphicEngine] = None
 mlops_manager: Optional[MLOpsManager] = None
 automl_engine: Optional[AutoMLEngine] = None
 event_handler: Optional[UnifiedMLEventHandler] = None
+event_driven_ml: Optional[EventDrivenMLIntegration] = None
 
 
 async def get_vault_consul() -> VaultConsulIntegration:
@@ -218,6 +220,72 @@ async def lifespan(app: FastAPI):
         vault_integration=vault_consul
     )
     await event_handler.initialize()
+
+    # Initialize event-driven ML integration
+    event_driven_ml = EventDrivenMLIntegration(vault_consul_integration=vault_consul)
+    await event_driven_ml.initialize()
+
+    # Hook event-driven integration into training orchestrator
+    async def on_training_started(training_job):
+        await event_driven_ml.publish_ml_event(
+            MLEventType.TRAINING_STARTED,
+            {
+                "model_metadata": {
+                    "model_id": training_job.get("model_id"),
+                    "model_name": training_job.get("name"),
+                    "algorithm": training_job.get("algorithm"),
+                    "framework": training_job.get("framework")
+                },
+                "training_id": training_job.get("training_id"),
+                "dataset_id": training_job.get("dataset_id")
+            }
+        )
+
+    async def on_training_completed(training_job, metrics):
+        await event_driven_ml.publish_ml_event(
+            MLEventType.TRAINING_COMPLETED,
+            {
+                "model_metadata": {
+                    "model_id": training_job.get("model_id"),
+                    "model_name": training_job.get("name"),
+                    "version": training_job.get("version"),
+                    "algorithm": training_job.get("algorithm"),
+                    "framework": training_job.get("framework"),
+                    "metrics": metrics,
+                    "parameters": training_job.get("parameters", {}),
+                    "dataset_id": training_job.get("dataset_id"),
+                    "experiment_id": training_job.get("experiment_id")
+                },
+                "training_id": training_job.get("training_id"),
+                "duration_seconds": training_job.get("duration_seconds"),
+                "resource_usage": training_job.get("resource_usage", {})
+            }
+        )
+
+    # Set event handlers on training orchestrator
+    training_orchestrator.on_training_started = on_training_started
+    training_orchestrator.on_training_completed = on_training_completed
+
+    # Hook into model registry for model events
+    async def on_model_registered(model_info):
+        await event_driven_ml.publish_ml_event(
+            MLEventType.MODEL_REGISTERED,
+            {
+                "model_id": model_info.get("model_id"),
+                "model_metadata": model_info
+            }
+        )
+
+    model_registry.on_model_registered = on_model_registered
+
+    # Hook into model monitor for drift detection
+    async def on_drift_detected(drift_info):
+        await event_driven_ml.publish_ml_event(
+            MLEventType.DRIFT_DETECTED,
+            drift_info
+        )
+
+    model_monitor.on_drift_detected = on_drift_detected
     
     # Register event handlers for all ML-related events
     event_handler.register_handler(

@@ -29,6 +29,9 @@ from .core.event_store import EventStore
 from .api import routes, admin, health, blockchain
 from .core.blockchain_event_handler import BlockchainEventHandler
 from .monitoring import EventMetrics
+from .api.trading_events import TradingEventRouter
+from .api import ml_events
+from .api import asset_events
 
 logger = logging.getLogger(__name__)
 
@@ -113,6 +116,20 @@ async def lifespan(app: FastAPI):
     )
     app.state.blockchain_event_handler = blockchain_event_handler
     
+    # Initialize trading event router
+    trading_router = TradingEventRouter(
+        event_router=event_router,
+        dlq_monitor=None # DLQMonitor is not initialized here, so pass None for now
+    )
+    app.state.trading_event_router = trading_router
+
+    # Initialize ML event router
+    ml_event_router = ml_events.MLEventRouter(
+        event_router=event_router,
+        dlq_monitor=None # DLQMonitor is not initialized here, so pass None for now
+    )
+    app.state.ml_event_router = ml_event_router
+    
     # Start background tasks
     asyncio.create_task(event_router.start_routing())
     asyncio.create_task(dead_letter_handler.process_dead_letters())
@@ -165,6 +182,9 @@ app.include_router(routes.router, prefix="/api/v1/routes", tags=["routes"])
 app.include_router(admin.router, prefix="/api/v1/admin", tags=["admin"])
 app.include_router(health.router, prefix="/api/v1/health", tags=["health"])
 app.include_router(blockchain.router, prefix="/api/v1/blockchain", tags=["blockchain"])
+app.include_router(trading_events.router, prefix="/api/v1/trading-events", tags=["trading-events"])
+app.include_router(ml_events.router, prefix="/api/v1/ml-events", tags=["ml-events"])
+app.include_router(asset_events.router, prefix="/api/v1/asset-events", tags=["asset-events"])
 
 # Root endpoint
 @app.get("/")
@@ -181,6 +201,7 @@ async def root():
             "event-replay",
             "content-based-routing",
             "event-enrichment",
-            "batch-processing"
+            "batch-processing",
+            "trading-event-routing"
         ]
     } 

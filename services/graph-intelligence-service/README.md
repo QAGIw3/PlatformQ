@@ -1,237 +1,414 @@
 # Graph Intelligence Service
 
-The Graph Intelligence Service provides advanced graph analytics and multi-dimensional trust scoring for PlatformQ. It leverages JanusGraph for relationship modeling and implements sophisticated algorithms for reputation calculation and network analysis.
+JanusGraph-based knowledge graph and intelligence platform for the platformQ ecosystem with advanced trading risk analysis.
 
-## 🎯 Overview
+## Overview
 
-This service manages:
-- Multi-dimensional reputation scoring across 5 key dimensions
-- Real-time trust network analysis
-- Relationship mapping between users, assets, and activities
-- Community detection and influence measurement
-- Fraud detection through anomaly analysis
-- Decentralized trust propagation
+The Graph Intelligence Service provides comprehensive graph analytics and intelligence capabilities:
 
-## 🏗️ Architecture
+- **Knowledge Graph Management**: Store and query complex relationships between entities
+- **Trading Risk Networks**: Analyze risk propagation and systemic importance in trading systems
+- **Trust Networks**: Calculate and track trust scores between entities
+- **Community Detection**: Identify clusters and communities within the graph
+- **Fraud Detection**: Graph-based anomaly and fraud detection
+- **Lineage Tracking**: Track data and asset lineage
+- **Compute Market Intelligence**: Analyze compute market dynamics and relationships
 
-### Technology Stack
-- **Framework**: FastAPI (Python)
-- **Graph Database**: JanusGraph with Cassandra backend
-- **Search**: Elasticsearch for graph queries
-- **Analytics**: NetworkX for graph algorithms
-- **Messaging**: Apache Pulsar
-- **Cache**: Apache Ignite for real-time metrics
+## Architecture
 
-### Key Components
+```
+┌─────────────────────────────────────────────────────────────┐
+│              Graph Intelligence Service                      │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┬──────────────┬─────────────┬────────────┐ │
+│  │  JanusGraph │   Trading    │   Trust     │  Compute   │ │
+│  │   Backend   │  Risk Network│   Network   │  Markets   │ │
+│  └─────────────┴──────────────┴─────────────┴────────────┘ │
+├─────────────────────────────────────────────────────────────┤
+│  ┌─────────────┬──────────────┬─────────────┬────────────┐ │
+│  │  Analytics  │   Lineage    │  Community  │   Fraud    │ │
+│  │   Engine    │   Tracker    │  Detection  │  Detection │ │
+│  └─────────────┴──────────────┴─────────────┴────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
 
-1. **Multi-Dimensional Reputation System**
-   - Technical Prowess: Code quality, asset complexity, tool mastery
-   - Collaboration Rating: Teamwork, communication, peer reviews
-   - Governance Influence: Proposal quality, voting participation
-   - Creativity Index: Innovation, unique solutions, artistic merit
-   - Reliability Score: Timeliness, consistency, promise keeping
+## Features
 
-2. **Trust Network Analysis**
-   - PageRank-based trust propagation
-   - Transitive trust calculations
-   - Trust path discovery
-   - Network resilience metrics
-
-3. **Graph Operations**
-   - Real-time edge creation for activities
-   - Batch graph updates from Flink
-   - Efficient traversals with Gremlin
-   - Subgraph extraction for analysis
-
-4. **Anomaly Detection**
-   - Unusual activity patterns
-   - Sybil attack detection
-   - Reputation gaming prevention
-   - Network manipulation alerts
-
-## 📡 API Endpoints
-
-### Reputation Scoring
-- `GET /api/v1/reputation/{user_id}` - Get user's reputation scores
-- `GET /api/v1/reputation/multi-dimensional` - Get detailed breakdown
-- `POST /api/v1/reputation/calculate` - Trigger recalculation
-- `GET /api/v1/reputation/history/{user_id}` - Historical scores
-
-### Trust Network
-- `GET /api/v1/trust/network/{user_id}` - User's trust network
-- `GET /api/v1/trust/path` - Find trust path between users
-- `POST /api/v1/trust/relationship` - Create trust relationship
-- `GET /api/v1/trust/score/{from_id}/{to_id}` - Pairwise trust score
+### Trading Risk Network Analysis
+- **Risk Propagation**: Analyze how risk spreads through trading networks
+- **Systemic Risk Detection**: Identify systemically important traders
+- **Cascade Simulation**: Simulate cascade effects of trader failures
+- **Risk Clustering**: Detect clusters of high-risk traders
+- **Real-time Updates**: Track risk metrics as trades occur
 
 ### Graph Analytics
-- `GET /api/v1/analytics/centrality/{user_id}` - User influence metrics
-- `GET /api/v1/analytics/communities` - Detect communities
-- `GET /api/v1/analytics/trends` - Network growth trends
-- `POST /api/v1/analytics/subgraph` - Extract subgraph
+- PageRank and centrality analysis
+- Community detection algorithms
+- Shortest path calculations
+- Graph structure analysis
+- Custom graph algorithms via Gremlin
 
-### Anomaly Detection
-- `GET /api/v1/anomalies/recent` - Recent anomalies
-- `POST /api/v1/anomalies/report` - Report suspicious activity
-- `GET /api/v1/anomalies/user/{user_id}` - User anomaly score
+### Trust Networks
+- Trust score calculation and propagation
+- Trust-based access control
+- Reputation tracking
+- Network influence analysis
 
-## 🚀 Quick Start
+### Compute Market Intelligence
+- Market participant analysis
+- Trust-adjusted margin calculations
+- Risk mitigation recommendations
+- Market impact predictions
 
-### Prerequisites
-- Python 3.10+
-- JanusGraph 0.6+
-- Elasticsearch 7.x
-- Apache Cassandra 3.x
-- Apache Pulsar
+## API Endpoints
 
-### Development Setup
+### Trading Risk Analysis
+- `POST /api/v1/graph/trading-risk/traders/{trader_id}/risk` - Update trader risk profile
+- `POST /api/v1/graph/trading-risk/relationships` - Add trading relationship
+- `POST /api/v1/graph/trading-risk/analyze/propagation` - Analyze risk propagation
+- `GET /api/v1/graph/trading-risk/clusters/risk` - Detect risk clusters
+- `GET /api/v1/graph/trading-risk/traders/{trader_id}/systemic-importance` - Get systemic importance
+- `POST /api/v1/graph/trading-risk/simulate/cascade` - Simulate cascade failure
+- `GET /api/v1/graph/trading-risk/network/stats` - Get network statistics
 
-1. **Install dependencies**
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Graph Operations
+- `POST /api/v1/graph/nodes` - Create node
+- `GET /api/v1/graph/nodes/{node_id}` - Get node
+- `POST /api/v1/graph/edges` - Create edge
+- `GET /api/v1/graph/nodes/{node_id}/neighbors` - Get neighbors
 
-2. **Start JanusGraph**
-   ```bash
-   docker-compose -f docker-compose.janusgraph.yml up -d
-   ```
+### Analytics
+- `POST /api/v1/graph/analyze/pagerank` - Run PageRank analysis
+- `POST /api/v1/graph/analyze/communities` - Detect communities
+- `POST /api/v1/graph/analyze/shortest-paths` - Find shortest paths
 
-3. **Initialize graph schema**
-   ```bash
-   python scripts/init_graph_schema.py
-   ```
+### Trust & Reputation
+- `GET /api/v1/graph/trust-score/{user_id}` - Get trust score
+- `POST /api/v1/graph/trust-score/{user_id}/calculate-verifiable` - Calculate verifiable trust
 
-4. **Set environment variables**
-   ```bash
-   export JANUSGRAPH_HOST="localhost"
-   export JANUSGRAPH_PORT="8182"
-   export ELASTICSEARCH_URL="http://localhost:9200"
-   export PULSAR_URL="pulsar://localhost:6650"
-   ```
+## Trading Risk Network
 
-5. **Start the service**
-   ```bash
-   uvicorn app.main:app --reload --port 8003
-   ```
-
-## 📊 Graph Schema
-
-### Vertices (Nodes)
-- **User**: Platform users with reputation scores
-- **Asset**: Digital assets with quality metrics
-- **Activity**: User actions and contributions
-- **Project**: Collaborative projects
-- **Review**: Peer reviews and ratings
-
-### Edges (Relationships)
-- **CREATED**: User -> Asset
-- **REVIEWED**: User -> Asset
-- **COLLABORATED**: User -> User
-- **CONTRIBUTED**: User -> Project
-- **TRUSTS**: User -> User (weighted)
-
-### Properties
-```groovy
-// User vertex properties
-user.property('reputation_technical', 85.5)
-user.property('reputation_collaboration', 92.0)
-user.property('reputation_governance', 78.5)
-user.property('reputation_creativity', 88.0)
-user.property('reputation_reliability', 95.0)
-user.property('total_score', 87.8)
-
-// Trust edge properties
-trust.property('weight', 0.85)
-trust.property('context', 'technical')
-trust.property('established', '2024-01-15')
+### Risk Propagation Types
+```python
+DIRECT_EXPOSURE = "direct_exposure"      # Direct trading relationship
+COPY_TRADING = "copy_trading"            # Copy trading relationship
+CORRELATED_POSITIONS = "correlated_positions"  # Similar positions
+LIQUIDITY_LINKAGE = "liquidity_linkage"  # Shared liquidity pools
+MARGIN_CASCADE = "margin_cascade"        # Margin call cascades
 ```
 
-## 🧮 Reputation Calculation
+### Risk Metrics
+- **Risk Score**: Overall risk level (0-1)
+- **Exposure**: Total monetary exposure
+- **Leverage**: Current leverage ratio
+- **Margin Utilization**: Percentage of margin used
+- **Liquidity**: Available liquidity
+- **Systemic Importance**: Network centrality score
 
-### Score Formula
+## Configuration
+
+### Environment Variables
+
+```bash
+# JanusGraph Configuration
+GREMLIN_SERVER_URL=ws://janusgraph:8182/gremlin
+CASSANDRA_HOSTS=cassandra-0,cassandra-1,cassandra-2
+CASSANDRA_PORT=9042
+
+# Service Configuration
+SERVICE_NAME=graph-intelligence-service
+LOG_LEVEL=INFO
+
+# Risk Network Configuration
+RISK_PROPAGATION_DAMPING=0.85
+MIN_PROPAGATION_STRENGTH=0.1
+SYSTEMIC_RISK_THRESHOLD=0.7
+```
+
+## Usage Examples
+
+### Update Trader Risk Profile
+
 ```python
-# Weighted average based on activity type
-technical_score = (
-    code_quality * 0.3 +
-    asset_complexity * 0.3 +
-    tool_expertise * 0.2 +
-    problem_solving * 0.2
+import httpx
+
+risk_update = {
+    "trader_id": "trader123",
+    "risk_score": 0.65,
+    "exposure": 1500000,
+    "leverage": 3.5,
+    "margin_utilization": 0.75,
+    "position_count": 12,
+    "liquidity": 500000
+}
+
+response = httpx.post(
+    "http://graph-intelligence:8000/api/v1/graph/trading-risk/traders/trader123/risk",
+    json=risk_update
+)
+```
+
+### Analyze Risk Propagation
+
+```python
+propagation_request = {
+    "source_trader": "trader123",
+    "risk_event": {
+        "type": "liquidation",
+        "severity": "high",
+        "market_volatility": 0.8,
+        "amount": 1000000
+    }
+}
+
+response = httpx.post(
+    "http://graph-intelligence:8000/api/v1/graph/trading-risk/analyze/propagation",
+    json=propagation_request
 )
 
-# Trust-adjusted score
-final_score = base_score * trust_multiplier + peer_influence
+# Response includes:
+# - affected_traders: List of traders affected
+# - total_exposure: Total exposure at risk
+# - cascade_depth: How many hops the risk propagated
+# - systemic_risk_score: Overall systemic risk (0-1)
+# - mitigation_actions: Recommended actions
 ```
 
-### Dimension Weights
-| Activity Type | Technical | Collaboration | Governance | Creativity | Reliability |
-|--------------|-----------|---------------|------------|------------|-------------|
-| Code Review | 40% | 20% | 10% | 10% | 20% |
-| Asset Creation | 30% | 10% | 5% | 40% | 15% |
-| DAO Voting | 10% | 20% | 50% | 5% | 15% |
+### Simulate Cascade Failure
 
-## 🔐 Security
+```python
+simulation_request = {
+    "failing_trader": "whale_trader_001",
+    "failure_type": "liquidation"
+}
 
-- **Graph Injection Prevention**: Parameterized Gremlin queries
-- **Rate Limiting**: Prevents reputation gaming
-- **Anomaly Detection**: Real-time fraud prevention
-- **Access Control**: Vertex-level permissions
-- **Audit Trail**: All score changes logged
+response = httpx.post(
+    "http://graph-intelligence:8000/api/v1/graph/trading-risk/simulate/cascade",
+    json=simulation_request
+)
 
-## 🧪 Testing
+# Response shows waves of failures and recommendations
+```
 
-Run the test suite:
+## Schema
+
+### Trader Node Properties
+- `trader_id`: Unique identifier
+- `risk_score`: Current risk score (0-1)
+- `exposure`: Total exposure amount
+- `leverage`: Current leverage
+- `margin_utilization`: Margin usage (0-1)
+- `position_count`: Number of open positions
+- `liquidity`: Available liquidity
+- `last_update`: Last update timestamp
+
+### Trading Relationship Edge Properties
+- `relationship_type`: Type of relationship
+- `strength`: Relationship strength (0-1)
+- `exposure_amount`: Monetary exposure
+- `last_interaction`: Last interaction time
+
+## Monitoring
+
+### Metrics
+- Graph size (nodes and edges)
+- Query performance and latency
+- Risk propagation analysis time
+- Community detection performance
+- Trust score calculation rate
+
+### Alerts
+- High systemic risk detected
+- Large risk clusters identified
+- Cascade simulation shows high impact
+- Graph query timeouts
+
+## Development
+
+### Running Locally
+
 ```bash
-pytest tests/ -v --cov=app
+# Install dependencies
+pip install -r requirements.txt
+
+# Start JanusGraph
+docker-compose up -d janusgraph
+
+# Run service
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-Graph integration tests:
+### Testing
+
 ```bash
-pytest tests/integration/test_graph.py -v
+# Run tests
+pytest tests/
+
+# Run integration tests
+pytest tests/integration/
 ```
 
-Load testing:
+## Integration
+
+The Graph Intelligence Service integrates with:
+- **Trading Platform Service**: Receives trader and position updates
+- **Event Router Service**: Processes risk events
+- **Derivatives Engine Service**: Analyzes derivative risk networks
+- **Data Platform Service**: Provides graph data for analytics 
+
+## ML Model Lineage
+
+The service provides comprehensive ML model lineage tracking and analysis:
+
+### ML Lineage Features
+- **Model Genealogy**: Track model versions and derivations
+- **Dataset Dependencies**: Track which datasets were used for training
+- **Feature Lineage**: Track feature engineering transformations
+- **Experiment Relationships**: Link models to experiments
+- **Impact Analysis**: Assess impact of changes to models or data
+- **Similarity Search**: Find similar models based on lineage patterns
+- **Evolution Tracking**: Track model performance over versions
+
+### Artifact Types
+- **Models**: ML models with versions and metadata
+- **Datasets**: Training, validation, and test datasets
+- **Feature Sets**: Engineered features and transformations
+- **Experiments**: ML experiments and trials
+- **Code Versions**: Track code used for training
+- **Pipelines**: ML pipeline definitions
+- **Deployments**: Model deployment configurations
+
+### Relationship Types
+- `derived_from`: Model derived from another model
+- `trained_on`: Model trained on specific dataset
+- `uses_features`: Model uses specific feature set
+- `part_of_experiment`: Model part of experiment
+- `replaced_by`: Model replaced by newer version
+- `ensemble_member`: Model part of ensemble
+- `fine_tuned_from`: Model fine-tuned from base model
+- `distilled_from`: Model distilled from teacher model
+
+### ML Lineage API
 ```bash
-locust -f tests/load/locustfile.py
+# Add model to lineage
+POST /api/v1/ml-lineage/models
+
+# Add dataset to lineage
+POST /api/v1/ml-lineage/datasets
+
+# Create lineage relationship
+POST /api/v1/ml-lineage/relationships
+
+# Get model lineage
+GET /api/v1/ml-lineage/models/{model_id}/lineage
+
+# Analyze change impact
+POST /api/v1/ml-lineage/impact-analysis
+
+# Find similar models
+POST /api/v1/ml-lineage/similarity-search
+
+# Track model evolution
+GET /api/v1/ml-lineage/models/{model_name}/evolution
+
+# Visualize lineage graph
+GET /api/v1/ml-lineage/models/{model_id}/visualization
+
+# Batch operations
+POST /api/v1/ml-lineage/batch/models
+POST /api/v1/ml-lineage/batch/relationships
+
+# Get lineage statistics
+GET /api/v1/ml-lineage/stats
 ```
 
-## 📈 Performance Optimization
+### Impact Analysis
+When models or datasets change, the service can analyze:
+- Affected downstream models
+- Impacted deployments
+- Risk assessment and scoring
+- Recommended actions
 
-- **Vertex Caching**: Frequently accessed users cached
-- **Batch Processing**: Bulk updates via Flink
-- **Index Optimization**: Composite indexes on key properties
-- **Query Optimization**: Prepared traversals for common paths
-- **Partitioning**: Graph partitioned by tenant
+### Visualization
+Generate Cytoscape-compatible visualization data for:
+- Model dependency graphs
+- Feature lineage trees
+- Experiment relationships
+- Evolution timelines 
 
-## 🔧 Configuration
+## Digital Asset Lineage
 
-Key settings in `app/core/config.py`:
-- `REPUTATION_UPDATE_INTERVAL`: How often to recalculate (300s)
-- `TRUST_DECAY_FACTOR`: Trust decay over time (0.95)
-- `MIN_ACTIVITIES_FOR_SCORE`: Minimum activities required (5)
-- `ANOMALY_THRESHOLD`: Anomaly detection sensitivity (2.5 std)
-- `MAX_TRUST_HOPS`: Maximum hops for trust propagation (3)
+The service provides comprehensive digital asset lineage tracking and analysis:
 
-## 📊 Monitoring
+### Asset Lineage Features
+- **Asset Provenance**: Track asset creation and derivation chains
+- **Review Tracking**: Peer reviews and quality scores
+- **Transaction History**: Marketplace purchases and licenses
+- **User Reputation**: Calculate reputation based on assets and activity
+- **Duplicate Detection**: Find duplicate assets by content ID
+- **Impact Analysis**: Assess impact of asset changes
+- **Relationship Discovery**: Find related assets by tags and type
 
-Metrics exposed at `/metrics`:
-- Graph size (vertices and edges)
-- Query performance histograms
-- Reputation calculation times
-- Anomaly detection rates
-- Cache hit ratios
+### Node Types
+- **Assets**: Digital assets with metadata and scores
+- **Users**: Asset creators, reviewers, and purchasers
+- **Reviews**: Peer reviews with ratings and comments
+- **Transactions**: Purchase and license transactions
+- **Licenses**: License agreements and terms
+- **Collections**: Asset collections and bundles
 
-## 🤝 Event Integration
+### Relationship Types
+- `derived_from`: Asset derived from another asset
+- `fork_of`: Asset forked from original
+- `version_of`: New version of existing asset
+- `component_of`: Asset is component of larger asset
+- `references`: Asset references another
+- `reviewed_by`: Asset reviewed by user
+- `purchased_by`: Asset purchased by user
+- `licensed_to`: Asset licensed to user
+- `created_by`: Asset created by user
 
-### Events Consumed
-- `UserActivityRecorded`: Updates activity graph
-- `AssetCreated`: Adds asset vertices
-- `PeerReviewSubmitted`: Creates review edges
-- `ProjectCollaborationStarted`: Links collaborators
+### Asset Lineage API
+```bash
+# Add asset to lineage
+POST /api/v1/asset-lineage/assets
 
-### Events Published
-- `ReputationUpdated`: When scores change significantly
-- `AnomalyDetected`: When suspicious activity found
-- `TrustNetworkChanged`: When relationships change
+# Add derivation relationship
+POST /api/v1/asset-lineage/derivations
 
-## 📝 License
+# Add review
+POST /api/v1/asset-lineage/reviews
 
-This service is part of the PlatformQ project and is licensed under the MIT License. 
+# Add transaction
+POST /api/v1/asset-lineage/transactions
+
+# Get asset lineage
+GET /api/v1/asset-lineage/assets/{asset_id}/lineage
+
+# Analyze impact
+POST /api/v1/asset-lineage/impact-analysis
+
+# Find duplicates
+GET /api/v1/asset-lineage/assets/duplicates/{cid}
+
+# Get user reputation
+GET /api/v1/asset-lineage/users/{user_id}/reputation
+
+# Batch operations
+POST /api/v1/asset-lineage/batch/assets
+POST /api/v1/asset-lineage/batch/derivations
+
+# Get statistics
+GET /api/v1/asset-lineage/stats
+```
+
+### Asset Quality & Trust Scores
+- **Quality Score**: Based on peer reviews and ratings
+- **Trust Score**: Based on transaction history
+- **Reputation Score**: User reputation calculation
+
+### Duplicate Detection
+Find potential duplicate assets by:
+- Content ID (CID) matching
+- Similarity analysis
+- Provenance tracking 

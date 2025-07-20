@@ -1,18 +1,18 @@
 # Unified Trading Platform Service
 
-Comprehensive trading platform for the platformQ ecosystem, combining social trading, copy trading, prediction markets, and advanced market mechanisms into a single, powerful service.
+Comprehensive trading platform for the platformQ ecosystem with advanced event-driven architecture and risk network analysis.
 
 ## Overview
 
-The Unified Trading Platform Service consolidates all trading-related functionality, providing:
+The Unified Trading Platform Service consolidates all trading-related functionality with:
 
 - **Social Trading**: Follow successful traders, copy strategies, and share trading insights
 - **Strategy NFTs**: Tokenized trading strategies with verifiable performance
 - **Copy Trading**: Automated portfolio replication with risk management
-- **Prediction Markets**: Binary, categorical, scalar, and conditional markets for real-world events
-- **Unified Order Matching**: High-performance order matching engine for all market types
-- **AMM Liquidity**: Automated market makers for prediction markets
-- **Oracle Resolution**: Decentralized oracle system for market outcomes
+- **Prediction Markets**: Binary, categorical, scalar, and conditional markets
+- **Event-Driven Architecture**: Real-time event processing and risk propagation
+- **Graph-Based Risk Analysis**: Network-based risk assessment and cascade simulation
+- **Medallion Data Lake**: Bronze/Silver/Gold architecture for trading data
 - **Real-time Analytics**: Performance tracking and market statistics
 
 ## Architecture
@@ -23,8 +23,8 @@ The Unified Trading Platform Service consolidates all trading-related functional
 ├─────────────────────────────────────────────────────────────┤
 │                    Shared Components                         │
 │  ┌─────────────┬──────────────┬─────────────┬────────────┐ │
-│  │   Order     │  Analytics   │  Reputation │   Real-    │ │
-│  │  Matching   │   Engine     │   System    │   time     │ │
+│  │   Order     │  Analytics   │  Reputation │   Event    │ │
+│  │  Matching   │   Engine     │   System    │   Driven   │ │
 │  └─────────────┴──────────────┴─────────────┴────────────┘ │
 ├─────────────────────────────────────────────────────────────┤
 │     Social Trading          │       Prediction Markets       │
@@ -32,10 +32,23 @@ The Unified Trading Platform Service consolidates all trading-related functional
 │  │ Strategy │  Copy   │    │    │  Market  │   Oracle    │ │
 │  │  Engine  │ Trading │    │    │  Engine  │  Resolver   │ │
 │  └──────────┴─────────┘    │    └──────────┴─────────────┘ │
+├─────────────────────────────────────────────────────────────┤
+│                  Event-Driven Integration                    │
+│  ┌─────────────┬──────────────┬─────────────────────────┐  │
+│  │   Event     │    Graph     │      Data Lake          │  │
+│  │   Router    │ Intelligence │    (Medallion)          │  │
+│  └─────────────┴──────────────┴─────────────────────────┘  │
 └─────────────────────────────────────────────────────────────┘
 ```
 
 ## Features
+
+### Event-Driven Trading
+- **Real-time Event Publishing**: Trade executions, position updates, risk alerts
+- **Event Enrichment**: Automatic enrichment with market data and risk metrics
+- **Risk Propagation Analysis**: Network-based risk contagion modeling
+- **Cascade Simulation**: What-if analysis for trader failures
+- **Systemic Risk Detection**: Identify systemically important traders
 
 ### Social Trading
 - **Strategy Creation**: Build and backtest trading strategies
@@ -44,52 +57,73 @@ The Unified Trading Platform Service consolidates all trading-related functional
 - **Social Feed**: Share insights, analysis, and trading ideas
 - **Reputation System**: Trust scores based on historical performance
 - **Strategy NFTs**: Mint and trade tokenized strategies
-- **Trader DAO**: Decentralized governance for platform features
 
 ### Prediction Markets
-- **Market Types**:
-  - Binary: Yes/No outcomes
-  - Categorical: Multiple discrete outcomes
-  - Scalar: Range-based outcomes
-  - Conditional: Markets dependent on other outcomes
+- **Market Types**: Binary, categorical, scalar, and conditional
 - **Liquidity Provision**: AMM pools for instant trading
 - **Oracle Integration**: Multiple oracle sources for reliable resolution
 - **Market Creation**: Permissionless market creation with DAO approval
-- **Dynamic Pricing**: Real-time pricing based on supply and demand
 
-### Unified Trading
-- **Order Types**: Market, limit, stop, and stop-limit orders
-- **Order Matching**: High-performance matching engine
-- **Real-time Data**: WebSocket streams for live updates
-- **Market Statistics**: Volume, price history, and depth charts
-- **Risk Management**: Position limits and margin requirements
+### Risk Management
+- **Network-Based Risk**: Graph analysis of trading relationships
+- **Real-time Risk Updates**: Dynamic risk scoring as trades occur
+- **Margin Requirements**: Trust-adjusted margin calculations
+- **Position Limits**: Automatic enforcement based on risk profile
+- **Risk Clustering**: Detection of correlated risk groups
 
 ## API Endpoints
 
-### Unified Trading
+### Trading Operations
 - `POST /api/v1/trading/orders` - Submit new order
 - `DELETE /api/v1/trading/orders/{order_id}` - Cancel order
 - `GET /api/v1/trading/orders` - List user's orders
 - `GET /api/v1/trading/markets/{market_id}/orderbook` - Get order book
-- `GET /api/v1/trading/markets/{market_id}/trades` - Get recent trades
-- `GET /api/v1/trading/markets/{market_id}/stats` - Get market statistics
 - `WS /api/v1/trading/markets/{market_id}/stream` - Real-time market data
 
 ### Social Trading
 - `POST /api/v1/social/strategies` - Create trading strategy
-- `GET /api/v1/social/strategies/{strategy_id}` - Get strategy details
 - `POST /api/v1/social/strategies/{strategy_id}/mint` - Mint strategy NFT
 - `POST /api/v1/social/copy/{trader_id}` - Start copying trader
 - `GET /api/v1/social/leaderboard` - Get top traders
-- `GET /api/v1/social/reputation/{trader_id}` - Get trader reputation
 
 ### Prediction Markets
 - `POST /api/v1/prediction/markets` - Create prediction market
-- `GET /api/v1/prediction/markets` - List active markets
 - `POST /api/v1/prediction/markets/{market_id}/trade` - Trade in market
-- `POST /api/v1/prediction/markets/{market_id}/provide-liquidity` - Add liquidity
-- `POST /api/v1/prediction/markets/{market_id}/resolve` - Submit resolution
 - `GET /api/v1/prediction/markets/{market_id}/odds` - Get current odds
+
+## Event-Driven Integration
+
+### Published Events
+```python
+# Trade Execution
+{
+    "event_type": "trade.executed",
+    "trader_id": "trader123",
+    "market_id": "BTC-USD",
+    "data": {
+        "trade_id": "T-123456",
+        "price": "45000.00",
+        "quantity": "0.5",
+        "side": "BUY"
+    }
+}
+
+# Risk Alert
+{
+    "event_type": "risk.alert",
+    "trader_id": "trader123",
+    "data": {
+        "risk_level": "high",
+        "risk_score": 0.85,
+        "alert_type": "margin_call"
+    }
+}
+```
+
+### Integration Services
+- **Event Router Service**: Routes and enriches trading events
+- **Graph Intelligence Service**: Analyzes risk propagation networks
+- **Data Platform Service**: Stores trading data in medallion architecture
 
 ## Configuration
 
@@ -100,119 +134,156 @@ The Unified Trading Platform Service consolidates all trading-related functional
 IGNITE_HOST=ignite:10800
 PULSAR_URL=pulsar://pulsar:6650
 ELASTICSEARCH_URL=http://elasticsearch:9200
-JANUSGRAPH_URL=http://janusgraph:8182
+JANUSGRAPH_URL=ws://janusgraph:8182/gremlin
 
 # Blockchain
-BLOCKCHAIN_GATEWAY_URL=http://blockchain-gateway-service:8000
-WEB3_PROVIDER_URL=https://eth-mainnet.example.com
+ETHEREUM_RPC_URL=https://eth-mainnet.g.alchemy.com/v2/YOUR_KEY
+POLYGON_RPC_URL=https://polygon-mainnet.g.alchemy.com/v2/YOUR_KEY
 
-# Services
-DERIVATIVES_ENGINE_URL=http://derivatives-engine-service:8000
+# Event Processing
+EVENT_ROUTER_URL=http://event-router-service:8000
 GRAPH_INTELLIGENCE_URL=http://graph-intelligence-service:8000
-NEUROMORPHIC_SERVICE_URL=http://neuromorphic-service:8000
+DATA_PLATFORM_URL=http://data-platform-service:8000
 
-# Trading Configuration
-MAX_ORDER_SIZE=1000000
-MIN_ORDER_SIZE=0.001
-MAKER_FEE=0.001
-TAKER_FEE=0.002
-
-# Service Configuration
-SERVICE_NAME=trading-platform-service
-LOG_LEVEL=INFO
+# Risk Configuration
+RISK_PROPAGATION_ENABLED=true
+SYSTEMIC_RISK_THRESHOLD=0.7
+CASCADE_SIMULATION_DEPTH=5
 ```
 
 ## Usage Examples
 
-### Submit Trading Order
+### Execute Trade with Event Processing
+
 ```python
 import httpx
 
-async with httpx.AsyncClient() as client:
-    response = await client.post(
-        "http://trading-platform:8000/api/v1/trading/orders",
-        json={
-            "market_id": "ETH-USD",
-            "side": "buy",
-            "order_type": "limit",
-            "quantity": 1.5,
-            "price": 2000.00
-        }
-    )
-    order_id = response.json()["order_id"]
+# Submit order
+order = {
+    "market_id": "BTC-USD",
+    "side": "BUY",
+    "order_type": "LIMIT",
+    "quantity": 0.5,
+    "price": 45000
+}
+
+response = httpx.post(
+    "http://trading-platform:8000/api/v1/trading/orders",
+    json=order,
+    headers={"Authorization": "Bearer YOUR_TOKEN"}
+)
+
+# The service automatically:
+# 1. Executes the order through matching engine
+# 2. Publishes trade event to Event Router
+# 3. Updates trader risk profile in Graph Intelligence
+# 4. Ingests trade data to Data Platform
+```
+
+### Start Copy Trading with Risk Analysis
+
+```python
+# Copy a trader
+copy_request = {
+    "allocation_percent": 20,
+    "max_position_size": 10000,
+    "risk_limits": {
+        "max_drawdown": 0.15,
+        "stop_loss": 0.05
+    }
+}
+
+response = httpx.post(
+    "http://trading-platform:8000/api/v1/social/copy/top_trader_001",
+    json=copy_request
+)
+
+# The service:
+# 1. Creates copy trading relationship
+# 2. Adds relationship to risk network graph
+# 3. Analyzes systemic risk impact
+# 4. Sets appropriate margin requirements
 ```
 
 ### Create Prediction Market
+
 ```python
-response = await client.post(
-    "http://trading-platform:8000/api/v1/prediction/markets",
-    json={
-        "question": "Will ETH reach $5000 by end of 2024?",
-        "market_type": "binary",
-        "resolution_source": "coingecko",
-        "end_date": "2024-12-31T23:59:59Z",
-        "initial_liquidity": 10000
+market = {
+    "market_type": "BINARY",
+    "question": "Will BTC reach $50,000 by end of month?",
+    "end_time": "2024-01-31T23:59:59Z",
+    "liquidity": 10000,
+    "oracle_config": {
+        "primary": "chainlink",
+        "fallback": "band_protocol"
     }
+}
+
+response = httpx.post(
+    "http://trading-platform:8000/api/v1/prediction/markets",
+    json=market
 )
-market_id = response.json()["market_id"]
 ```
 
-### Start Copy Trading
-```python
-response = await client.post(
-    "http://trading-platform:8000/api/v1/social/copy/trader123",
-    json={
-        "allocation": 5000,
-        "max_position_size": 0.2,
-        "stop_loss": 0.1
-    }
-)
-```
+## Risk Network Integration
+
+### Automatic Updates
+- Trade executions update trader risk profiles
+- Copy trading creates risk relationships
+- Position changes trigger risk recalculation
+- Liquidations simulate cascade effects
+
+### Risk Metrics Tracked
+- **Trader Level**: Risk score, exposure, leverage, margin usage
+- **Network Level**: Systemic importance, cluster membership
+- **System Level**: Total risk, cascade potential
+
+## Monitoring
+
+### Metrics
+- Order matching latency
+- Event publishing rate
+- Risk calculation time
+- Copy trading performance
+- Market maker efficiency
+
+### Alerts
+- High systemic risk detected
+- Large position concentration
+- Cascade simulation shows impact
+- Event processing failures
 
 ## Development
 
 ### Running Locally
+
 ```bash
-cd services/trading-platform-service
+# Install dependencies
 pip install -r requirements.txt
-uvicorn app.main:app --reload
+
+# Start dependencies
+docker-compose up -d redis postgres pulsar janusgraph
+
+# Run service
+uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 ```
 
-### Running Tests
+### Testing
+
 ```bash
+# Run tests
 pytest tests/
+
+# Run integration tests
+pytest tests/integration/
+
+# Test event processing
+python tests/simulate_trading_events.py
 ```
 
-### Building Docker Image
-```bash
-docker build -t platformq/trading-platform-service .
-```
+## Security
 
-## Monitoring
-
-The service exposes Prometheus metrics at `/metrics`:
-
-- `trading_orders_total` - Total orders by type and status
-- `trading_volume_total` - Total trading volume by market
-- `copy_trading_active` - Number of active copy trading relationships
-- `prediction_markets_active` - Number of active prediction markets
-- `matching_engine_latency` - Order matching latency histogram
-
-## Security Considerations
-
-- All trading operations require authentication
-- Position limits enforced per user and market
-- Anti-manipulation measures for prediction markets
-- Slippage protection for copy trading
-- Rate limiting on all endpoints
-- Audit logs for all trades
-
-## Migration from Legacy Services
-
-This service replaces:
-- `social-trading-service` - All social trading features integrated
-- `prediction-markets-service` - All prediction market functionality integrated
-
-Update service references:
-- `http://social-trading-service:8000` → `http://trading-platform-service:8000/api/v1/social`
-- `http://prediction-markets-service:8000` → `http://trading-platform-service:8000/api/v1/prediction` 
+- **Authentication**: JWT tokens with role-based access
+- **Risk Limits**: Automatic position and leverage limits
+- **Event Validation**: All events validated before processing
+- **Audit Trail**: Complete event history maintained 

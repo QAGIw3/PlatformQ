@@ -71,6 +71,7 @@ from app.integrations import (
     OracleAggregatorClient,
     SocialDataClient
 )
+from app.integrations.event_driven_trading import EventDrivenTradingIntegration
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -92,6 +93,7 @@ prediction_amm: Optional[PredictionAMM] = None
 market_dao: Optional[MarketGovernanceDAO] = None
 matching_engine: Optional[UnifiedMatchingEngine] = None
 websocket_manager: Set[WebSocket] = set()
+event_driven_trading: Optional[EventDrivenTradingIntegration] = None
 
 
 @asynccontextmanager
@@ -102,6 +104,7 @@ async def lifespan(app: FastAPI):
     global reputation_engine, performance_tracker, portfolio_copier
     global trader_dao, market_engine, conditional_engine
     global oracle_resolver, prediction_amm, market_dao
+    global event_driven_trading
     
     # Initialize Vault/Consul integration
     vault_consul = VaultConsulIntegration({
@@ -179,6 +182,35 @@ async def lifespan(app: FastAPI):
     market_dao = MarketGovernanceDAO(
         vault_consul=vault_consul
     )
+    
+    # Initialize event-driven trading integration
+    event_driven_trading = EventDrivenTradingIntegration(
+        vault_consul=vault_consul
+    )
+    await event_driven_trading.initialize()
+    
+    # Register event handlers for matching engine
+    async def on_trade_executed(trade):
+        await event_driven_trading.process_trade_execution(trade)
+    
+    async def on_position_updated(position):
+        await event_driven_trading.process_position_update(position)
+    
+    # Hook into matching engine events
+    matching_engine.on_trade_executed = on_trade_executed
+    
+    # Hook into copy trading events
+    async def on_copy_trade_executed(copy_trade):
+        # Create trading relationship in graph
+        await event_driven_trading.add_trading_relationship(
+            from_trader=copy_trade["follower_id"],
+            to_trader=copy_trade["leader_id"],
+            relationship_type="copy_trading",
+            strength=0.8,
+            exposure_amount=copy_trade["amount"]
+        )
+    
+    copy_executor.on_copy_trade = on_copy_trade_executed
     
     # Start background tasks
     asyncio.create_task(monitor_exchange_health())
