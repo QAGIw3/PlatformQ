@@ -18,8 +18,10 @@ from platformq_trading_common.models.orders import MarketType
 
 from ..config import RiskManagementConfig
 from ..models.risk_state import RiskState, AlertLevel, MarginStatus
+from ..models.risk_models import MarketRisk, PositionRisk
 from ..integrations.market_data import MarketDataClient
 from ..integrations.position_service import PositionServiceClient
+from .ml_risk_engine import MLRiskEngine
 
 
 logger = logging.getLogger(__name__)
@@ -35,22 +37,27 @@ class MonitoringResult:
     alerts: List[Dict]
     violations: List[Dict]
     actions_required: List[Dict]
+    ml_assessment: Optional[Dict] = None  # ML-based assessment
 
 
 class RiskMonitor:
-    """Real-time risk monitoring engine"""
+    """Real-time risk monitoring engine with ML capabilities"""
     
     def __init__(
         self,
         config: RiskManagementConfig,
         market_data_client: MarketDataClient,
         position_client: PositionServiceClient,
-        event_publisher: EventPublisher
+        event_publisher: EventPublisher,
+        ignite_client=None
     ):
         self.config = config
         self.market_data = market_data_client
         self.position_client = position_client
         self.event_publisher = event_publisher
+        
+        # Initialize ML risk engine
+        self.ml_engine = MLRiskEngine(config, ignite_client)
         
         # Active monitoring
         self.monitored_traders: Set[str] = set()
@@ -61,6 +68,9 @@ class RiskMonitor:
         # Price cache
         self.price_cache: Dict[str, Decimal] = {}
         self.price_cache_timestamp: Dict[str, datetime] = {}
+        
+        # Market data cache for ML features
+        self.market_data_cache: Dict[str, Dict] = {}
         
         # Historical data for calculations
         self.returns_data: Dict[str, List[float]] = {}
@@ -83,8 +93,11 @@ class RiskMonitor:
         self._tasks.append(
             asyncio.create_task(self._liquidation_monitor())
         )
+        self._tasks.append(
+            asyncio.create_task(self._market_data_update_task())
+        )
         
-        logger.info("Risk monitoring started")
+        logger.info("Risk monitoring started with ML capabilities")
     
     async def stop(self):
         """Stop risk monitoring"""
@@ -137,7 +150,7 @@ class RiskMonitor:
         logger.info(f"Removed trader {trader_id} from monitoring")
     
     async def check_trader_risk(self, trader_id: str) -> MonitoringResult:
-        """Check risk for a specific trader"""
+        """Check risk for a specific trader with ML enhancement"""
         # Get portfolio
         portfolio = self.trader_portfolios.get(trader_id)
         if not portfolio:
@@ -150,21 +163,48 @@ class RiskMonitor:
         # Update position prices
         await self._update_portfolio_prices(portfolio)
         
-        # Calculate risk metrics
+        # Traditional risk metrics
         risk_metrics = await self._calculate_risk_metrics(portfolio)
         
         # Check margin status
         margin_status = self._calculate_margin_status(portfolio)
         
+        # ML-based assessment for each position
+        ml_assessments = {}
+        for position in portfolio.positions:
+            market_data = await self._get_enriched_market_data(position.market_id)
+            if market_data:
+                # Get ML market risk assessment
+                market_risk = await self.ml_engine.assess_market_risk(
+                    position.market_id,
+                    market_data
+                )
+                
+                # Get position risk assessment
+                position_dict = self._position_to_dict(position)
+                position_risk = await self.ml_engine.assess_position_risk(
+                    position_dict,
+                    market_risk
+                )
+                
+                ml_assessments[position.position_id] = {
+                    "market_risk": market_risk.to_dict(),
+                    "position_risk": position_risk.to_dict()
+                }
+        
         # Check for violations
         limits = self.trader_limits[trader_id]
         violations = RiskCalculator.check_risk_limits(portfolio, limits)
         
-        # Generate alerts
+        # Generate alerts (enhanced with ML insights)
         alerts = self._generate_alerts(trader_id, portfolio, risk_metrics, margin_status)
+        ml_alerts = self._generate_ml_alerts(ml_assessments)
+        alerts.extend(ml_alerts)
         
-        # Determine required actions
+        # Determine required actions (enhanced with ML recommendations)
         actions = self._determine_actions(trader_id, portfolio, margin_status, violations)
+        ml_actions = self._determine_ml_actions(ml_assessments)
+        actions.extend(ml_actions)
         
         # Update trader state
         self.trader_states[trader_id] = RiskState(
@@ -182,8 +222,170 @@ class RiskMonitor:
             margin_status=margin_status,
             alerts=alerts,
             violations=violations,
-            actions_required=actions
+            actions_required=actions,
+            ml_assessment=ml_assessments
         )
+    
+    def _position_to_dict(self, position: Position) -> Dict:
+        """Convert Position object to dictionary for ML engine"""
+        return {
+            "position_id": position.position_id,
+            "market_id": position.market_id,
+            "side": position.side,
+            "size": str(position.size),
+            "entry_price": str(position.entry_price),
+            "mark_price": str(position.mark_price),
+            "leverage": str(position.leverage),
+            "margin_used": str(position.margin_used),
+            "collateral_value": str(position.initial_margin),
+            "health_factor": float(position.margin_used / position.initial_margin) if position.initial_margin > 0 else 1.0,
+            "unrealized_pnl_percent": float(position.unrealized_pnl / position.notional_value) if position.notional_value > 0 else 0,
+            "time_held_hours": 24,  # Placeholder
+            "notional_value": str(position.notional_value)
+        }
+    
+    def _generate_ml_alerts(self, ml_assessments: Dict) -> List[Dict]:
+        """Generate alerts based on ML assessments"""
+        alerts = []
+        
+        for position_id, assessment in ml_assessments.items():
+            position_risk = assessment["position_risk"]
+            market_risk = assessment["market_risk"]
+            
+            # High liquidation probability alert
+            if float(position_risk["liquidation_probability"]) > 0.3:
+                alerts.append({
+                    "type": "ml_liquidation_risk",
+                    "level": AlertLevel.HIGH,
+                    "message": f"ML model predicts {float(position_risk['liquidation_probability'])*100:.1f}% liquidation probability for position {position_id}",
+                    "data": {
+                        "position_id": position_id,
+                        "liquidation_probability": float(position_risk["liquidation_probability"])
+                    }
+                })
+            
+            # Market anomaly alert
+            if market_risk["anomaly_score"] > 0.7:
+                alerts.append({
+                    "type": "market_anomaly",
+                    "level": AlertLevel.HIGH,
+                    "message": f"Anomalous market behavior detected for {market_risk['market_id']}",
+                    "data": {
+                        "market_id": market_risk["market_id"],
+                        "anomaly_score": market_risk["anomaly_score"]
+                    }
+                })
+            
+            # Volatility spike alert
+            if float(market_risk["predicted_volatility"]) > float(market_risk["current_volatility"]) * 1.5:
+                alerts.append({
+                    "type": "volatility_spike_predicted",
+                    "level": AlertLevel.MEDIUM,
+                    "message": f"Volatility spike predicted for {market_risk['market_id']}: {float(market_risk['predicted_volatility'])*100:.1f}%",
+                    "data": {
+                        "market_id": market_risk["market_id"],
+                        "current_volatility": float(market_risk["current_volatility"]),
+                        "predicted_volatility": float(market_risk["predicted_volatility"])
+                    }
+                })
+        
+        return alerts
+    
+    def _determine_ml_actions(self, ml_assessments: Dict) -> List[Dict]:
+        """Determine actions based on ML assessments"""
+        actions = []
+        
+        for position_id, assessment in ml_assessments.items():
+            position_risk = assessment["position_risk"]
+            
+            # Add ML recommendations as actions
+            for recommendation in position_risk["recommendations"]:
+                actions.append({
+                    "action": "ml_recommendation",
+                    "urgency": "medium",
+                    "reason": recommendation,
+                    "position_id": position_id,
+                    "risk_score": position_risk.get("risk_score", 0)
+                })
+            
+            # Check stress test results
+            for stress_test in position_risk["stress_test_results"]:
+                if not stress_test["survival"]:
+                    actions.append({
+                        "action": "hedge_position",
+                        "urgency": "high",
+                        "reason": f"Position would not survive {stress_test['scenario']} scenario",
+                        "position_id": position_id,
+                        "scenario": stress_test["scenario"],
+                        "potential_loss": stress_test["potential_loss"]
+                    })
+        
+        return actions
+    
+    async def _get_enriched_market_data(self, market_id: str) -> Optional[Dict]:
+        """Get enriched market data for ML features"""
+        # Check cache first
+        if market_id in self.market_data_cache:
+            cache_age = (datetime.utcnow() - self.market_data_cache[market_id].get("timestamp", datetime.min)).seconds
+            if cache_age < 30:  # 30 second cache
+                return self.market_data_cache[market_id]
+        
+        try:
+            # Get basic price data
+            price_data = await self.market_data.get_price(market_id)
+            if not price_data:
+                return None
+            
+            # Get historical returns
+            historical_returns = self.returns_data.get(market_id, [])
+            
+            # Calculate basic metrics
+            enriched_data = {
+                "market_id": market_id,
+                "price": float(price_data["price"]),
+                "volatility_24h": 0.02,  # Placeholder
+                "volume_24h": 1000000,  # Placeholder
+                "avg_volume": 1000000,  # Placeholder
+                "price_change_24h": 0.01,  # Placeholder
+                "rsi": 50,  # Placeholder
+                "bollinger_position": 0.5,  # Placeholder
+                "bid_ask_spread": 0.0001,  # Placeholder
+                "order_book_imbalance": 0,  # Placeholder
+                "funding_rate": 0.0001,  # Placeholder
+                "open_interest_change": 0,  # Placeholder
+                "order_book_depth": 500000,  # Placeholder
+                "historical_returns": historical_returns,
+                "timestamp": datetime.utcnow()
+            }
+            
+            # Cache the data
+            self.market_data_cache[market_id] = enriched_data
+            
+            return enriched_data
+            
+        except Exception as e:
+            logger.error(f"Error getting enriched market data for {market_id}: {e}")
+            return None
+    
+    async def _market_data_update_task(self):
+        """Update market data for ML features"""
+        while self._running:
+            try:
+                # Get unique markets from all portfolios
+                market_ids = set()
+                for portfolio in self.trader_portfolios.values():
+                    for position in portfolio.positions:
+                        market_ids.add(position.market_id)
+                
+                # Update market data for each market
+                for market_id in market_ids:
+                    await self._get_enriched_market_data(market_id)
+                
+                await asyncio.sleep(10)  # Update every 10 seconds
+                
+            except Exception as e:
+                logger.error(f"Error in market data update task: {e}")
+                await asyncio.sleep(1)
     
     async def _continuous_monitoring(self):
         """Continuously monitor all traders"""

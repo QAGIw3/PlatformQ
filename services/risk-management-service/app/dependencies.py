@@ -2,6 +2,7 @@
 
 from typing import Dict, Optional
 from fastapi import Header, HTTPException
+from pyignite import Client as IgniteClient
 
 from platformq_trading_common.events.trading_events import EventPublisher
 from pulsar import Client as PulsarClient
@@ -19,6 +20,7 @@ _pulsar_client: Optional[PulsarClient] = None
 _event_publisher: Optional[EventPublisher] = None
 _market_data_client: Optional[MarketDataClient] = None
 _position_client: Optional[PositionServiceClient] = None
+_ignite_client: Optional[IgniteClient] = None
 
 
 def get_config() -> RiskManagementConfig:
@@ -27,6 +29,16 @@ def get_config() -> RiskManagementConfig:
     if _config is None:
         _config = RiskManagementConfig()
     return _config
+
+
+def get_ignite_client() -> IgniteClient:
+    """Get Ignite client"""
+    global _ignite_client
+    if _ignite_client is None:
+        config = get_config()
+        _ignite_client = IgniteClient()
+        _ignite_client.connect(config.IGNITE_ADDRESSES)
+    return _ignite_client
 
 
 def get_pulsar_client() -> PulsarClient:
@@ -71,7 +83,8 @@ def get_risk_monitor() -> RiskMonitor:
             config=config,
             market_data_client=get_market_data_client(),
             position_client=get_position_client(),
-            event_publisher=get_event_publisher()
+            event_publisher=get_event_publisher(),
+            ignite_client=get_ignite_client()
         )
     return _risk_monitor
 

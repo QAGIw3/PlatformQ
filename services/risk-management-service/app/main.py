@@ -17,7 +17,8 @@ from .dependencies import (
     get_event_publisher,
     get_market_data_client,
     get_position_client,
-    get_pulsar_client
+    get_pulsar_client,
+    get_ignite_client
 )
 
 
@@ -77,6 +78,7 @@ async def lifespan(app: FastAPI):
     
     logger.info(f"Risk Management Service started on port {config.SERVICE_PORT}")
     logger.info(f"Metrics available on port {config.METRICS_PORT}")
+    logger.info("ML risk engine initialized with predictive capabilities")
     
     yield
     
@@ -93,14 +95,17 @@ async def lifespan(app: FastAPI):
     pulsar_client = get_pulsar_client()
     pulsar_client.close()
     
+    ignite_client = get_ignite_client()
+    ignite_client.close()
+    
     logger.info("Risk Management Service stopped")
 
 
 # Create FastAPI app
 app = FastAPI(
     title="Risk Management Service",
-    description="Real-time risk monitoring and management",
-    version="1.0.0",
+    description="Real-time risk monitoring and management with ML predictions",
+    version="2.0.0",
     lifespan=lifespan
 )
 
@@ -147,8 +152,16 @@ async def root():
     """Root endpoint"""
     return {
         "service": "Risk Management Service",
-        "version": "1.0.0",
-        "status": "running"
+        "version": "2.0.0",
+        "status": "running",
+        "features": [
+            "Real-time risk monitoring",
+            "ML-based risk predictions",
+            "Volatility forecasting",
+            "Anomaly detection",
+            "Stress testing",
+            "Dynamic risk parameters"
+        ]
     }
 
 
@@ -162,7 +175,8 @@ async def health_check(risk_monitor: RiskMonitor = Depends(get_risk_monitor)):
         "active_alerts": sum(
             len(state.active_alerts) 
             for state in risk_monitor.trader_states.values()
-        )
+        ),
+        "ml_engine_status": "active" if risk_monitor.ml_engine else "inactive"
     }
 
 
@@ -196,6 +210,7 @@ async def get_service_stats(risk_monitor: RiskMonitor = Depends(get_risk_monitor
     total_positions = 0
     total_margin_used = 0
     traders_at_risk = 0
+    ml_predictions_count = 0
     
     for trader_id in risk_monitor.monitored_traders:
         portfolio = risk_monitor.trader_portfolios.get(trader_id)
@@ -207,14 +222,23 @@ async def get_service_stats(risk_monitor: RiskMonitor = Depends(get_risk_monitor
         if state and (state.has_high_alerts or state.has_critical_alerts):
             traders_at_risk += 1
     
+    # Count ML predictions in cache
+    ml_predictions_count = len(risk_monitor.market_data_cache)
+    
     return {
         "monitored_traders": len(risk_monitor.monitored_traders),
         "total_positions": total_positions,
         "total_margin_used": total_margin_used,
         "traders_at_risk": traders_at_risk,
+        "ml_predictions_active": ml_predictions_count,
         "cache_size": {
             "price_cache": len(risk_monitor.price_cache),
-            "portfolio_cache": len(risk_monitor.trader_portfolios)
+            "portfolio_cache": len(risk_monitor.trader_portfolios),
+            "market_data_cache": len(risk_monitor.market_data_cache)
+        },
+        "ml_engine": {
+            "models_loaded": sum(1 for m in risk_monitor.ml_engine.models.values() if m is not None),
+            "features_tracked": 9  # Number of features in ML model
         }
     }
 

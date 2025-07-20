@@ -43,6 +43,9 @@ class RiskCheckResponse(BaseModel):
     total_exposure: Decimal
     net_exposure: Decimal
     largest_position_pct: float
+    
+    # ML assessment
+    ml_assessment: Optional[Dict] = None
 
 
 class PortfolioRiskResponse(BaseModel):
@@ -53,6 +56,48 @@ class PortfolioRiskResponse(BaseModel):
     margin_level: Decimal
     risk_metrics: Dict
     stress_test_results: Optional[Dict] = None
+
+
+class MarketRiskRequest(BaseModel):
+    """Request for market risk assessment"""
+    market_id: str
+    include_predictions: bool = True
+    include_recommendations: bool = True
+
+
+class MarketRiskResponse(BaseModel):
+    """Market risk assessment response"""
+    market_id: str
+    timestamp: datetime
+    current_volatility: str
+    predicted_volatility: str
+    anomaly_score: float
+    var_95: str
+    var_99: str
+    liquidity_score: str
+    risk_level: str
+    warnings: List[str]
+    recommended_params: Dict[str, str]
+
+
+class PositionRiskRequest(BaseModel):
+    """Request for position risk assessment"""
+    position_id: str
+    include_stress_tests: bool = True
+    include_ml_predictions: bool = True
+
+
+class PositionRiskResponse(BaseModel):
+    """Position risk assessment response"""
+    position_id: str
+    liquidation_probability: str
+    expected_shortfall: str
+    margin_utilization: str
+    health_factor: str
+    risk_score: float
+    stress_test_results: List[Dict]
+    recommendations: List[str]
+    market_risk: Dict
 
 
 @router.post("/limits/{trader_id}")
@@ -134,7 +179,8 @@ async def check_trader_risk(
             var_95=result.risk_metrics.var_95,
             total_exposure=result.risk_metrics.total_exposure,
             net_exposure=result.risk_metrics.net_exposure,
-            largest_position_pct=result.risk_metrics.largest_position_pct
+            largest_position_pct=result.risk_metrics.largest_position_pct,
+            ml_assessment=result.ml_assessment
         )
         
     except ValueError as e:
@@ -208,6 +254,107 @@ async def get_portfolio_risk(
             }
         
         return response
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/market/assess", response_model=MarketRiskResponse)
+async def assess_market_risk(
+    request: MarketRiskRequest,
+    risk_monitor: RiskMonitor = Depends(get_risk_monitor),
+    current_user: Dict = Depends(get_current_user)
+):
+    """Get ML-based market risk assessment"""
+    try:
+        # Get market data
+        market_data = await risk_monitor._get_enriched_market_data(request.market_id)
+        if not market_data:
+            raise HTTPException(status_code=404, detail="Market data not available")
+        
+        # Get ML assessment
+        market_risk = await risk_monitor.ml_engine.assess_market_risk(
+            request.market_id,
+            market_data
+        )
+        
+        return MarketRiskResponse(
+            market_id=market_risk.market_id,
+            timestamp=market_risk.timestamp,
+            current_volatility=str(market_risk.current_volatility),
+            predicted_volatility=str(market_risk.predicted_volatility),
+            anomaly_score=market_risk.anomaly_score,
+            var_95=str(market_risk.var_95),
+            var_99=str(market_risk.var_99),
+            liquidity_score=str(market_risk.liquidity_score),
+            risk_level=market_risk.risk_level,
+            warnings=market_risk.warnings if request.include_predictions else [],
+            recommended_params={k: str(v) for k, v in market_risk.recommended_params.items()} if request.include_recommendations else {}
+        )
+        
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/position/assess", response_model=PositionRiskResponse)
+async def assess_position_risk(
+    request: PositionRiskRequest,
+    risk_monitor: RiskMonitor = Depends(get_risk_monitor),
+    current_user: Dict = Depends(get_current_user)
+):
+    """Get ML-based position risk assessment"""
+    try:
+        # Find position in portfolios
+        position_dict = None
+        position = None
+        
+        for portfolio in risk_monitor.trader_portfolios.values():
+            for pos in portfolio.positions:
+                if pos.position_id == request.position_id:
+                    position = pos
+                    position_dict = risk_monitor._position_to_dict(pos)
+                    break
+            if position_dict:
+                break
+        
+        if not position_dict:
+            raise HTTPException(status_code=404, detail="Position not found")
+        
+        # Verify permissions
+        if current_user["user_id"] != position.trader_id and "admin" not in current_user.get("roles", []):
+            raise HTTPException(status_code=403, detail="Insufficient permissions")
+        
+        # Get market data
+        market_data = await risk_monitor._get_enriched_market_data(position.market_id)
+        if not market_data:
+            raise HTTPException(status_code=404, detail="Market data not available")
+        
+        # Get ML assessments
+        market_risk = await risk_monitor.ml_engine.assess_market_risk(
+            position.market_id,
+            market_data
+        )
+        
+        position_risk = await risk_monitor.ml_engine.assess_position_risk(
+            position_dict,
+            market_risk
+        )
+        
+        return PositionRiskResponse(
+            position_id=position_risk.position_id,
+            liquidation_probability=str(position_risk.liquidation_probability),
+            expected_shortfall=str(position_risk.expected_shortfall),
+            margin_utilization=str(position_risk.margin_utilization),
+            health_factor=str(position_risk.health_factor),
+            risk_score=position_risk.risk_score,
+            stress_test_results=position_risk.stress_test_results if request.include_stress_tests else [],
+            recommendations=position_risk.recommendations if request.include_ml_predictions else [],
+            market_risk=market_risk.to_dict()
+        )
         
     except HTTPException:
         raise
