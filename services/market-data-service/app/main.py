@@ -8,8 +8,8 @@ from fastapi.middleware.cors import CORSMiddleware
 from prometheus_client import Counter, Histogram, generate_latest
 from prometheus_fastapi_instrumentator import Instrumentator
 
-from app.api import market_data
-from app.config import Settings
+from app.api import market_data, oracle_data
+from app.config import MarketDataConfig
 from app.core.aggregator import MarketDataAggregator
 from app.websocket import market_stream
 
@@ -27,18 +27,19 @@ async def lifespan(app: FastAPI):
     global aggregator
     
     # Startup
-    settings = Settings()
-    aggregator = MarketDataAggregator(settings)
-    await aggregator.start()
+    settings = MarketDataConfig()
+    # TODO: Initialize aggregator with proper dependencies
+    # aggregator = MarketDataAggregator(settings, cache_manager, event_subscriber)
+    # await aggregator.start()
     
     # Start background tasks
     background_tasks = []
-    for symbol in ["BTC/USD", "ETH/USD", "BNB/USD"]:
-        task = asyncio.create_task(aggregator.build_candles(symbol))
-        background_tasks.append(task)
+    # for symbol in ["BTC/USD", "ETH/USD", "BNB/USD"]:
+    #     task = asyncio.create_task(aggregator.build_candles(symbol))
+    #     background_tasks.append(task)
     
     # Create WebSocket manager
-    app.state.ws_manager = market_stream.create_websocket_manager(aggregator)
+    # app.state.ws_manager = market_stream.create_websocket_manager(aggregator)
     
     yield
     
@@ -46,7 +47,7 @@ async def lifespan(app: FastAPI):
     for task in background_tasks:
         task.cancel()
     
-    await aggregator.stop()
+    # await aggregator.stop()
 
 
 # Create FastAPI app
@@ -86,6 +87,7 @@ instrumentator.instrument(app).expose(app)
 
 # Include routers
 app.include_router(market_data.router, prefix="/api/v1/market", tags=["market"])
+app.include_router(oracle_data.router, prefix="/api/v1/oracle", tags=["oracle"])
 app.include_router(market_stream.router, prefix="/ws", tags=["websocket"])
 
 # Health check endpoint
@@ -95,7 +97,8 @@ async def health_check():
     return {
         "status": "healthy",
         "service": "market-data-service",
-        "aggregator_running": aggregator is not None and aggregator._running
+        # "aggregator_running": aggregator is not None and aggregator._running
+        "aggregator_running": False  # TODO: Fix when aggregator is properly initialized
     }
 
 # Metrics endpoint

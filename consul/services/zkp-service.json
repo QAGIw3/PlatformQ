@@ -1,0 +1,98 @@
+{
+  "service": {
+    "name": "zkp-service",
+    "id": "zkp-service-1",
+    "tags": [
+      "verifiable-credentials",
+      "zero-knowledge-proofs",
+      "apache-ignite",
+      "distributed-compute"
+    ],
+    "address": "zkp-service",
+    "port": 8052,
+    "meta": {
+      "version": "1.0.0",
+      "description": "Zero-Knowledge Proof service for privacy-preserving credential operations"
+    },
+    "checks": [
+      {
+        "id": "zkp-service-health",
+        "name": "HTTP Health Check",
+        "http": "http://zkp-service:8052/health",
+        "interval": "10s",
+        "timeout": "5s"
+      },
+      {
+        "id": "zkp-service-compute-grid",
+        "name": "Compute Grid Health",
+        "http": "http://zkp-service:8052/api/v1/stats/compute",
+        "interval": "30s",
+        "timeout": "5s"
+      }
+    ],
+    "connect": {
+      "sidecar_service": {
+        "proxy": {
+          "upstreams": [
+            {
+              "destination_name": "key-management-service",
+              "local_bind_port": 8088,
+              "config": {
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 100,
+                  "max_requests": 200
+                }
+              }
+            },
+            {
+              "destination_name": "core-credential-service",
+              "local_bind_port": 8050,
+              "config": {
+                "limits": {
+                  "max_connections": 50,
+                  "max_pending_requests": 50,
+                  "max_requests": 100
+                }
+              }
+            },
+            {
+              "destination_name": "vault",
+              "local_bind_port": 8200,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 20,
+                  "max_pending_requests": 10,
+                  "max_requests": 50
+                }
+              }
+            }
+          ],
+          "config": {
+            "protocol": "http",
+            "local_request_timeout_ms": 30000,
+            "local_connect_timeout_ms": 5000,
+            "max_inbound_connections": 1000,
+            "envoy_stats_bind_addr": "0.0.0.0:9105"
+          },
+          "expose": {
+            "paths": [
+              {
+                "path": "/metrics",
+                "local_path_port": 8052,
+                "listener_port": 9052,
+                "protocol": "http"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "weights": {
+      "passing": 10,
+      "warning": 1
+    },
+    "enable_tag_override": false
+  }
+} 

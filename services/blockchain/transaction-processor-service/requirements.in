@@ -1,0 +1,43 @@
+# Transaction Processor Service dependencies
+
+# Base dependencies
+-r ../../requirements/base.in
+
+# API Framework
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+
+# Queue and messaging
+aiopulsar>=0.1.0
+asyncio-throttle>=1.0.0
+
+# Transaction processing
+eth-account>=0.9.0
+eth-utils>=2.2.0
+web3>=6.5.0
+
+# Infrastructure
+pyignite[async]>=0.5.2
+python-consul>=1.1.0
+hvac>=1.1.0  # HashiCorp Vault
+
+# Monitoring
+prometheus-client>=0.17.0
+opentelemetry-api>=1.20.0
+opentelemetry-sdk>=1.20.0
+opentelemetry-instrumentation-fastapi>=0.41b0
+
+# Utilities
+tenacity>=8.2.0  # Retry logic
+apscheduler>=3.10.0  # Scheduled tasks
+
+# PlatformQ shared libraries
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-consul
+-e ../../libs/platformq-blockchain-common
+
+# Testing
+pytest>=7.4.0
+pytest-asyncio>=0.21.0
+pytest-mock>=3.11.0 

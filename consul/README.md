@@ -1,238 +1,298 @@
-# Consul Service Mesh for PlatformQ
+# PlatformQ Consul Connect Service Mesh
 
-This directory contains the configuration and setup for HashiCorp Consul, which provides service discovery, health checking, and secure service-to-service communication for the PlatformQ microservices architecture.
+This directory contains the configuration and setup for PlatformQ's Consul Connect service mesh, providing secure service-to-service communication, service discovery, and configuration management.
 
-## Features
+## Overview
 
-- **Service Discovery**: Automatic service registration and discovery
-- **Health Checking**: Built-in health checks for all services
-- **Service Mesh**: mTLS encryption between services via Envoy proxy
-- **Configuration Management**: Centralized configuration with hot-reload
-- **ACL Security**: Fine-grained access control for services
-- **Observability**: Metrics and tracing through Envoy sidecars
+The service mesh provides:
+- **Mutual TLS (mTLS)** encryption between all services
+- **Service discovery** with health checking
+- **Configuration management** via Consul KV store
+- **Access control** with ACL policies and intentions
+- **Observability** through Envoy proxy metrics
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                     Consul Cluster                           │
-│  ┌───────────┐    ┌───────────┐    ┌───────────┐          │
-│  │  Server 1  │────│  Server 2  │────│  Server 3  │          │
-│  └───────────┘    └───────────┘    └───────────┘          │
-└─────────────────────────────────────────────────────────────┘
-                            │
-        ┌───────────────────┼───────────────────┐
-        │                   │                   │
-┌───────▼────────┐  ┌───────▼────────┐  ┌──────▼─────────┐
-│  Service Node   │  │  Service Node   │  │  Service Node   │
-│ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐│
-│ │Consul Agent │ │  │ │Consul Agent │ │  │ │Consul Agent ││
-│ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘│
-│ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐│
-│ │   Service   │ │  │ │   Service   │ │  │ │   Service   ││
-│ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘│
-│ ┌─────────────┐ │  │ ┌─────────────┐ │  │ ┌─────────────┐│
-│ │Envoy Sidecar│ │  │ │Envoy Sidecar│ │  │ │Envoy Sidecar││
-│ └─────────────┘ │  │ └─────────────┘ │  │ └─────────────┘│
-└─────────────────┘  └─────────────────┘  └─────────────────┘
+┌─────────────────┐     ┌─────────────────┐     ┌─────────────────┐
+│ Consul Server 1 │────▶│ Consul Server 2 │────▶│ Consul Server 3 │
+└────────┬────────┘     └────────┬────────┘     └────────┬────────┘
+         │                       │                       │
+         └───────────────────────┴───────────────────────┘
+                                │
+                    ┌───────────┴───────────┐
+                    │                       │
+         ┌──────────▼────────┐   ┌─────────▼──────────┐
+         │   Service A       │   │   Service B        │
+         │ ┌───────────────┐ │   │ ┌────────────────┐ │
+         │ │ Consul Agent  │ │   │ │ Consul Agent   │ │
+         │ └───────┬───────┘ │   │ └────────┬───────┘ │
+         │ ┌───────▼───────┐ │   │ ┌────────▼───────┐ │
+         │ │ Envoy Sidecar │◀────┼─▶│ Envoy Sidecar  │ │
+         │ └───────┬───────┘ │   │ └────────┬───────┘ │
+         │ ┌───────▼───────┐ │   │ ┌────────▼───────┐ │
+         │ │  Application  │ │   │ │  Application   │ │
+         │ └───────────────┘ │   │ └────────────────┘ │
+         └───────────────────┘   └────────────────────┘
 ```
 
 ## Quick Start
 
-### 1. Start Consul Cluster
+### 1. Start the Service Mesh
 
 ```bash
-# Start the Consul cluster with example services
-docker-compose -f docker-compose.consul.yml up -d
+# Start Consul servers and all services
+./scripts/start-service-mesh.sh
 
-# Check cluster status
-docker exec consul-server-1 consul members
-
-# Access Consul UI
-open http://localhost:8500
+# Or manually with docker-compose
+docker-compose -f docker-compose.service-mesh.yml up -d
 ```
 
-### 2. Register a Service
+### 2. Bootstrap ACLs and Policies
 
-Services can register themselves using the Consul integration library:
+```bash
+# Run the bootstrap script
+python3 scripts/bootstrap-service-mesh.py
+
+# This will:
+# - Initialize ACL system
+# - Create service policies
+# - Set up service intentions
+# - Load initial configurations
+# - Generate consul-tokens.env file
+```
+
+### 3. Access Consul UI
+
+Open http://localhost:8500 and login with the bootstrap token.
+
+## Service Integration
+
+### Using the PlatformQ Consul Library
 
 ```python
-from platformq_consul import ConsulServiceRegistry
+from platformq_consul import create_service_config, HealthCheckRegistry, create_health_endpoint
 
-# Initialize registry
-registry = ConsulServiceRegistry()
-
-# Register service
-await registry.register_service(
-    name="my-service",
+# Create service configuration
+config = create_service_config("my-service",
     port=8000,
-    tags=["api", "v1"],
-    meta={"version": "1.0.0"}
+    upstreams={
+        "auth-service": 5000,
+        "data-platform-service": 5001,
+    }
 )
+
+# Use service discovery
+auth_url = config.get_upstream_url("auth-service")
+
+# Register health checks
+health_registry = HealthCheckRegistry()
+health_registry.register("database", check_database_connection)
+health_registry.register("cache", check_cache_connection)
+
+# Add health endpoints to FastAPI
+app.include_router(create_health_endpoint(health_registry))
 ```
 
-### 3. Discover Services
+### Environment Variables
 
-```python
-# Discover healthy instances of a service
-instances = await registry.discover_service("amm-service")
+Services should be configured with these environment variables:
 
-# Get connection URL (uses sidecar proxy if available)
-url = await registry.get_service_connection("amm-service")
+```bash
+# Consul agent address
+CONSUL_HTTP_ADDR=consul-agent-myservice:8500
+
+# Service name and port
+SERVICE_NAME=my-service
+SERVICE_PORT=8000
+
+# Consul token (from consul-tokens.env)
+CONSUL_HTTP_TOKEN=<service-token>
+
+# Upstream service ports (for Connect)
+AUTH_SERVICE_PORT=5000
+DATA_PLATFORM_PORT=5001
 ```
 
-### 4. Service-to-Service Communication
+## Service Definitions
 
-```python
-from platformq_consul import ServiceMeshClient
+Service definitions are stored in `consul/services/` as JSON files. Each definition includes:
 
-# Initialize client
-mesh_client = ServiceMeshClient(registry)
-
-# Make secure requests through the mesh
-response = await mesh_client.get("oracle-service", "/api/v1/price/BTC/USD")
-```
-
-## Configuration
-
-### Server Configuration (`consul.hcl`)
-
-- **Datacenter**: `platformq-dc1`
-- **ACL**: Enabled with deny-by-default
-- **Connect**: Enabled for service mesh
-- **UI**: Enabled on port 8500
-- **Telemetry**: Prometheus metrics enabled
-
-### Client Configuration (`consul-client.hcl`)
-
-- **Mode**: Client (non-voting)
-- **Retry Join**: Automatically join cluster
-- **Connect**: Enabled for sidecar proxy
-
-### Service Definitions
-
-Each service has a JSON configuration file in `services/` that defines:
-- Service name and port
-- Health checks
+- Service metadata (name, tags, port)
+- Health check configuration
 - Connect sidecar configuration
-- Upstream dependencies
+- Upstream service dependencies
 
-## Service Intentions (ACLs)
+Example service definition:
 
-Service intentions define which services can communicate:
-
-```hcl
-# Allow market-data-service to call options-service
-service_intentions = [
-  {
-    name = "options-service"
-    sources = [{
-      name   = "market-data-service"
-      action = "allow"
-    }]
+```json
+{
+  "service": {
+    "name": "my-service",
+    "tags": ["api", "platform"],
+    "port": 8000,
+    "check": {
+      "http": "http://localhost:8000/health",
+      "interval": "10s"
+    },
+    "connect": {
+      "sidecar_service": {
+        "port": 21000,
+        "proxy": {
+          "upstreams": [
+            {
+              "destination_name": "auth-service",
+              "local_bind_port": 5000
+            }
+          ]
+        }
+      }
+    }
   }
-]
+}
 ```
 
-## Key Features Implemented
+## Service Intentions
 
-### 1. Automatic Service Registration
-- Services register on startup
-- Health checks keep registration active
-- Deregister on shutdown
+Service intentions define which services can communicate. They are configured in:
+- `consul/policies/service-intentions-comprehensive.hcl`
 
-### 2. Configuration Management
-- Store configuration in Consul KV
-- Watch for changes and hot-reload
-- Environment-specific configs
+Key principles:
+- All services can access `auth-service`
+- All services can access infrastructure (Ignite, Pulsar)
+- Specific services have restricted access to databases
+- Default deny policy for undefined connections
 
-### 3. Service Mesh Security
-- mTLS between all services
-- No plaintext communication
-- Certificate rotation handled by Consul
+## Configuration Management
 
-### 4. Load Balancing
-- Client-side load balancing
-- Health-aware routing
-- Circuit breaking support
+Service configurations are stored in Consul KV under `config/<service-name>/`.
 
-### 5. Observability
-- Prometheus metrics from Envoy
-- Distributed tracing support
-- Service topology visualization
+### Reading Configuration
+
+```python
+# Get service configuration
+config_data = config.get_config()  # Gets config/<service-name>/
+
+# Or specific key
+api_config = config.get_config("config/my-service/api")
+```
+
+### Writing Configuration
+
+```bash
+# Via CLI
+consul kv put config/my-service/settings '{"key": "value"}'
+
+# Via API
+curl -X PUT -d '{"key": "value"}' \
+  http://localhost:8500/v1/kv/config/my-service/settings
+```
+
+## Health Checks
+
+Services must expose health endpoints:
+
+- `/health` - Comprehensive health status
+- `/health/live` - Liveness probe (is service running)
+- `/health/ready` - Readiness probe (is service ready to accept traffic)
+
+The health check should return:
+- HTTP 200 for healthy
+- HTTP 503 for unhealthy
+
+## Security
+
+### ACL Policies
+
+Each service has its own ACL policy granting:
+- Write access to its own service registration
+- Read access to all services (for discovery)
+- Write access to its configuration namespace
+
+### mTLS Encryption
+
+All service-to-service communication is encrypted using mTLS via Envoy proxies. Certificates are automatically managed by Consul.
+
+### Service Tokens
+
+Service tokens are generated during bootstrap and saved to `consul-tokens.env`. These should be:
+- Stored securely (use Vault in production)
+- Rotated regularly
+- Never committed to version control
 
 ## Monitoring
 
-### Consul UI
-- Service health status
-- Service topology
-- Key/Value store browser
-
 ### Metrics
-- Envoy exposes Prometheus metrics on port 9102
-- Consul exposes metrics on `/v1/agent/metrics`
 
-### Health Checks
-- HTTP health endpoints
-- TCP connection checks
-- Script-based checks
+Envoy sidecars expose Prometheus metrics on port 9102+:
+- Request rates and latencies
+- Error rates
+- Connection pool statistics
 
-## Security Best Practices
+### Tracing
 
-1. **Enable ACLs**: Always use ACLs in production
-2. **Encrypt Communication**: Use TLS for Consul agent communication
-3. **Rotate Tokens**: Regularly rotate ACL tokens
-4. **Limit Access**: Use least-privilege for service permissions
-5. **Audit Logs**: Enable audit logging for compliance
+Envoy can be configured to send traces to Jaeger:
+- Distributed request tracing
+- Service dependency visualization
+- Performance bottleneck identification
 
 ## Troubleshooting
 
-### Service Not Discoverable
+### Check Service Registration
+
 ```bash
-# Check service registration
+# List all services
 consul catalog services
 
-# Check service health
+# Check specific service health
 consul health checks <service-name>
 ```
 
-### Connection Refused
-```bash
-# Check sidecar proxy status
-consul connect proxy -sidecar-for <service-name> -admin-bind localhost:19000
+### View Envoy Configuration
 
-# Check Envoy admin interface
+```bash
+# Access Envoy admin interface
 curl http://localhost:19000/clusters
+curl http://localhost:19000/config_dump
 ```
 
-### ACL Denied
+### Debug Intentions
+
 ```bash
-# Check token permissions
-consul acl token read -id <token-id>
+# List all intentions
+consul intention list
 
-# Update service intentions
-consul intention create -allow <source> <destination>
+# Check specific intention
+consul intention check auth-service data-platform-service
 ```
 
-## Production Considerations
+### Common Issues
 
-1. **High Availability**: Run 3-5 Consul servers
-2. **Backup**: Regular snapshots of Consul data
-3. **Monitoring**: Set up alerts for cluster health
-4. **Performance**: Tune Raft parameters for your workload
-5. **Security**: Use Vault for certificate management
+1. **Service cannot connect to upstream**
+   - Check service intentions
+   - Verify upstream port configuration
+   - Check Envoy logs
 
-## Integration with PlatformQ Services
+2. **Health check failing**
+   - Verify service is running
+   - Check health endpoint accessibility
+   - Review health check timeout
 
-All PlatformQ services can leverage Consul for:
+3. **ACL permission denied**
+   - Verify service token is set
+   - Check ACL policy includes required permissions
+   - Review Consul agent logs
 
-- **Service Discovery**: Find other services dynamically
-- **Configuration**: Load settings from Consul KV
-- **Health Checking**: Report service health
-- **Secure Communication**: mTLS via Connect
-- **Load Balancing**: Distribute requests across instances
+## Scripts
 
-Example service integration:
-- Market Data Service → Options Service (pricing data)
-- AMM Service → Oracle Service (price feeds)
-- Social Trading → Order Matching Service (copy trades) 
+- `scripts/generate_consul_services.py` - Generate service definitions
+- `scripts/generate_docker_compose_mesh.py` - Generate docker-compose file
+- `scripts/bootstrap-service-mesh.py` - Bootstrap ACLs and configurations
+- `scripts/start-service-mesh.sh` - Start the entire service mesh
+
+## Files
+
+- `config/consul.hcl` - Consul server configuration
+- `config/consul-client.hcl` - Consul client configuration
+- `services/*.json` - Service definitions
+- `policies/service-intentions-comprehensive.hcl` - Service communication policies 

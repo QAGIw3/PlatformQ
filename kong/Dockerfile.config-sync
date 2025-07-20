@@ -1,0 +1,19 @@
+FROM python:3.11-alpine
+
+# Install dependencies
+RUN apk add --no-cache curl jq
+
+# Install Python packages
+RUN pip install --no-cache-dir \
+    python-consul2==0.1.5 \
+    requests==2.31.0 \
+    pyyaml==6.0.1
+
+# Create working directory
+WORKDIR /app
+
+# Copy sync script
+COPY scripts/kong-consul-sync.py /app/
+
+# Run the sync script
+CMD ["python", "/app/kong-consul-sync.py"] 

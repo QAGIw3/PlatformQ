@@ -1,0 +1,47 @@
+{
+  "service": {
+    "name": "did-service",
+    "tags": [
+      "did",
+      "identity",
+      "api",
+      "python"
+    ],
+    "address": "did-service",
+    "port": 8051,
+    "meta": {
+      "version": "1.0.0",
+      "description": "Decentralized Identifier (DID) management service",
+      "api_prefix": "/api/v1"
+    },
+    "checks": [
+      {
+        "id": "did-service-health",
+        "name": "DID Service Health Check",
+        "http": "http://did-service:8051/health",
+        "interval": "10s",
+        "timeout": "5s"
+      }
+    ],
+    "connect": {
+      "sidecar_service": {
+        "proxy": {
+          "upstreams": [
+            {
+              "destination_name": "key-management-service",
+              "local_bind_port": 8088
+            },
+            {
+              "destination_name": "blockchain-connector-service",
+              "local_bind_port": 8086
+            },
+            {
+              "destination_name": "vault",
+              "local_bind_port": 8200
+            }
+          ]
+        }
+      }
+    }
+  }
+} 

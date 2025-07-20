@@ -1,0 +1,1 @@
+"""Models module for cross-chain bridge service""" 

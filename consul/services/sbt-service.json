@@ -1,0 +1,109 @@
+{
+  "service": {
+    "name": "sbt-service",
+    "id": "sbt-service-1",
+    "tags": [
+      "verifiable-credentials",
+      "soulbound-tokens",
+      "blockchain",
+      "nft"
+    ],
+    "address": "sbt-service",
+    "port": 8053,
+    "meta": {
+      "version": "1.0.0",
+      "description": "SoulBound Token service for non-transferable on-chain credentials"
+    },
+    "checks": [
+      {
+        "id": "sbt-service-health",
+        "name": "HTTP Health Check",
+        "http": "http://sbt-service:8053/health",
+        "interval": "10s",
+        "timeout": "5s"
+      },
+      {
+        "id": "sbt-service-chains",
+        "name": "Blockchain Status Check",
+        "http": "http://sbt-service:8053/api/v1/chains/status",
+        "interval": "30s",
+        "timeout": "10s"
+      }
+    ],
+    "connect": {
+      "sidecar_service": {
+        "proxy": {
+          "upstreams": [
+            {
+              "destination_name": "blockchain-connector-service",
+              "local_bind_port": 8086,
+              "config": {
+                "limits": {
+                  "max_connections": 100,
+                  "max_pending_requests": 100,
+                  "max_requests": 200
+                }
+              }
+            },
+            {
+              "destination_name": "core-credential-service",
+              "local_bind_port": 8050,
+              "config": {
+                "limits": {
+                  "max_connections": 50,
+                  "max_pending_requests": 50,
+                  "max_requests": 100
+                }
+              }
+            },
+            {
+              "destination_name": "storage-service",
+              "local_bind_port": 8084,
+              "config": {
+                "limits": {
+                  "max_connections": 50,
+                  "max_pending_requests": 50,
+                  "max_requests": 100
+                }
+              }
+            },
+            {
+              "destination_name": "vault",
+              "local_bind_port": 8200,
+              "config": {
+                "protocol": "http",
+                "limits": {
+                  "max_connections": 20,
+                  "max_pending_requests": 10,
+                  "max_requests": 50
+                }
+              }
+            }
+          ],
+          "config": {
+            "protocol": "http",
+            "local_request_timeout_ms": 60000,
+            "local_connect_timeout_ms": 5000,
+            "max_inbound_connections": 500,
+            "envoy_stats_bind_addr": "0.0.0.0:9106"
+          },
+          "expose": {
+            "paths": [
+              {
+                "path": "/metrics",
+                "local_path_port": 8053,
+                "listener_port": 9053,
+                "protocol": "http"
+              }
+            ]
+          }
+        }
+      }
+    },
+    "weights": {
+      "passing": 10,
+      "warning": 1
+    },
+    "enable_tag_override": false
+  }
+} 

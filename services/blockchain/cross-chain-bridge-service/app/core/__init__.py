@@ -1,0 +1,1 @@
+"""Core module for cross-chain bridge service""" 

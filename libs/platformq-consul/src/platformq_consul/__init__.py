@@ -17,6 +17,17 @@ from .config import (
     get_blockchain_client
 )
 
+from .health import (
+    HealthStatus,
+    HealthCheck,
+    HealthCheckRegistry,
+    create_database_check,
+    create_cache_check,
+    create_message_queue_check,
+    create_service_dependency_check,
+    create_health_endpoint
+)
+
 __all__ = [
     # Service discovery
     'ConsulServiceDiscovery',
@@ -29,7 +40,17 @@ __all__ = [
     # Client helpers
     'get_auth_client',
     'get_data_platform_client',
-    'get_blockchain_client'
+    'get_blockchain_client',
+    
+    # Health checks
+    'HealthStatus',
+    'HealthCheck',
+    'HealthCheckRegistry',
+    'create_database_check',
+    'create_cache_check',
+    'create_message_queue_check',
+    'create_service_dependency_check',
+    'create_health_endpoint'
 ]
 
 __version__ = '0.1.0' 
