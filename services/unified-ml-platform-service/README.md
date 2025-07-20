@@ -14,7 +14,7 @@ The Unified ML Platform Service provides:
 - **Feature Store**: Centralized feature management and serving
 - **AutoML**: Automated model selection and hyperparameter tuning
 - **Event-Driven Architecture**: Real-time ML lifecycle event processing
-- **Model Lineage**: Comprehensive tracking via Graph Intelligence Service
+- **Model Lineage**: Comprehensive ML model lineage tracking with impact analysis
 - **Data Lake Integration**: Seamless training data management
 
 ## Event-Driven Architecture
@@ -94,6 +94,16 @@ The service integrates with the platform's event-driven architecture for compreh
 - Automated retraining
 - Compliance and governance
 
+### ML Model Lineage Tracking
+- **Model Genealogy**: Track model versions and derivations
+- **Dataset Dependencies**: Track which datasets were used for training
+- **Feature Lineage**: Track feature engineering transformations
+- **Experiment Relationships**: Link models to experiments
+- **Impact Analysis**: Assess impact of changes to models or data
+- **Similarity Search**: Find similar models based on lineage patterns
+- **Evolution Tracking**: Track model performance over versions
+- **Visualization**: Generate lineage graphs for understanding relationships
+
 ### Federated Learning
 - Privacy-preserving training
 - Secure aggregation
@@ -146,6 +156,16 @@ async def on_drift_detected(drift_info):
 - `GET /api/v1/models/{model_id}` - Get model details
 - `PUT /api/v1/models/{model_id}` - Update model
 - `DELETE /api/v1/models/{model_id}` - Delete model
+
+### ML Model Lineage
+- `POST /api/v1/ml-lineage/models` - Add model to lineage
+- `POST /api/v1/ml-lineage/datasets` - Add dataset to lineage
+- `POST /api/v1/ml-lineage/relationships` - Create lineage relationship
+- `GET /api/v1/ml-lineage/models/{model_id}/lineage` - Get model lineage
+- `POST /api/v1/ml-lineage/impact-analysis` - Analyze change impact
+- `POST /api/v1/ml-lineage/similarity-search` - Find similar models
+- `GET /api/v1/ml-lineage/models/{model_name}/evolution` - Track model evolution
+- `GET /api/v1/ml-lineage/models/{model_id}/visualization` - Visualize lineage
 
 ### Inference
 - `POST /api/v1/models/{model_id}/predict` - Single prediction

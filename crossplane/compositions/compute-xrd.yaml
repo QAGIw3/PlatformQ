@@ -1,0 +1,211 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: computeinstances.platformq.io
+spec:
+  group: platformq.io
+  names:
+    kind: ComputeInstance
+    plural: computeinstances
+    singular: computeinstance
+  
+  # Enable claim creation for self-service
+  claimNames:
+    kind: ComputeInstanceClaim
+    plural: computeinstanceclaims
+    singular: computeinstanceclaim
+  
+  # Connection secret keys that will be exposed
+  connectionSecretKeys:
+  - privateIp
+  - publicIp
+  - serverId
+  - sshPrivateKey
+  
+  # Supported versions
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            required:
+            - instanceType
+            - osImage
+            - tenantId
+            - customerId
+            - resellerId
+            properties:
+              # Instance configuration
+              instanceType:
+                type: string
+                description: Instance size (small, medium, large, xlarge, 2xlarge, gpu.large)
+                enum:
+                - small
+                - medium
+                - large
+                - xlarge
+                - 2xlarge
+                - gpu.large
+                - gpu.xlarge
+              
+              osImage:
+                type: string
+                description: Operating system image
+                default: ubuntu-22.04
+                enum:
+                - ubuntu-22.04
+                - ubuntu-20.04
+                - centos-8
+                - debian-11
+              
+              # Network configuration
+              networkId:
+                type: string
+                description: Network UUID to attach the instance to
+              
+              publicIpEnabled:
+                type: boolean
+                description: Whether to assign a public IP
+                default: false
+              
+              # Storage configuration
+              rootDiskSize:
+                type: integer
+                description: Root disk size in GB
+                default: 20
+                minimum: 20
+                maximum: 1000
+              
+              additionalDisks:
+                type: array
+                description: Additional data disks
+                items:
+                  type: object
+                  properties:
+                    size:
+                      type: integer
+                      description: Disk size in GB
+                      minimum: 1
+                    type:
+                      type: string
+                      description: Disk type (standard or premium)
+                      default: standard
+                      enum:
+                      - standard
+                      - premium
+              
+              # Security configuration
+              sshKeyName:
+                type: string
+                description: SSH key pair name for access
+              
+              securityGroups:
+                type: array
+                description: Additional security groups to attach
+                items:
+                  type: string
+              
+              # Multi-tenancy fields
+              tenantId:
+                type: string
+                description: Platform Q tenant ID
+              
+              customerId:
+                type: string
+                description: Platform Q customer ID
+              
+              resellerId:
+                type: string
+                description: Platform Q reseller ID
+              
+              # Metadata and tags
+              metadata:
+                type: object
+                description: Instance metadata
+                additionalProperties:
+                  type: string
+              
+              tags:
+                type: object
+                description: Resource tags
+                additionalProperties:
+                  type: string
+              
+              # Advanced options
+              userData:
+                type: string
+                description: Cloud-init user data (base64 encoded)
+              
+              availabilityZone:
+                type: string
+                description: Availability zone preference
+          
+          status:
+            type: object
+            properties:
+              ready:
+                type: boolean
+                description: Whether the instance is ready
+              
+              phase:
+                type: string
+                description: Current phase (Pending, Creating, Ready, Failed)
+              
+              instanceId:
+                type: string
+                description: Cloud provider instance ID
+              
+              privateIp:
+                type: string
+                description: Private IP address
+              
+              publicIp:
+                type: string
+                description: Public IP address (if enabled)
+              
+              conditions:
+                type: array
+                description: Resource conditions
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    reason:
+                      type: string
+                    message:
+                      type: string
+    
+    # Print columns for kubectl
+    additionalPrinterColumns:
+    - name: Ready
+      type: string
+      jsonPath: .status.ready
+    - name: Type
+      type: string
+      jsonPath: .spec.instanceType
+    - name: OS
+      type: string
+      jsonPath: .spec.osImage
+    - name: Private IP
+      type: string
+      jsonPath: .status.privateIp
+    - name: Public IP
+      type: string
+      jsonPath: .status.publicIp
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp 

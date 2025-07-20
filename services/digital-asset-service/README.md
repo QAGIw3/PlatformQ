@@ -26,8 +26,9 @@ This service manages the lifecycle of digital assets including:
 1. **Asset Management**
    - CRUD operations for digital assets
    - Metadata extraction and indexing
-   - Version control and lineage tracking
+   - Version control and comprehensive lineage tracking
    - Multi-format support
+   - Asset provenance and derivation chains
 
 2. **Marketplace Integration**
    - List assets for sale or license
@@ -46,6 +47,15 @@ This service manages the lifecycle of digital assets including:
    - Marketplace transaction events
    - Review submission notifications
    - Lineage update propagation
+
+5. **Asset Lineage Tracking**
+   - Asset provenance and derivation chains
+   - Fork and version relationship tracking
+   - Impact analysis for asset changes
+   - Duplicate detection by content ID
+   - User reputation based on asset quality
+   - Transaction and review history
+   - Lineage visualization capabilities
 
 ## 📡 API Endpoints
 
@@ -68,6 +78,14 @@ This service manages the lifecycle of digital assets including:
 - `POST /api/v1/digital-assets/{cid}/reviews` - Submit review
 - `PUT /api/v1/reviews/{review_id}` - Update review
 - `DELETE /api/v1/reviews/{review_id}` - Delete review
+
+### Asset Lineage
+- `POST /api/v1/asset-lineage/assets` - Add asset to lineage graph
+- `POST /api/v1/asset-lineage/derivations` - Create derivation relationship
+- `GET /api/v1/asset-lineage/assets/{asset_id}/lineage` - Get asset lineage
+- `POST /api/v1/asset-lineage/impact-analysis` - Analyze change impact
+- `GET /api/v1/asset-lineage/assets/duplicates/{cid}` - Find duplicate assets
+- `GET /api/v1/asset-lineage/users/{user_id}/reputation` - Get user reputation
 
 ## 🚀 Quick Start
 

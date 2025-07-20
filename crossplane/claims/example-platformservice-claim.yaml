@@ -1,0 +1,164 @@
+# Example: How a tenant would request platform services through Crossplane
+
+---
+# Request a Cassandra keyspace
+apiVersion: platformq.io/v1alpha1
+kind: PlatformServiceClaim
+metadata:
+  name: my-app-database
+  namespace: tenant-12345
+spec:
+  serviceType: cassandra
+  plan: standard           # 3-node cluster with replication
+  
+  # Multi-tenancy
+  tenantId: "12345"
+  customerId: "customer-001"
+  resellerId: "reseller-001"
+  
+  # Cassandra-specific configuration
+  cassandra:
+    replicationFactor: 3
+    tables:
+    - name: users
+      columns:
+      - name: user_id
+        type: uuid
+        primaryKey: true
+      - name: username
+        type: text
+      - name: email
+        type: text
+      - name: created_at
+        type: timestamp
+    - name: sessions
+      columns:
+      - name: session_id
+        type: uuid
+        primaryKey: true
+      - name: user_id
+        type: uuid
+      - name: expires_at
+        type: timestamp
+  
+  # Resource limits
+  resources:
+    cpu: "2"
+    memory: "4Gi"
+    storage: "100Gi"
+  
+  # Connection secret
+  writeConnectionSecretToRef:
+    name: my-app-database-connection
+
+---
+# Request an Ignite cache
+apiVersion: platformq.io/v1alpha1
+kind: PlatformServiceClaim
+metadata:
+  name: my-app-cache
+  namespace: tenant-12345
+spec:
+  serviceType: ignite
+  plan: standard
+  
+  # Multi-tenancy
+  tenantId: "12345"
+  customerId: "customer-001"
+  resellerId: "reseller-001"
+  
+  # Ignite-specific configuration
+  ignite:
+    cacheMode: PARTITIONED
+    backups: 1
+    persistence: true
+    sqlEnabled: true      # Enable SQL queries on cache
+  
+  # Resource limits
+  resources:
+    cpu: "1"
+    memory: "2Gi"
+    storage: "10Gi"
+  
+  writeConnectionSecretToRef:
+    name: my-app-cache-connection
+
+---
+# Request a Pulsar namespace
+apiVersion: platformq.io/v1alpha1
+kind: PlatformServiceClaim
+metadata:
+  name: my-app-messaging
+  namespace: tenant-12345
+spec:
+  serviceType: pulsar
+  plan: standard
+  
+  # Multi-tenancy
+  tenantId: "12345"
+  customerId: "customer-001"
+  resellerId: "reseller-001"
+  
+  # Pulsar-specific configuration
+  pulsar:
+    retentionDays: 7      # Keep messages for 7 days
+    throughputMB: 100     # 100 MB/s throughput
+    storageGB: 500        # 500GB storage quota
+    geoReplication: false
+  
+  writeConnectionSecretToRef:
+    name: my-app-messaging-connection
+
+---
+# Request MinIO object storage
+apiVersion: platformq.io/v1alpha1
+kind: PlatformServiceClaim
+metadata:
+  name: my-app-storage
+  namespace: tenant-12345
+spec:
+  serviceType: minio
+  plan: standard
+  
+  # Multi-tenancy
+  tenantId: "12345"
+  customerId: "customer-001"
+  resellerId: "reseller-001"
+  
+  # MinIO-specific configuration
+  minio:
+    quotaGB: 1000         # 1TB quota
+    versioning: true      # Enable object versioning
+    lifecycleDays: 90     # Delete objects after 90 days
+    encryption: true      # Server-side encryption
+  
+  writeConnectionSecretToRef:
+    name: my-app-storage-connection
+
+---
+# The connection secrets will contain service-specific credentials:
+#
+# Cassandra:
+# - hosts: Cassandra contact points
+# - keyspace: Keyspace name
+# - username: Auth username
+# - password: Auth password
+#
+# Ignite:
+# - host: Ignite server host
+# - port: Ignite server port
+# - cacheName: Cache name
+# - username: Auth username
+# - password: Auth password
+#
+# Pulsar:
+# - serviceUrl: Pulsar broker URL
+# - namespace: Full namespace path
+# - authToken: Authentication token
+#
+# MinIO:
+# - endpoint: MinIO endpoint
+# - bucket: Bucket name
+# - accessKey: Access key ID
+# - secretKey: Secret access key
+# - region: Region (usually us-east-1) 

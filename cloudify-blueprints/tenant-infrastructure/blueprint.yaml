@@ -1,0 +1,454 @@
+tosca_definitions_version: cloudify_dsl_1_4
+
+description: >
+  Platform Q Tenant Infrastructure Blueprint
+  Provisions complete infrastructure for a multi-tenant environment
+
+imports:
+  - https://cloudify.co/spec/cloudify/6.4/types.yaml
+  - plugin:cloudify-kubernetes-plugin
+  - plugin:cloudify-utilities-plugin
+
+inputs:
+  # Tenant Information
+  tenant_id:
+    type: string
+    display_label: Tenant ID
+    description: Unique tenant identifier
+
+  reseller_id:
+    type: string
+    display_label: Reseller ID
+    description: Reseller identifier for hierarchical tenancy
+    default: ""
+
+  customer_id:
+    type: string
+    display_label: Customer ID
+    description: Customer identifier for hierarchical tenancy
+    default: ""
+
+  region:
+    type: string
+    display_label: Region
+    description: Deployment region
+    default: "default"
+
+  environment:
+    type: string
+    display_label: Environment
+    description: Deployment environment
+    default: "production"
+
+  # Service Connection Configuration
+  cassandra_hosts:
+    type: list
+    display_label: Cassandra Hosts
+    default: ["cassandra"]
+    
+  ignite_hosts:
+    type: list
+    display_label: Ignite Hosts
+    default: ["ignite"]
+    
+  pulsar_admin_url:
+    type: string
+    display_label: Pulsar Admin URL
+    default: "http://pulsar:8080"
+    
+  pulsar_service_url:
+    type: string
+    display_label: Pulsar Service URL
+    default: "pulsar://pulsar:6650"
+    
+  minio_endpoint:
+    type: string
+    display_label: MinIO Endpoint
+    default: "minio:9000"
+    
+  minio_access_key:
+    type: string
+    display_label: MinIO Access Key
+    default: "minioadmin"
+    
+  minio_secret_key:
+    type: string
+    display_label: MinIO Secret Key
+    default: "minioadmin"
+    
+  elasticsearch_hosts:
+    type: list
+    display_label: Elasticsearch Hosts
+    default: ["http://elasticsearch:9200"]
+    
+  janusgraph_gremlin_server:
+    type: string
+    display_label: JanusGraph Gremlin Server
+    default: "janusgraph"
+    
+  vault_addr:
+    type: string
+    display_label: Vault Address
+    default: "http://vault:8200"
+    
+  vault_token:
+    type: string
+    display_label: Vault Token
+    description: Vault root or admin token
+    
+  consul_host:
+    type: string
+    display_label: Consul Host
+    default: "consul"
+
+  # Cassandra Configuration
+  cassandra_replication_factor:
+    type: integer
+    display_label: Cassandra Replication Factor
+    default: 3
+    constraints:
+      - greater_or_equal: 1
+      - less_or_equal: 5
+
+  # Ignite Configuration
+  ignite_replication_factor:
+    type: integer
+    display_label: Ignite Replication Factor
+    default: 2
+    
+  ignite_max_memory_mb:
+    type: integer
+    display_label: Ignite Max Memory (MB)
+    default: 1024
+
+  # Pulsar Configuration
+  pulsar_retention_hours:
+    type: integer
+    display_label: Message Retention Hours
+    default: 72
+    
+  pulsar_retention_size_gb:
+    type: integer
+    display_label: Message Retention Size (GB)
+    default: 10
+
+  # MinIO Configuration
+  minio_storage_quota_gb:
+    type: integer
+    display_label: Storage Quota (GB)
+    default: 100
+    
+  minio_enable_versioning:
+    type: boolean
+    display_label: Enable Versioning
+    default: true
+
+  # Elasticsearch Configuration
+  elasticsearch_app_shards:
+    type: integer
+    display_label: Application Index Shards
+    default: 3
+
+  elasticsearch_app_replicas:
+    type: integer
+    display_label: Application Index Replicas
+    default: 1
+
+  # Kubernetes Configuration
+  kubernetes_namespace:
+    type: string
+    display_label: Kubernetes Namespace
+    default: { concat: ["tenant-", { get_input: tenant_id }] }
+
+  kubernetes_cpu_quota:
+    type: string
+    display_label: CPU Quota
+    default: "10"
+
+  kubernetes_memory_quota:
+    type: string
+    display_label: Memory Quota
+    default: "10Gi"
+    
+  kubernetes_storage_quota:
+    type: string
+    display_label: Storage Quota
+    default: "100Gi"
+
+  # JanusGraph Configuration
+  janusgraph_storage_backend:
+    type: string
+    display_label: Storage Backend
+    default: "cassandra"
+    
+  janusgraph_index_backend:
+    type: string
+    display_label: Index Backend
+    default: "elasticsearch"
+
+node_templates:
+  # Kubernetes Namespace and Resources
+  kubernetes_resources:
+    type: cloudify.nodes.ApplicationModule
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: scripts/kubernetes/create_namespace.py
+          inputs:
+            tenant_id: { get_input: tenant_id }
+            reseller_id: { get_input: reseller_id }
+            customer_id: { get_input: customer_id }
+            namespace: { get_input: kubernetes_namespace }
+            cpu_quota: { get_input: kubernetes_cpu_quota }
+            memory_quota: { get_input: kubernetes_memory_quota }
+            storage_quota: { get_input: kubernetes_storage_quota }
+            region: { get_input: region }
+            environment: { get_input: environment }
+            # Service endpoints for ConfigMap
+            cassandra_hosts: { get_input: cassandra_hosts }
+            ignite_hosts: { get_input: ignite_hosts }
+            pulsar_url: { get_input: pulsar_service_url }
+            minio_endpoint: { get_input: minio_endpoint }
+            elasticsearch_hosts: { get_input: elasticsearch_hosts }
+            janusgraph_gremlin: { concat: [{ get_input: janusgraph_gremlin_server }, ":8182"] }
+
+  # Cassandra Keyspace
+  cassandra_keyspace:
+    type: cloudify.nodes.ApplicationModule
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: scripts/cassandra/create_keyspace.py
+          inputs:
+            tenant_id: { get_input: tenant_id }
+            reseller_id: { get_input: reseller_id }
+            customer_id: { get_input: customer_id }
+            cassandra_hosts: { get_input: cassandra_hosts }
+            keyspace_name: { concat: ["tenant_", { get_input: tenant_id }] }
+            replication_factor: { get_input: cassandra_replication_factor }
+            region: { get_input: region }
+    relationships:
+      - type: cloudify.relationships.depends_on
+        target: kubernetes_resources
+
+  # Ignite Cache
+  ignite_cache:
+    type: cloudify.nodes.ApplicationModule
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: scripts/ignite/create_cache.py
+          inputs:
+            tenant_id: { get_input: tenant_id }
+            reseller_id: { get_input: reseller_id }
+            customer_id: { get_input: customer_id }
+            ignite_hosts: { get_input: ignite_hosts }
+            cache_name: { concat: ["tenant_", { get_input: tenant_id }] }
+            replication_factor: { get_input: ignite_replication_factor }
+            max_memory_mb: { get_input: ignite_max_memory_mb }
+            region: { get_input: region }
+    relationships:
+      - type: cloudify.relationships.depends_on
+        target: kubernetes_resources
+
+  # Pulsar Namespace
+  pulsar_namespace:
+    type: cloudify.nodes.ApplicationModule
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: scripts/pulsar/create_namespace.py
+          inputs:
+            tenant_id: { get_input: tenant_id }
+            reseller_id: { get_input: reseller_id }
+            customer_id: { get_input: customer_id }
+            pulsar_admin_url: { get_input: pulsar_admin_url }
+            pulsar_service_url: { get_input: pulsar_service_url }
+            pulsar_tenant: { concat: ["tenant-", { get_input: tenant_id }] }
+            namespace: "default"
+            retention_hours: { get_input: pulsar_retention_hours }
+            retention_size_gb: { get_input: pulsar_retention_size_gb }
+            region: { get_input: region }
+    relationships:
+      - type: cloudify.relationships.depends_on
+        target: kubernetes_resources
+
+  # MinIO Bucket
+  minio_bucket:
+    type: cloudify.nodes.ApplicationModule
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: scripts/minio/create_bucket.py
+          inputs:
+            tenant_id: { get_input: tenant_id }
+            reseller_id: { get_input: reseller_id }
+            customer_id: { get_input: customer_id }
+            minio_endpoint: { get_input: minio_endpoint }
+            access_key: { get_input: minio_access_key }
+            secret_key: { get_input: minio_secret_key }
+            bucket_name: { concat: ["tenant-", { get_input: tenant_id }] }
+            storage_quota_gb: { get_input: minio_storage_quota_gb }
+            enable_versioning: { get_input: minio_enable_versioning }
+            region: { get_input: region }
+            environment: { get_input: environment }
+    relationships:
+      - type: cloudify.relationships.depends_on
+        target: kubernetes_resources
+
+  # Elasticsearch Templates
+  elasticsearch_templates:
+    type: cloudify.nodes.ApplicationModule
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: scripts/elasticsearch/create_template.py
+          inputs:
+            tenant_id: { get_input: tenant_id }
+            reseller_id: { get_input: reseller_id }
+            customer_id: { get_input: customer_id }
+            elasticsearch_hosts: { get_input: elasticsearch_hosts }
+            index_prefix: { concat: ["tenant-", { get_input: tenant_id }] }
+            app_shards: { get_input: elasticsearch_app_shards }
+            app_replicas: { get_input: elasticsearch_app_replicas }
+            region: { get_input: region }
+    relationships:
+      - type: cloudify.relationships.depends_on
+        target: kubernetes_resources
+
+  # JanusGraph Configuration
+  janusgraph_graph:
+    type: cloudify.nodes.ApplicationModule
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: scripts/janusgraph/create_graph.py
+          inputs:
+            tenant_id: { get_input: tenant_id }
+            reseller_id: { get_input: reseller_id }
+            customer_id: { get_input: customer_id }
+            gremlin_server: { get_input: janusgraph_gremlin_server }
+            graph_name: { concat: ["tenant_", { get_input: tenant_id }] }
+            storage_backend: { get_input: janusgraph_storage_backend }
+            cassandra_hosts: { get_input: cassandra_hosts }
+            index_backend: { get_input: janusgraph_index_backend }
+            elasticsearch_hosts: { get_input: elasticsearch_hosts }
+            replication_factor: { get_input: cassandra_replication_factor }
+            region: { get_input: region }
+    relationships:
+      - type: cloudify.relationships.depends_on
+        target: cassandra_keyspace
+      - type: cloudify.relationships.depends_on
+        target: elasticsearch_templates
+
+  # Vault Secrets
+  vault_secrets:
+    type: cloudify.nodes.ApplicationModule
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: scripts/vault/create_secrets.py
+          inputs:
+            tenant_id: { get_input: tenant_id }
+            reseller_id: { get_input: reseller_id }
+            customer_id: { get_input: customer_id }
+            vault_addr: { get_input: vault_addr }
+            vault_token: { get_input: vault_token }
+            secrets_path: { concat: ["tenant/", { get_input: tenant_id }] }
+            region: { get_input: region }
+    relationships:
+      - type: cloudify.relationships.depends_on
+        target: kubernetes_resources
+
+  # Consul Configuration
+  consul_config:
+    type: cloudify.nodes.ApplicationModule
+    interfaces:
+      cloudify.interfaces.lifecycle:
+        create:
+          implementation: scripts/consul/create_config.py
+          inputs:
+            tenant_id: { get_input: tenant_id }
+            reseller_id: { get_input: reseller_id }
+            customer_id: { get_input: customer_id }
+            consul_host: { get_input: consul_host }
+            kv_prefix: { concat: ["tenants/", { get_input: tenant_id }] }
+            # Service endpoints
+            cassandra_hosts: { get_input: cassandra_hosts }
+            ignite_hosts: { get_input: ignite_hosts }
+            pulsar_service_url: { get_input: pulsar_service_url }
+            pulsar_admin_url: { get_input: pulsar_admin_url }
+            minio_endpoint: { get_input: minio_endpoint }
+            elasticsearch_hosts: { get_input: elasticsearch_hosts }
+            janusgraph_gremlin: { concat: [{ get_input: janusgraph_gremlin_server }, ":8182"] }
+            # Resource limits
+            max_storage_gb: { get_input: minio_storage_quota_gb }
+            max_memory_gb: 64
+            max_compute_cores: 16
+            # Environment
+            environment: { get_input: environment }
+            region: { get_input: region }
+    relationships:
+      - type: cloudify.relationships.depends_on
+        target: kubernetes_resources
+
+outputs:
+  kubernetes_namespace:
+    description: Kubernetes namespace for the tenant
+    value: { get_input: kubernetes_namespace }
+
+  cassandra_keyspace:
+    description: Cassandra keyspace name
+    value: { concat: ["tenant_", { get_input: tenant_id }] }
+
+  ignite_cache:
+    description: Ignite cache name
+    value: { concat: ["tenant_", { get_input: tenant_id }] }
+
+  pulsar_namespace:
+    description: Pulsar namespace
+    value: { concat: ["tenant-", { get_input: tenant_id }, "/default"] }
+
+  minio_bucket:
+    description: MinIO bucket name
+    value: { concat: ["tenant-", { get_input: tenant_id }] }
+
+  elasticsearch_index_prefix:
+    description: Elasticsearch index prefix
+    value: { concat: ["tenant-", { get_input: tenant_id }] }
+
+  janusgraph_graph:
+    description: JanusGraph graph name
+    value: { concat: ["tenant_", { get_input: tenant_id }] }
+
+  vault_path:
+    description: Vault secrets path
+    value: { concat: ["tenant/", { get_input: tenant_id }] }
+
+  consul_path:
+    description: Consul configuration path
+    value: { concat: ["tenants/", { get_input: tenant_id }] }
+
+capabilities:
+  tenant_info:
+    description: Tenant provisioning information
+    value:
+      tenant_id: { get_input: tenant_id }
+      reseller_id: { get_input: reseller_id }
+      customer_id: { get_input: customer_id }
+      namespace: { get_input: kubernetes_namespace }
+      resources:
+        cassandra_keyspace: { concat: ["tenant_", { get_input: tenant_id }] }
+        ignite_cache: { concat: ["tenant_", { get_input: tenant_id }] }
+        pulsar_namespace: { concat: ["tenant-", { get_input: tenant_id }, "/default"] }
+        minio_bucket: { concat: ["tenant-", { get_input: tenant_id }] }
+        elasticsearch_prefix: { concat: ["tenant-", { get_input: tenant_id }] }
+        janusgraph_graph: { concat: ["tenant_", { get_input: tenant_id }] }
+        vault_path: { concat: ["tenant/", { get_input: tenant_id }] }
+        consul_path: { concat: ["tenants/", { get_input: tenant_id }] }
+
+  service_credentials:
+    description: Service account credentials (stored in Vault)
+    value:
+      vault_path: { concat: ["tenant/", { get_input: tenant_id }, "/data/services"] }
+      approle_path: { concat: ["auth/approle/role/tenant-", { get_input: tenant_id }, "-approle"] } 

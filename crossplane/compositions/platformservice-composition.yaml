@@ -1,0 +1,404 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: platformservice.platformq.io
+  labels:
+    platformq.io/service: platform-services
+    platformq.io/provider: kubernetes
+spec:
+  # Define the composite resource this composition implements
+  compositeTypeRef:
+    apiVersion: platformq.io/v1alpha1
+    kind: PlatformService
+  
+  # Resources to be created based on service type
+  resources:
+  # Cassandra Keyspace
+  - name: cassandra-keyspace
+    base:
+      apiVersion: cassandra.platformq.io/v1alpha1
+      kind: Keyspace
+      spec:
+        forProvider:
+          clusterRef:
+            name: cassandra-cluster
+          replicationStrategy: NetworkTopologyStrategy
+          replicationFactor: 3
+          durableWrites: true
+          tables:
+          - name: default_table
+            columns:
+            - name: id
+              type: uuid
+              primaryKey: true
+            - name: data
+              type: text
+            - name: created_at
+              type: timestamp
+    
+    patches:
+    # Only create for Cassandra service
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.serviceType
+      toFieldPath: metadata.annotations[crossplane.io/paused]
+      transforms:
+      - type: map
+        map:
+          cassandra: "false"
+          ignite: "true"
+          pulsar: "true"
+          minio: "true"
+          elasticsearch: "true"
+          janusgraph: "true"
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: spec.forProvider.name
+      transforms:
+      - type: string
+        string:
+          fmt: "platformq_%s"
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.cassandra.replicationFactor
+      toFieldPath: spec.forProvider.replicationFactor
+    
+    connectionDetails:
+    - name: hosts
+      value: "cassandra.platformq.svc.cluster.local:9042"
+    - name: keyspace
+      fromFieldPath: spec.forProvider.name
+  
+  # Ignite Cache
+  - name: ignite-cache
+    base:
+      apiVersion: ignite.platformq.io/v1alpha1
+      kind: Cache
+      spec:
+        forProvider:
+          clusterRef:
+            name: ignite-cluster
+          cacheMode: PARTITIONED
+          backups: 1
+          atomicityMode: TRANSACTIONAL
+          writeSynchronizationMode: FULL_SYNC
+          sqlSchema: PUBLIC
+          dataRegion: default
+    
+    patches:
+    # Only create for Ignite service
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.serviceType
+      toFieldPath: metadata.annotations[crossplane.io/paused]
+      transforms:
+      - type: map
+        map:
+          ignite: "false"
+          cassandra: "true"
+          pulsar: "true"
+          minio: "true"
+          elasticsearch: "true"
+          janusgraph: "true"
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: spec.forProvider.name
+      transforms:
+      - type: string
+        string:
+          fmt: "platformq_%s"
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.ignite.cacheMode
+      toFieldPath: spec.forProvider.cacheMode
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.ignite.backups
+      toFieldPath: spec.forProvider.backups
+    
+    connectionDetails:
+    - name: host
+      value: "ignite.platformq.svc.cluster.local"
+    - name: port
+      value: "10800"
+    - name: cacheName
+      fromFieldPath: spec.forProvider.name
+  
+  # Pulsar Namespace
+  - name: pulsar-namespace
+    base:
+      apiVersion: pulsar.platformq.io/v1alpha1
+      kind: Namespace
+      spec:
+        forProvider:
+          tenant: platformq
+          policies:
+            retentionPolicies:
+              retentionTimeInMinutes: 1440  # 24 hours
+              retentionSizeInMB: 10240      # 10GB
+            backlogQuota:
+              limit: 1073741824  # 1GB
+              policy: consumer_backlog_eviction
+            deduplicationEnabled: false
+            schemaValidationEnforced: false
+    
+    patches:
+    # Only create for Pulsar service
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.serviceType
+      toFieldPath: metadata.annotations[crossplane.io/paused]
+      transforms:
+      - type: map
+        map:
+          pulsar: "false"
+          cassandra: "true"
+          ignite: "true"
+          minio: "true"
+          elasticsearch: "true"
+          janusgraph: "true"
+    
+    - type: CombineFromComposite
+      combine:
+        variables:
+        - fromFieldPath: spec.tenantId
+        - fromFieldPath: metadata.name
+        strategy: string
+        string:
+          fmt: "platformq/%s/%s"
+      toFieldPath: spec.forProvider.namespace
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.pulsar.retentionDays
+      toFieldPath: spec.forProvider.policies.retentionPolicies.retentionTimeInMinutes
+      transforms:
+      - type: math
+        math:
+          multiply: 1440  # days to minutes
+    
+    connectionDetails:
+    - name: serviceUrl
+      value: "pulsar://pulsar.platformq.svc.cluster.local:6650"
+    - name: namespace
+      fromFieldPath: spec.forProvider.namespace
+  
+  # MinIO Bucket
+  - name: minio-bucket
+    base:
+      apiVersion: minio.platformq.io/v1alpha1
+      kind: Bucket
+      spec:
+        forProvider:
+          region: us-east-1
+          versioning: true
+          lifecycle:
+          - id: expire-old-versions
+            status: Enabled
+            noncurrentVersionExpiration:
+              days: 30
+          quota:
+            type: hard
+            value: 107374182400  # 100GB
+    
+    patches:
+    # Only create for MinIO service
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.serviceType
+      toFieldPath: metadata.annotations[crossplane.io/paused]
+      transforms:
+      - type: map
+        map:
+          minio: "false"
+          cassandra: "true"
+          ignite: "true"
+          pulsar: "true"
+          elasticsearch: "true"
+          janusgraph: "true"
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: spec.forProvider.name
+      transforms:
+      - type: string
+        string:
+          fmt: "platformq-%s"
+          # MinIO bucket names must be lowercase
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.minio.quotaGB
+      toFieldPath: spec.forProvider.quota.value
+      transforms:
+      - type: math
+        math:
+          multiply: 1073741824  # GB to bytes
+    
+    connectionDetails:
+    - name: endpoint
+      value: "minio.platformq.svc.cluster.local:9000"
+    - name: bucket
+      fromFieldPath: spec.forProvider.name
+    - name: region
+      value: "us-east-1"
+  
+  # Service account and credentials
+  - name: service-credentials
+    base:
+      apiVersion: v1
+      kind: Secret
+      metadata:
+        namespace: platformq-services
+      type: Opaque
+      data: {}  # Will be patched
+    
+    patches:
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: metadata.name
+      transforms:
+      - type: string
+        string:
+          fmt: "platformq-service-%s"
+    
+    # Generate credentials based on service type
+    - type: CombineFromComposite
+      combine:
+        variables:
+        - fromFieldPath: spec.serviceType
+        - fromFieldPath: metadata.uid
+        strategy: string
+        string:
+          fmt: "%s-user-%s"
+      toFieldPath: data.username
+      transforms:
+      - type: string
+        string:
+          type: Convert
+          convert: ToBase64
+    
+    # Random password generation would be handled by a function
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.uid
+      toFieldPath: data.password
+      transforms:
+      - type: string
+        string:
+          fmt: "temp-password-%s"  # In production, use password generation
+      - type: string
+        string:
+          type: Convert
+          convert: ToBase64
+  
+  # RBAC for multi-tenancy
+  - name: tenant-rbac
+    base:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: Role
+      metadata:
+        namespace: platformq-services
+      rules:
+      - apiGroups: [""]
+        resources: ["secrets"]
+        verbs: ["get", "list"]
+    
+    patches:
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: metadata.name
+      transforms:
+      - type: string
+        string:
+          fmt: "platformq-service-%s-role"
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.tenantId
+      toFieldPath: metadata.labels[platformq.io/tenant-id]
+  
+  # Role binding
+  - name: tenant-role-binding
+    base:
+      apiVersion: rbac.authorization.k8s.io/v1
+      kind: RoleBinding
+      metadata:
+        namespace: platformq-services
+      roleRef:
+        apiGroup: rbac.authorization.k8s.io
+        kind: Role
+        name: ""  # Will be patched
+      subjects:
+      - kind: ServiceAccount
+        name: ""  # Will be patched
+        namespace: platformq-services
+    
+    patches:
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: metadata.name
+      transforms:
+      - type: string
+        string:
+          fmt: "platformq-service-%s-binding"
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: roleRef.name
+      transforms:
+      - type: string
+        string:
+          fmt: "platformq-service-%s-role"
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.tenantId
+      toFieldPath: subjects[0].name
+      transforms:
+      - type: string
+        string:
+          fmt: "tenant-%s"
+  
+  # Usage reporting
+  - name: usage-report
+    base:
+      apiVersion: batch/v1
+      kind: CronJob
+      metadata:
+        namespace: platformq-services
+      spec:
+        schedule: "*/5 * * * *"  # Every 5 minutes
+        jobTemplate:
+          spec:
+            template:
+              spec:
+                containers:
+                - name: usage-reporter
+                  image: platformq/usage-reporter:latest
+                  env:
+                  - name: SERVICE_TYPE
+                    value: ""  # Will be patched
+                  - name: INSTANCE_ID
+                    value: ""  # Will be patched
+                  - name: TENANT_ID
+                    value: ""  # Will be patched
+                  - name: CLOUDKITTY_URL
+                    value: "http://cloudkitty:8889"
+                  - name: OPENMETER_URL
+                    value: "http://openmeter:8080"
+                restartPolicy: OnFailure
+    
+    patches:
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: metadata.name
+      transforms:
+      - type: string
+        string:
+          fmt: "usage-reporter-%s"
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.serviceType
+      toFieldPath: spec.jobTemplate.spec.template.spec.containers[0].env[0].value
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: spec.jobTemplate.spec.template.spec.containers[0].env[1].value
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.tenantId
+      toFieldPath: spec.jobTemplate.spec.template.spec.containers[0].env[2].value 

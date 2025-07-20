@@ -1,0 +1,41 @@
+# Core dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# OpenStack SDK
+openstacksdk==2.0.0
+python-keystoneclient==5.2.0
+
+# Async HTTP client
+httpx==0.25.2
+aiohttp==3.9.1
+
+# Cloudify client
+cloudify-rest-client==7.0.0
+
+# Platform Q service clients
+cassandra-driver==3.28.0
+pyignite==0.6.1
+pulsar-client==3.3.0
+minio==7.2.0
+elasticsearch==8.11.0
+
+# Monitoring and metrics
+prometheus-client==0.19.0
+
+# Consul and Vault
+python-consul==1.1.0
+hvac==2.1.0
+
+# Utilities
+python-dateutil==2.8.2
+tenacity==8.2.3
+
+# Development dependencies
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+black==23.11.0
+pylint==3.0.2 

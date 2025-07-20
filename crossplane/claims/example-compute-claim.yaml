@@ -1,0 +1,60 @@
+# Example: How a tenant would request a compute instance through Crossplane
+apiVersion: platformq.io/v1alpha1
+kind: ComputeInstanceClaim
+metadata:
+  name: my-web-server
+  namespace: tenant-12345  # Tenant's namespace
+spec:
+  # Instance configuration
+  instanceType: medium       # 2 vCPU, 4GB RAM
+  osImage: ubuntu-22.04
+  
+  # Network configuration
+  networkId: "tenant-network-uuid"  # Pre-created tenant network
+  publicIpEnabled: true      # Request public IP
+  
+  # Storage
+  rootDiskSize: 50          # 50GB root disk
+  additionalDisks:
+  - size: 100
+    type: standard
+  
+  # Security
+  sshKeyName: my-ssh-key
+  securityGroups:
+  - web-security-group
+  
+  # Multi-tenancy metadata
+  tenantId: "12345"
+  customerId: "customer-001"
+  resellerId: "reseller-001"
+  
+  # Instance metadata
+  metadata:
+    environment: production
+    application: web-frontend
+    team: platform-team
+  
+  # Tags for billing/organization
+  tags:
+    costCenter: engineering
+    project: platform-q
+    owner: john.doe@example.com
+  
+  # Cloud-init user data (base64 encoded)
+  userData: |
+    I2Nsb3VkLWNvbmZpZwpwYWNrYWdlX3VwZGF0ZTogdHJ1ZQpwYWNrYWdlczoKLSBuZ2lueAotIGRvY2tlci5pbw==
+  
+  # Composition selection (optional - defaults to latest)
+  compositionRef:
+    name: compute.platformq.io
+  
+  # Connection secret configuration
+  writeConnectionSecretToRef:
+    name: my-web-server-connection
+---
+# The connection secret will contain:
+# - privateIp: Internal IP address
+# - publicIp: Public IP address (if enabled)
+# - serverId: OpenStack server ID
+# - sshPrivateKey: SSH private key for access (if generated) 

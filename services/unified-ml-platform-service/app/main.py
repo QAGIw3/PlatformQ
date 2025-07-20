@@ -50,6 +50,9 @@ from .api import (
     experiments
 )
 
+# Import ML lineage module
+from .ml_lineage import MLModelLineageTracker, ml_lineage_router
+
 # Import event handlers
 from .event_handlers import UnifiedMLEventHandler
 from .integrations.event_driven_ml import EventDrivenMLIntegration, MLEventType
@@ -84,7 +87,7 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global vault_consul, model_registry, feature_store, training_orchestrator, serving_engine
     global model_monitor, marketplace, federated_coordinator, neuromorphic_engine
-    global mlops_manager, automl_engine, event_handler
+    global mlops_manager, automl_engine, event_handler, ml_lineage_tracker
     
     # Startup
     logger.info("Starting Unified ML Platform Service...")
@@ -206,6 +209,21 @@ async def lifespan(app: FastAPI):
     )
     await automl_engine.initialize()
     app.state.automl_engine = automl_engine
+    
+    # Initialize ML Model Lineage Tracker
+    # Check if JanusGraph is available from configuration
+    janusgraph_config = await vault_consul._get_consul_config("janusgraph-config")
+    if janusgraph_config and janusgraph_config.get('enabled', False):
+        from .db.janusgraph import JanusGraph
+        graph_db = JanusGraph()
+        graph_db.connect()
+        
+        ml_lineage_tracker = MLModelLineageTracker(graph_db)
+        app.state.ml_lineage_tracker = ml_lineage_tracker
+        logger.info("ML Lineage Tracker initialized with JanusGraph")
+    else:
+        logger.warning("JanusGraph not configured, ML lineage tracking disabled")
+        app.state.ml_lineage_tracker = None
     
     # Initialize event handler
     event_handler = UnifiedMLEventHandler(
@@ -398,6 +416,7 @@ app.include_router(marketplace.router, prefix="/api/v1/marketplace", tags=["mark
 app.include_router(monitoring.router, prefix="/api/v1/monitoring", tags=["monitoring"])
 app.include_router(features.router, prefix="/api/v1/features", tags=["features"])
 app.include_router(experiments.router, prefix="/api/v1/experiments", tags=["experiments"])
+app.include_router(ml_lineage_router, tags=["ml-lineage"])
 
 # Root endpoint
 @app.get("/")

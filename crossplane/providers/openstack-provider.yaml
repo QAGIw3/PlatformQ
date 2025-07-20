@@ -1,0 +1,58 @@
+# Install the Crossplane OpenStack Provider
+apiVersion: pkg.crossplane.io/v1
+kind: Provider
+metadata:
+  name: provider-openstack
+spec:
+  package: xpkg.upbound.io/upbound/provider-openstack:v0.1.0  # Use appropriate version
+---
+# Provider configuration with OpenStack credentials
+apiVersion: openstack.upbound.io/v1beta1
+kind: ProviderConfig
+metadata:
+  name: openstack-provider
+spec:
+  credentials:
+    source: Secret
+    secretRef:
+      name: openstack-credentials
+      namespace: crossplane-system
+      key: credentials
+---
+# OpenStack credentials secret
+# This should be created securely with proper RBAC
+apiVersion: v1
+kind: Secret
+metadata:
+  name: openstack-credentials
+  namespace: crossplane-system
+type: Opaque
+stringData:
+  credentials: |
+    {
+      "auth_url": "${OS_AUTH_URL}",
+      "application_credential_id": "${OS_APPLICATION_CREDENTIAL_ID}",
+      "application_credential_secret": "${OS_APPLICATION_CREDENTIAL_SECRET}",
+      "region_name": "${OS_REGION_NAME}",
+      "interface": "public"
+    }
+---
+# Alternative: Use username/password authentication
+# apiVersion: v1
+# kind: Secret
+# metadata:
+#   name: openstack-credentials
+#   namespace: crossplane-system
+# type: Opaque
+# stringData:
+#   credentials: |
+#     {
+#       "auth_url": "${OS_AUTH_URL}",
+#       "username": "${OS_USERNAME}",
+#       "password": "${OS_PASSWORD}",
+#       "project_name": "${OS_PROJECT_NAME}",
+#       "project_domain_name": "${OS_PROJECT_DOMAIN_NAME}",
+#       "user_domain_name": "${OS_USER_DOMAIN_NAME}",
+#       "region_name": "${OS_REGION_NAME}",
+#       "interface": "public"
+#     } 

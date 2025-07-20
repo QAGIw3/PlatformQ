@@ -1,0 +1,53 @@
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+fastapi
+uvicorn
+pydantic
+gremlinpython
+requests
+python-dotenv
+tenacity
+asyncio
+aiohttp
+backoff
+janusgraph-python
+dse-graph
+psycopg2-binary
+numpy
+pandas
+scikit-learn
+scipy
+networkx
+matplotlib
+seaborn
+plotly
+jupyterlab
+boto3
+pyspark
+pyignite
+py-fhe
+opacus
+syft
+cryptography
+paho-mqtt
+confluent-kafka
+pulsar-client
+aiopulsar
+apache-beam
+google-cloud-pubsub
+google-cloud-storage
+azure-eventhub
+azure-storage-blob
+redis
+celery
+flower
+pyarrow 
+
+# Graph analytics libraries
+python-louvain
+graphframes
+scikit-learn
+
+# Additional required libraries
+httpx
+asyncio-throttle 

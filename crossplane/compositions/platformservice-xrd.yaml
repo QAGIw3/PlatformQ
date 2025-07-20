@@ -1,0 +1,356 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: CompositeResourceDefinition
+metadata:
+  name: platformservices.platformq.io
+spec:
+  group: platformq.io
+  names:
+    kind: PlatformService
+    plural: platformservices
+    singular: platformservice
+  
+  # Enable claim creation for self-service
+  claimNames:
+    kind: PlatformServiceClaim
+    plural: platformserviceclaims
+    singular: platformserviceclaim
+  
+  # Connection secret keys that will be exposed
+  connectionSecretKeys:
+  # Common keys
+  - username
+  - password
+  - endpoint
+  - port
+  # Service-specific keys
+  - hosts        # Cassandra
+  - keyspace     # Cassandra
+  - cacheName    # Ignite
+  - serviceUrl   # Pulsar
+  - namespace    # Pulsar
+  - bucket       # MinIO
+  - accessKey    # MinIO
+  - secretKey    # MinIO
+  - url          # Elasticsearch
+  - index        # Elasticsearch
+  
+  # Supported versions
+  versions:
+  - name: v1alpha1
+    served: true
+    referenceable: true
+    schema:
+      openAPIV3Schema:
+        type: object
+        properties:
+          spec:
+            type: object
+            required:
+            - serviceType
+            - plan
+            - tenantId
+            - customerId
+            - resellerId
+            properties:
+              # Service selection
+              serviceType:
+                type: string
+                description: Platform service type
+                enum:
+                - cassandra
+                - ignite
+                - pulsar
+                - minio
+                - elasticsearch
+                - janusgraph
+              
+              plan:
+                type: string
+                description: Service plan
+                default: standard
+                enum:
+                - development
+                - standard
+                - premium
+                - dedicated
+              
+              # Multi-tenancy fields
+              tenantId:
+                type: string
+                description: Platform Q tenant ID
+              
+              customerId:
+                type: string
+                description: Platform Q customer ID
+              
+              resellerId:
+                type: string
+                description: Platform Q reseller ID
+              
+              # Service-specific configurations
+              cassandra:
+                type: object
+                description: Cassandra-specific configuration
+                properties:
+                  replicationFactor:
+                    type: integer
+                    description: Replication factor
+                    default: 3
+                    minimum: 1
+                    maximum: 5
+                  tables:
+                    type: array
+                    description: Initial tables to create
+                    items:
+                      type: object
+                      properties:
+                        name:
+                          type: string
+                        columns:
+                          type: array
+                          items:
+                            type: object
+                            properties:
+                              name:
+                                type: string
+                              type:
+                                type: string
+                              primaryKey:
+                                type: boolean
+              
+              ignite:
+                type: object
+                description: Ignite-specific configuration
+                properties:
+                  cacheMode:
+                    type: string
+                    description: Cache mode
+                    default: PARTITIONED
+                    enum:
+                    - PARTITIONED
+                    - REPLICATED
+                  backups:
+                    type: integer
+                    description: Number of backup copies
+                    default: 1
+                    minimum: 0
+                    maximum: 3
+                  persistence:
+                    type: boolean
+                    description: Enable native persistence
+                    default: true
+                  sqlEnabled:
+                    type: boolean
+                    description: Enable SQL queries
+                    default: true
+              
+              pulsar:
+                type: object
+                description: Pulsar-specific configuration
+                properties:
+                  retentionDays:
+                    type: integer
+                    description: Message retention in days
+                    default: 7
+                    minimum: 1
+                    maximum: 90
+                  throughputMB:
+                    type: integer
+                    description: Max throughput in MB/s
+                    default: 100
+                  storageGB:
+                    type: integer
+                    description: Max storage in GB
+                    default: 100
+                  geoReplication:
+                    type: boolean
+                    description: Enable geo-replication
+                    default: false
+              
+              minio:
+                type: object
+                description: MinIO-specific configuration
+                properties:
+                  quotaGB:
+                    type: integer
+                    description: Storage quota in GB
+                    default: 100
+                    minimum: 1
+                    maximum: 10000
+                  versioning:
+                    type: boolean
+                    description: Enable object versioning
+                    default: true
+                  lifecycleDays:
+                    type: integer
+                    description: Object lifecycle in days
+                    default: 0  # 0 means no expiration
+                  encryption:
+                    type: boolean
+                    description: Enable server-side encryption
+                    default: true
+              
+              elasticsearch:
+                type: object
+                description: Elasticsearch-specific configuration
+                properties:
+                  replicas:
+                    type: integer
+                    description: Number of replicas
+                    default: 1
+                    minimum: 0
+                    maximum: 3
+                  shards:
+                    type: integer
+                    description: Number of shards
+                    default: 3
+                    minimum: 1
+                    maximum: 10
+                  heapGB:
+                    type: integer
+                    description: JVM heap size in GB
+                    default: 2
+                  indices:
+                    type: array
+                    description: Initial indices to create
+                    items:
+                      type: string
+              
+              janusgraph:
+                type: object
+                description: JanusGraph-specific configuration
+                properties:
+                  backend:
+                    type: string
+                    description: Storage backend
+                    default: cassandra
+                    enum:
+                    - cassandra
+                    - hbase
+                  indexBackend:
+                    type: string
+                    description: Index backend
+                    default: elasticsearch
+                    enum:
+                    - elasticsearch
+                    - solr
+                  cacheEnabled:
+                    type: boolean
+                    description: Enable query cache
+                    default: true
+              
+              # Resource limits
+              resources:
+                type: object
+                description: Resource limits
+                properties:
+                  cpu:
+                    type: string
+                    description: CPU limit (e.g., "2", "500m")
+                    default: "1"
+                  memory:
+                    type: string
+                    description: Memory limit (e.g., "2Gi", "512Mi")
+                    default: "2Gi"
+                  storage:
+                    type: string
+                    description: Storage limit (e.g., "10Gi", "100Gi")
+                    default: "10Gi"
+              
+              # Maintenance window
+              maintenanceWindow:
+                type: object
+                description: Maintenance window configuration
+                properties:
+                  dayOfWeek:
+                    type: string
+                    description: Day of week (1-7, 1=Monday)
+                    default: "7"  # Sunday
+                  hour:
+                    type: integer
+                    description: Hour of day (0-23 UTC)
+                    default: 2
+                    minimum: 0
+                    maximum: 23
+                  duration:
+                    type: integer
+                    description: Duration in hours
+                    default: 4
+                    minimum: 1
+                    maximum: 8
+          
+          status:
+            type: object
+            properties:
+              ready:
+                type: boolean
+                description: Whether the service is ready
+              
+              phase:
+                type: string
+                description: Current phase
+                enum:
+                - Pending
+                - Creating
+                - Updating
+                - Ready
+                - Failed
+                - Deleting
+              
+              endpoint:
+                type: string
+                description: Service endpoint
+              
+              connectionSecret:
+                type: string
+                description: Name of the connection secret
+              
+              capacity:
+                type: object
+                description: Current capacity usage
+                properties:
+                  used:
+                    type: string
+                  total:
+                    type: string
+                  percentage:
+                    type: integer
+              
+              conditions:
+                type: array
+                description: Service conditions
+                items:
+                  type: object
+                  properties:
+                    type:
+                      type: string
+                    status:
+                      type: string
+                    lastTransitionTime:
+                      type: string
+                      format: date-time
+                    reason:
+                      type: string
+                    message:
+                      type: string
+    
+    # Print columns for kubectl
+    additionalPrinterColumns:
+    - name: Service
+      type: string
+      jsonPath: .spec.serviceType
+    - name: Plan
+      type: string
+      jsonPath: .spec.plan
+    - name: Ready
+      type: string
+      jsonPath: .status.ready
+    - name: Endpoint
+      type: string
+      jsonPath: .status.endpoint
+    - name: Phase
+      type: string
+      jsonPath: .status.phase
+    - name: Age
+      type: date
+      jsonPath: .metadata.creationTimestamp 

@@ -1,0 +1,15 @@
+-e ../../libs/platformq-shared
+-e ../../libs/platformq-events
+-e ../../libs/platformq-trading-common
+fastapi
+uvicorn
+pydantic
+gremlinpython
+asyncio
+networkx
+numpy
+httpx
+hvac
+python-consul
+tenacity
+aiohttp 

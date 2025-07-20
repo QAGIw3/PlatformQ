@@ -71,6 +71,7 @@ delta-spark>=2.4.0  # Delta Lake
 torch-geometric>=2.3.0
 dgl>=1.1.0  # Deep Graph Library
 networkx>=3.1
+gremlinpython  # For ML lineage tracking
 
 # Time Series
 prophet>=1.1.0

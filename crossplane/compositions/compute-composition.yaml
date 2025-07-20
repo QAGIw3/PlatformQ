@@ -1,0 +1,287 @@
+apiVersion: apiextensions.crossplane.io/v1
+kind: Composition
+metadata:
+  name: compute.platformq.io
+  labels:
+    platformq.io/service: compute
+    platformq.io/provider: openstack
+spec:
+  # Define the composite resource this composition implements
+  compositeTypeRef:
+    apiVersion: platformq.io/v1alpha1
+    kind: ComputeInstance
+  
+  # Patch sets for common configurations
+  patchSets:
+  - name: common-labels
+    patches:
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.labels
+      toFieldPath: metadata.labels
+      policy:
+        mergeOptions:
+          appendSlice: true
+          keepMapValues: true
+  
+  - name: tenant-metadata
+    patches:
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.tenantId
+      toFieldPath: metadata.labels[platformq.io/tenant-id]
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.customerId
+      toFieldPath: metadata.labels[platformq.io/customer-id]
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.resellerId
+      toFieldPath: metadata.labels[platformq.io/reseller-id]
+  
+  # Resources to be created
+  resources:
+  # OpenStack Server Instance
+  - name: openstack-server
+    base:
+      apiVersion: compute.openstack.crossplane.io/v1alpha1
+      kind: Server
+      spec:
+        forProvider:
+          region: RegionOne
+          flavorRef: ""  # Will be patched
+          imageRef: ""   # Will be patched
+          networks:
+          - uuid: ""     # Will be patched
+          metadata:
+            managed-by: crossplane
+            service: platformq-compute
+          userData: |
+            #cloud-config
+            package_update: true
+            packages:
+            - prometheus-node-exporter
+            - filebeat
+            write_files:
+            - path: /etc/platformq/metadata.json
+              content: |
+                {
+                  "instance_id": "${INSTANCE_ID}",
+                  "tenant_id": "${TENANT_ID}",
+                  "service": "compute"
+                }
+        providerConfigRef:
+          name: openstack-provider
+    
+    patches:
+    - type: PatchSet
+      patchSetName: common-labels
+    - type: PatchSet
+      patchSetName: tenant-metadata
+    
+    # Map instance type to OpenStack flavor
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.instanceType
+      toFieldPath: spec.forProvider.flavorRef
+      transforms:
+      - type: map
+        map:
+          small: "2"      # 1 vCPU, 2GB RAM
+          medium: "3"     # 2 vCPU, 4GB RAM
+          large: "4"      # 4 vCPU, 8GB RAM
+          xlarge: "5"     # 8 vCPU, 16GB RAM
+          2xlarge: "6"    # 16 vCPU, 32GB RAM
+          gpu.large: "7"  # GPU flavor
+    
+    # Map OS image
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.osImage
+      toFieldPath: spec.forProvider.imageRef
+      transforms:
+      - type: map
+        map:
+          ubuntu-22.04: "ubuntu-22.04-server-cloudimg"
+          ubuntu-20.04: "ubuntu-20.04-server-cloudimg"
+          centos-8: "centos-8-x86_64-genericcloud"
+          debian-11: "debian-11-genericcloud-amd64"
+    
+    # Set server name
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: spec.forProvider.name
+      transforms:
+      - type: string
+        string:
+          fmt: "platformq-%s"
+    
+    # Network configuration
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.networkId
+      toFieldPath: spec.forProvider.networks[0].uuid
+    
+    # User data with metadata injection
+    - type: CombineFromComposite
+      combine:
+        variables:
+        - fromFieldPath: metadata.name
+        - fromFieldPath: spec.tenantId
+        strategy: string
+        string:
+          fmt: |
+            #cloud-config
+            package_update: true
+            packages:
+            - prometheus-node-exporter
+            - filebeat
+            write_files:
+            - path: /etc/platformq/metadata.json
+              content: |
+                {
+                  "instance_id": "%s",
+                  "tenant_id": "%s",
+                  "service": "compute"
+                }
+      toFieldPath: spec.forProvider.userData
+    
+    # Connection details to propagate back
+    connectionDetails:
+    - name: privateIp
+      fromFieldPath: status.atProvider.accessIPv4
+    - name: publicIp
+      fromFieldPath: status.atProvider.accessIPv6
+    - name: serverId
+      fromFieldPath: status.atProvider.id
+  
+  # Security Group for the instance
+  - name: security-group
+    base:
+      apiVersion: network.openstack.crossplane.io/v1alpha1
+      kind: SecurityGroup
+      spec:
+        forProvider:
+          region: RegionOne
+          description: Security group for Platform Q compute instance
+          rules:
+          - direction: ingress
+            ethertype: IPv4
+            protocol: tcp
+            portRangeMin: 22
+            portRangeMax: 22
+            remoteIpPrefix: 0.0.0.0/0
+          - direction: ingress
+            ethertype: IPv4
+            protocol: tcp
+            portRangeMin: 80
+            portRangeMax: 80
+            remoteIpPrefix: 0.0.0.0/0
+          - direction: ingress
+            ethertype: IPv4
+            protocol: tcp
+            portRangeMin: 443
+            portRangeMax: 443
+            remoteIpPrefix: 0.0.0.0/0
+          - direction: egress
+            ethertype: IPv4
+            protocol: -1
+            remoteIpPrefix: 0.0.0.0/0
+        providerConfigRef:
+          name: openstack-provider
+    
+    patches:
+    - type: PatchSet
+      patchSetName: common-labels
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: spec.forProvider.name
+      transforms:
+      - type: string
+        string:
+          fmt: "platformq-sg-%s"
+  
+  # Floating IP (if public access is requested)
+  - name: floating-ip
+    base:
+      apiVersion: network.openstack.crossplane.io/v1alpha1
+      kind: FloatingIP
+      spec:
+        forProvider:
+          region: RegionOne
+          floatingNetworkId: ""  # External network ID
+        providerConfigRef:
+          name: openstack-provider
+    
+    patches:
+    - type: PatchSet
+      patchSetName: common-labels
+    
+    # Only create if public IP is requested
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.publicIpEnabled
+      toFieldPath: metadata.annotations[crossplane.io/paused]
+      transforms:
+      - type: map
+        map:
+          "true": "false"
+          "false": "true"
+    
+    # Associate with server
+    - type: FromCompositeFieldPath
+      fromFieldPath: status.openstack-server.id
+      toFieldPath: spec.forProvider.portId
+  
+  # CloudKitty usage reporting
+  - name: cloudkitty-metric
+    base:
+      apiVersion: metrics.platformq.io/v1alpha1
+      kind: UsageReport
+      spec:
+        forProvider:
+          service: compute
+          metricName: instance
+          unit: instance-hour
+          groupBy:
+          - flavor
+          - tenant_id
+          - project_id
+    
+    patches:
+    - type: PatchSet
+      patchSetName: tenant-metadata
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.instanceType
+      toFieldPath: spec.forProvider.metadata.flavor
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: status.openstack-server.id
+      toFieldPath: spec.forProvider.resourceId
+  
+  # OpenMeter event
+  - name: openmeter-event
+    base:
+      apiVersion: events.platformq.io/v1alpha1
+      kind: CloudEvent
+      spec:
+        forProvider:
+          type: io.platformq.provision
+          source: crossplane-compute
+          data:
+            service_id: openstack-compute
+            event_type: provision
+    
+    patches:
+    - type: PatchSet
+      patchSetName: tenant-metadata
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: metadata.name
+      toFieldPath: spec.forProvider.subject
+      transforms:
+      - type: string
+        string:
+          fmt: "compute/%s"
+    
+    - type: FromCompositeFieldPath
+      fromFieldPath: spec.instanceType
+      toFieldPath: spec.forProvider.data.plan_id
+      transforms:
+      - type: string
+        string:
+          fmt: "compute-%s" 

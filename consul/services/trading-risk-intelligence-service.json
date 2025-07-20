@@ -1,0 +1,37 @@
+{
+  "service": {
+    "name": "trading-risk-intelligence-service",
+    "tags": [
+      "trading",
+      "risk",
+      "graph",
+      "analytics"
+    ],
+    "port": 8000,
+    "meta": {
+      "version": "1.0.0",
+      "protocol": "http",
+      "graph_db": "janusgraph"
+    },
+    "check": {
+      "id": "trading-risk-intelligence-service-health",
+      "name": "HTTP Health Check",
+      "http": "http://localhost:8000/health",
+      "method": "GET",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "connect": {
+      "sidecar_service": {
+        "port": 21055,
+        "proxy": {
+          "local_service_address": "127.0.0.1",
+          "local_service_port": 8000,
+          "config": {
+            "protocol": "http"
+          }
+        }
+      }
+    }
+  }
+} 

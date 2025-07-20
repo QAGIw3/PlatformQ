@@ -30,6 +30,7 @@ from .models import Asset, AssetMetadata, AssetUploadResponse, AssetSearchQuery
 from .storage import StorageManager
 from .processing import AssetProcessor
 from .integrations.event_driven_assets import EventDrivenAssetIntegration, AssetEventType
+from .asset_lineage import DigitalAssetLineageTracker, asset_lineage_router
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -46,6 +47,7 @@ class DigitalAssetService:
         self.storage_manager: Optional[StorageManager] = None
         self.asset_processor: Optional[AssetProcessor] = None
         self.event_integration: Optional[EventDrivenAssetIntegration] = None
+        self.asset_lineage_tracker: Optional[DigitalAssetLineageTracker] = None
         
     @asynccontextmanager
     async def lifespan(self, app: FastAPI):
@@ -104,8 +106,38 @@ class DigitalAssetService:
             )
             await self.event_integration.initialize()
             
+            # Initialize asset lineage tracker if JanusGraph is available
+            janusgraph_config = await self.consul_integration.consul.kv_get("graph/janusgraph-config")
+            if janusgraph_config and janusgraph_config.get('enabled', False):
+                # Create a simple JanusGraph client
+                from gremlin_python.driver.driver_remote_connection import DriverRemoteConnection
+                from gremlin_python.structure.graph import Graph
+                
+                gremlin_url = janusgraph_config.get('gremlin_url', 'ws://janusgraph:8182/gremlin')
+                connection = DriverRemoteConnection(gremlin_url, 'g')
+                graph = Graph()
+                graph_traversal = graph.traversal().withRemote(connection)
+                
+                # Create a wrapper object that has the g property
+                class GraphClient:
+                    def __init__(self, traversal):
+                        self.g = traversal
+                
+                graph_client = GraphClient(graph_traversal)
+                self.asset_lineage_tracker = DigitalAssetLineageTracker(graph_client)
+                await self.asset_lineage_tracker._initialize_schema()
+                self.app.state.asset_lineage_tracker = self.asset_lineage_tracker
+                logger.info("Asset Lineage Tracker initialized with JanusGraph")
+            else:
+                logger.warning("JanusGraph not configured, asset lineage tracking disabled")
+                self.app.state.asset_lineage_tracker = None
+            
             # Set up routes
             self._setup_routes()
+            
+            # Include asset lineage router if available
+            if self.asset_lineage_tracker:
+                self.app.include_router(asset_lineage_router)
             
             # Add security middleware
             security_middleware = SecurityMiddleware(

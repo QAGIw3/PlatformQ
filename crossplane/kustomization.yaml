@@ -1,0 +1,44 @@
+# Kustomization for Platform Q Crossplane resources
+apiVersion: kustomize.config.k8s.io/v1beta1
+kind: Kustomization
+
+resources:
+# Providers
+- providers/openstack-provider.yaml
+
+# XRDs (Composite Resource Definitions)
+- compositions/compute-xrd.yaml
+- compositions/platformservice-xrd.yaml
+
+# Compositions
+- compositions/compute-composition.yaml
+- compositions/platformservice-composition.yaml
+
+# Note: Claims are not included here as they are created by users
+# Example claims are in the claims/ directory for reference
+
+# Common labels applied to all resources
+commonLabels:
+  platform: platformq
+  managed-by: crossplane
+
+# Namespace for CRDs and compositions
+namespace: crossplane-system
+
+# Patches for environment-specific configuration
+patches:
+- target:
+    kind: ProviderConfig
+    name: openstack-provider
+  patch: |-
+    - op: replace
+      path: /spec/credentials/secretRef/name
+      value: openstack-credentials-prod  # Use environment-specific secret
+
+# Config map generator for provider configuration
+configMapGenerator:
+- name: crossplane-platformq-config
+  literals:
+  - defaultRegion=RegionOne
+  - defaultNetwork=platformq-network
+  - defaultSecurityGroup=platformq-default-sg 
