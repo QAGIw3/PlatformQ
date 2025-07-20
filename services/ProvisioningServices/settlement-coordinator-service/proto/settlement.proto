@@ -1,0 +1,178 @@
+syntax = "proto3";
+
+package settlement;
+
+import "google/protobuf/timestamp.proto";
+import "google/protobuf/empty.proto";
+
+// Settlement Coordinator Service
+service SettlementCoordinator {
+  // Process settlement for completed trades
+  rpc ProcessSettlement(SettlementRequest) returns (SettlementResponse);
+  
+  // Calculate physical settlement risk
+  rpc CalculateRisk(RiskRequest) returns (RiskResponse);
+  
+  // Get settlement status
+  rpc GetSettlementStatus(StatusRequest) returns (StatusResponse);
+  
+  // Stream settlement updates
+  rpc StreamSettlements(StreamRequest) returns (stream SettlementUpdate);
+  
+  // Batch process multiple settlements
+  rpc BatchProcessSettlements(BatchSettlementRequest) returns (BatchSettlementResponse);
+  
+  // Get risk metrics for a time period
+  rpc GetRiskMetrics(RiskMetricsRequest) returns (RiskMetricsResponse);
+}
+
+// Common enums
+enum SettlementStatus {
+  PENDING = 0;
+  PROCESSING = 1;
+  COMPLETED = 2;
+  FAILED = 3;
+  RECONCILING = 4;
+  DISPUTED = 5;
+}
+
+enum RiskLevel {
+  LOW = 0;
+  MEDIUM = 1;
+  HIGH = 2;
+  CRITICAL = 3;
+}
+
+enum RiskModel {
+  BASIC_PROBABILISTIC = 0;
+  SA_CCR = 1;
+  MONTE_CARLO = 2;
+}
+
+// Messages
+message SettlementRequest {
+  string trade_id = 1;
+  string buyer_tenant_id = 2;
+  string seller_tenant_id = 3;
+  double amount = 4;
+  string resource_type = 5;
+  double quantity = 6;
+  google.protobuf.Timestamp delivery_time = 7;
+  map<string, string> metadata = 8;
+}
+
+message SettlementResponse {
+  string settlement_id = 1;
+  SettlementStatus status = 2;
+  double settled_amount = 3;
+  RiskAssessment risk_assessment = 4;
+  google.protobuf.Timestamp processed_at = 5;
+}
+
+message RiskRequest {
+  string tenant_id = 1;
+  string resource_type = 2;
+  double capacity_value = 3;
+  double sla_uptime = 4;
+  RiskModel model = 5;
+  map<string, double> parameters = 6;
+}
+
+message RiskResponse {
+  double risk_score = 1;
+  RiskLevel risk_level = 2;
+  double exposure_amount = 3;
+  double recommended_margin = 4;
+  RiskBreakdown breakdown = 5;
+}
+
+message RiskBreakdown {
+  double replacement_cost = 1;
+  double potential_future_exposure = 2;
+  double confidence_interval = 3;
+  repeated ScenarioResult scenarios = 4;
+}
+
+message ScenarioResult {
+  string scenario_name = 1;
+  double probability = 2;
+  double loss_amount = 3;
+}
+
+message StatusRequest {
+  string settlement_id = 1;
+}
+
+message StatusResponse {
+  string settlement_id = 1;
+  SettlementStatus status = 2;
+  repeated SettlementEvent events = 3;
+  google.protobuf.Timestamp last_updated = 4;
+}
+
+message SettlementEvent {
+  google.protobuf.Timestamp timestamp = 1;
+  string event_type = 2;
+  string description = 3;
+  map<string, string> details = 4;
+}
+
+message StreamRequest {
+  repeated string tenant_ids = 1;
+  repeated SettlementStatus statuses = 2;
+  google.protobuf.Timestamp since = 3;
+}
+
+message SettlementUpdate {
+  string settlement_id = 1;
+  SettlementStatus status = 2;
+  google.protobuf.Timestamp timestamp = 3;
+  map<string, string> changes = 4;
+}
+
+message BatchSettlementRequest {
+  repeated SettlementRequest settlements = 1;
+  bool parallel_processing = 2;
+}
+
+message BatchSettlementResponse {
+  repeated SettlementResponse results = 1;
+  int32 successful_count = 2;
+  int32 failed_count = 3;
+}
+
+message RiskMetricsRequest {
+  repeated string tenant_ids = 1;
+  google.protobuf.Timestamp start_time = 2;
+  google.protobuf.Timestamp end_time = 3;
+  bool include_scenarios = 4;
+}
+
+message RiskMetricsResponse {
+  double total_exposure = 1;
+  double average_risk_score = 2;
+  map<string, TenantRiskMetrics> tenant_metrics = 3;
+  repeated RiskTrend trends = 4;
+}
+
+message TenantRiskMetrics {
+  string tenant_id = 1;
+  double total_exposure = 2;
+  double average_risk_score = 3;
+  RiskLevel current_risk_level = 4;
+  int32 settlement_count = 5;
+}
+
+message RiskTrend {
+  google.protobuf.Timestamp timestamp = 1;
+  double risk_score = 2;
+  double exposure_amount = 3;
+}
+
+message RiskAssessment {
+  RiskModel model_used = 1;
+  double risk_score = 2;
+  RiskLevel risk_level = 3;
+  double mitigation_amount = 4;
+  repeated string mitigation_strategies = 5;
+} 

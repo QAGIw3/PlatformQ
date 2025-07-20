@@ -1,0 +1,48 @@
+# Web framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# gRPC
+grpcio==1.59.3
+grpcio-tools==1.59.3
+grpcio-reflection==1.59.3
+
+# Async support
+aiohttp==3.9.1
+httpx==0.25.2
+
+# Database and caching
+cassandra-driver==3.28.0
+pyignite==0.6.1
+aiocache==0.12.2
+
+# Message queue
+pulsar-client==3.3.0
+
+# Monitoring and metrics
+prometheus-client==0.19.0
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-instrumentation-fastapi==0.42b0
+opentelemetry-instrumentation-grpc==0.42b0
+
+# CloudKitty client
+python-cloudkittyclient==4.1.0
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3
+tenacity==8.2.3
+structlog==23.2.0
+
+# Risk calculation libraries
+numpy==1.26.2
+scipy==1.11.4
+pandas==2.1.4
+
+# Testing
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0 

@@ -1,0 +1,117 @@
+version: '3.8'
+
+services:
+  settlement-coordinator:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: settlement-coordinator
+    environment:
+      - ENVIRONMENT=development
+      - HTTP_PORT=8092
+      - GRPC_PORT=50051
+      
+      # Ignite configuration
+      - IGNITE_HOST=ignite
+      - IGNITE_PORT=10800
+      
+      # CloudKitty configuration (mock for dev)
+      - CLOUDKITTY_URL=http://cloudkitty:8889
+      - CLOUDKITTY_AUTH_URL=http://keystone:5000/v3
+      - CLOUDKITTY_USERNAME=admin
+      - CLOUDKITTY_PASSWORD=admin
+      - CLOUDKITTY_PROJECT_ID=admin
+      
+      # OpenMeter configuration (mock for dev)
+      - OPENMETER_URL=http://openmeter:8888
+      - OPENMETER_API_KEY=dev-api-key
+      
+      # Pulsar configuration
+      - PULSAR_URL=pulsar://pulsar:6650
+      
+      # Prometheus configuration
+      - PROMETHEUS_URL=http://prometheus:9090
+      
+      # Consul configuration
+      - CONSUL_HOST=consul
+      - CONSUL_PORT=8500
+      
+      # Vault configuration
+      - VAULT_URL=http://vault:8200
+      - VAULT_TOKEN=dev-token
+      
+    ports:
+      - "8092:8092"  # HTTP API
+      - "50051:50051"  # gRPC
+    
+    depends_on:
+      - ignite
+      - consul
+      - pulsar
+    
+    networks:
+      - platformq_network
+    
+    volumes:
+      - ./app:/app/app
+      - ./proto:/app/proto
+    
+    command: python -m app.main
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8092/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Apache Ignite for caching and state management
+  ignite:
+    image: apacheignite/ignite:2.14.0
+    container_name: settlement-ignite
+    environment:
+      - IGNITE_QUIET=false
+      - OPTION_LIBS=ignite-rest-http,ignite-spring
+    ports:
+      - "10800:10800"  # Thin client
+      - "11211:11211"  # REST API
+      - "47100:47100"  # Discovery
+      - "47500:47500"  # Communication
+      - "49112:49112"  # JMX
+    networks:
+      - platformq_network
+    volumes:
+      - ignite_data:/persistence
+      - ./infra/ignite/settlement-cache-config.xml:/opt/ignite/config/default-config.xml
+    command: /opt/ignite/bin/ignite.sh /opt/ignite/config/default-config.xml
+
+  # Mock CloudKitty for development
+  cloudkitty-mock:
+    image: python:3.11-slim
+    container_name: cloudkitty-mock
+    environment:
+      - PORT=8889
+    ports:
+      - "8889:8889"
+    networks:
+      - platformq_network
+    command: python -m http.server 8889
+
+  # Mock OpenMeter for development
+  openmeter-mock:
+    image: python:3.11-slim
+    container_name: openmeter-mock
+    environment:
+      - PORT=8888
+    ports:
+      - "8888:8888"
+    networks:
+      - platformq_network
+    command: python -m http.server 8888
+
+volumes:
+  ignite_data:
+
+networks:
+  platformq_network:
+    external: true 
