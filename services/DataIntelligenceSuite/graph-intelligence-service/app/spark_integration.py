@@ -86,7 +86,6 @@ class SparkGraphAnalytics:
         job_map = {
             'pagerank': '/opt/spark/jobs/graphx/pagerank.py',
             'community_detection': '/opt/spark/jobs/graphx/community_detection.py',
-            'fraud_detection': '/opt/spark/jobs/graphx/fraud_detection.py',
             'recommendation_engine': '/opt/spark/jobs/graphx/recommendations.py'
         }
         

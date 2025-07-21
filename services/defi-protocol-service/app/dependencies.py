@@ -17,6 +17,7 @@ from .protocols.compute_resource_vault import ComputeResourceVault
 from .protocols.compute_resource_lending import ComputeResourceLending
 from .protocols.compute_resource_derivatives import ComputeResourceDerivatives
 from .protocols.compute_resource_insurance import ComputeResourceInsurance
+from .protocols.compute_resource_amm import AMM
 
 
 # Cached instances
@@ -28,6 +29,7 @@ _compute_vault_protocol: Optional[ComputeResourceVault] = None
 _compute_lending_protocol: Optional[ComputeResourceLending] = None
 _compute_derivatives_protocol: Optional[ComputeResourceDerivatives] = None
 _compute_insurance_protocol: Optional[ComputeResourceInsurance] = None
+_compute_amm: Optional[AMM] = None
 
 
 @lru_cache()
@@ -197,6 +199,25 @@ async def get_compute_insurance_protocol() -> ComputeResourceInsurance:
         await _compute_insurance_protocol.initialize()
     
     return _compute_insurance_protocol
+
+
+async def get_compute_amm() -> AMM:
+    """Get compute resource AMM instance"""
+    global _compute_amm
+    
+    if _compute_amm is None:
+        blockchain = get_blockchain_client()
+        
+        _compute_amm = AMM(
+            blockchain_client=blockchain,
+            factory_address=os.getenv("AMM_FACTORY_ADDRESS"),
+            router_address=os.getenv("AMM_ROUTER_ADDRESS"),
+            price_oracle_address=os.getenv("PRICE_ORACLE_ADDRESS"),
+            weth_address=os.getenv("WETH_ADDRESS"),
+            usdc_address=os.getenv("USDC_ADDRESS")
+        )
+    
+    return _compute_amm
 
 
 def get_current_user() -> Dict[str, Any]:

@@ -22,7 +22,7 @@ import consul
 import hvac
 
 from platformq_shared import ConfigLoader, setup_logging
-from .api import kyc, aml, risk, monitoring, reporting
+from .api import kyc, aml, risk, monitoring, reporting, fraud
 from .core.config import Settings
 from .core.aml_engine import AMLEngine
 from .core.kyc_manager import KYCManager, KYCStatus, KYCLevel
@@ -37,6 +37,8 @@ from .services import (
 )
 from .aml.aml_engine import AMLEngine as AMLEngineImpl
 from .aml.risk_assessment import RiskAssessmentEngine
+from .fraud import FraudDetectionEngine
+from .clients import GraphIntelligenceClient
 
 # Import Vault/Consul integration
 from .vault_consul_integration import VaultConsulIntegration
@@ -55,6 +57,8 @@ transaction_monitor: Optional[TransactionMonitor] = None
 regulatory_reporter: Optional[RegulatoryReporter] = None
 vc_integration: Optional[VCIntegrationService] = None
 aml_vc_integration: Optional[AMLVCIntegrationService] = None
+fraud_engine: Optional[FraudDetectionEngine] = None
+graph_client: Optional[GraphIntelligenceClient] = None
 ignite_client: Optional[IgniteClient] = None
 pulsar_client: Optional[pulsar.Client] = None
 vault_consul: Optional[VaultConsulIntegration] = None
@@ -86,8 +90,8 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager with Vault/Consul integration"""
     global kyc_manager, aml_engine, risk_scorer, identity_verifier
     global sanctions_checker, transaction_monitor, regulatory_reporter
-    global vc_integration, aml_vc_integration, ignite_client, pulsar_client
-    global vault_consul
+    global vc_integration, aml_vc_integration, fraud_engine, graph_client
+    global ignite_client, pulsar_client, vault_consul
     
     try:
         logger.info("Starting Compliance Service...")
@@ -112,6 +116,15 @@ async def lifespan(app: FastAPI):
         
         # Get secure configurations
         compliance_cert = await vault_consul.get_compliance_certificate("gdpr", "service")
+        
+        # Initialize Ignite client
+        ignite_hosts = await vault_consul.get_config("ignite_hosts", ["localhost:10800"])
+        ignite_client = IgniteClient()
+        ignite_client.connect(ignite_hosts)
+        
+        # Initialize Pulsar client
+        pulsar_url = await vault_consul.get_config("pulsar_url", "pulsar://localhost:6650")
+        pulsar_client = pulsar.Client(pulsar_url)
         
         # Initialize services with encrypted audit logging
         kyc_manager = KYCManager(
@@ -158,9 +171,27 @@ async def lifespan(app: FastAPI):
             vault_consul=vault_consul
         )
         
+        # Initialize Graph Intelligence Client
+        graph_client = GraphIntelligenceClient(
+            base_url=await vault_consul.get_service_endpoint('graph-intelligence-service')
+        )
+        
+        # Initialize Fraud Detection Engine
+        fraud_engine = FraudDetectionEngine(
+            ignite_client=ignite_client,
+            graph_client=graph_client,
+            vault_consul=vault_consul
+        )
+        await fraud_engine.initialize()
+        
+        # Store in app state for dependency injection
+        app.state.fraud_engine = fraud_engine
+        app.state.graph_client = graph_client
+        
         # Start background tasks
-        asyncio.create_task(monitor_compliance_policies())
-        asyncio.create_task(rotate_audit_encryption_keys())
+        # These would be implemented based on specific compliance needs
+        # asyncio.create_task(monitor_compliance_policies())
+        # asyncio.create_task(rotate_audit_encryption_keys())
         
         logger.info("Compliance Service started successfully")
         
@@ -173,8 +204,17 @@ async def lifespan(app: FastAPI):
     # Cleanup
     logger.info("Shutting down Compliance Service...")
     
+    if fraud_engine:
+        await fraud_engine.shutdown()
+        
     if transaction_monitor:
         await transaction_monitor.stop()
+        
+    if ignite_client:
+        ignite_client.close()
+        
+    if pulsar_client:
+        pulsar_client.close()
     
     if vault_consul:
         await vault_consul.deregister_service()
@@ -206,6 +246,7 @@ app.include_router(aml.router, prefix="/api/v1/aml", tags=["AML"])
 app.include_router(risk.router, prefix="/api/v1/risk", tags=["Risk"])
 app.include_router(monitoring.router, prefix="/api/v1/monitoring", tags=["Monitoring"])
 app.include_router(reporting.router, prefix="/api/v1/reporting", tags=["Reporting"])
+app.include_router(fraud.router, prefix="/api/v1/fraud", tags=["Fraud"])
 
 
 @app.get("/")
@@ -220,6 +261,7 @@ async def root():
             "risk": "/api/v1/risk",
             "monitoring": "/api/v1/monitoring",
             "reporting": "/api/v1/reporting",
+            "fraud": "/api/v1/fraud",
             "health": "/health"
         }
     }

@@ -9,7 +9,6 @@ The Graph Intelligence Service provides foundational graph database capabilities
 - **Knowledge Graph Management**: Store and query complex relationships between entities
 - **Graph Analytics**: PageRank, community detection, shortest paths, and custom algorithms
 - **Trust Networks**: Calculate and track trust scores between entities
-- **Fraud Detection**: Graph-based anomaly and fraud detection patterns
 - **General Lineage Tracking**: Track data transformations and relationships
 - **Compute Market Intelligence**: Analyze compute market dynamics and relationships
 
@@ -25,8 +24,8 @@ The Graph Intelligence Service provides foundational graph database capabilities
 │  └─────────────┴──────────────┴─────────────┴────────────┘ │
 ├─────────────────────────────────────────────────────────────┤
 │  ┌─────────────┬──────────────┬─────────────┬────────────┐ │
-│  │  PageRank   │   Lineage    │  Community  │   Fraud    │ │
-│  │ & Centrality│   Tracker    │  Detection  │  Detection │ │
+│  │  PageRank   │   Lineage    │  Community  │   Market   │ │
+│  │ & Centrality│   Tracker    │  Detection  │ Analytics  │ │
 │  └─────────────┴──────────────┴─────────────┴────────────┘ │
 └─────────────────────────────────────────────────────────────┘
 ```
@@ -46,11 +45,7 @@ The Graph Intelligence Service provides foundational graph database capabilities
 - **Network Influence**: Analyze influence propagation through the network
 - **Verifiable Trust**: Integration with verifiable credentials
 
-### Fraud Detection
-- **Anomaly Detection**: Identify unusual patterns in graph structures
-- **Pattern Matching**: Detect known fraud patterns
-- **Risk Scoring**: Calculate risk scores based on network behavior
-- **Real-time Alerts**: Generate alerts for suspicious activities
+
 
 ### Compute Market Intelligence
 - **Market Analysis**: Analyze compute market participant relationships
@@ -69,6 +64,8 @@ The Graph Intelligence Service provides foundational graph database capabilities
 - `GET /api/v1/graph/edges/{edge_id}` - Get edge
 - `DELETE /api/v1/graph/edges/{edge_id}` - Delete edge
 - `GET /api/v1/graph/nodes/{node_id}/neighbors` - Get node neighbors
+- `POST /api/v1/graph/query/entities` - Query entity properties
+- `PUT /api/v1/graph/entities/{entity_id}/properties` - Update entity properties
 
 ### Graph Analytics
 - `POST /api/v1/graph/analyze/pagerank` - Run PageRank analysis
@@ -83,9 +80,7 @@ The Graph Intelligence Service provides foundational graph database capabilities
 - `GET /api/v1/graph/trust/network/{entity_id}` - Get trust network
 - `POST /api/v1/graph/trust/calculate` - Calculate trust between entities
 
-### Fraud Detection
-- `POST /api/v1/graph/fraud/check` - Check for fraud patterns
-- `GET /api/v1/graph/fraud/results/{job_id}` - Get fraud check results
+
 
 ### Compute Market Intelligence
 - `GET /api/v1/graph/market/insights` - Get market insights
@@ -253,6 +248,9 @@ The Graph Intelligence Service provides core graph functionality for:
 - **Search Service**: Graph-enhanced search capabilities
 - **Unified ML Platform Service**: ML model lineage tracking
 - **Digital Asset Service**: Asset lineage and provenance
+- **Compliance Service**: Graph-based operations for fraud detection
+
+> **Note**: Fraud detection functionality has been moved to the Compliance Service for better separation of concerns. The Graph Intelligence Service continues to provide the underlying graph infrastructure and algorithms that power fraud detection.
 
 ## Extensibility
 

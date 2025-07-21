@@ -506,10 +506,47 @@ await insurance.stake_for_slashing_insurance(
 
 ## 11. Future Enhancements
 
+## 5. Automated Market Maker (AMM) - Now Available!
+
+### Pool Types
+- **Stable Pools**: Resource/USDC pairs with 0.05% fees
+- **Volatile Pools**: Cross-resource pairs with 0.3% fees
+- **Concentrated Pools**: V3-style capital efficiency
+
+### Example Usage
+```python
+# Create liquidity pool
+pool = await amm.create_pool(
+    token0="0xQuantumToken",
+    token1="0xUSDC",
+    pool_type="stable",
+    initial_price=100
+)
+
+# Add liquidity
+liquidity = await amm.add_liquidity(
+    pool_address=pool['pool_address'],
+    amount0=10,      # 10 Quantum
+    amount1=1000     # 1000 USDC
+)
+
+# Swap tokens
+swap = await amm.swap(
+    token_in="0xQuantumToken",
+    token_out="0xAIToken",
+    amount=5,
+    max_slippage=0.01
+)
+```
+
+For detailed AMM documentation, see [Compute AMM Integration Guide](../compute-amm-integration.md)
+
+## Future Enhancements
+
 1. **Cross-Chain Bridges**: Access compute resources on other chains
 2. **Synthetic Resources**: Create synthetic compute assets
-3. **Automated Market Makers**: Dedicated AMMs for compute resources
-4. **Perpetual Futures**: 24/7 tradeable compute futures with funding rates
-5. **DAO Governance**: Decentralized parameter adjustment
-6. **Zero-Knowledge Proofs**: Private compute resource verification
-7. **Layer 2 Scaling**: Rollup solutions for high-frequency trading 
+3. **Perpetual Futures**: 24/7 tradeable compute futures with funding rates
+4. **DAO Governance**: Decentralized parameter adjustment
+5. **Zero-Knowledge Proofs**: Private compute resource verification
+6. **Layer 2 Scaling**: Rollup solutions for high-frequency trading
+7. **Yield Aggregators**: Auto-compound LP and vault rewards 

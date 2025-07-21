@@ -390,6 +390,20 @@ class VaultConsulIntegration:
             return token_data['token']
         
         return None
+        
+    async def get_service_endpoint(self, service_name: str) -> str:
+        """Get service endpoint from Consul"""
+        try:
+            # Query Consul for service
+            services = await self.consul_client.catalog.service(service_name)
+            if services and len(services) > 0:
+                service = services[0]
+                return f"http://{service['ServiceAddress']}:{service['ServicePort']}"
+        except Exception as e:
+            logger.error(f"Error getting service endpoint for {service_name}: {e}")
+            
+        # Return default
+        return f"http://{service_name}:8000"
 
     async def sign_trust_score(self, trust_data: Dict[str, Any]) -> str:
         """Sign trust score data"""

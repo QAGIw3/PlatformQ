@@ -14,6 +14,10 @@ from ..config import settings
 quantum_oracle_instance = None
 ai_oracle_instance = None
 network_oracle_instance = None
+quality_aggregator_instance = None
+availability_monitor_instance = None
+price_aggregator_instance = None
+performance_oracle_instance = None
 
 
 def get_quantum_oracle() -> QuantumOracle:

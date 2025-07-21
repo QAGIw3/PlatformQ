@@ -50,11 +50,8 @@ class GraphAnalysisResponse(BaseModel):
     parameters: Dict[str, Any]
 
 
-class FraudCheckRequest(BaseModel):
-    """Request model for fraud detection check"""
-    entity_ids: List[str] = Field(..., description="List of entity IDs to check")
-    check_depth: int = Field(2, description="Graph traversal depth for analysis")
-    include_network_analysis: bool = Field(True, description="Include network-based fraud indicators")
+# Fraud detection has been moved to compliance-service
+# The following models are kept for backward compatibility but deprecated
 
 
 class RecommendationRequest(BaseModel):
@@ -330,97 +327,8 @@ async def get_trust_network(
         raise HTTPException(status_code=500, detail=str(e))
 
 
-@router.post("/fraud/check")
-async def check_fraud(
-    request: FraudCheckRequest,
-    context: dict = Depends(get_current_tenant_and_user),
-    background_tasks: BackgroundTasks = BackgroundTasks()
-):
-    """
-    Check entities for fraud indicators using graph analysis
-    """
-    tenant_id = context["tenant_id"]
-    
-    try:
-        # Submit fraud detection Spark job
-        spark_params = {
-            "entity_ids": request.entity_ids,
-            "check_depth": request.check_depth,
-            "include_network_analysis": request.include_network_analysis,
-            "fraud_threshold": 0.7
-        }
-        
-        # Run fraud detection
-        job_id = await spark_analytics.submit_job(
-            "fraud_detection",
-            tenant_id,
-            spark_params
-        )
-        
-        # For immediate checks, also query current graph state
-        immediate_results = []
-        
-        from gremlin_python.driver import client, serializer
-        gremlin_client = client.Client(
-            'ws://janusgraph:8182/gremlin',
-            'g',
-            message_serializer=serializer.GraphSONSerializersV3d0()
-        )
-        
-        for entity_id in request.entity_ids[:5]:  # Quick check for first 5
-            query = f"""
-                g.V().has('entity_id', '{entity_id}')
-                .project('id', 'fraud_score', 'is_suspicious', 'trust_score')
-                .by('entity_id')
-                .by(coalesce(values('fraud_score'), constant(0.0)))
-                .by(coalesce(values('is_suspicious'), constant(false)))
-                .by(coalesce(values('trust_score'), constant(0.5)))
-            """
-            
-            result = gremlin_client.submit(query).all().result()
-            if result:
-                immediate_results.append(result[0])
-        
-        gremlin_client.close()
-        
-        return {
-            "job_id": job_id,
-            "status": "processing",
-            "immediate_results": immediate_results,
-            "total_entities": len(request.entity_ids),
-            "message": "Full fraud analysis in progress"
-        }
-        
-    except Exception as e:
-        logger.error(f"Error checking fraud: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/fraud/results/{job_id}")
-async def get_fraud_results(
-    job_id: str,
-    context: dict = Depends(get_current_tenant_and_user)
-):
-    """
-    Get results of fraud detection job
-    """
-    try:
-        results = await spark_analytics.get_job_results(job_id)
-        
-        if results:
-            return {
-                "job_id": job_id,
-                "status": results['status'],
-                "fraud_analysis": results.get('pattern_analysis', {}),
-                "suspicious_entities": results.get('suspicious_entities', []),
-                "execution_time": results.get('execution_time')
-            }
-        else:
-            return {"message": "Job still processing or not found"}
-            
-    except Exception as e:
-        logger.error(f"Error getting fraud results: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+# Fraud detection endpoints have been moved to compliance-service
+# See compliance-service /api/v1/fraud endpoints for fraud detection functionality
 
 
 @router.post("/community/detect")
@@ -605,7 +513,6 @@ async def run_custom_algorithm(
         algorithm_map = {
             "pagerank": "pagerank",
             "community_detection": "community_detection",
-            "fraud_detection": "fraud_detection",
             "shortest_path": "shortest_path",
             "centrality": "centrality_measures",
             "similarity": "node_similarity"

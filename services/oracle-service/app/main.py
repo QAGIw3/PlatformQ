@@ -10,8 +10,12 @@ import asyncio
 import consul
 
 from .config import settings
-from .api import measurements, quality
-from .oracles import QuantumOracle, AIOracle, NetworkOracle
+from .api import measurements, quality, defi_oracles
+from .oracles import (
+    QuantumOracle, AIOracle, NetworkOracle,
+    QualityAggregator, AvailabilityMonitor, 
+    PriceAggregator, PerformanceOracle
+)
 from .utils.blockchain import BlockchainOracle
 from . import core
 from .models.measurements import OracleHealthResponse
@@ -57,6 +61,62 @@ async def lifespan(app: FastAPI):
         blockchain_oracle = BlockchainOracle()
         await blockchain_oracle.initialize()
         
+        # Initialize DeFi oracles
+        # Quality Aggregator
+        oracles["quality_aggregator"] = QualityAggregator(
+            blockchain_client=blockchain_oracle.client,
+            quantum_oracle=oracles["quantum"],
+            ai_oracle=oracles["ai"],
+            network_oracle=oracles["network"],
+            oracle_contract_address=settings.QUALITY_ORACLE_ADDRESS,
+            signing_key=settings.ORACLE_SIGNING_KEY
+        )
+        
+        # Availability Monitor
+        oracles["availability_monitor"] = AvailabilityMonitor(
+            blockchain_client=blockchain_oracle.client,
+            monitor_contract_address=settings.AVAILABILITY_MONITOR_ADDRESS,
+            signing_key=settings.ORACLE_SIGNING_KEY,
+            check_interval=settings.AVAILABILITY_CHECK_INTERVAL
+        )
+        await oracles["availability_monitor"].initialize()
+        
+        # Price Aggregator
+        market_addresses = {
+            'quantum': settings.QUANTUM_MARKET_ADDRESS,
+            'ai': settings.AI_MARKET_ADDRESS,
+            'network': settings.NETWORK_MARKET_ADDRESS
+        }
+        amm_addresses = {
+            'quantum': settings.QUANTUM_AMM_ADDRESS,
+            'ai': settings.AI_AMM_ADDRESS,
+            'network': settings.NETWORK_AMM_ADDRESS
+        }
+        oracles["price_aggregator"] = PriceAggregator(
+            blockchain_client=blockchain_oracle.client,
+            oracle_contract_address=settings.PRICE_ORACLE_ADDRESS,
+            signing_key=settings.ORACLE_SIGNING_KEY,
+            market_addresses=market_addresses,
+            amm_addresses=amm_addresses
+        )
+        await oracles["price_aggregator"].initialize()
+        
+        # Performance Oracle
+        oracles["performance_oracle"] = PerformanceOracle(
+            blockchain_client=blockchain_oracle.client,
+            oracle_contract_address=settings.PERFORMANCE_ORACLE_ADDRESS,
+            signing_key=settings.ORACLE_SIGNING_KEY,
+            quantum_oracle=oracles["quantum"],
+            ai_oracle=oracles["ai"],
+            network_oracle=oracles["network"]
+        )
+        
+        # Set DeFi oracle instances for dependency injection
+        core.dependencies.quality_aggregator_instance = oracles["quality_aggregator"]
+        core.dependencies.availability_monitor_instance = oracles["availability_monitor"]
+        core.dependencies.price_aggregator_instance = oracles["price_aggregator"]
+        core.dependencies.performance_oracle_instance = oracles["performance_oracle"]
+        
         # Start background measurement task
         global measurement_task
         measurement_task = asyncio.create_task(periodic_measurements())
@@ -88,6 +148,9 @@ async def lifespan(app: FastAPI):
         for oracle in oracles.values():
             if hasattr(oracle, 'cleanup'):
                 await oracle.cleanup()
+            # Special cleanup for oracles with shutdown methods
+            if hasattr(oracle, 'shutdown'):
+                await oracle.shutdown()
         
         # Deregister from Consul
         await deregister_from_consul()
@@ -120,6 +183,7 @@ if settings.PROMETHEUS_ENABLED:
 # Include routers
 app.include_router(measurements.router, prefix=settings.API_PREFIX)
 app.include_router(quality.router, prefix=settings.API_PREFIX)
+app.include_router(defi_oracles.router)
 
 
 # Root endpoint
@@ -131,7 +195,12 @@ async def root():
         "version": settings.VERSION,
         "status": "healthy",
         "api_docs": "/docs",
-        "oracles": ["quantum", "ai", "network"]
+        "oracles": [
+            "quantum", "ai", "network",
+            "quality_aggregator", "availability_monitor",
+            "price_aggregator", "performance_oracle"
+        ],
+        "defi_oracles_api": "/api/v1/defi-oracles"
     }
 
 

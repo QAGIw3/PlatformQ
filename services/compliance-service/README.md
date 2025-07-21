@@ -13,6 +13,7 @@ The Compliance Service provides comprehensive KYC (Know Your Customer), AML (Ant
 - **Risk Scoring**: Dynamic risk assessment based on multiple factors
 - **Regulatory Reporting**: Automated SAR, CTR, and other regulatory report generation
 - **Identity Verification**: Integration with multiple identity verification providers (Jumio, Onfido)
+- **Fraud Detection**: Graph-based fraud detection leveraging relationship analysis and pattern matching
 
 ### Privacy-Preserving Features (NEW)
 - **Verifiable Credentials Integration**: Issue W3C-compliant credentials for compliance status
@@ -35,6 +36,7 @@ The Compliance Service provides comprehensive KYC (Know Your Customer), AML (Ant
 - **Blockchain Gateway Service**: For on-chain compliance checks
 - **Auth Service**: For user authentication and authorization
 - **Notification Service**: For compliance alerts and notifications
+- **Graph Intelligence Service**: For graph-based fraud detection and network analysis
 
 ## API Endpoints
 
@@ -91,6 +93,14 @@ GET    /api/v1/reporting/jurisdictions    - Get supported jurisdictions
 GET    /api/v1/reporting/download/{id}    - Download report
 POST   /api/v1/reporting/schedule         - Schedule recurring report
 GET    /api/v1/reporting/statistics       - Get statistics
+```
+
+### Fraud Detection Endpoints
+```
+POST   /api/v1/fraud/check                - Check entities for fraud indicators
+GET    /api/v1/fraud/results/{job_id}     - Get fraud detection results
+GET    /api/v1/fraud/patterns             - Get available fraud patterns
+GET    /api/v1/fraud/statistics           - Get fraud detection statistics
 ```
 
 ## Configuration
@@ -165,6 +175,45 @@ proof = await vc_integration.generate_kyc_proof(
 result = await vc_integration.verify_kyc_proof(proof_id, required_attributes, min_level)
 ```
 
+## Fraud Detection Integration
+
+### Graph-Based Fraud Detection
+The service integrates with the Graph Intelligence Service to provide sophisticated fraud detection:
+
+- **Pattern Matching**: Identifies known fraud patterns including:
+  - Money laundering layering patterns
+  - Transaction structuring to avoid reporting
+  - Circular money flows
+  - Rapid fund movements
+  - High-risk jurisdiction involvement
+
+- **Network Analysis**: Analyzes entity relationships to detect:
+  - Suspicious relationship networks
+  - Abnormal connection patterns
+  - Risk propagation through networks
+
+- **Real-time Scoring**: Provides immediate fraud risk assessment with:
+  - Fraud risk scores (0-1 scale)
+  - Suspicious entity flagging
+  - Pattern match details
+  - Recommended actions
+
+### Example Fraud Check
+```python
+# Check entities for fraud
+response = await client.post(
+    "/api/v1/fraud/check",
+    json={
+        "entity_ids": ["user123", "merchant456"],
+        "check_depth": 3,
+        "include_network_analysis": True
+    }
+)
+
+# Get detailed results
+results = await client.get(f"/api/v1/fraud/results/{response['job_id']}")
+```
+
 ## Apache Ignite Integration
 
 ### Distributed Caching
@@ -173,6 +222,8 @@ The service uses Apache Ignite for high-performance distributed caching:
 - Risk assessment results
 - Pattern detection data
 - User compliance status
+- Fraud detection results
+- Fraud pattern cache
 
 ### Compute Grid
 Ignite's compute grid enables:
@@ -190,7 +241,10 @@ caches = {
     "aml_alerts": "Monitoring alerts",
     "aml_patterns": "Pattern detection data",
     "zkp_tasks": "ZKP generation tasks",
-    "zkp_results": "Generated proof results"
+    "zkp_results": "Generated proof results",
+    "fraud_detection_results": "Fraud check results cache",
+    "fraud_patterns": "Fraud pattern definitions",
+    "fraud_detection_jobs": "Fraud detection job tracking"
 }
 ```
 

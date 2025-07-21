@@ -47,6 +47,32 @@ class Settings(BaseSettings):
     BLOCKCHAIN_GAS_LIMIT: int = Field(default=500000, env="BLOCKCHAIN_GAS_LIMIT")
     CHAIN_ID: int = Field(default=1, env="CHAIN_ID")
     
+    # DeFi Oracle Configuration
+    ORACLE_PRIVATE_KEY: Optional[str] = Field(default=None, env="ORACLE_PRIVATE_KEY")
+    ORACLE_SIGNING_KEY: str = Field(default="", env="ORACLE_SIGNING_KEY")
+    
+    # Oracle Contract Addresses
+    QUANTUM_ORACLE_ADDRESS: str = Field(default="", env="QUANTUM_ORACLE_ADDRESS")
+    AI_ORACLE_ADDRESS: str = Field(default="", env="AI_ORACLE_ADDRESS")
+    NETWORK_ORACLE_ADDRESS: str = Field(default="", env="NETWORK_ORACLE_ADDRESS")
+    QUALITY_ORACLE_ADDRESS: str = Field(default="", env="QUALITY_ORACLE_ADDRESS")
+    AVAILABILITY_MONITOR_ADDRESS: str = Field(default="", env="AVAILABILITY_MONITOR_ADDRESS")
+    PRICE_ORACLE_ADDRESS: str = Field(default="", env="PRICE_ORACLE_ADDRESS")
+    PERFORMANCE_ORACLE_ADDRESS: str = Field(default="", env="PERFORMANCE_ORACLE_ADDRESS")
+    
+    # Market Addresses
+    QUANTUM_MARKET_ADDRESS: str = Field(default="", env="QUANTUM_MARKET_ADDRESS")
+    AI_MARKET_ADDRESS: str = Field(default="", env="AI_MARKET_ADDRESS")
+    NETWORK_MARKET_ADDRESS: str = Field(default="", env="NETWORK_MARKET_ADDRESS")
+    
+    # AMM Addresses
+    QUANTUM_AMM_ADDRESS: str = Field(default="", env="QUANTUM_AMM_ADDRESS")
+    AI_AMM_ADDRESS: str = Field(default="", env="AI_AMM_ADDRESS")
+    NETWORK_AMM_ADDRESS: str = Field(default="", env="NETWORK_AMM_ADDRESS")
+    
+    # Availability Monitor Configuration
+    AVAILABILITY_CHECK_INTERVAL: int = Field(default=60, env="AVAILABILITY_CHECK_INTERVAL")  # seconds
+    
     # Data Aggregation
     AGGREGATION_METHOD: str = Field(default="median", env="AGGREGATION_METHOD")  # median, mean, weighted
     OUTLIER_DETECTION_ENABLED: bool = Field(default=True, env="OUTLIER_DETECTION_ENABLED")
@@ -97,6 +123,7 @@ class Settings(BaseSettings):
     API_KEY_HEADER: str = Field(default="X-Oracle-API-Key", env="API_KEY_HEADER")
     REQUIRE_API_KEY: bool = Field(default=True, env="REQUIRE_API_KEY")
     TRUSTED_ORACLES: list = Field(default=[], env="TRUSTED_ORACLES")
+    VALID_API_KEYS: list = Field(default=[], env="VALID_API_KEYS")
     
     # Resource Limits
     MAX_MEASUREMENTS_PER_REQUEST: int = Field(default=1000, env="MAX_MEASUREMENTS_PER_REQUEST")

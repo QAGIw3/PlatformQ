@@ -46,6 +46,17 @@ A comprehensive decentralized finance (DeFi) service providing lending, borrowin
   - Protocol hacks (governance approval required)
   - Impermanent loss
 
+### 🔄 Automated Market Maker (AMM) for Compute Resources
+- **Multiple Pool Types**:
+  - **Stable Pools**: Compute resource/USDC pairs (0.05% fee)
+  - **Volatile Pools**: Cross-resource pairs (0.3% fee)
+  - **Concentrated Pools**: V3-style concentrated liquidity
+- **Smart Routing**: Finds optimal swap paths through multiple pools
+- **Price Impact Protection**: Maximum 10% price impact allowed
+- **Integration with Price Oracle**: Real-time price feeds from oracle infrastructure
+- **LP Incentives**: Trading fees distributed to liquidity providers
+- **Impermanent Loss Tracking**: Real-time IL calculation for positions
+
 ### 🔐 Security Features
 - Vault integration for secure key management
 - Multi-signature treasury wallets
@@ -78,6 +89,18 @@ A comprehensive decentralized finance (DeFi) service providing lending, borrowin
 - `GET /api/v1/insurance/pools/stats` - Get pool statistics
 - `GET /api/v1/insurance/pools/apy` - Get current APYs
 - `GET /api/v1/insurance/positions` - Get user positions
+
+### Compute Resource AMM
+- `POST /api/v1/compute-amm/pools/create` - Create new liquidity pool
+- `POST /api/v1/compute-amm/liquidity/add` - Add liquidity to pool
+- `POST /api/v1/compute-amm/liquidity/remove` - Remove liquidity from pool
+- `POST /api/v1/compute-amm/swap` - Execute token swap
+- `POST /api/v1/compute-amm/swap/quote` - Get swap quote
+- `GET /api/v1/compute-amm/pools` - List all pools
+- `GET /api/v1/compute-amm/pools/{pool_address}` - Get pool details
+- `GET /api/v1/compute-amm/liquidity/positions/{user_address}` - Get user LP positions
+- `GET /api/v1/compute-amm/analytics/volume` - Trading volume analytics
+- `GET /api/v1/compute-amm/analytics/liquidity` - Liquidity analytics
 - `GET /api/v1/insurance/coverage/available` - Check available coverage
 
 ### Yield Farming

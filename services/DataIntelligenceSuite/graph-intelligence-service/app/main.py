@@ -15,6 +15,7 @@ from typing import Dict, List, Any, Optional
 from datetime import datetime, timedelta
 import consul
 import json
+import os
 
 from platformq_shared import (
     create_base_app,
@@ -29,6 +30,7 @@ from .api import endpoints
 from .api.endpoints import graph_api
 from .api import compute_market_endpoints
 from .api import trading_risk_api
+from .api import entity_query
 from .api.deps import (
     get_db_session, 
     get_api_key_crud, 
@@ -103,15 +105,18 @@ async def lifespan(app: FastAPI):
     graph_db = JanusGraph()
     graph_db.connect()
     
+    # Get Gremlin connection string
+    gremlin_url = await vault_consul.get_gremlin_connection_string()
+    
     # Initialize repositories
     node_repo = GraphNodeRepository(
-        gremlin_url=vault_consul.janusgraph_config.get('gremlin_url', 'ws://janusgraph:8182/gremlin')
+        gremlin_url=gremlin_url
     )
     edge_repo = GraphEdgeRepository(
-        gremlin_url=vault_consul.janusgraph_config.get('gremlin_url', 'ws://janusgraph:8182/gremlin')
+        gremlin_url=gremlin_url
     )
     analytics_repo = GraphAnalyticsRepository(
-        gremlin_url=vault_consul.janusgraph_config.get('gremlin_url', 'ws://janusgraph:8182/gremlin')
+        gremlin_url=gremlin_url
     )
     
     # Initialize services
@@ -130,10 +135,13 @@ async def lifespan(app: FastAPI):
     # Initialize service clients
     service_clients = ServiceClients()
     
+    # Get Pulsar URL
+    pulsar_url = os.environ.get('PULSAR_URL', 'pulsar://pulsar:6650')
+    
     # Initialize event processors
     graph_update_processor = GraphUpdateProcessor(
         service_name="graph-intelligence-service",
-        pulsar_url=vault_consul.pulsar_config.get('url', 'pulsar://pulsar:6650'),
+        pulsar_url=pulsar_url,
         node_repo=node_repo,
         edge_repo=edge_repo,
         analytics_repo=analytics_repo,
@@ -142,7 +150,7 @@ async def lifespan(app: FastAPI):
     
     lineage_processor = LineageProcessor(
         service_name="graph-intelligence-service",
-        pulsar_url=vault_consul.pulsar_config.get('url', 'pulsar://pulsar:6650'),
+        pulsar_url=pulsar_url,
         node_repo=node_repo,
         edge_repo=edge_repo,
         lineage_tracker=lineage_tracker
@@ -150,7 +158,7 @@ async def lifespan(app: FastAPI):
     
     trust_processor = TrustNetworkProcessor(
         service_name="graph-intelligence-service",
-        pulsar_url=vault_consul.pulsar_config.get('url', 'pulsar://pulsar:6650'),
+        pulsar_url=pulsar_url,
         edge_repo=edge_repo,
         trust_manager=trust_network_manager,
         service_clients=service_clients
@@ -158,7 +166,7 @@ async def lifespan(app: FastAPI):
     
     query_processor = GraphQueryProcessor(
         service_name="graph-intelligence-service",
-        pulsar_url=vault_consul.pulsar_config.get('url', 'pulsar://pulsar:6650'),
+        pulsar_url=pulsar_url,
         analytics_repo=analytics_repo,
         graph_processor=graph_processor
     )
@@ -242,6 +250,7 @@ add_error_handlers(app)
 app.include_router(endpoints.router, prefix="/api/v1/graph")
 app.include_router(graph_api.router, prefix="/api/v1/graph")
 app.include_router(compute_market_endpoints.router, prefix="/api/v1/graph")
+app.include_router(entity_query.router, prefix="/api/v1/graph")
 
 
 # Health check endpoints remain the same...
@@ -260,7 +269,6 @@ def read_root():
             "graph-analytics",
             "community-detection",
             "trust-networks",
-            "fraud-detection",
             "recommendations",
             "lineage-tracking",
             "compute-market-intelligence"

@@ -20,12 +20,10 @@ from cryptography.hazmat.primitives import hashes, serialization
 from cryptography.hazmat.primitives.asymmetric import rsa, padding
 from cryptography.hazmat.backends import default_backend
 
-from platformq_shared.vault_consul_base import VaultConsulBase
-
 logger = logging.getLogger(__name__)
 
 
-class VaultConsulIntegration(VaultConsulBase):
+class VaultConsulIntegration:
     """
     Compliance service specific Vault and Consul integration.
     
@@ -41,12 +39,17 @@ class VaultConsulIntegration(VaultConsulBase):
     """
     
     def __init__(self, config: Dict[str, Any]):
-        super().__init__(
-            vault_addr=config["vault_addr"],
-            vault_token=config.get("vault_token"),
-            consul_addr=config["consul_addr"],
-            service_name="compliance-service"
-        )
+        self.vault_addr = config["vault_addr"]
+        self.vault_token = config.get("vault_token")
+        self.consul_addr = config["consul_addr"]
+        self.service_name = "compliance-service"
+        
+        # Initialize clients
+        self.vault_client = None
+        self.consul_client = None
+        
+        # Service details
+        self.node_id = None
         
         self.compliance_config = {}
         self._certificate_cache = {}
@@ -55,7 +58,23 @@ class VaultConsulIntegration(VaultConsulBase):
         
     async def initialize(self):
         """Initialize compliance-specific Vault and Consul features"""
-        await super().initialize()
+        # Initialize base clients
+        self.vault_client = hvac.Client(
+            url=self.vault_addr,
+            token=self.vault_token
+        )
+        
+        if not self.vault_client.is_authenticated():
+            raise Exception("Vault authentication failed")
+            
+        self.consul_client = consul.aio.ConsulAgent(
+            host=self.consul_addr.split(':')[0] if ':' in self.consul_addr else self.consul_addr,
+            port=int(self.consul_addr.split(':')[1]) if ':' in self.consul_addr else 8500
+        )
+        
+        # Set node ID
+        import socket
+        self.node_id = socket.gethostname()
         
         logger.info("Initializing compliance Vault/Consul integration")
         
@@ -75,6 +94,77 @@ class VaultConsulIntegration(VaultConsulBase):
         
     async def _setup_compliance_secrets(self):
         """Setup compliance-specific secret engines"""
+        # Implementation would enable specific secret engines
+        pass
+        
+    async def _load_compliance_config(self):
+        """Load compliance configuration from Vault"""
+        try:
+            config = await self.get_config("compliance/config")
+            if config:
+                self.compliance_config = config
+        except Exception as e:
+            logger.error(f"Error loading compliance config: {e}")
+            
+    async def _setup_compliance_certificates(self):
+        """Setup compliance certificates"""
+        # Implementation would setup certificates
+        pass
+        
+    async def _setup_policy_watchers(self):
+        """Setup policy watchers for dynamic updates"""
+        # Implementation would setup watchers
+        pass
+        
+    async def get_compliance_certificate(self, framework: str, cert_type: str) -> Dict[str, Any]:
+        """Get compliance certificate for a framework"""
+        cert_key = f"{framework}_{cert_type}"
+        if cert_key in self._certificate_cache:
+            return self._certificate_cache[cert_key]
+            
+        # Mock certificate for now
+        cert = {
+            "framework": framework,
+            "type": cert_type,
+            "valid": True,
+            "issued_at": datetime.utcnow().isoformat()
+        }
+        self._certificate_cache[cert_key] = cert
+        return cert
+        
+    async def get_service_endpoint(self, service_name: str) -> str:
+        """Get service endpoint from Consul"""
+        try:
+            # Query Consul for service
+            services = await self.consul_client.catalog.service(service_name)
+            if services and len(services) > 0:
+                service = services[0]
+                return f"http://{service['ServiceAddress']}:{service['ServicePort']}"
+        except Exception as e:
+            logger.error(f"Error getting service endpoint for {service_name}: {e}")
+            
+        # Return default
+        return f"http://{service_name}:8000"
+        
+    async def check_vault_health(self) -> Dict[str, Any]:
+        """Check Vault health"""
+        try:
+            if self.vault_client.is_authenticated():
+                return {"status": "healthy", "authenticated": True}
+        except:
+            pass
+        return {"status": "unhealthy", "authenticated": False}
+        
+    async def check_consul_health(self) -> Dict[str, Any]:
+        """Check Consul health"""
+        try:
+            # Check Consul agent
+            agent_info = await self.consul_client.agent.self()
+            if agent_info:
+                return {"status": "healthy", "agent": True}
+        except:
+            pass
+        return {"status": "unhealthy", "agent": False}
         try:
             # Enable Transit engine for encryption
             try:
@@ -767,10 +857,51 @@ class VaultConsulIntegration(VaultConsulBase):
                     
         return False
         
+    async def get_config(self, key: str, default: Any = None) -> Any:
+        """Get configuration from Consul"""
+        try:
+            index, data = await self.consul_client.kv.get(f"config/{self.service_name}/{key}")
+            if data and data["Value"]:
+                value = data["Value"]
+                try:
+                    return json.loads(value.decode('utf-8'))
+                except:
+                    return value.decode('utf-8')
+        except Exception as e:
+            logger.debug(f"Config key {key} not found: {e}")
+        return default
+        
+    async def register_service(self, tags: List[str] = None, meta: Dict[str, str] = None):
+        """Register service with Consul"""
+        import socket
+        service_id = f"{self.service_name}-{self.node_id}"
+        
+        # Register service
+        await self.consul_client.agent.service.register(
+            name=self.service_name,
+            service_id=service_id,
+            address=socket.gethostbyname(socket.gethostname()),
+            port=8001,  # Default compliance service port
+            tags=tags or [],
+            meta=meta or {},
+            check={
+                "http": f"http://localhost:8001/health",
+                "interval": "10s",
+                "timeout": "5s"
+            }
+        )
+        logger.info(f"Registered service {service_id} with Consul")
+        
+    async def deregister_service(self):
+        """Deregister service from Consul"""
+        service_id = f"{self.service_name}-{self.node_id}"
+        await self.consul_client.agent.service.deregister(service_id)
+        logger.info(f"Deregistered service {service_id} from Consul")
+        
     async def shutdown(self):
         """Cleanup resources"""
         # Cancel policy watchers
         for task in self._policy_watchers.values():
             task.cancel()
             
-        await super().shutdown() 
+        # No parent class to call 

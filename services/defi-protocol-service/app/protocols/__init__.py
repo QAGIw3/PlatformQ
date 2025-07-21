@@ -16,10 +16,11 @@ from .compute_resource_vault import ComputeResourceVault, ComputeResourceType, C
 from .compute_resource_lending import ComputeResourceLending, ComputeCollateralType, ComputeLoanType
 from .compute_resource_derivatives import ComputeResourceDerivatives, ComputeDerivativeType, ComputeOptionType
 from .compute_resource_insurance import ComputeResourceInsurance, InsuranceCoverageType, ClaimStatus, RiskLevel
+from .compute_resource_amm import AMM, PoolType, SwapDirection
 
 __all__ = [
     "AuctionProtocol",
-    "LendingProtocol", 
+    "LendingProtocol",
     "YieldFarmingProtocol",
     "LiquidityProtocol",
     "InsuranceProtocol",
@@ -39,5 +40,8 @@ __all__ = [
     "ComputeResourceInsurance",
     "InsuranceCoverageType",
     "ClaimStatus",
-    "RiskLevel"
+    "RiskLevel",
+    "AMM",
+    "PoolType",
+    "SwapDirection"
 ]
