@@ -118,6 +118,98 @@ async function main() {
   await resourceToken.grantRole(OPERATOR_ROLE, cpuVault.address);
   console.log("Vault roles assigned");
 
+  // Deploy Derivatives Contracts
+  console.log("\nDeploying Derivatives contracts...");
+  
+  // Use the deployed stablecoin address or deploy a mock one
+  const settlementToken = "0x0000000000000000000000000000000000000000"; // Update with real USDC
+  
+  // Deploy ResourceOptions
+  const ResourceOptions = await hre.ethers.getContractFactory("ResourceOptions");
+  const resourceOptions = await ResourceOptions.deploy(
+    resourceToken.address,
+    resourceAMM.address,
+    settlementToken
+  );
+  await resourceOptions.deployed();
+  console.log("ResourceOptions deployed to:", resourceOptions.address);
+
+  // Deploy ResourcePerpetuals
+  const ResourcePerpetuals = await hre.ethers.getContractFactory("ResourcePerpetuals");
+  const resourcePerpetuals = await ResourcePerpetuals.deploy(
+    resourceToken.address,
+    resourceAMM.address,
+    settlementToken
+  );
+  await resourcePerpetuals.deployed();
+  console.log("ResourcePerpetuals deployed to:", resourcePerpetuals.address);
+
+  // Deploy OptionsAMM
+  const OptionsAMM = await hre.ethers.getContractFactory("OptionsAMM");
+  const optionsAMM = await OptionsAMM.deploy(
+    resourceToken.address,
+    resourceOptions.address,
+    settlementToken
+  );
+  await optionsAMM.deployed();
+  console.log("OptionsAMM deployed to:", optionsAMM.address);
+
+  // Grant roles for derivatives
+  const MARKET_MAKER_ROLE = await resourceOptions.MARKET_MAKER_ROLE();
+  const ORACLE_ROLE = await resourceOptions.ORACLE_ROLE();
+  const PERPETUALS_KEEPER_ROLE = await resourcePerpetuals.KEEPER_ROLE();
+  const PERPETUALS_ORACLE_ROLE = await resourcePerpetuals.ORACLE_ROLE();
+  const LIQUIDATOR_ROLE = await resourcePerpetuals.LIQUIDATOR_ROLE();
+  const AMM_LP_ROLE = await optionsAMM.LP_ROLE();
+  const AMM_KEEPER_ROLE = await optionsAMM.KEEPER_ROLE();
+
+  // Grant options roles
+  await resourceOptions.grantRole(MARKET_MAKER_ROLE, optionsAMM.address);
+  await resourceOptions.grantRole(ORACLE_ROLE, deployer.address);
+  console.log("Options roles assigned");
+
+  // Grant perpetuals roles
+  await resourcePerpetuals.grantRole(PERPETUALS_KEEPER_ROLE, deployer.address);
+  await resourcePerpetuals.grantRole(PERPETUALS_ORACLE_ROLE, deployer.address);
+  await resourcePerpetuals.grantRole(LIQUIDATOR_ROLE, deployer.address);
+  console.log("Perpetuals roles assigned");
+
+  // Grant AMM roles
+  await optionsAMM.grantRole(AMM_LP_ROLE, deployer.address);
+  await optionsAMM.grantRole(AMM_KEEPER_ROLE, deployer.address);
+  await optionsAMM.grantRole(MARKET_MAKER_ROLE, deployer.address);
+  console.log("Options AMM roles assigned");
+
+  // Grant resource token operator roles
+  await resourceToken.grantRole(OPERATOR_ROLE, resourceOptions.address);
+  await resourceToken.grantRole(OPERATOR_ROLE, optionsAMM.address);
+  console.log("Resource token roles for derivatives assigned");
+
+  // Create perpetual markets
+  const maxOpenInterest = hre.ethers.utils.parseEther("1000000");
+  await resourcePerpetuals.createMarket(0, maxOpenInterest); // CPU perpetuals
+  await resourcePerpetuals.createMarket(1, maxOpenInterest); // GPU perpetuals
+  await resourcePerpetuals.createMarket(2, maxOpenInterest); // Storage perpetuals
+  console.log("Created perpetual markets");
+
+  // Set initial oracle prices for options
+  await resourceOptions.updateSpotPrice(0, cpuPrice);
+  await resourceOptions.updateSpotPrice(1, gpuPrice);
+  await resourceOptions.updateSpotPrice(2, storagePrice);
+  
+  // Set initial implied volatility (50% as an example)
+  const initialIV = 5000; // 50% in basis points
+  await resourceOptions.updateImpliedVolatility(0, initialIV);
+  await resourceOptions.updateImpliedVolatility(1, initialIV);
+  await resourceOptions.updateImpliedVolatility(2, initialIV);
+  console.log("Set initial options oracle data");
+
+  // Set initial perpetuals oracle prices
+  await resourcePerpetuals.updatePrices(0, cpuPrice, cpuPrice);
+  await resourcePerpetuals.updatePrices(1, gpuPrice, gpuPrice);
+  await resourcePerpetuals.updatePrices(2, storagePrice, storagePrice);
+  console.log("Set initial perpetuals oracle data");
+
   // Create initial AMM pools
   const cpuPrice = hre.ethers.utils.parseEther("0.05");
   const gpuPrice = hre.ethers.utils.parseEther("0.50");
@@ -139,12 +231,23 @@ async function main() {
           InfrastructureRewards: infrastructureRewards.address,
           FlashResourceProvider: flashResourceProvider.address,
           ResourceStaking: resourceStaking.address,
-          CPUVault: cpuVault.address
+          CPUVault: cpuVault.address,
+          ResourceOptions: resourceOptions.address,
+          ResourcePerpetuals: resourcePerpetuals.address,
+          OptionsAMM: optionsAMM.address
       },
       pools: {
           CPU: 0,
           GPU: 1,
           Storage: 2
+      },
+      derivatives: {
+          perpetualMarkets: {
+              CPU: 0,
+              GPU: 1,
+              Storage: 2
+          },
+          settlementToken: settlementToken
       }
   };
 

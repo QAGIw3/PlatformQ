@@ -42,7 +42,7 @@ from .protocols.liquidity import LiquidityProtocol
 from .protocols.insurance import InsuranceProtocol
 from .services.risk_calculator import RiskCalculator
 from .services.price_oracle import PriceOracle
-from .api import lending, auctions, yield_farming, liquidity, analytics, insurance, infrastructure, infrastructure_amm, infrastructure_risk, infrastructure_insurance, staking, vaults
+from .api import lending, auctions, yield_farming, liquidity, analytics, insurance, infrastructure, infrastructure_amm, infrastructure_risk, infrastructure_insurance, staking, vaults, derivatives
 
 # Import Vault/Consul integration
 from .vault_consul_integration import VaultConsulIntegration
@@ -297,6 +297,7 @@ app.include_router(infrastructure_risk.router, prefix="/api/v1/infrastructure/ri
 app.include_router(infrastructure_insurance.router, prefix="/api/v1/infrastructure/insurance", tags=["infrastructure-insurance"])
 app.include_router(staking.router, prefix="/api/v1", tags=["staking"])
 app.include_router(vaults.router, prefix="/api/v1", tags=["vaults"])
+app.include_router(derivatives.router, prefix="/api/v1", tags=["derivatives"])
 
 # Root endpoint
 @app.get("/")
@@ -314,7 +315,11 @@ async def root():
             "flash-loans",
             "price-oracles",
             "risk-management",
-            "cross-chain-defi"
+            "cross-chain-defi",
+            "staking-delegation",
+            "infrastructure-vaults",
+            "options-perpetuals",
+            "derivatives-amm"
         ]
     }
 
