@@ -70,6 +70,54 @@ async function main() {
   await resourceToken.grantRole(OPERATOR_ROLE, flashResourceProvider.address);
   console.log("Granted flash provider roles");
 
+  // Deploy ResourceStaking contract
+  console.log("\nDeploying ResourceStaking contract...");
+  const ResourceStaking = await hre.ethers.getContractFactory("ResourceStaking");
+  const resourceStaking = await ResourceStaking.deploy(
+    resourceToken.address,
+    infrastructureRewards.address
+  );
+  await resourceStaking.deployed();
+  console.log("ResourceStaking deployed to:", resourceStaking.address);
+
+  // Grant roles for ResourceStaking
+  const STAKING_OPERATOR_ROLE = await resourceStaking.OPERATOR_ROLE();
+  const SLASHER_ROLE = await resourceStaking.SLASHER_ROLE();
+  const REWARD_MANAGER_ROLE = await resourceStaking.REWARD_MANAGER_ROLE();
+  
+  await resourceStaking.grantRole(STAKING_OPERATOR_ROLE, deployer.address);
+  await resourceStaking.grantRole(SLASHER_ROLE, deployer.address);
+  await resourceStaking.grantRole(REWARD_MANAGER_ROLE, deployer.address);
+  await resourceToken.grantRole(OPERATOR_ROLE, resourceStaking.address);
+  console.log("Staking roles assigned");
+
+  // Deploy InfrastructureVault (example for CPU resources)
+  console.log("\nDeploying InfrastructureVault for CPU...");
+  const InfrastructureVault = await hre.ethers.getContractFactory("InfrastructureVault");
+  const cpuVault = await InfrastructureVault.deploy(
+    resourceToken.address,
+    0, // CPU resource token ID
+    resourceAMM.address,
+    infrastructureLending.address,
+    flashResourceProvider.address,
+    resourceStaking.address,
+    "CPU Vault Token",
+    "vCPU"
+  );
+  await cpuVault.deployed();
+  console.log("CPU Vault deployed to:", cpuVault.address);
+
+  // Grant roles for Vault
+  const STRATEGIST_ROLE = await cpuVault.STRATEGIST_ROLE();
+  const KEEPER_ROLE = await cpuVault.KEEPER_ROLE();
+  const GUARDIAN_ROLE = await cpuVault.GUARDIAN_ROLE();
+  
+  await cpuVault.grantRole(STRATEGIST_ROLE, deployer.address);
+  await cpuVault.grantRole(KEEPER_ROLE, deployer.address);
+  await cpuVault.grantRole(GUARDIAN_ROLE, deployer.address);
+  await resourceToken.grantRole(OPERATOR_ROLE, cpuVault.address);
+  console.log("Vault roles assigned");
+
   // Create initial AMM pools
   const cpuPrice = hre.ethers.utils.parseEther("0.05");
   const gpuPrice = hre.ethers.utils.parseEther("0.50");
@@ -89,7 +137,9 @@ async function main() {
           ResourceAMM: resourceAMM.address,
           InfrastructureLending: infrastructureLending.address,
           InfrastructureRewards: infrastructureRewards.address,
-          FlashResourceProvider: flashResourceProvider.address
+          FlashResourceProvider: flashResourceProvider.address,
+          ResourceStaking: resourceStaking.address,
+          CPUVault: cpuVault.address
       },
       pools: {
           CPU: 0,
