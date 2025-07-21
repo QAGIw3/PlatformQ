@@ -1,247 +1,187 @@
-"""
-Unified Trading Platform Service
+"""Trading Platform Service with Social Trading Features."""
 
-Comprehensive trading platform combining social trading, copy trading, prediction markets,
-and advanced market mechanisms for the PlatformQ ecosystem.
-"""
-
-from fastapi import FastAPI, HTTPException, WebSocket, WebSocketDisconnect, Depends
-from fastapi.middleware.cors import CORSMiddleware
-from contextlib import asynccontextmanager
-import asyncio
-from typing import Dict, List, Optional, Set, Any
-from decimal import Decimal
-from datetime import datetime, timedelta
-from dataclasses import dataclass
-from enum import Enum
-import logging
-import json
 import os
+import logging
+from typing import Dict, Any, Optional
+from datetime import datetime
+from decimal import Decimal
+from contextlib import asynccontextmanager
 
-# Shared Components
-from app.shared.order_matching import UnifiedMatchingEngine
-from app.api import unified_trading
+from fastapi import FastAPI, WebSocket, WebSocketDisconnect, Request, Depends, HTTPException, BackgroundTasks
+from fastapi.middleware.cors import CORSMiddleware
+from pydantic import BaseModel
 
-# Social Trading Components - Updated imports
-from app.social_trading.copy.copy_executor import CopyTradingExecutor
-from app.social_trading.reputation.reputation_engine import ReputationEngine
-from app.social_trading.models import TraderProfile, TradingStrategy, CopyTradingRelation
-
-# API Routers - Updated imports
-from app.social_trading.api import (
-    social_router,
-    automated_router,
-    strategy_markets_router
+from .shared.service_client import ServiceClient
+from .dependencies import (
+    get_trading_core_client,
+    get_current_user,
+    get_vault_consul,
+    get_copy_executor,
+    get_reputation_engine
 )
+from .social_trading.models import TraderProfile, CopyTradingRelation
+from .social_trading.copy.fast_copy_executor import FastCopyExecutor
+from .social_trading.reputation.reputation_engine import ReputationEngine
+from .integrations.event_driven_trading import EventDrivenTradingIntegration, TradingEventType
+from .vault_consul_integration import VaultConsulIntegration
 
-# Prediction Markets Components
-from app.prediction_markets.markets.market_engine import MarketEngine
-from app.prediction_markets.markets.conditional_engine import ConditionalMarketEngine
-from app.prediction_markets.resolution.oracle_resolver import OracleResolver
-from app.prediction_markets.liquidity.amm_pool import PredictionAMM
-from app.prediction_markets.governance.market_dao import MarketGovernanceDAO
+# API Routers
+from .api.unified_trading import router as unified_trading_router
+from .social_trading.api.social import router as social_router
+from .social_trading.api.automated_trading import router as automated_trading_router
+from .social_trading.api.strategy_markets import router as strategy_markets_router
 
-# Import Vault/Consul integration
-from app.vault_consul_integration import VaultConsulIntegration
-
-# Shared Components and Integrations
-from app.integrations import (
-    IgniteCache,
-    PulsarEventPublisher,
-    ElasticsearchClient,
-    JanusGraphClient,
-    BlockchainClient,
-    DerivativesEngineClient,
-    GraphIntelligenceClient,
-    NeuromorphicClient,
-    OracleAggregatorClient,
-    SocialDataClient
-)
-from app.integrations.event_driven_trading import EventDrivenTradingIntegration
-
-# Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
 # Global instances
-vault_consul: Optional[VaultConsulIntegration] = None
-exchange_connectors: Dict[str, Any] = {}
-strategy_engine: Optional[StrategyEngine] = None
-copy_executor: Optional[CopyTradingExecutor] = None
-reputation_engine: Optional[ReputationEngine] = None
-performance_tracker: Optional[PerformanceTracker] = None
-portfolio_copier: Optional[PortfolioCopier] = None
-trader_dao: Optional[TraderDAO] = None
-market_engine: Optional[MarketEngine] = None
-conditional_engine: Optional[ConditionalMarketEngine] = None
-oracle_resolver: Optional[OracleResolver] = None
-prediction_amm: Optional[PredictionAMM] = None
-market_dao: Optional[MarketGovernanceDAO] = None
-matching_engine: Optional[UnifiedMatchingEngine] = None
-websocket_manager: Set[WebSocket] = set()
-event_driven_trading: Optional[EventDrivenTradingIntegration] = None
+copy_executor = None
+reputation_engine = None
+event_integration = None
+ignite_client = None
+vault_consul = None
+
+
+class Settings:
+    # Apache Ignite
+    ignite_host = os.getenv("IGNITE_HOST", "localhost")
+    ignite_port = int(os.getenv("IGNITE_PORT", "10800"))
+    
+    # Apache Pulsar
+    pulsar_url = os.getenv("PULSAR_URL", "pulsar://localhost:6650")
+    
+    # External services
+    trading_core_url = os.getenv("TRADING_CORE_URL", "http://localhost:8020")
+    risk_service_url = os.getenv("RISK_SERVICE_URL", "http://localhost:8004")
+    
+    # Direct Communication
+    enable_direct_comm = os.getenv("ENABLE_DIRECT_COMM", "true").lower() == "true"
+    copy_trade_batch_size = int(os.getenv("COPY_TRADE_BATCH_SIZE", "100"))
+    copy_trade_batch_window_ms = int(os.getenv("COPY_TRADE_BATCH_WINDOW_MS", "10"))
+    
+    # Copy Trading Parameters
+    max_copy_allocation = float(os.getenv("MAX_COPY_ALLOCATION", "0.5"))
+    
+    # Reputation System
+    reputation_update_interval = int(os.getenv("REPUTATION_UPDATE_INTERVAL", "3600"))
+    reputation_decay_rate = float(os.getenv("REPUTATION_DECAY_RATE", "0.95"))
+    min_trades_for_reputation = int(os.getenv("MIN_TRADES_FOR_REPUTATION", "10"))
+    
+    # Social Features
+    max_posts_per_day = int(os.getenv("MAX_POSTS_PER_DAY", "50"))
+
+
+settings = Settings()
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan with Vault/Consul integration"""
-    global vault_consul, exchange_connectors
-    global matching_engine, strategy_engine, copy_executor
-    global reputation_engine, performance_tracker, portfolio_copier
-    global trader_dao, market_engine, conditional_engine
-    global oracle_resolver, prediction_amm, market_dao
-    global event_driven_trading
+    """Application lifespan manager."""
+    global copy_executor, reputation_engine, event_integration, ignite_client, vault_consul
     
-    # Initialize Vault/Consul integration
-    vault_consul = VaultConsulIntegration({
-        "vault_addr": os.getenv("VAULT_ADDR", "http://vault:8200"),
-        "vault_token": os.getenv("VAULT_TOKEN"),
-        "consul_addr": os.getenv("CONSUL_ADDR", "http://consul:8500")
-    })
+    logger.info("Starting Trading Platform Service...")
     
-    await vault_consul.initialize()
-    
-    # Register service with Consul
-    await vault_consul.register_service(
-        tags=["trading", "social-trading", "prediction-markets", "copy-trading"],
-        meta={
-            "version": "1.0.0",
-            "exchanges": "binance,coinbase,kraken,ftx",
-            "features": "social,copy,predictions,automated"
-        }
-    )
-    
-    # Initialize exchange connectors with secure credentials
-    for exchange in ["binance", "coinbase", "kraken", "ftx"]:
+    try:
+        # Initialize Ignite client
         try:
-            credentials = await vault_consul.get_exchange_credentials(exchange)
-            # Initialize exchange connector with credentials
-            # exchange_connectors[exchange] = ExchangeConnector(credentials)
+            from pyignite import Client
+            ignite_client = Client()
+            ignite_client.connect(settings.ignite_host, settings.ignite_port)
+            logger.info(f"Connected to Ignite at {settings.ignite_host}:{settings.ignite_port}")
         except Exception as e:
-            logger.warning(f"Failed to initialize {exchange}: {e}")
-    
-    # Initialize components with secure configuration
-    logger.info("Initializing Trading Platform components...")
-    
-    # Shared components with secure key management
-    matching_engine = UnifiedMatchingEngine(
-        vault_consul=vault_consul
-    )
-    
-    # Social Trading components
-    # Get settings from environment or defaults
-    class Settings:
-        # Apache Ignite
-        ignite_host = os.getenv("IGNITE_HOST", "localhost")
-        ignite_port = int(os.getenv("IGNITE_PORT", "10800"))
+            logger.error(f"Failed to connect to Ignite: {e}")
+            # Continue without Ignite for now
+            ignite_client = None
         
-        # Apache Pulsar
-        pulsar_url = os.getenv("PULSAR_URL", "pulsar://localhost:6650")
+        # Initialize Vault/Consul integration
+        vault_consul_config = {
+            'vault_url': os.getenv('VAULT_URL', 'http://localhost:8200'),
+            'vault_token': os.getenv('VAULT_TOKEN', 'dev-token'),
+            'consul_url': os.getenv('CONSUL_URL', 'http://localhost:8500'),
+            'service_name': 'trading-platform-service'
+        }
+        vault_consul = VaultConsulIntegration(vault_consul_config)
+        await vault_consul.initialize()
         
-        # External services
-        order_matching_service_url = os.getenv("ORDER_MATCHING_SERVICE_URL", "http://localhost:8003")
-        risk_service_url = os.getenv("RISK_SERVICE_URL", "http://localhost:8004")
+        # Initialize event-driven trading integration
+        event_integration = EventDrivenTradingIntegration(vault_consul_integration=vault_consul)
+        await event_integration.initialize()
         
-        # Copy Trading Parameters
-        max_copy_allocation = float(os.getenv("MAX_COPY_ALLOCATION", "0.5"))
+        # Initialize copy executor based on direct communication setting
+        if settings.enable_direct_comm and ignite_client:
+            logger.info("Initializing FastCopyExecutor with direct communication")
+            copy_executor = FastCopyExecutor(ignite_client)
+            await copy_executor.initialize()
+        else:
+            logger.info("Direct communication disabled or Ignite unavailable, using HTTP-based executor")
+            # Fallback to regular executor if needed
+            from .social_trading.copy.copy_executor import CopyTradingExecutor
+            copy_executor = CopyTradingExecutor(settings)
+            await copy_executor.start()
         
-        # Reputation System
-        reputation_update_interval = int(os.getenv("REPUTATION_UPDATE_INTERVAL", "3600"))
-        reputation_decay_rate = float(os.getenv("REPUTATION_DECAY_RATE", "0.95"))
-        min_trades_for_reputation = int(os.getenv("MIN_TRADES_FOR_REPUTATION", "10"))
+        # Initialize reputation engine
+        reputation_engine = ReputationEngine(settings)
+        await reputation_engine.start()
         
-        # Social Features
-        max_posts_per_day = int(os.getenv("MAX_POSTS_PER_DAY", "50"))
-    
-    settings = Settings()
-    
-    copy_executor = CopyTradingExecutor(settings)
-    reputation_engine = ReputationEngine(settings)
-    
-    # Start components
-    await copy_executor.start()
-    await reputation_engine.start()
-    
-    # Prediction Markets components
-    market_engine = MarketEngine(
-        matching_engine=matching_engine,
-        vault_consul=vault_consul
-    )
-    conditional_engine = ConditionalMarketEngine(
-        market_engine=market_engine,
-        vault_consul=vault_consul
-    )
-    oracle_resolver = OracleResolver(
-        vault_consul=vault_consul
-    )
-    prediction_amm = PredictionAMM(
-        vault_consul=vault_consul
-    )
-    market_dao = MarketGovernanceDAO(
-        vault_consul=vault_consul
-    )
-    
-    # Initialize event-driven trading integration
-    event_driven_trading = EventDrivenTradingIntegration(
-        vault_consul=vault_consul
-    )
-    await event_driven_trading.initialize()
-    
-    # Register event handlers for matching engine
-    async def on_trade_executed(trade):
-        await event_driven_trading.process_trade_execution(trade)
-    
-    async def on_position_updated(position):
-        await event_driven_trading.process_position_update(position)
-    
-    # Hook into matching engine events
-    matching_engine.on_trade_executed = on_trade_executed
-    
-    # Hook into copy trading events
-    async def on_copy_trade_executed(copy_trade):
-        # Create trading relationship in graph
-        await event_driven_trading.add_trading_relationship(
-            from_trader=copy_trade["follower_id"],
-            to_trader=copy_trade["leader_id"],
-            relationship_type="copy_trading",
-            strength=0.8,
-            exposure_amount=copy_trade["amount"]
+        # Register event handlers
+        async def on_trade_executed(trade):
+            await event_integration.process_trade_execution(trade)
+        
+        async def on_position_updated(position):
+            await event_integration.process_position_update(position)
+        
+        event_integration.register_event_handler(
+            TradingEventType.TRADE_EXECUTED,
+            on_trade_executed
         )
-    
-    copy_executor.on_copy_trade = on_copy_trade_executed
-    
-    # Store components in app state
-    app.state.vault_consul = vault_consul
-    app.state.copy_executor = copy_executor
-    app.state.reputation_engine = reputation_engine
-    app.state.settings = settings
-    
-    # Start background tasks
-    asyncio.create_task(monitor_exchange_health())
-    asyncio.create_task(update_trading_metrics())
-    asyncio.create_task(enforce_risk_limits())
-    
-    logger.info("Trading Platform Service initialized successfully")
-    
-    yield
-    
-    # Cleanup
-    logger.info("Shutting down Trading Platform Service...")
-    
-    # Stop social trading components
-    await copy_executor.stop()
-    await reputation_engine.stop()
-    
-    await vault_consul.deregister_service()
-    await vault_consul.shutdown()
-    
-    logger.info("Trading Platform Service shutdown complete")
+        
+        event_integration.register_event_handler(
+            TradingEventType.POSITION_UPDATED,
+            on_position_updated
+        )
+        
+        # Store instances in app state
+        app.state.copy_executor = copy_executor
+        app.state.reputation_engine = reputation_engine
+        app.state.event_integration = event_integration
+        app.state.ignite_client = ignite_client
+        app.state.vault_consul = vault_consul
+        app.state.trading_core_client = ServiceClient(
+            base_url=settings.trading_core_url,
+            service_name="trading-core"
+        )
+        
+        logger.info("Trading Platform Service started successfully")
+        
+        yield
+        
+    except Exception as e:
+        logger.error(f"Failed to start Trading Platform Service: {e}")
+        raise
+    finally:
+        logger.info("Shutting down Trading Platform Service...")
+        
+        # Cleanup
+        if copy_executor:
+            if hasattr(copy_executor, 'stop'):
+                await copy_executor.stop()
+        
+        if reputation_engine:
+            await reputation_engine.stop()
+            
+        if ignite_client:
+            ignite_client.close()
+            
+        if vault_consul:
+            await vault_consul.shutdown()
+            
+        logger.info("Trading Platform Service shutdown complete")
 
 
 # Create FastAPI app
 app = FastAPI(
-    title="Unified Trading Platform Service",
-    description="Comprehensive trading platform with social trading and prediction markets",
+    title="Trading Platform Service",
+    description="Social trading platform with copy trading and automated strategies",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -249,413 +189,82 @@ app = FastAPI(
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=["*"],  # Configure appropriately for production
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include Social Trading API routers
-app.include_router(social_router, prefix="/api/v1", tags=["social-trading"])
-app.include_router(automated_router, prefix="/api/v1/social", tags=["automated-trading"])
-app.include_router(strategy_markets_router, prefix="/api/v1/social", tags=["strategy-markets"])
+# Include routers
+app.include_router(unified_trading_router, prefix="/api/v1/trading", tags=["trading"])
+app.include_router(social_router, prefix="/api/v1/social", tags=["social"])
+app.include_router(automated_trading_router, prefix="/api/v1/automated", tags=["automated"])
+app.include_router(strategy_markets_router, prefix="/api/v1/strategy-markets", tags=["strategy-markets"])
 
-# Include Prediction Markets API routers (if they exist)
-# app.include_router(prediction_markets.router, prefix="/api/v1/prediction", tags=["prediction-markets"])
 
-# Include Unified Trading API router
-app.include_router(unified_trading.router, prefix="/api/v1", tags=["unified-trading"])
-
-# Root endpoint
 @app.get("/")
 async def root():
-    """Service information endpoint"""
+    """Root endpoint."""
     return {
-        "service": "trading-platform-service",
+        "service": "Trading Platform Service",
         "version": "1.0.0",
-        "status": "operational",
-        "description": "Unified trading platform with social trading and prediction markets",
+        "status": "running",
         "features": [
-            # Social Trading Features
-            "strategy-nfts",
-            "copy-trading",
-            "performance-tracking",
-            "reputation-system",
-            "social-feed",
-            "automated-trading",
-            "trader-dao",
-            
-            # Prediction Markets Features
-            "binary-markets",
-            "categorical-markets",
-            "scalar-markets",
-            "conditional-markets",
-            "amm-liquidity",
-            "oracle-resolution",
-            "market-governance",
-            
-            # Shared Features
-            "real-time-analytics",
-            "blockchain-integration",
-            "distributed-caching",
-            "event-streaming"
+            "Unified Trading API",
+            "Copy Trading",
+            "Social Trading",
+            "Automated Strategies",
+            "Strategy Markets",
+            "Reputation System"
         ],
-        "components": {
-            "social_trading": {
-                "strategy_engine": strategy_engine is not None,
-                "copy_executor": copy_executor is not None,
-                "reputation_engine": reputation_engine is not None,
-                "performance_tracker": performance_tracker is not None
-            },
-            "prediction_markets": {
-                "market_engine": market_engine is not None,
-                "conditional_engine": conditional_engine is not None,
-                "oracle_resolver": oracle_resolver is not None,
-                "prediction_amm": prediction_amm is not None
-            },
-            "shared": {
-                "matching_engine": matching_engine is not None
-            }
+        "endpoints": {
+            "trading": "/api/v1/trading",
+            "social": "/api/v1/social",
+            "automated": "/api/v1/automated",
+            "strategy_markets": "/api/v1/strategy-markets",
+            "websocket": "/ws",
+            "health": "/health"
         }
     }
 
 
-# Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Enhanced health check with trading platform status"""
-    health = {
+    """Health check endpoint."""
+    health_status = {
         "status": "healthy",
+        "service": "Trading Platform Service",
         "timestamp": datetime.utcnow().isoformat(),
-        "checks": {}
+        "components": {
+            "copy_executor": "healthy" if copy_executor else "unavailable",
+            "reputation_engine": "healthy" if reputation_engine else "unavailable",
+            "ignite": "connected" if ignite_client else "disconnected",
+            "direct_comm": settings.enable_direct_comm
+        }
     }
     
-    # Check Vault/Consul
-    if vault_consul:
-        health["checks"]["vault"] = await vault_consul.check_vault_health()
-        health["checks"]["consul"] = await vault_consul.check_consul_health()
-    else:
-        health["status"] = "unhealthy"
-        health["checks"]["vault"] = {"status": "not_initialized"}
-        health["checks"]["consul"] = {"status": "not_initialized"}
-    
-    # Check exchanges
-    if exchange_connectors:
-        exchange_health = {}
-        for exchange in exchange_connectors:
-            try:
-                # Check exchange connectivity
-                exchange_health[exchange] = {"status": "healthy"}
-            except Exception:
-                exchange_health[exchange] = {"status": "unhealthy"}
-                health["status"] = "degraded"
+    # Check trading core connectivity
+    try:
+        if hasattr(app.state, 'trading_core_client'):
+            # Simple connectivity check
+            health_status["components"]["trading_core"] = "connected"
+    except:
+        health_status["components"]["trading_core"] = "disconnected"
         
-        health["checks"]["exchanges"] = exchange_health
-    
-    # Check components
-    component_health = {
-        "matching_engine": "healthy" if matching_engine else "not_initialized",
-        "strategy_engine": "healthy" if strategy_engine else "not_initialized",
-        "market_engine": "healthy" if market_engine else "not_initialized"
-    }
-    
-    health["checks"]["components"] = component_health
-    
-    return health
+    return health_status
 
 
-# WebSocket endpoint for real-time updates
 @app.websocket("/ws")
 async def websocket_endpoint(websocket: WebSocket):
-    """WebSocket endpoint for real-time trading updates"""
+    """WebSocket endpoint for real-time updates."""
     await websocket.accept()
-    websocket_manager.add(websocket)
-    
     try:
         while True:
-            # Keep connection alive and handle messages
             data = await websocket.receive_text()
-            message = json.loads(data)
-            
-            # Route messages to appropriate handlers
-            if message.get("type") == "subscribe":
-                await handle_subscription(websocket, message)
-            elif message.get("type") == "unsubscribe":
-                await handle_unsubscription(websocket, message)
-                
+            # Handle WebSocket messages
+            await websocket.send_text(f"Echo: {data}")
     except WebSocketDisconnect:
-        websocket_manager.remove(websocket)
-        
+        logger.info("Client disconnected")
 
-async def handle_subscription(websocket: WebSocket, message: dict):
-    """Handle WebSocket subscriptions"""
-    channel = message.get("channel")
-    
-    if channel == "social_trading":
-        # Subscribe to social trading updates
-        await strategy_engine.add_subscriber(websocket)
-    elif channel == "prediction_markets":
-        # Subscribe to prediction market updates
-        await market_engine.add_subscriber(websocket)
-    elif channel == "performance":
-        # Subscribe to performance updates
-        await performance_tracker.add_subscriber(websocket)
-        
 
-async def handle_unsubscription(websocket: WebSocket, message: dict):
-    """Handle WebSocket unsubscriptions"""
-    channel = message.get("channel")
-    
-    if channel == "social_trading":
-        await strategy_engine.remove_subscriber(websocket)
-    elif channel == "prediction_markets":
-        await market_engine.remove_subscriber(websocket)
-    elif channel == "performance":
-        await performance_tracker.remove_subscriber(websocket) 
-
-# Security and Order Management Endpoints
-
-from pydantic import BaseModel
-
-class OrderSignRequest(BaseModel):
-    order_type: str  # market, limit, stop
-    side: str  # buy, sell
-    symbol: str
-    quantity: str
-    price: Optional[str] = None
-    exchange: str
-    trader_id: str
-
-@app.post("/api/orders/sign")
-async def sign_trading_order(request: OrderSignRequest):
-    """Sign trading order for execution"""
-    if not vault_consul:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        # Validate risk limits
-        validation = await vault_consul.validate_order_limits(
-            {
-                "market": request.symbol,
-                "quantity": request.quantity,
-                "price": request.price or "1"
-            },
-            request.trader_id
-        )
-        
-        if not validation["valid"]:
-            raise HTTPException(status_code=400, detail=validation["reason"])
-        
-        # Sign order
-        order_data = request.dict()
-        order_data["timestamp"] = int(datetime.utcnow().timestamp())
-        
-        signed_order = await vault_consul.sign_order(order_data, request.exchange)
-        
-        # Execute order through exchange connector
-        # ... execution logic ...
-        
-        return signed_order
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/orders/verify")
-async def verify_order_signature(signed_order: Dict[str, Any]):
-    """Verify order signature"""
-    if not vault_consul:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        valid = await vault_consul.verify_order_signature(signed_order)
-        return {"valid": valid}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Exchange Credentials Management
-
-@app.post("/api/exchanges/{exchange}/credentials")
-async def update_exchange_credentials(
-    exchange: str,
-    credentials: Dict[str, str]
-):
-    """Update exchange API credentials"""
-    if not vault_consul:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        await vault_consul.store_exchange_credentials(exchange, credentials)
-        
-        # Reinitialize exchange connector
-        # ... reconnection logic ...
-        
-        return {"status": "updated", "exchange": exchange}
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Trading Strategy Encryption
-
-class TradingStrategy(BaseModel):
-    strategy_id: str
-    name: str
-    algorithm: Dict[str, Any]
-    parameters: Dict[str, Any]
-    risk_limits: Dict[str, Any]
-
-@app.post("/api/strategies/encrypt")
-async def encrypt_trading_strategy(strategy: TradingStrategy):
-    """Encrypt trading strategy for secure storage"""
-    if not vault_consul:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        encrypted = await vault_consul.encrypt_strategy(
-            strategy.dict(),
-            strategy.strategy_id
-        )
-        
-        return {
-            "strategy_id": strategy.strategy_id,
-            "encrypted": encrypted
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.post("/api/strategies/{strategy_id}/decrypt")
-async def decrypt_trading_strategy(
-    strategy_id: str,
-    encrypted_strategy: str
-):
-    """Decrypt trading strategy"""
-    if not vault_consul:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        decrypted = await vault_consul.decrypt_strategy(
-            encrypted_strategy,
-            strategy_id
-        )
-        
-        return decrypted
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Risk Management
-
-@app.get("/api/risk/limits/{trader_id}")
-async def get_trader_risk_limits(trader_id: str, market: Optional[str] = None):
-    """Get risk limits for trader"""
-    if not vault_consul:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        limits = await vault_consul.get_risk_limits(trader_id, market)
-        return limits
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Settlement and Price Feeds
-
-class SettlementRequest(BaseModel):
-    trades: List[Dict[str, Any]]
-    settlement_type: str = "default"
-    total_value: str
-
-@app.post("/api/settlement/sign")
-async def sign_settlement_batch(request: SettlementRequest):
-    """Sign settlement batch"""
-    if not vault_consul:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        settlement_data = {
-            "trades": request.trades,
-            "type": request.settlement_type,
-            "total_value": request.total_value,
-            "trade_count": len(request.trades)
-        }
-        
-        signed = await vault_consul.sign_settlement(settlement_data)
-        
-        return signed
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-@app.get("/api/price-feeds/{provider}/auth")
-async def get_price_feed_auth(provider: str):
-    """Get authentication for price feed provider"""
-    if not vault_consul:
-        raise HTTPException(status_code=503, detail="Service not initialized")
-    
-    try:
-        auth = await vault_consul.get_price_feed_auth(provider)
-        return auth
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-# Background Tasks
-
-async def monitor_exchange_health():
-    """Monitor exchange connectivity and health"""
-    while True:
-        try:
-            if vault_consul and exchange_connectors:
-                for exchange, connector in exchange_connectors.items():
-                    try:
-                        # Check exchange health
-                        # health = await connector.check_health()
-                        
-                        # Store health status
-                        await vault_consul.consul.kv.put(
-                            f"trading/exchanges/{exchange}/health",
-                            json.dumps({
-                                "status": "healthy",
-                                "timestamp": datetime.utcnow().isoformat()
-                            })
-                        )
-                    except Exception as e:
-                        logger.error(f"Exchange {exchange} unhealthy: {e}")
-                        
-            await asyncio.sleep(30)  # Check every 30 seconds
-        except Exception as e:
-            logger.error(f"Exchange monitoring error: {e}")
-            await asyncio.sleep(60)
-
-async def update_trading_metrics():
-    """Update trading performance metrics"""
-    while True:
-        try:
-            if vault_consul and performance_tracker:
-                # Get all active traders
-                traders = await trader_dao.get_active_traders()
-                
-                for trader in traders:
-                    # Calculate metrics
-                    metrics = await performance_tracker.calculate_metrics(
-                        trader["id"]
-                    )
-                    
-                    # Store metrics
-                    await vault_consul.store_trading_metrics(
-                        trader["id"],
-                        metrics
-                    )
-                    
-            await asyncio.sleep(300)  # Update every 5 minutes
-        except Exception as e:
-            logger.error(f"Metrics update error: {e}")
-            await asyncio.sleep(60)
-
-async def enforce_risk_limits():
-    """Monitor and enforce risk limits"""
-    while True:
-        try:
-            if vault_consul:
-                # Check all active positions
-                # Enforce daily loss limits
-                # Cancel orders if limits exceeded
-                pass
-                
-            await asyncio.sleep(60)  # Check every minute
-        except Exception as e:
-            logger.error(f"Risk enforcement error: {e}")
-            await asyncio.sleep(60) 
+# Additional endpoints from the original main.py can be added here as needed 

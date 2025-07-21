@@ -5,17 +5,14 @@ from decimal import Decimal
 import asyncio
 from datetime import datetime
 
+from platformq_direct_comm import DirectCommunicator, MessageType
+
 from ..models.order import Order, OrderType, OrderSide
 from ..models.trade import Trade
 from ..core.matching_engine import MatchingEngine
 from ..core.order_manager import OrderManager
 from ..core.position_manager import PositionManager
 from ..state.ignite_manager import IgniteStateManager
-
-# Import shared communication layer
-import sys
-sys.path.append('/app/services/MarketServices/shared')
-from direct_communication import DirectCommunicator, MessageType
 
 
 class PlatformDirectIntegration:
@@ -60,8 +57,8 @@ class PlatformDirectIntegration:
             self._handle_risk_check
         )
         
-        # Start message processor
-        asyncio.create_task(self.communicator.process_incoming())
+        # Start the communicator
+        await self.communicator.start()
         
     async def _handle_direct_order(self, data: Dict[str, Any], msg) -> Dict[str, Any]:
         """Handle order submission with minimal overhead."""
@@ -264,4 +261,8 @@ class PlatformDirectIntegration:
             msg_type=MessageType.TRADE_EXECUTE if event_type == "trade" else MessageType.POSITION_UPDATE,
             data=data,
             wait_response=False  # Fire and forget for events
-        ) 
+        )
+    
+    async def shutdown(self):
+        """Shutdown the integration."""
+        await self.communicator.stop() 

@@ -1,8 +1,8 @@
-"""Configuration for Trading Core Service."""
+"""Trading Core Service configuration."""
 
-from pydantic_settings import BaseSettings
-from typing import List, Dict, Any, Optional
+from typing import List, Dict, Optional
 from decimal import Decimal
+from pydantic import BaseSettings
 
 
 class Settings(BaseSettings):
@@ -16,6 +16,11 @@ class Settings(BaseSettings):
     api_prefix: str = "/api/v1"
     host: str = "0.0.0.0"
     port: int = 8020
+    
+    # Direct Communication
+    enable_direct_comm: bool = True
+    direct_comm_batch_size: int = 1000
+    direct_comm_timeout_ms: int = 100
     
     # Apache Ignite Configuration
     ignite_host: str = "localhost"
@@ -77,6 +82,7 @@ class Settings(BaseSettings):
     order_processing_batch_size: int = 100
     trade_processing_batch_size: int = 200
     position_update_batch_size: int = 50
+    order_processing_threads: int = 8
     
     # Circuit Breaker Configuration
     circuit_breaker_enabled: bool = True
@@ -104,4 +110,21 @@ class Settings(BaseSettings):
     
     class Config:
         env_prefix = "TRADING_CORE_"
-        case_sensitive = False 
+        case_sensitive = False
+        
+        @classmethod
+        def customise_sources(
+            cls,
+            init_settings,
+            env_settings,
+            file_secret_settings,
+        ):
+            return (
+                init_settings,
+                env_settings,
+                file_secret_settings,
+            )
+
+
+# Create global settings instance
+settings = Settings() 

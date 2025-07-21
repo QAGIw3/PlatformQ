@@ -5,13 +5,10 @@ from decimal import Decimal
 import asyncio
 from datetime import datetime
 
-from ...models import CopyTradingRelation, CopyMode
-from pyignite import Client as IgniteClient
+from platformq_direct_comm import DirectCommunicator, MessageType
 
-# Import shared communication layer
-import sys
-sys.path.append('/app/services/MarketServices/shared')
-from direct_communication import DirectCommunicator, MessageType
+from ...social_trading.models import CopyTradingRelation, CopyMode
+from pyignite import Client as IgniteClient
 
 
 class FastCopyExecutor:
@@ -43,10 +40,16 @@ class FastCopyExecutor:
             self._handle_leader_trade
         )
         
+        # Start the communicator
+        await self.communicator.start()
+        
         # Start background tasks
-        asyncio.create_task(self.communicator.process_incoming())
         asyncio.create_task(self._refresh_cache_loop())
         asyncio.create_task(self._batch_processor())
+        
+    async def stop(self):
+        """Stop the executor."""
+        await self.communicator.stop()
         
     async def _handle_leader_trade(self, data: Dict[str, Any], msg) -> None:
         """Handle leader trade execution with minimal latency."""
@@ -241,7 +244,7 @@ class FastCopyExecutor:
                 
                 # Get all active copy relations
                 cache = self.ignite_client.get_cache("copy_relations")
-                all_relations = await cache.get_all()
+                all_relations = cache.get_all()
                 
                 # Group by leader
                 new_cache = {}
@@ -266,21 +269,22 @@ class FastCopyExecutor:
         
         cache = self.ignite_client.get_cache("copy_relations")
         
-        # Use SQL query for efficiency
-        query = f"SELECT * FROM CopyTradingRelation WHERE leader_id = ? AND is_active = true"
-        cursor = cache.query(query, [leader_id])
+        # Simple scan for now - in production use SQL query
+        all_relations = cache.get_all()
         
         relations = []
-        for row in cursor:
-            relations.append(CopyTradingRelation(**row))
-            
+        for relation_id, relation_data in all_relations.items():
+            if (relation_data.get("leader_id") == leader_id and 
+                relation_data.get("is_active")):
+                relations.append(CopyTradingRelation(**relation_data))
+                
         return relations
     
     async def _get_portfolio_value(self, user_id: str) -> Optional[Decimal]:
         """Get user portfolio value from cache."""
         
         cache = self.ignite_client.get_cache("user_state")
-        user_state = await cache.get_async(user_id)
+        user_state = cache.get(user_id)
         
         if user_state:
             return Decimal(str(user_state.get("portfolio_value", 0)))
