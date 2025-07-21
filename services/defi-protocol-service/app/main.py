@@ -39,9 +39,10 @@ from .protocols.lending import LendingProtocol
 from .protocols.auctions import AuctionProtocol
 from .protocols.yield_farming import YieldFarmingProtocol
 from .protocols.liquidity import LiquidityProtocol
+from .protocols.insurance import InsuranceProtocol
 from .services.risk_calculator import RiskCalculator
 from .services.price_oracle import PriceOracle
-from .api import lending, auctions, yield_farming, liquidity, analytics
+from .api import lending, auctions, yield_farming, liquidity, analytics, insurance
 
 # Import Vault/Consul integration
 from .vault_consul_integration import VaultConsulIntegration
@@ -82,12 +83,13 @@ lending_protocols: Dict[str, LendingProtocol] = {}
 auction_protocols: Dict[str, AuctionProtocol] = {}
 yield_protocols: Dict[str, YieldFarmingProtocol] = {}
 liquidity_protocols: Dict[str, LiquidityProtocol] = {}
+insurance_protocol: Optional[InsuranceProtocol] = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan with Vault/Consul integration"""
     global connection_pool, defi_manager, price_oracle, risk_calculator, vault_consul
-    global lending_protocols, auction_protocols, yield_protocols, liquidity_protocols
+    global lending_protocols, auction_protocols, yield_protocols, liquidity_protocols, insurance_protocol
     
     logger.info("Starting DeFi Protocol Service...")
     
@@ -124,69 +126,78 @@ async def lifespan(app: FastAPI):
         )
         await connection_pool.add_chain(config)
     
-    # Initialize price oracle with signing keys
-    oracle_key = await vault_consul.get_amm_pricing_key("main-oracle")
+    # Initialize price oracle
     price_oracle = PriceOracle(
-        connection_pool=connection_pool,
-        oracle_key=oracle_key,
-        vault_consul=vault_consul
+        providers=settings.PRICE_PROVIDERS,
+        cache_ttl=settings.PRICE_CACHE_TTL
     )
+    await price_oracle.initialize()
     
     # Initialize risk calculator
     risk_calculator = RiskCalculator(
         price_oracle=price_oracle,
-        vault_consul=vault_consul
+        volatility_window=settings.VOLATILITY_WINDOW
     )
     
     # Initialize DeFi manager
     defi_manager = DeFiManager(
         connection_pool=connection_pool,
         price_oracle=price_oracle,
-        risk_calculator=risk_calculator,
-        vault_consul=vault_consul
+        risk_calculator=risk_calculator
     )
     
     # Initialize protocols with secure configuration
     protocol_params = await vault_consul.get_protocol_parameters()
     
     # Initialize lending protocols
-    for chain in connection_pool.chains:
-        lending_key = await vault_consul.get_liquidity_provider_keys(f"lending-{chain}")
+    for chain in ["ethereum", "polygon", "arbitrum", "optimism"]:
         lending_protocols[chain] = LendingProtocol(
-            chain=chain,
-            connection_pool=connection_pool,
-            risk_calculator=risk_calculator,
-            protocol_key=lending_key,
-            params=protocol_params.get("lending", {})
+            defi_manager=defi_manager
         )
+        await lending_protocols[chain].initialize()
     
     # Initialize auction protocols
-    for chain in connection_pool.chains:
+    for chain in ["ethereum", "polygon", "arbitrum", "optimism"]:
         auction_protocols[chain] = AuctionProtocol(
-            chain=chain,
-            connection_pool=connection_pool,
-            vault_consul=vault_consul
+            defi_manager=defi_manager
         )
+        await auction_protocols[chain].initialize()
     
     # Initialize yield farming protocols
-    for chain in connection_pool.chains:
+    for chain in ["ethereum", "polygon", "arbitrum", "optimism"]:
         yield_protocols[chain] = YieldFarmingProtocol(
-            chain=chain,
-            connection_pool=connection_pool,
-            price_oracle=price_oracle,
-            vault_consul=vault_consul
+            defi_manager=defi_manager
         )
+        await yield_protocols[chain].initialize()
     
     # Initialize liquidity protocols
-    for chain in connection_pool.chains:
-        lp_key = await vault_consul.get_liquidity_provider_keys(f"amm-{chain}")
+    for chain in ["ethereum", "polygon", "arbitrum", "optimism"]:
         liquidity_protocols[chain] = LiquidityProtocol(
-            chain=chain,
-            connection_pool=connection_pool,
-            price_oracle=price_oracle,
-            lp_key=lp_key,
-            params=protocol_params.get("amm", {})
+            defi_manager=defi_manager
         )
+        await liquidity_protocols[chain].initialize()
+    
+    # Initialize insurance protocol (single instance across all chains)
+    insurance_protocol = InsuranceProtocol(
+        defi_manager=defi_manager,
+        lending_protocol=None,  # Will be set after initialization
+        yield_protocol=None     # Will be set after initialization
+    )
+    await insurance_protocol.initialize()
+    
+    # Now link insurance with lending and yield protocols
+    insurance_protocol.lending_protocol = lending_protocols
+    insurance_protocol.yield_protocol = yield_protocols
+    
+    # Update lending protocols to use insurance
+    for chain, lending in lending_protocols.items():
+        lending.insurance_protocol = insurance_protocol
+    
+    # Update risk calculator to use insurance
+    risk_calculator.insurance_protocol = insurance_protocol
+    
+    # Store insurance protocol in app state for API access
+    app.state.insurance_protocol = insurance_protocol
     
     # Start background tasks
     asyncio.create_task(monitor_protocol_health())
@@ -200,9 +211,35 @@ async def lifespan(app: FastAPI):
     # Cleanup
     logger.info("Shutting down DeFi Protocol Service...")
     
-    await connection_pool.close()
-    await vault_consul.deregister_service()
-    await vault_consul.shutdown()
+    # Shutdown protocols
+    if insurance_protocol:
+        await insurance_protocol.shutdown()
+    
+    for protocol in lending_protocols.values():
+        await protocol.shutdown()
+    
+    for protocol in auction_protocols.values():
+        await protocol.shutdown()
+    
+    for protocol in yield_protocols.values():
+        await protocol.shutdown()
+    
+    for protocol in liquidity_protocols.values():
+        await protocol.shutdown()
+    
+    # Shutdown core components
+    if price_oracle:
+        await price_oracle.shutdown()
+    
+    if defi_manager:
+        await defi_manager.shutdown()
+    
+    if connection_pool:
+        await connection_pool.close()
+    
+    if vault_consul:
+        await vault_consul.deregister_service()
+        await vault_consul.shutdown()
     
     logger.info("DeFi Protocol Service shutdown complete")
 
@@ -253,6 +290,7 @@ app.include_router(auctions.router, prefix="/api/v1/auctions", tags=["auctions"]
 app.include_router(yield_farming.router, prefix="/api/v1/yield-farming", tags=["yield-farming"])
 app.include_router(liquidity.router, prefix="/api/v1/liquidity", tags=["liquidity"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
+app.include_router(insurance.router, prefix="/api/v1/insurance", tags=["insurance"])
 
 # Root endpoint
 @app.get("/")
@@ -266,6 +304,7 @@ async def root():
             "nft-auctions",
             "yield-farming",
             "liquidity-pools",
+            "insurance-pools",
             "flash-loans",
             "price-oracles",
             "risk-management",
@@ -579,7 +618,8 @@ async def health_check():
             "lending": len(lending_protocols),
             "liquidity": len(liquidity_protocols),
             "yield": len(yield_protocols),
-            "auction": len(auction_protocols)
+            "auction": len(auction_protocols),
+            "insurance": 1 if insurance_protocol else 0
         }
     
     return health 

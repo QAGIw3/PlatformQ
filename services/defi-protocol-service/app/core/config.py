@@ -175,6 +175,19 @@ class Settings(BaseSettings):
     class Config:
         env_file = ".env"
         case_sensitive = True
+    
+    def get_chain_rpc(self, chain: str) -> str:
+        """Get RPC URL for a specific chain"""
+        for chain_config in self.SUPPORTED_CHAINS:
+            if chain_config["type"] == chain:
+                return chain_config["rpc_url"]
+        raise ValueError(f"Chain {chain} not found in supported chains")
+    
+    def get_chain_contracts(self, chain: str) -> Dict[str, str]:
+        """Get contract addresses for a specific chain"""
+        # In production, this would return actual deployed contract addresses
+        # For now, return empty dict
+        return {}
 
 
 # Create global settings instance

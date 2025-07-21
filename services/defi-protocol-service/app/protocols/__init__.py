@@ -6,10 +6,12 @@ from .auctions import AuctionProtocol
 from .lending import LendingProtocol
 from .yield_farming import YieldFarmingProtocol
 from .liquidity import LiquidityProtocol
+from .insurance import InsuranceProtocol
 
 __all__ = [
     "AuctionProtocol",
     "LendingProtocol", 
     "YieldFarmingProtocol",
-    "LiquidityProtocol"
+    "LiquidityProtocol",
+    "InsuranceProtocol"
 ]

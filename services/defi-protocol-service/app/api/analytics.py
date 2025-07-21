@@ -12,11 +12,12 @@ async def get_total_value_locked(chain: Optional[str] = None):
     """Get total value locked across protocols"""
     return {
         "tvl": {
-            "total_usd": 3500000,
+            "total_usd": 6500000,
             "by_protocol": {
                 "lending": 1000000,
                 "yield_farming": 500000,
-                "liquidity": 2000000
+                "liquidity": 2000000,
+                "insurance": 3000000
             }
         }
     }

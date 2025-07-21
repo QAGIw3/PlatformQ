@@ -14,9 +14,10 @@ logger = logging.getLogger(__name__)
 class RiskCalculator:
     """Calculates risk metrics for DeFi operations"""
     
-    def __init__(self, price_oracle: 'PriceOracle', volatility_window: int = 30):
+    def __init__(self, price_oracle: 'PriceOracle', volatility_window: int = 30, insurance_protocol: 'InsuranceProtocol' = None):
         self.price_oracle = price_oracle
         self.volatility_window = volatility_window
+        self.insurance_protocol = insurance_protocol
         
     async def calculate_risk(
         self,
@@ -94,4 +95,79 @@ class RiskCalculator:
             "liquidation_threshold": float(liquidation_threshold),
             "safety_margin": float(margin),
             "risk_level": "safe" if is_safe else "at_risk"
-        } 
+        }
+    
+    async def calculate_risk_with_insurance(
+        self,
+        chain: str,
+        user: str,
+        operation: str,
+        amount: float,
+        market_type: str = "crypto",
+        leverage: int = 1
+    ) -> Dict[str, Any]:
+        """
+        Calculate risk score considering insurance coverage.
+        
+        Returns enhanced risk assessment including insurance availability.
+        """
+        # Get base risk score
+        base_risk = await self.calculate_risk(chain, user, operation, amount)
+        
+        # Check insurance coverage if available
+        insurance_info = {
+            "coverage_available": False,
+            "coverage_amount": 0.0,
+            "effective_risk": base_risk
+        }
+        
+        if self.insurance_protocol:
+            try:
+                # Get available coverage
+                coverage = await self.insurance_protocol.get_available_coverage(
+                    chain=chain,
+                    market_type=market_type,
+                    leverage=leverage
+                )
+                
+                total_coverage = sum(float(v) for v in coverage.values())
+                
+                if total_coverage > 0:
+                    insurance_info["coverage_available"] = True
+                    insurance_info["coverage_amount"] = min(total_coverage, amount)
+                    
+                    # Reduce effective risk based on coverage
+                    coverage_ratio = min(1.0, total_coverage / amount)
+                    insurance_info["effective_risk"] = base_risk * (1 - coverage_ratio * 0.5)
+                    insurance_info["coverage_tiers"] = {
+                        tier.value: float(amount) for tier, amount in coverage.items()
+                    }
+                    
+            except Exception as e:
+                logger.warning(f"Could not calculate insurance coverage: {e}")
+        
+        return {
+            "base_risk": base_risk,
+            "insurance": insurance_info,
+            "recommended_action": self._get_risk_recommendation(
+                insurance_info["effective_risk"],
+                insurance_info["coverage_available"]
+            )
+        }
+    
+    def _get_risk_recommendation(self, effective_risk: float, has_insurance: bool) -> str:
+        """Get risk-based recommendation"""
+        if effective_risk < 0.3:
+            return "Low risk - proceed normally"
+        elif effective_risk < 0.5:
+            if has_insurance:
+                return "Moderate risk - insurance coverage available"
+            else:
+                return "Moderate risk - consider reducing position size"
+        elif effective_risk < 0.7:
+            if has_insurance:
+                return "High risk - ensure insurance coverage is active"
+            else:
+                return "High risk - strongly consider insurance or reduce position"
+        else:
+            return "Very high risk - not recommended even with insurance" 

@@ -26,11 +26,13 @@ logger = logging.getLogger(__name__)
 class LendingProtocol:
     """Manages lending and borrowing operations"""
     
-    def __init__(self, defi_manager: DeFiManager):
+    def __init__(self, defi_manager: DeFiManager, insurance_protocol: 'InsuranceProtocol' = None):
         self.defi_manager = defi_manager
+        self.insurance_protocol = insurance_protocol
         self._lending_contracts: Dict[str, str] = {}  # chain -> contract address
         self._active_loans: Dict[str, Loan] = {}  # loan_id -> loan
         self._loan_offers: Dict[str, LoanOffer] = {}  # offer_id -> offer
+        self._insurance_coverage: Dict[str, bool] = {}  # loan_id -> has_insurance
         
     async def initialize(self):
         """Initialize lending protocol contracts"""
@@ -363,6 +365,32 @@ class LendingProtocol:
                 loan.status = LoanStatus.LIQUIDATED
                 loan.liquidated_at = datetime.utcnow()
                 
+                # Check for insurance coverage
+                if self.insurance_protocol and self._insurance_coverage.get(loan_id, False):
+                    # Calculate liquidation loss
+                    collateral_value = await self._get_collateral_value(
+                        chain, loan.collateral_contract, loan.collateral_token_id
+                    )
+                    
+                    if collateral_value < loan.repayment_amount:
+                        loss_amount = loan.repayment_amount - collateral_value
+                        
+                        # Process insurance claim
+                        coverage_result = await self.insurance_protocol.cover_liquidation_loss(
+                            chain=chain,
+                            loan_id=loan_id,
+                            loss_amount=loss_amount,
+                            liquidation_details={
+                                "market_type": "crypto",
+                                "leverage": 1,  # NFT loans are 1:1
+                                "borrower": loan.borrower,
+                                "lender": loan.lender,
+                                "collateral_value": collateral_value
+                            }
+                        )
+                        
+                        logger.info(f"Insurance covered {coverage_result['amount_covered']} of {loss_amount} loss")
+                
                 logger.info(f"Loan {loan_id} liquidated")
                 
                 return {
@@ -473,4 +501,37 @@ class LendingProtocol:
         return {
             "error": "Loan not found in cache",
             "loan_id": loan_id
-        } 
+        }
+    
+    async def _get_collateral_value(
+        self,
+        chain: str,
+        nft_contract: str,
+        token_id: int
+    ) -> Decimal:
+        """Get current value of NFT collateral"""
+        # This would query price oracles or recent sales
+        # For now, return mock value
+        return Decimal("1000")
+    
+    async def record_insurance_coverage(
+        self,
+        chain: str,
+        loan_id: str,
+        amount_covered: Decimal
+    ):
+        """Record insurance coverage for a liquidated loan"""
+        loan = self._active_loans.get(loan_id)
+        if loan:
+            loan.metadata["insurance_coverage"] = str(amount_covered)
+            loan.metadata["final_loss"] = str(loan.repayment_amount - amount_covered)
+            logger.info(f"Recorded insurance coverage of {amount_covered} for loan {loan_id}")
+    
+    async def get_tvl(self) -> float:
+        """Get total value locked in lending protocol"""
+        # Sum up all active loan amounts
+        total = Decimal("0")
+        for loan in self._active_loans.values():
+            if loan.status == LoanStatus.ACTIVE:
+                total += loan.principal
+        return float(total) 
