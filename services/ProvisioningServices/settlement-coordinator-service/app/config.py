@@ -35,6 +35,13 @@ class Settings(BaseSettings):
     ignite_username: Optional[str] = os.getenv("IGNITE_USERNAME", None)
     ignite_password: Optional[str] = os.getenv("IGNITE_PASSWORD", None)
     
+    # Blockchain Configuration for Tokenization
+    enable_tokenization: bool = os.getenv("ENABLE_TOKENIZATION", "true").lower() == "true"
+    blockchain_chain_id: int = int(os.getenv("BLOCKCHAIN_CHAIN_ID", "1"))
+    blockchain_rpc_url: str = os.getenv("BLOCKCHAIN_RPC_URL", "http://localhost:8545")
+    resource_token_contract: str = os.getenv("RESOURCE_TOKEN_CONTRACT", "")
+    tokenizer_private_key: str = os.getenv("TOKENIZER_PRIVATE_KEY", "")
+    
     # Risk Calculation Parameters
     risk_alpha: float = 1.4  # SA-CCR alpha parameter
     risk_confidence_level: float = 0.95  # 95% confidence for Monte Carlo
@@ -44,7 +51,7 @@ class Settings(BaseSettings):
     risk_cache_ttl_seconds: int = 300  # 5 minutes cache for risk scores
     
     # Risk Thresholds
-    risk_threshold_low: float = 0.1  # Below 10% - low risk
+    risk_threshold_low: float = 0.1
     risk_threshold_medium: float = 0.3  # 10-30% - medium risk
     risk_threshold_high: float = 0.5  # 30-50% - high risk
     # Above 50% - critical risk
@@ -83,6 +90,7 @@ class Settings(BaseSettings):
     # Escrow Configuration
     escrow_buffer_percentage: float = 0.1  # 10% pre-provisioning buffer
     escrow_release_delay_hours: int = 24  # Hold escrow for 24 hours
+    high_risk_escrow_hours: int = 72  # 3 days for high risk settlements
     
     # Cache Configuration
     cache_backend: str = "ignite"  # or "redis" for local dev

@@ -70,6 +70,7 @@ PlatformQ transforms from a simple marketplace into a comprehensive compute util
 - **Variance Swaps** - Trade compute price volatility
 - **Quality Derivatives** - Latency futures, uptime swaps, performance bonds
 - **Structured Products** - Custom compute hedging strategies
+- **Infrastructure DeFi** - Tokenized compute resources with AMM pools, lending, and insurance
 
 #### Service Integration
 - **Automatic Allocation** - Services request compute, platform handles procurement

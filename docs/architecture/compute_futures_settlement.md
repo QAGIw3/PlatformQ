@@ -45,7 +45,24 @@ Automated provisioning and delivery of compute resources when futures contracts 
 Primary Provider → Failover Provider 1 → Failover Provider 2 → Platform Backfill
 ```
 
-### 3. Provisioning Service Integration
+### 3. Infrastructure DeFi Integration
+
+The system now integrates with Infrastructure DeFi for tokenized resource trading:
+
+**Resource Tokenization:**
+- Compute commitments are minted as ERC-1155 tokens
+- Tokens represent specific resource types, quantities, and time periods
+- Automatic token burning upon resource consumption
+- Token slashing for SLA violations
+
+**AMM Trading:**
+- ResourceAMM pools enable instant liquidity for resource tokens
+- Time decay pricing reflects expiring nature of resources
+- Cross-region arbitrage opportunities
+
+See [Infrastructure DeFi Implementation](../infrastructure-defi-implementation.md) for details.
+
+### 4. Provisioning Service Integration
 
 The provisioning service handles the actual resource allocation across multiple providers.
 

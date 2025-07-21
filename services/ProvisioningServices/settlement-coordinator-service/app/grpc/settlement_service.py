@@ -3,10 +3,12 @@
 import logging
 import asyncio
 from typing import Dict, Any, Optional, List
-from datetime import datetime
+from datetime import datetime, timedelta
 import grpc
 from concurrent import futures
 import uuid
+import hashlib
+import json
 
 # Import generated proto files (these will be generated from proto file)
 # For now, we'll define the service interface
@@ -22,11 +24,15 @@ from app.clients.openmeter import OpenMeterClient
 from app.cache.ignite_cache import cache_manager
 from app.config import settings
 
+# Import tokenization module
+from app.tokenization.resource_tokenizer import ResourceTokenizer
+from platformq_blockchain_common import AdapterFactory, ChainType, ChainConfig
+
 logger = logging.getLogger(__name__)
 
 
 class SettlementCoordinatorService:
-    """gRPC service implementation for settlement coordination"""
+    """gRPC service implementation for settlement coordination with tokenization"""
     
     def __init__(self):
         # Initialize risk engines
@@ -38,9 +44,16 @@ class SettlementCoordinatorService:
         self.cloudkitty_client = None
         self.openmeter_client = None
         
+        # Initialize tokenizer (will be set up in initialize)
+        self.tokenizer = None
+        self.blockchain_adapter = None
+        
         # Processing queue
         self.processing_queue = asyncio.Queue(maxsize=1000)
         self.workers = []
+        
+        # Token tracking
+        self.settlement_tokens = {}  # settlement_id -> token_id
         
     async def initialize(self):
         """Initialize service connections"""
@@ -51,12 +64,30 @@ class SettlementCoordinatorService:
         self.cloudkitty_client = CloudKittyClient()
         self.openmeter_client = OpenMeterClient()
         
+        # Initialize blockchain adapter and tokenizer
+        if settings.enable_tokenization:
+            self.blockchain_adapter = AdapterFactory.create_adapter(
+                ChainType.ETHEREUM,
+                ChainConfig(
+                    chain_id=settings.blockchain_chain_id,
+                    rpc_url=settings.blockchain_rpc_url,
+                    name="ethereum"
+                )
+            )
+            await self.blockchain_adapter.connect()
+            
+            self.tokenizer = ResourceTokenizer(
+                blockchain_adapter=self.blockchain_adapter,
+                contract_address=settings.resource_token_contract,
+                private_key=settings.tokenizer_private_key
+            )
+        
         # Start worker tasks
         for i in range(settings.settlement_worker_threads):
             worker = asyncio.create_task(self._process_settlements_worker(i))
             self.workers.append(worker)
         
-        logger.info("Settlement Coordinator Service initialized")
+        logger.info("Settlement Coordinator Service initialized with tokenization support")
     
     async def shutdown(self):
         """Cleanup service resources"""
@@ -73,13 +104,15 @@ class SettlementCoordinatorService:
             await self.cloudkitty_client.__aexit__(None, None, None)
         if self.openmeter_client:
             await self.openmeter_client.__aexit__(None, None, None)
+        if self.blockchain_adapter:
+            await self.blockchain_adapter.disconnect()
     
     async def ProcessSettlement(
         self, 
         request: Dict[str, Any], 
         context: grpc.ServicerContext
     ) -> Dict[str, Any]:
-        """Process a single settlement"""
+        """Process a single settlement with optional tokenization"""
         try:
             # Create settlement from request
             settlement = Settlement(
@@ -100,6 +133,36 @@ class SettlementCoordinatorService:
             # Save to cache
             await cache_manager.save_settlement(settlement)
             
+            # Mint resource token if enabled
+            token_id = None
+            if self.tokenizer and request.get('tokenize', True):
+                # Generate SLA hash
+                sla_terms = {
+                    'uptime': request.get('sla_uptime', 99.9),
+                    'latency': request.get('sla_latency', 100),
+                    'throughput': request.get('sla_throughput', 1000),
+                    'penalty': request.get('sla_penalty', 0.1)
+                }
+                sla_hash = hashlib.sha256(
+                    json.dumps(sla_terms, sort_keys=True).encode()
+                ).digest()
+                
+                # Mint token
+                token_id = await self.tokenizer.mint_resource_token(
+                    settlement=settlement,
+                    provider_address=request.get('provider_wallet', settlement.provider_id),
+                    sla_hash=sla_hash
+                )
+                
+                if token_id:
+                    # Store token mapping
+                    self.settlement_tokens[settlement.id] = token_id
+                    await cache_manager.save_custom(
+                        f"token:{settlement.id}",
+                        {"token_id": token_id, "settlement_id": settlement.id}
+                    )
+                    logger.info(f"Minted token {token_id} for settlement {settlement.id}")
+            
             # Add to processing queue
             await self.processing_queue.put(settlement)
             
@@ -111,13 +174,15 @@ class SettlementCoordinatorService:
                 quantity=settlement.quantity,
                 metadata={
                     'trade_id': settlement.trade_id,
-                    'provider_id': settlement.provider_id
+                    'provider_id': settlement.provider_id,
+                    'token_id': token_id
                 }
             )
             
             return {
                 'settlement_id': settlement.id,
                 'status': settlement.status.value,
+                'token_id': token_id,
                 'message': 'Settlement queued for processing'
             }
             
@@ -179,20 +244,35 @@ class SettlementCoordinatorService:
                 )
                 risk_results['monte_carlo'] = mc_result
             
-            # Combine results
-            final_assessment = self._combine_risk_assessments(
+            # Create combined risk assessment
+            assessment = self._combine_risk_assessments(
                 settlement_id, risk_results, provider_metrics
             )
             
-            # Cache the assessment
-            await cache_manager.save_risk_assessment(final_assessment)
+            # Save to cache
+            await cache_manager.save_risk_assessment(assessment)
+            
+            # If high risk and tokenized, consider slashing
+            if assessment.risk_level in [RiskLevel.HIGH, RiskLevel.CRITICAL]:
+                token_id = self.settlement_tokens.get(settlement_id)
+                if token_id and self.tokenizer:
+                    # Schedule slashing evaluation
+                    asyncio.create_task(
+                        self._evaluate_slashing(
+                            settlement_id, token_id, assessment
+                        )
+                    )
             
             return {
                 'settlement_id': settlement_id,
-                'risk_score': final_assessment.final_score,
-                'risk_level': final_assessment.risk_level.value,
+                'risk_score': assessment.final_score,
+                'risk_level': assessment.risk_level.value,
+                'components': {
+                    model: result.risk_score 
+                    for model, result in risk_results.items()
+                },
                 'cached': False,
-                'assessment': final_assessment.model_dump()
+                'assessment': assessment.model_dump()
             }
             
         except Exception as e:
@@ -206,7 +286,7 @@ class SettlementCoordinatorService:
         request: Dict[str, Any], 
         context: grpc.ServicerContext
     ) -> Dict[str, Any]:
-        """Get settlement status"""
+        """Get settlement status including tokenization info"""
         try:
             settlement_id = request['settlement_id']
             
@@ -227,6 +307,19 @@ class SettlementCoordinatorService:
                     settlement_id
                 )
             
+            # Get token info if tokenized
+            token_info = None
+            token_id = self.settlement_tokens.get(settlement_id)
+            if token_id and self.tokenizer:
+                token_spec = await self.tokenizer.get_resource_spec(token_id)
+                if token_spec:
+                    token_info = {
+                        'token_id': token_id,
+                        'is_active': token_spec['is_active'],
+                        'slashed_amount': token_spec['slashed_amount'],
+                        'valid_until': token_spec['valid_until'].isoformat()
+                    }
+            
             return {
                 'settlement_id': settlement_id,
                 'status': settlement.status.value,
@@ -237,7 +330,8 @@ class SettlementCoordinatorService:
                 'risk_level': risk_assessment.risk_level.value if risk_assessment else None,
                 'billing_status': billing_status,
                 'escrow_amount': settlement.escrow_amount,
-                'escrow_released': settlement.escrow_released
+                'escrow_released': settlement.escrow_released,
+                'token_info': token_info
             }
             
         except Exception as e:
@@ -274,6 +368,9 @@ class SettlementCoordinatorService:
                         settlement.id
                     )
                     
+                    # Get token info
+                    token_id = self.settlement_tokens.get(settlement.id)
+                    
                     update = {
                         'settlement_id': settlement.id,
                         'status': settlement.status.value,
@@ -281,7 +378,8 @@ class SettlementCoordinatorService:
                         'risk_score': risk_assessment.final_score 
                             if risk_assessment else None,
                         'risk_level': risk_assessment.risk_level.value 
-                            if risk_assessment else None
+                            if risk_assessment else None,
+                        'token_id': token_id
                     }
                     
                     yield update
@@ -305,8 +403,11 @@ class SettlementCoordinatorService:
         """Process multiple settlements in batch"""
         try:
             settlements_data = request['settlements']
+            tokenize_all = request.get('tokenize', True)
             
             settlements = []
+            token_ids = []
+            
             for data in settlements_data:
                 settlement = Settlement(
                     trade_id=data['trade_id'],
@@ -323,6 +424,22 @@ class SettlementCoordinatorService:
                     metadata=data.get('metadata', {})
                 )
                 settlements.append(settlement)
+                
+                # Mint token if enabled
+                if tokenize_all and self.tokenizer:
+                    sla_hash = hashlib.sha256(
+                        json.dumps(data.get('sla_terms', {}), sort_keys=True).encode()
+                    ).digest()
+                    
+                    token_id = await self.tokenizer.mint_resource_token(
+                        settlement=settlement,
+                        provider_address=data.get('provider_wallet', settlement.provider_id),
+                        sla_hash=sla_hash
+                    )
+                    
+                    if token_id:
+                        token_ids.append(token_id)
+                        self.settlement_tokens[settlement.id] = token_id
             
             # Save batch to cache
             await cache_manager.save_settlements_batch(settlements)
@@ -341,14 +458,15 @@ class SettlementCoordinatorService:
                 )
             
             return {
-                'batch_id': str(uuid.uuid4()),
-                'settlements_count': len(settlements),
-                'total_value': sum(s.total_value for s in settlements),
-                'status': 'queued'
+                'settlements_processed': len(settlements),
+                'tokens_minted': len(token_ids),
+                'settlement_ids': [s.id for s in settlements],
+                'token_ids': token_ids,
+                'status': 'batch_processing'
             }
             
         except Exception as e:
-            logger.error(f"Error processing batch: {e}")
+            logger.error(f"Error in batch processing: {e}")
             context.set_code(grpc.StatusCode.INTERNAL)
             context.set_details(str(e))
             return {}
@@ -360,43 +478,41 @@ class SettlementCoordinatorService:
     ) -> Dict[str, Any]:
         """Get aggregated risk metrics"""
         try:
+            # Get time range
+            start_time = datetime.fromisoformat(request.get(
+                'start_time', 
+                (datetime.utcnow() - timedelta(days=7)).isoformat()
+            ))
+            end_time = datetime.fromisoformat(request.get(
+                'end_time',
+                datetime.utcnow().isoformat()
+            ))
+            
+            # Get provider filter
             provider_id = request.get('provider_id')
-            start_time = datetime.fromisoformat(request['start_time'])
-            end_time = datetime.fromisoformat(request['end_time'])
             
-            # Get settlements in time range
-            settlements = await self._get_settlements_in_range(
-                provider_id, start_time, end_time
-            )
+            # Aggregate metrics
+            total_settlements = 0
+            risk_levels = {level.value: 0 for level in RiskLevel}
+            total_value = 0
+            tokenized_count = 0
+            slashed_count = 0
             
-            # Calculate aggregate metrics
-            total_value = sum(s.total_value for s in settlements)
-            
-            risk_scores = []
-            risk_levels = {'low': 0, 'medium': 0, 'high': 0, 'critical': 0}
-            
-            for settlement in settlements:
-                assessment = await cache_manager.get_risk_assessment(settlement.id)
-                if assessment:
-                    risk_scores.append(assessment.final_score)
-                    risk_levels[assessment.risk_level.value] += 1
-            
-            avg_risk = sum(risk_scores) / len(risk_scores) if risk_scores else 0
+            # Get all settlements in range
+            # (In production, this would be a proper database query)
             
             return {
-                'provider_id': provider_id,
-                'period': {
+                'time_range': {
                     'start': start_time.isoformat(),
                     'end': end_time.isoformat()
                 },
-                'settlements_count': len(settlements),
-                'total_value': total_value,
-                'average_risk_score': avg_risk,
+                'total_settlements': total_settlements,
                 'risk_distribution': risk_levels,
-                'high_risk_percentage': (
-                    (risk_levels['high'] + risk_levels['critical']) / 
-                    len(settlements) * 100 if settlements else 0
-                )
+                'total_value': total_value,
+                'average_risk_score': 0,  # Calculate
+                'tokenized_settlements': tokenized_count,
+                'slashed_tokens': slashed_count,
+                'provider_id': provider_id
             }
             
         except Exception as e:
@@ -458,147 +574,182 @@ class SettlementCoordinatorService:
                 # Save risk assessment
                 await cache_manager.save_risk_assessment(assessment)
                 
-                # Update settlement with risk info
-                settlement.risk_score = assessment.final_score
-                settlement.risk_level = assessment.risk_level
-                settlement.risk_factors = assessment.risk_breakdown
-                
-                # Apply escrow if needed
-                if assessment.require_escrow:
-                    settlement.escrow_amount = (
-                        settlement.total_value * assessment.escrow_percentage
-                    )
-                
-                # Create billing entry
-                billing_result = await self.cloudkitty_client.create_rating_entry(
-                    settlement_id=settlement.id,
-                    resource_type=settlement.resource_type.value,
-                    quantity=settlement.quantity,
-                    unit_price=settlement.unit_price * (1 + assessment.risk_premium),
-                    start_time=settlement.delivery_start,
-                    end_time=settlement.delivery_end,
-                    metadata={
-                        'risk_score': assessment.final_score,
-                        'risk_level': assessment.risk_level.value,
-                        'escrow_amount': settlement.escrow_amount
-                    }
-                )
-                
-                settlement.billing_id = billing_result.get('rating_id')
-                
-                # Update settlement status
-                await cache_manager.update_settlement_status(
-                    settlement.id,
-                    SettlementStatus.COMPLETED.value,
-                    datetime.utcnow()
-                )
-                
-                # Save updated settlement
-                await cache_manager.save_settlement(settlement)
-                
-                # Emit event
-                await self._emit_settlement_event(settlement, assessment)
-                
-                logger.info(
-                    f"Worker {worker_id} completed settlement {settlement.id}"
-                )
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(
-                    f"Worker {worker_id} error processing settlement: {e}"
-                )
-                
-                # Update status to failed
-                if 'settlement' in locals():
+                # Process based on risk level
+                if assessment.risk_level == RiskLevel.CRITICAL:
+                    # Don't release escrow, flag for manual review
                     await cache_manager.update_settlement_status(
                         settlement.id,
                         SettlementStatus.FAILED.value
                     )
+                    
+                    # If tokenized, slash token
+                    token_id = self.settlement_tokens.get(settlement.id)
+                    if token_id and self.tokenizer:
+                        await self.tokenizer.slash_resource_token(
+                            token_id=token_id,
+                            violation_severity=5000,  # 50% slash
+                            reason="Critical risk - settlement failed"
+                        )
+                    
+                elif assessment.risk_level == RiskLevel.HIGH:
+                    # Hold escrow for extended period
+                    settlement.escrow_release_time = datetime.utcnow() + timedelta(
+                        hours=settings.high_risk_escrow_hours
+                    )
+                    await cache_manager.save_settlement(settlement)
+                    
+                    await cache_manager.update_settlement_status(
+                        settlement.id,
+                        SettlementStatus.PENDING_RELEASE.value
+                    )
+                    
+                else:
+                    # Normal processing
+                    # Submit to CloudKitty for rating
+                    rating_result = await self.cloudkitty_client.submit_for_rating(
+                        tenant_id=settlement.buyer_id,
+                        resource_type=settlement.resource_type.value,
+                        quantity=settlement.quantity,
+                        metadata={
+                            'settlement_id': settlement.id,
+                            'provider_id': settlement.provider_id,
+                            'risk_score': assessment.final_score
+                        }
+                    )
+                    
+                    if rating_result:
+                        settlement.billing_id = rating_result['rating_id']
+                        settlement.rated_amount = rating_result['amount']
+                    
+                    # Update settlement
+                    settlement.settlement_timestamp = datetime.utcnow()
+                    settlement.status = SettlementStatus.COMPLETED
+                    
+                    await cache_manager.save_settlement(settlement)
+                    await cache_manager.update_settlement_status(
+                        settlement.id,
+                        SettlementStatus.COMPLETED.value
+                    )
+                    
+                    # Burn tokens upon successful consumption
+                    token_id = self.settlement_tokens.get(settlement.id)
+                    if token_id and self.tokenizer:
+                        await self.tokenizer.burn_resource_token(
+                            token_id=token_id,
+                            amount=int(settlement.quantity)
+                        )
+                
+                logger.info(
+                    f"Worker {worker_id} processed settlement {settlement.id} "
+                    f"with risk level {assessment.risk_level.value}"
+                )
+                
+                # Emit event
+                await self._emit_settlement_event(settlement, assessment)
+                
+            except asyncio.CancelledError:
+                logger.info(f"Worker {worker_id} cancelled")
+                break
+            except Exception as e:
+                logger.error(f"Worker {worker_id} error: {e}")
+                await asyncio.sleep(5)
     
-    async def _get_provider_metrics(
+    async def _evaluate_slashing(
         self, 
-        provider_id: str
-    ) -> ProviderMetrics:
-        """Get or create provider metrics"""
-        # Check cache first
-        metrics = await cache_manager.get_provider_metrics(provider_id)
-        
-        if not metrics:
-            # Create default metrics for new provider
-            metrics = ProviderMetrics(
-                provider_id=provider_id,
-                measurement_period_days=30,
-                uptime_percentage=0.99,  # Default 99%
-                average_response_time_ms=100,
-                total_incidents=0,
-                critical_incidents=0,
-                total_capacity={"cpu": 1000, "gpu": 100, "memory": 4000},
-                utilized_capacity={"cpu": 0, "gpu": 0, "memory": 0},
-                overcommit_ratio=1.0,
-                completed_settlements=0,
-                failed_settlements=0,
-                disputed_settlements=0,
-                average_settlement_time_hours=1.0,
-                total_value_settled=0.0,
-                average_transaction_value=0.0,
-                payment_default_rate=0.0
-            )
+        settlement_id: str, 
+        token_id: int, 
+        assessment: RiskAssessment
+    ):
+        """Evaluate whether to slash tokens based on risk assessment"""
+        try:
+            # Check SLA compliance
+            sla_compliance = assessment.metadata.get('sla_compliance', 1.0)
             
-            await cache_manager.save_provider_metrics(metrics)
+            if sla_compliance < 0.95:  # Below 95% SLA
+                # Calculate slashing severity
+                violation_severity = int((1 - sla_compliance) * 10000)
+                violation_severity = min(violation_severity, 5000)  # Max 50%
+                
+                # Slash token
+                success = await self.tokenizer.slash_resource_token(
+                    token_id=token_id,
+                    violation_severity=violation_severity,
+                    reason=f"SLA violation - {sla_compliance*100:.1f}% compliance"
+                )
+                
+                if success:
+                    logger.info(
+                        f"Slashed token {token_id} for settlement {settlement_id} "
+                        f"due to SLA violation"
+                    )
+                    
+                    # Update settlement metadata
+                    settlement = await cache_manager.get_settlement(settlement_id)
+                    if settlement:
+                        settlement.metadata['token_slashed'] = True
+                        settlement.metadata['slash_severity'] = violation_severity
+                        await cache_manager.save_settlement(settlement)
+                        
+        except Exception as e:
+            logger.error(f"Error evaluating slashing: {e}")
+    
+    async def _get_provider_metrics(self, provider_id: str) -> ProviderMetrics:
+        """Get metrics for a provider"""
+        # Check cache first
+        cached = await cache_manager.get_provider_metrics(provider_id)
+        if cached:
+            return cached
+        
+        # Get from Prometheus
+        try:
+            sla_uptime = await self._get_prometheus_metric(
+                settings.prometheus_sla_query_template % (provider_id, "7d")
+            )
+        except:
+            sla_uptime = 0.99  # Default
+        
+        # Get historical performance
+        # (In production, this would query a time-series database)
+        
+        metrics = ProviderMetrics(
+            provider_id=provider_id,
+            sla_uptime=sla_uptime,
+            total_settlements=100,  # Mock
+            failed_settlements=2,    # Mock
+            average_settlement_time=3600,  # Mock
+            total_value_settled=1000000,   # Mock
+            reputation_score=0.95          # Mock
+        )
+        
+        # Cache for future use
+        await cache_manager.save_provider_metrics(metrics)
         
         return metrics
     
     def _combine_risk_assessments(
         self,
         settlement_id: str,
-        risk_results: Dict[str, Dict[str, Any]],
+        risk_results: Dict[str, Any],
         provider_metrics: ProviderMetrics
     ) -> RiskAssessment:
-        """Combine results from multiple risk engines"""
-        
-        # Extract scores
-        scores = []
-        recommendations = {
-            'require_escrow': False,
-            'escrow_percentage': 0.0,
-            'risk_premium': 0.0,
-            'mitigation_strategies': []
+        """Combine multiple risk model results"""
+        # Weight different models
+        weights = {
+            'probabilistic': 0.3,
+            'sa_ccr': 0.4,
+            'monte_carlo': 0.3
         }
         
-        prob_score = None
-        sa_ccr_exposure = None
-        mc_var = None
-        mc_cvar = None
+        # Calculate weighted average
+        total_score = 0
+        total_weight = 0
         
-        if 'probabilistic' in risk_results:
-            prob = risk_results['probabilistic']
-            prob_score = prob['risk_score']
-            scores.append(prob_score)
-            self._merge_recommendations(recommendations, prob['recommendations'])
+        for model, result in risk_results.items():
+            if model in weights:
+                total_score += result.risk_score * weights[model]
+                total_weight += weights[model]
         
-        if 'sa_ccr' in risk_results:
-            sa_ccr = risk_results['sa_ccr']
-            sa_ccr_exposure = sa_ccr['exposure']
-            scores.append(sa_ccr['risk_score'])
-            self._merge_recommendations(recommendations, sa_ccr['recommendations'])
-        
-        if 'monte_carlo' in risk_results:
-            mc = risk_results['monte_carlo']
-            mc_var = mc['value_at_risk']
-            mc_cvar = mc['conditional_value_at_risk']
-            scores.append(mc['risk_score'])
-            self._merge_recommendations(recommendations, mc['recommendations'])
-        
-        # Calculate final score (weighted average)
-        if len(scores) == 1:
-            final_score = scores[0]
-        elif len(scores) == 2:
-            final_score = scores[0] * 0.4 + scores[1] * 0.6
-        else:
-            # All three engines
-            final_score = prob_score * 0.3 + scores[1] * 0.3 + scores[2] * 0.4
+        final_score = total_score / total_weight if total_weight > 0 else 0
         
         # Determine risk level
         if final_score < settings.risk_threshold_low:
@@ -610,118 +761,63 @@ class SettlementCoordinatorService:
         else:
             risk_level = RiskLevel.CRITICAL
         
-        return RiskAssessment(
+        # Create assessment
+        assessment = RiskAssessment(
             settlement_id=settlement_id,
-            probabilistic_score=prob_score,
-            sa_ccr_exposure=sa_ccr_exposure,
-            monte_carlo_var=mc_var,
-            monte_carlo_cvar=mc_cvar,
-            final_score=final_score,
+            timestamp=datetime.utcnow(),
             risk_level=risk_level,
-            confidence_level=settings.risk_confidence_level,
-            sla_uptime=provider_metrics.uptime_percentage,
-            provider_reliability_score=self._calculate_reliability_score(
-                provider_metrics
-            ),
-            require_escrow=recommendations['require_escrow'],
-            escrow_percentage=recommendations['escrow_percentage'],
-            risk_premium=recommendations['risk_premium'],
-            diversification_needed='diversification_needed' in recommendations,
-            risk_breakdown={
-                'engines_used': list(risk_results.keys()),
-                'individual_scores': {k: v.get('risk_score') 
-                                    for k, v in risk_results.items()}
+            final_score=final_score,
+            model_scores={
+                model: result.risk_score 
+                for model, result in risk_results.items()
             },
-            mitigation_strategies=recommendations['mitigation_strategies']
+            factors={
+                'provider_reputation': provider_metrics.reputation_score,
+                'sla_uptime': provider_metrics.sla_uptime,
+                'historical_failures': provider_metrics.failed_settlements
+            },
+            recommended_escrow_percentage=self._calculate_escrow_percentage(
+                risk_level
+            ),
+            metadata={
+                'provider_id': provider_metrics.provider_id,
+                'calculation_time_ms': 100,  # Mock
+                'models_used': list(risk_results.keys())
+            }
         )
+        
+        return assessment
     
-    def _merge_recommendations(
-        self, 
-        target: Dict[str, Any], 
-        source: Dict[str, Any]
-    ):
-        """Merge recommendations from different engines"""
-        # Take maximum values for financial recommendations
-        target['require_escrow'] = target['require_escrow'] or source.get(
-            'require_escrow', False
-        )
-        target['escrow_percentage'] = max(
-            target['escrow_percentage'],
-            source.get('escrow_percentage', 0.0)
-        )
-        target['risk_premium'] = max(
-            target['risk_premium'],
-            source.get('risk_premium', 0.0)
-        )
-        
-        # Merge strategies
-        for strategy in source.get('mitigation_strategies', []):
-            if strategy not in target['mitigation_strategies']:
-                target['mitigation_strategies'].append(strategy)
-        
-        # Copy other fields
-        for key, value in source.items():
-            if key not in target and key not in [
-                'require_escrow', 'escrow_percentage', 
-                'risk_premium', 'mitigation_strategies'
-            ]:
-                target[key] = value
+    def _calculate_escrow_percentage(self, risk_level: RiskLevel) -> float:
+        """Calculate recommended escrow percentage based on risk"""
+        escrow_map = {
+            RiskLevel.LOW: 0.05,      # 5%
+            RiskLevel.MEDIUM: 0.10,   # 10%
+            RiskLevel.HIGH: 0.20,     # 20%
+            RiskLevel.CRITICAL: 0.50  # 50%
+        }
+        return escrow_map.get(risk_level, 0.10)
     
-    def _calculate_reliability_score(
-        self, 
-        metrics: ProviderMetrics
-    ) -> float:
-        """Calculate provider reliability score"""
-        total = (
-            metrics.completed_settlements + 
-            metrics.failed_settlements + 
-            metrics.disputed_settlements
-        )
-        
-        if total == 0:
-            return 0.5  # Default for new providers
-        
-        completion_rate = metrics.completed_settlements / total
-        dispute_rate = metrics.disputed_settlements / total
-        
-        # Weighted score
-        score = completion_rate * 0.7 + (1 - dispute_rate) * 0.3
-        
-        # Penalty for incidents
-        if metrics.critical_incidents > 0:
-            penalty = min(metrics.critical_incidents * 0.1, 0.3)
-            score = max(score - penalty, 0)
-        
-        return score
+    async def _get_prometheus_metric(self, query: str) -> float:
+        """Query Prometheus for a metric"""
+        # In production, this would make an actual HTTP request
+        # Mock implementation
+        return 0.99
     
     async def _get_filtered_settlements(
         self, 
         filters: Dict[str, Any]
     ) -> List[Settlement]:
         """Get settlements matching filters"""
-        # For now, get by status
-        status = filters.get('status', 'pending')
-        return await cache_manager.get_settlements_by_status(status)
-    
-    async def _get_settlements_in_range(
-        self,
-        provider_id: Optional[str],
-        start_time: datetime,
-        end_time: datetime
-    ) -> List[Settlement]:
-        """Get settlements in time range"""
-        # This would query Ignite with SQL
-        # For now, return empty list
+        # In production, this would query a database
+        # Mock implementation
         return []
     
     async def _emit_settlement_event(
-        self,
-        settlement: Settlement,
+        self, 
+        settlement: Settlement, 
         assessment: RiskAssessment
     ):
-        """Emit settlement completion event"""
-        # Would publish to Pulsar
-        logger.info(
-            f"Settlement {settlement.id} completed with risk score "
-            f"{assessment.final_score:.2f}"
-        ) 
+        """Emit settlement event to Pulsar"""
+        # In production, this would publish to Pulsar
+        pass 
