@@ -76,10 +76,25 @@ class FlinkEventProcessor:
             batching_max_publish_delay_ms=50
         )
         
+        self.producers['compute'] = self.pulsar_client.create_producer(
+            'persistent://public/trading/compute-events',
+            batching_enabled=True,
+            batching_max_messages=100,
+            batching_max_publish_delay_ms=50
+        )
+        
+        self.producers['settlement'] = self.pulsar_client.create_producer(
+            'persistent://public/trading/settlement-events',
+            batching_enabled=True,
+            batching_max_messages=50,
+            batching_max_publish_delay_ms=100
+        )
+        
         # Define Flink jobs
         self._setup_order_aggregation_job()
         self._setup_risk_monitoring_job()
         self._setup_market_analytics_job()
+        self._setup_compute_analytics_job()
         
         logger.info("Flink event processor initialized")
     
@@ -197,6 +212,43 @@ class FlinkEventProcessor:
                 TUMBLE(event_time, INTERVAL '1' MINUTE)
         """)
     
+    def _setup_compute_analytics_job(self):
+        """Set up compute resource analytics Flink job."""
+        # Create compute events table
+        self.t_env.execute_sql("""
+            CREATE TABLE compute_events (
+                event_type STRING,
+                provider_id STRING,
+                resource_type STRING,
+                quantity DECIMAL(20, 8),
+                price_per_hour DECIMAL(20, 8),
+                allocation_id STRING,
+                event_time TIMESTAMP(3),
+                WATERMARK FOR event_time AS event_time - INTERVAL '5' SECOND
+            ) WITH (
+                'connector' = 'pulsar',
+                'topic' = 'persistent://public/trading/compute-events',
+                'format' = 'json',
+                'pulsar.service-url' = '{}'
+            )
+        """.format(self.settings.PULSAR_URL))
+        
+        # Compute utilization analytics
+        self.t_env.execute_sql("""
+            CREATE VIEW compute_utilization AS
+            SELECT 
+                resource_type,
+                COUNT(DISTINCT provider_id) as active_providers,
+                SUM(quantity) as total_allocated,
+                AVG(price_per_hour) as avg_price,
+                TUMBLE_START(event_time, INTERVAL '5' MINUTE) as window_start
+            FROM compute_events
+            WHERE event_type = 'resource_allocated'
+            GROUP BY 
+                resource_type,
+                TUMBLE(event_time, INTERVAL '5' MINUTE)
+        """)
+    
     async def publish_order_event(self, event: OrderEvent):
         """Publish order event to Pulsar."""
         try:
@@ -280,6 +332,70 @@ class FlinkEventProcessor:
                 )
         except Exception as e:
             logger.error(f"Failed to publish market data: {e}")
+    
+    async def publish_compute_event(self, event: Dict[str, Any]):
+        """Publish compute resource event to Pulsar."""
+        try:
+            producer = self.producers.get('compute')
+            if producer:
+                # Ensure all required fields
+                event_data = {
+                    'event_type': event.get('event_type'),
+                    'provider_id': event.get('provider_id', ''),
+                    'resource_type': event.get('resource_type', ''),
+                    'quantity': str(event.get('quantity', 0)),
+                    'price_per_hour': str(event.get('price_per_hour', 0)),
+                    'allocation_id': event.get('allocation_id', ''),
+                    'event_time': event.get('timestamp', datetime.utcnow().isoformat())
+                }
+                
+                # Add allocation details if present
+                if 'allocation' in event:
+                    allocation = event['allocation']
+                    event_data.update({
+                        'provider_id': allocation.get('provider_id', ''),
+                        'resource_type': allocation.get('resource_type', ''),
+                        'quantity': allocation.get('quantity', '0'),
+                        'price_per_hour': allocation.get('price_per_hour', '0'),
+                        'allocation_id': allocation.get('allocation_id', '')
+                    })
+                
+                message = json.dumps(event_data)
+                
+                await producer.send_async(
+                    message.encode('utf-8'),
+                    properties={
+                        'event_type': event.get('event_type', 'unknown'),
+                        'resource_type': event_data['resource_type']
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Failed to publish compute event: {e}")
+    
+    async def publish_settlement_event(self, event: Dict[str, Any]):
+        """Publish settlement event to Pulsar."""
+        try:
+            producer = self.producers.get('settlement')
+            if producer:
+                message = json.dumps({
+                    'market_id': event.get('market_id'),
+                    'settlement_price': event.get('settlement_price'),
+                    'product_type': event.get('product_type'),
+                    'settlement_type': event.get('settlement_type'),
+                    'event_type': 'settlement',
+                    'event_time': datetime.utcnow().isoformat()
+                })
+                
+                await producer.send_async(
+                    message.encode('utf-8'),
+                    properties={
+                        'event_type': 'settlement',
+                        'market_id': event.get('market_id', ''),
+                        'product_type': event.get('product_type', '')
+                    }
+                )
+        except Exception as e:
+            logger.error(f"Failed to publish settlement event: {e}")
     
     def start(self):
         """Start Flink job execution."""

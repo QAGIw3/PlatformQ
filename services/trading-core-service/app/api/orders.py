@@ -4,12 +4,13 @@ import logging
 from typing import Dict, List, Optional, Any
 from datetime import datetime
 from decimal import Decimal
+import uuid
 
-from fastapi import APIRouter, HTTPException, Depends, Query, Response
+from fastapi import APIRouter, HTTPException, Depends, Query, Response, Request
 from pydantic import BaseModel, Field, validator
 
 from ..models.order import Order, OrderType, OrderSide, OrderStatus, TimeInForce
-from ..dependencies import get_order_manager, get_matching_engine
+from ..dependencies import get_order_manager, get_matching_engine, get_current_user
 from ..core import OrderManager, MatchingEngine
 
 
@@ -30,6 +31,7 @@ class CreateOrderRequest(BaseModel):
     stop_price: Optional[Decimal] = Field(None, gt=0, description="Stop price")
     time_in_force: TimeInForce = Field(default=TimeInForce.GTC, description="Time in force")
     client_order_id: Optional[str] = Field(None, description="Client order ID")
+    enable_ml_enhancement: bool = Field(default=False, description="Enable ML enhancement for order routing")
     
     @validator('price')
     def validate_price(cls, v, values):
@@ -288,6 +290,90 @@ async def create_batch_orders(
             ))
     
     return responses
+
+
+@router.post("/orders", response_model=OrderResponse)
+async def submit_order(
+    request: CreateOrderRequest,
+    current_user: dict = Depends(get_current_user),
+    matching_engine: MatchingEngine = Depends(get_matching_engine),
+    req: Request = Request
+):
+    """Submit a new order with optional ML enhancement."""
+    try:
+        # Convert request to order data
+        order_data = {
+            "market_id": request.market_id,
+            "product_type": request.product_type,
+            "side": request.side,
+            "type": request.type,
+            "quantity": str(request.quantity),
+            "price": str(request.price) if request.price else None,
+            "stop_price": str(request.stop_price) if request.stop_price else None,
+            "time_in_force": request.time_in_force,
+            "client_order_id": request.client_order_id,
+            "user_id": current_user["user_id"],
+            "tenant_id": current_user["tenant_id"]
+        }
+        
+        # Apply ML enhancement if enabled and available
+        if request.enable_ml_enhancement and hasattr(req.app.state, 'market_intelligence'):
+            try:
+                market_intelligence = req.app.state.market_intelligence
+                order_data = await market_intelligence.enhance_order_routing(order_data)
+                logger.info(f"Applied ML enhancement to order for {request.market_id}")
+            except Exception as e:
+                logger.warning(f"Failed to apply ML enhancement: {e}")
+                # Continue without enhancement
+        
+        # Submit order
+        order_id = str(uuid.uuid4())
+        
+        # Create order object
+        order = Order(
+            user_id=current_user["user_id"],
+            market_id=order_data["market_id"],
+            product_type=order_data["product_type"],
+            side=order_data["side"],
+            type=order_data["type"],
+            quantity=Decimal(order_data["quantity"]),
+            price=Decimal(order_data["price"]) if order_data["price"] else None,
+            stop_price=Decimal(order_data["stop_price"]) if order_data["stop_price"] else None,
+            time_in_force=order_data["time_in_force"],
+            client_order_id=order_data["client_order_id"]
+        )
+        
+        # Process order through matching engine
+        result = await matching_engine.process_order(order)
+        
+        # Calculate average price if there were trades
+        avg_price = None
+        if result.get('trades'):
+            total_value = sum(
+                Decimal(t['price']) * Decimal(t['quantity']) 
+                for t in result['trades']
+            )
+            total_quantity = sum(Decimal(t['quantity']) for t in result['trades'])
+            if total_quantity > 0:
+                avg_price = str(total_value / total_quantity)
+        
+        return OrderResponse(
+            success=result['success'],
+            order_id=result['order_id'],
+            status=result.get('status'),
+            filled_quantity=result.get('filled_quantity'),
+            remaining_quantity=result.get('remaining_quantity'),
+            average_price=avg_price,
+            trades=result.get('trades'),
+            latency_ns=result.get('latency_ns'),
+            timestamp=result['timestamp'],
+            reason=result.get('reason'),
+            client_order_id=order_data["client_order_id"]
+        )
+        
+    except Exception as e:
+        logger.error(f"Error submitting order with ML enhancement: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.get("/metrics/summary", response_model=Dict[str, Any])

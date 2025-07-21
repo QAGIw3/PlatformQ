@@ -2,6 +2,7 @@
 Unified Trading API Endpoints
 
 Common trading endpoints that serve both social trading and prediction markets.
+Delegates to trading-core-service for actual order matching.
 """
 
 from fastapi import APIRouter, Depends, HTTPException, Query, WebSocket, WebSocketDisconnect
@@ -12,8 +13,8 @@ import uuid
 import asyncio
 import logging
 
-from ..shared.order_matching import Order, OrderType, OrderSide, OrderStatus, UnifiedMatchingEngine
-from ..dependencies import get_matching_engine, get_current_user
+from platformq_shared import ServiceClient
+from ..dependencies import get_trading_core_client, get_current_user
 
 logger = logging.getLogger(__name__)
 
@@ -27,42 +28,49 @@ async def submit_order(
     order_type: str,
     quantity: float,
     price: Optional[float] = None,
+    stop_price: Optional[float] = None,
     metadata: Optional[Dict[str, Any]] = None,
     current_user: dict = Depends(get_current_user),
-    matching_engine: UnifiedMatchingEngine = Depends(get_matching_engine)
+    trading_core: ServiceClient = Depends(get_trading_core_client)
 ):
     """
     Submit a new order to the unified trading platform.
     Works for both social trading strategies and prediction market positions.
     """
     try:
-        # Create order object
-        order = Order(
-            order_id=str(uuid.uuid4()),
-            market_id=market_id,
-            trader_id=current_user["user_id"],
-            side=OrderSide(side.lower()),
-            order_type=OrderType(order_type.lower()),
-            price=Decimal(str(price)) if price else None,
-            quantity=Decimal(str(quantity)),
-            metadata=metadata or {}
-        )
-        
-        # Submit to matching engine
-        order_id = await matching_engine.submit_order(order)
-        
-        return {
-            "order_id": order_id,
-            "status": "submitted",
+        # Prepare order request for trading-core-service
+        order_request = {
             "market_id": market_id,
-            "side": side,
-            "order_type": order_type,
-            "quantity": quantity,
-            "price": price
+            "product_type": metadata.get("product_type", "spot") if metadata else "spot",
+            "side": side.lower(),
+            "type": order_type.lower(),
+            "quantity": str(quantity),
+            "price": str(price) if price else None,
+            "stop_price": str(stop_price) if stop_price else None,
+            "time_in_force": metadata.get("time_in_force", "GTC") if metadata else "GTC",
+            "client_order_id": metadata.get("client_order_id") if metadata else None
         }
         
-    except ValueError as e:
-        raise HTTPException(status_code=400, detail=str(e))
+        # Submit to trading-core-service
+        result = await trading_core.request(
+            method="POST",
+            path="/api/v1/orders",
+            json=order_request,
+            headers={
+                "X-User-ID": current_user["user_id"],
+                "X-Tenant-ID": current_user["tenant_id"]
+            }
+        )
+        
+        if result.get("success"):
+            # Add platform-specific metadata
+            result["platform_metadata"] = {
+                "source": "trading-platform",
+                "original_metadata": metadata
+            }
+        
+        return result
+        
     except Exception as e:
         logger.error(f"Error submitting order: {e}")
         raise HTTPException(status_code=500, detail="Failed to submit order")
@@ -72,122 +80,61 @@ async def submit_order(
 async def cancel_order(
     order_id: str,
     current_user: dict = Depends(get_current_user),
-    matching_engine: UnifiedMatchingEngine = Depends(get_matching_engine)
+    trading_core: ServiceClient = Depends(get_trading_core_client)
 ):
-    """Cancel an existing order"""
+    """Cancel an order"""
     try:
-        # Verify ownership
-        order = matching_engine.orders_cache.get(order_id)
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found")
-            
-        if order.trader_id != current_user["user_id"]:
-            raise HTTPException(status_code=403, detail="Not authorized to cancel this order")
-            
-        # Cancel order
-        success = await matching_engine.cancel_order(order_id)
+        result = await trading_core.request(
+            method="DELETE",
+            path=f"/api/v1/orders/{order_id}",
+            headers={
+                "X-User-ID": current_user["user_id"],
+                "X-Tenant-ID": current_user["tenant_id"]
+            }
+        )
         
-        if success:
-            return {"status": "cancelled", "order_id": order_id}
-        else:
-            raise HTTPException(status_code=400, detail="Order cannot be cancelled")
-            
-    except HTTPException:
-        raise
+        return result
+        
     except Exception as e:
-        logger.error(f"Error cancelling order: {e}")
+        logger.error(f"Error canceling order: {e}")
         raise HTTPException(status_code=500, detail="Failed to cancel order")
-
-
-@router.get("/orders/{order_id}")
-async def get_order(
-    order_id: str,
-    current_user: dict = Depends(get_current_user),
-    matching_engine: UnifiedMatchingEngine = Depends(get_matching_engine)
-):
-    """Get order details"""
-    try:
-        order = matching_engine.orders_cache.get(order_id)
-        if not order:
-            raise HTTPException(status_code=404, detail="Order not found")
-            
-        # Check ownership or admin access
-        if order.trader_id != current_user["user_id"] and "admin" not in current_user.get("roles", []):
-            raise HTTPException(status_code=403, detail="Not authorized to view this order")
-            
-        return {
-            "order_id": order.order_id,
-            "market_id": order.market_id,
-            "side": order.side.value,
-            "order_type": order.order_type.value,
-            "price": str(order.price) if order.price else None,
-            "quantity": str(order.quantity),
-            "filled_quantity": str(order.filled_quantity),
-            "status": order.status.value,
-            "timestamp": order.timestamp.isoformat(),
-            "metadata": order.metadata
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Error getting order: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get order")
 
 
 @router.get("/orders")
 async def list_orders(
-    market_id: Optional[str] = None,
-    status: Optional[str] = None,
-    limit: int = Query(100, le=1000),
-    offset: int = Query(0, ge=0),
+    market_id: Optional[str] = Query(None),
+    status: Optional[str] = Query(None),
+    side: Optional[str] = Query(None),
+    page: int = Query(1, ge=1),
+    page_size: int = Query(20, ge=1, le=100),
     current_user: dict = Depends(get_current_user),
-    matching_engine: UnifiedMatchingEngine = Depends(get_matching_engine)
+    trading_core: ServiceClient = Depends(get_trading_core_client)
 ):
-    """List user's orders with optional filtering"""
+    """List user's orders"""
     try:
-        # Get all user's orders from cache
-        # In production, this would query a proper database
-        user_orders = []
-        
-        # Filter orders
-        for order_id in matching_engine.orders_cache.keys():
-            order = matching_engine.orders_cache.get(order_id)
-            
-            if order.trader_id != current_user["user_id"]:
-                continue
-                
-            if market_id and order.market_id != market_id:
-                continue
-                
-            if status and order.status.value != status:
-                continue
-                
-            user_orders.append({
-                "order_id": order.order_id,
-                "market_id": order.market_id,
-                "side": order.side.value,
-                "order_type": order.order_type.value,
-                "price": str(order.price) if order.price else None,
-                "quantity": str(order.quantity),
-                "filled_quantity": str(order.filled_quantity),
-                "status": order.status.value,
-                "timestamp": order.timestamp.isoformat()
-            })
-            
-        # Sort by timestamp descending
-        user_orders.sort(key=lambda x: x["timestamp"], reverse=True)
-        
-        # Apply pagination
-        total = len(user_orders)
-        user_orders = user_orders[offset:offset + limit]
-        
-        return {
-            "orders": user_orders,
-            "total": total,
-            "limit": limit,
-            "offset": offset
+        params = {
+            "page": page,
+            "page_size": page_size
         }
+        
+        if market_id:
+            params["market_id"] = market_id
+        if status:
+            params["status"] = status
+        if side:
+            params["side"] = side
+        
+        result = await trading_core.request(
+            method="GET",
+            path="/api/v1/orders",
+            params=params,
+            headers={
+                "X-User-ID": current_user["user_id"],
+                "X-Tenant-ID": current_user["tenant_id"]
+            }
+        )
+        
+        return result
         
     except Exception as e:
         logger.error(f"Error listing orders: {e}")
@@ -195,155 +142,138 @@ async def list_orders(
 
 
 @router.get("/markets/{market_id}/orderbook")
-async def get_order_book(
+async def get_orderbook(
     market_id: str,
-    depth: int = Query(20, le=100),
-    matching_engine: UnifiedMatchingEngine = Depends(get_matching_engine)
+    depth: int = Query(10, ge=1, le=100),
+    trading_core: ServiceClient = Depends(get_trading_core_client)
 ):
-    """Get order book snapshot for a market"""
+    """Get market orderbook"""
     try:
-        orderbook = await matching_engine.get_order_book_snapshot(market_id)
+        result = await trading_core.request(
+            method="GET",
+            path=f"/api/v1/markets/{market_id}/orderbook",
+            params={"depth": depth}
+        )
         
-        # Apply depth limit
-        orderbook["bids"] = orderbook["bids"][:depth]
-        orderbook["asks"] = orderbook["asks"][:depth]
-        
-        return {
-            "market_id": market_id,
-            "timestamp": datetime.utcnow().isoformat(),
-            "bids": orderbook["bids"],
-            "asks": orderbook["asks"],
-            "spread": calculate_spread(orderbook)
-        }
+        return result
         
     except Exception as e:
-        logger.error(f"Error getting order book: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get order book")
+        logger.error(f"Error getting orderbook: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get orderbook")
 
 
 @router.get("/markets/{market_id}/trades")
-async def get_recent_trades(
+async def get_trades(
     market_id: str,
-    limit: int = Query(100, le=500),
-    matching_engine: UnifiedMatchingEngine = Depends(get_matching_engine)
+    limit: int = Query(50, ge=1, le=500),
+    trading_core: ServiceClient = Depends(get_trading_core_client)
 ):
     """Get recent trades for a market"""
     try:
-        # Get trades from cache
-        # In production, this would query a proper database
-        trades = []
+        result = await trading_core.request(
+            method="GET",
+            path=f"/api/v1/markets/{market_id}/trades",
+            params={"limit": limit}
+        )
         
-        for trade_id in matching_engine.trades_cache.keys():
-            trade = matching_engine.trades_cache.get(trade_id)
-            
-            if trade["market_id"] == market_id:
-                trades.append(trade)
-                
-        # Sort by timestamp descending
-        trades.sort(key=lambda x: x["timestamp"], reverse=True)
-        
-        # Apply limit
-        trades = trades[:limit]
-        
-        return {
-            "market_id": market_id,
-            "trades": trades,
-            "count": len(trades)
-        }
+        return result
         
     except Exception as e:
         logger.error(f"Error getting trades: {e}")
         raise HTTPException(status_code=500, detail="Failed to get trades")
 
 
-@router.get("/markets/{market_id}/stats")
-async def get_market_stats(
-    market_id: str,
-    period: str = Query("24h", regex="^(1h|24h|7d|30d)$"),
-    matching_engine: UnifiedMatchingEngine = Depends(get_matching_engine)
+@router.get("/metrics")
+async def get_trading_metrics(
+    market_id: Optional[str] = Query(None),
+    trading_core: ServiceClient = Depends(get_trading_core_client)
 ):
-    """Get market statistics"""
+    """Get trading metrics"""
     try:
-        # Calculate stats from trades
-        # In production, this would use proper analytics
-        trades = []
-        
-        for trade_id in matching_engine.trades_cache.keys():
-            trade = matching_engine.trades_cache.get(trade_id)
-            if trade["market_id"] == market_id:
-                trades.append(trade)
-                
-        if not trades:
-            return {
-                "market_id": market_id,
-                "period": period,
-                "volume": "0",
-                "trade_count": 0,
-                "high": None,
-                "low": None,
-                "open": None,
-                "close": None
-            }
+        params = {}
+        if market_id:
+            params["market_id"] = market_id
             
-        # Calculate statistics
-        prices = [Decimal(trade["price"]) for trade in trades]
-        volumes = [Decimal(trade["quantity"]) for trade in trades]
+        result = await trading_core.request(
+            method="GET",
+            path="/api/v1/orders/metrics/summary",
+            params=params
+        )
         
-        return {
-            "market_id": market_id,
-            "period": period,
-            "volume": str(sum(volumes)),
-            "trade_count": len(trades),
-            "high": str(max(prices)),
-            "low": str(min(prices)),
-            "open": str(prices[-1]) if prices else None,
-            "close": str(prices[0]) if prices else None,
-            "average_price": str(sum(prices) / len(prices))
-        }
+        return result
         
     except Exception as e:
-        logger.error(f"Error getting market stats: {e}")
-        raise HTTPException(status_code=500, detail="Failed to get market stats")
+        logger.error(f"Error getting metrics: {e}")
+        raise HTTPException(status_code=500, detail="Failed to get metrics")
 
 
 @router.websocket("/markets/{market_id}/stream")
-async def market_data_stream(
+async def market_stream(
     websocket: WebSocket,
     market_id: str,
-    matching_engine: UnifiedMatchingEngine = Depends(get_matching_engine)
+    current_user: dict = Depends(get_current_user)
 ):
-    """WebSocket stream for real-time market data"""
+    """WebSocket endpoint for real-time market data"""
     await websocket.accept()
     
+    # Create WebSocket client to trading-core-service
+    trading_core_ws_url = f"ws://trading-core-service:8000/api/v1/ws/markets/{market_id}"
+    
     try:
-        # Subscribe to market updates
-        # In production, this would use proper pub/sub
+        # This would proxy WebSocket connection to trading-core
+        # For now, send periodic updates
         while True:
-            # Send orderbook updates
-            orderbook = await matching_engine.get_order_book_snapshot(market_id)
-            
             await websocket.send_json({
-                "type": "orderbook",
+                "type": "heartbeat",
                 "market_id": market_id,
-                "data": orderbook,
                 "timestamp": datetime.utcnow().isoformat()
             })
-            
-            # Wait before next update
-            await asyncio.sleep(1)
+            await asyncio.sleep(5)
             
     except WebSocketDisconnect:
         logger.info(f"WebSocket disconnected for market {market_id}")
     except Exception as e:
-        logger.error(f"Error in market data stream: {e}")
+        logger.error(f"WebSocket error: {e}")
         await websocket.close()
 
 
-def calculate_spread(orderbook: dict) -> Optional[str]:
-    """Calculate bid-ask spread"""
-    if orderbook["bids"] and orderbook["asks"]:
-        best_bid = Decimal(orderbook["bids"][0]["price"])
-        best_ask = Decimal(orderbook["asks"][0]["price"])
-        spread = best_ask - best_bid
-        return str(spread)
-    return None 
+@router.post("/batch-orders")
+async def submit_batch_orders(
+    orders: List[Dict[str, Any]],
+    current_user: dict = Depends(get_current_user),
+    trading_core: ServiceClient = Depends(get_trading_core_client)
+):
+    """Submit multiple orders in batch"""
+    try:
+        # Convert to trading-core format
+        batch_requests = []
+        for order in orders:
+            order_request = {
+                "market_id": order["market_id"],
+                "product_type": order.get("product_type", "spot"),
+                "side": order["side"].lower(),
+                "type": order["order_type"].lower(),
+                "quantity": str(order["quantity"]),
+                "price": str(order["price"]) if order.get("price") else None,
+                "stop_price": str(order["stop_price"]) if order.get("stop_price") else None,
+                "time_in_force": order.get("time_in_force", "GTC"),
+                "client_order_id": order.get("client_order_id")
+            }
+            batch_requests.append(order_request)
+        
+        # Submit batch to trading-core-service
+        result = await trading_core.request(
+            method="POST",
+            path="/api/v1/orders/batch",
+            json=batch_requests,
+            headers={
+                "X-User-ID": current_user["user_id"],
+                "X-Tenant-ID": current_user["tenant_id"]
+            }
+        )
+        
+        return result
+        
+    except Exception as e:
+        logger.error(f"Error submitting batch orders: {e}")
+        raise HTTPException(status_code=500, detail="Failed to submit batch orders") 

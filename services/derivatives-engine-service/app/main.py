@@ -194,7 +194,7 @@ async def lifespan(app: FastAPI):
     
     # Create margin engine
     margin_engine = MarginEngine(
-        graph_intelligence_client=graph_intelligence_client,
+        graph_intelligence_client=graph_client,
         oracle_client=oracle_client,
         ignite_cache=ignite,
         pulsar_publisher=pulsar
@@ -217,8 +217,6 @@ async def lifespan(app: FastAPI):
         ignite,
         pulsar,
         oracle_client,
-        compute_spot_market,
-        compute_futures_engine,
         pricing_engine,
         options_amm,
         margin_engine
@@ -233,8 +231,6 @@ async def lifespan(app: FastAPI):
         ignite,
         pulsar,
         oracle_client,
-        compute_spot_market,
-        compute_futures_engine,
         partner_capacity_manager
     )
     
@@ -250,7 +246,6 @@ async def lifespan(app: FastAPI):
         pulsar,
         oracle_client,
         blockchain_bridge,
-        compute_spot_market,
         collateral_engine
     )
     

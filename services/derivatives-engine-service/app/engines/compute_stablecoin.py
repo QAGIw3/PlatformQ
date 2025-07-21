@@ -1,7 +1,7 @@
 """
 Compute-Backed Stablecoin Engine
 
-Stablecoins pegged to computational units (FLOPS, GPU-hours, etc.)
+Stablecoins pegged to computational units (FLOPS, GPU-hours, etc.) integrated with trading-core-service
 """
 
 from typing import Dict, List, Optional, Tuple, Any, Set
@@ -21,7 +21,7 @@ from app.integrations import (
     OracleAggregatorClient,
     BlockchainEventBridgeClient
 )
-from app.engines.compute_spot_market import ComputeSpotMarket
+from app.integrations.trading_core_integration import TradingCoreIntegration
 from app.collateral.multi_tier_engine import MultiTierCollateralEngine
 
 logger = logging.getLogger(__name__)
@@ -37,21 +37,20 @@ class StablecoinType(Enum):
 
 
 class PegMechanism(Enum):
-    """Stabilization mechanisms"""
-    ALGORITHMIC = "algorithmic"      # Pure algorithmic stabilization
+    """Mechanism for maintaining peg"""
+    ALGORITHMIC = "algorithmic"      # Pure algorithmic (mint/burn)
     COLLATERALIZED = "collateralized" # Backed by compute collateral
-    HYBRID = "hybrid"               # Mix of algorithmic and collateral
-    REBASE = "rebase"              # Elastic supply rebase
+    HYBRID = "hybrid"                # Mix of algorithmic and collateral
+    REBASE = "rebase"                # Supply rebases to maintain peg
 
 
 class StabilizationAction(Enum):
-    """Actions to maintain peg"""
-    MINT = "mint"                   # Mint new coins
-    BURN = "burn"                   # Burn coins
-    REBASE_EXPAND = "rebase_expand" # Expand supply
-    REBASE_CONTRACT = "rebase_contract" # Contract supply
-    ADJUST_COLLATERAL = "adjust_collateral" # Change collateral ratio
-    ARBITRAGE = "arbitrage"         # Enable arbitrage
+    """Actions taken to stabilize price"""
+    MINT = "mint"
+    BURN = "burn"
+    REBASE_EXPAND = "rebase_expand"
+    REBASE_CONTRACT = "rebase_contract"
+    COLLATERAL_ADJUST = "collateral_adjust"
 
 
 @dataclass
@@ -77,14 +76,15 @@ class ComputeStablecoin:
 
 @dataclass
 class CollateralVault:
-    """Vault holding compute collateral"""
+    """Vault holding collateral for stablecoin"""
     vault_id: str
     coin_id: str
-    collateral_type: str  # Resource type
-    locked_amount: Decimal  # Amount of compute resources locked
-    value_locked: Decimal  # Value in target units
-    last_update: datetime = field(default_factory=datetime.utcnow)
-    providers: List[str] = field(default_factory=list)  # Compute providers
+    user_id: str
+    resource_type: str
+    locked_amount: Decimal
+    value_locked: Decimal  # In coin's peg units
+    lock_time: datetime = field(default_factory=datetime.utcnow)
+    unlock_time: Optional[datetime] = None
 
 
 @dataclass
@@ -94,14 +94,14 @@ class MintRequest:
     user_id: str
     coin_id: str
     amount_to_mint: Decimal
-    collateral_provided: Dict[str, Decimal]  # Resource type -> amount
+    collateral_provided: Dict[str, Decimal]
     timestamp: datetime = field(default_factory=datetime.utcnow)
-    status: str = "pending"  # pending, approved, rejected, completed
+    status: str = "pending"
 
 
 @dataclass
 class RedemptionRequest:
-    """Request to redeem stablecoins for compute"""
+    """Request to redeem stablecoins"""
     request_id: str
     user_id: str
     coin_id: str
@@ -120,13 +120,12 @@ class StabilizationEvent:
     trigger_price: Decimal
     target_price: Decimal
     amount: Decimal
-    effectiveness: Optional[Decimal] = None
     timestamp: datetime = field(default_factory=datetime.utcnow)
 
 
 class ComputeStablecoinEngine:
     """
-    Engine for compute-backed stablecoins pegged to computational units
+    Engine for compute-backed stablecoins pegged to computational units using trading-core-service
     """
     
     def __init__(
@@ -135,18 +134,22 @@ class ComputeStablecoinEngine:
         pulsar: PulsarEventPublisher,
         oracle: OracleAggregatorClient,
         blockchain_bridge: BlockchainEventBridgeClient,
-        spot_market: ComputeSpotMarket,
         collateral_engine: MultiTierCollateralEngine
     ):
         self.ignite = ignite
         self.pulsar = pulsar
         self.oracle = oracle
         self.blockchain_bridge = blockchain_bridge
-        self.spot_market = spot_market
         self.collateral_engine = collateral_engine
+        
+        # Trading core integration
+        self.trading_core = TradingCoreIntegration()
         
         # Stablecoin registry
         self.stablecoins: Dict[str, ComputeStablecoin] = {}
+        
+        # Registered stablecoin markets
+        self.registered_stablecoin_markets: Set[str] = set()
         
         # Collateral vaults
         self.vaults: Dict[str, List[CollateralVault]] = defaultdict(list)
@@ -177,6 +180,9 @@ class ComputeStablecoinEngine:
         
     async def start(self):
         """Start stablecoin engine"""
+        # Initialize trading core
+        await self.trading_core.initialize()
+        
         # Initialize default stablecoins
         await self._initialize_default_coins()
         
@@ -188,7 +194,7 @@ class ComputeStablecoinEngine:
         self._stabilization_task = asyncio.create_task(self._stabilization_loop())
         self._collateral_management_task = asyncio.create_task(self._collateral_management_loop())
         
-        logger.info("Compute stablecoin engine started")
+        logger.info("Compute stablecoin engine started with trading-core integration")
         
     async def stop(self):
         """Stop stablecoin engine"""
@@ -209,7 +215,7 @@ class ComputeStablecoinEngine:
         initial_collateral_ratio: Decimal = Decimal("1.0"),
         rebase_enabled: bool = False
     ) -> ComputeStablecoin:
-        """Create a new compute-backed stablecoin"""
+        """Create a new compute-backed stablecoin and register with trading-core"""
         
         # Validate parameters
         if peg_target <= 0:
@@ -232,6 +238,9 @@ class ComputeStablecoinEngine:
             rebase_enabled=rebase_enabled
         )
         
+        # Register stablecoin market with trading-core
+        market_id = await self._register_stablecoin_market(coin)
+        
         # Store
         self.stablecoins[coin.coin_id] = coin
         await self._store_stablecoin(coin)
@@ -243,6 +252,7 @@ class ComputeStablecoinEngine:
         # Emit event
         await self.pulsar.publish('compute.stablecoin.created', {
             'coin_id': coin.coin_id,
+            'market_id': market_id,
             'symbol': symbol,
             'name': name,
             'type': coin_type.value,
@@ -251,6 +261,35 @@ class ComputeStablecoinEngine:
         })
         
         return coin
+        
+    async def _register_stablecoin_market(self, coin: ComputeStablecoin) -> str:
+        """Register stablecoin market with trading-core"""
+        market_id = f"STABLE_{coin.symbol}"
+        
+        if market_id not in self.registered_stablecoin_markets:
+            # Register as derivatives market
+            success = await self.trading_core.register_derivatives_market(
+                market_id=market_id,
+                market_type="stablecoin",
+                underlying_asset=coin.coin_type.value,
+                specifications={
+                    "symbol": coin.symbol,
+                    "name": coin.name,
+                    "peg_mechanism": coin.peg_mechanism.value,
+                    "peg_target": str(coin.peg_target),
+                    "collateral_ratio": str(coin.collateral_ratio),
+                    "rebase_enabled": coin.rebase_enabled,
+                    "coin_type": coin.coin_type.value
+                }
+            )
+            
+            if success:
+                self.registered_stablecoin_markets.add(market_id)
+                logger.info(f"Registered stablecoin market: {market_id}")
+            else:
+                logger.error(f"Failed to register stablecoin market: {market_id}")
+                
+        return market_id
         
     async def mint_stablecoin(
         self,
@@ -268,8 +307,8 @@ class ComputeStablecoinEngine:
         # Calculate required collateral value
         required_value = amount * coin.peg_target * coin.collateral_ratio
         
-        # Value provided collateral
-        collateral_value = await self._value_collateral(collateral, coin.coin_type)
+        # Value provided collateral using trading-core prices
+        collateral_value = await self._value_collateral_via_trading_core(collateral, coin.coin_type)
         
         if collateral_value < required_value:
             return {
@@ -356,8 +395,8 @@ class ComputeStablecoinEngine:
         # Calculate compute value
         compute_value = amount * coin.peg_target
         
-        # Allocate compute resources
-        allocation = await self._allocate_compute_for_redemption(
+        # Allocate compute resources via trading-core
+        allocation = await self._allocate_compute_via_trading_core(
             coin,
             compute_value,
             preferred_resource
@@ -412,8 +451,8 @@ class ComputeStablecoinEngine:
         if not coin:
             raise ValueError(f"Stablecoin {coin_id} not found")
             
-        # Get market price based on trading activity
-        market_price = await self._get_market_price(coin)
+        # Get market price from trading-core
+        market_price = await self._get_market_price_from_trading_core(coin)
         
         # Get collateral backing
         collateral_value = await self._get_total_collateral_value(coin)
@@ -449,8 +488,8 @@ class ComputeStablecoinEngine:
         if not coin.rebase_enabled:
             return {"success": False, "error": "Rebase not enabled for this coin"}
             
-        # Get current price
-        market_price = await self._get_market_price(coin)
+        # Get current price from trading-core
+        market_price = await self._get_market_price_from_trading_core(coin)
         deviation = (market_price - coin.peg_target) / coin.peg_target
         
         if abs(deviation) < self.stabilization_params["rebase_threshold"]:
@@ -525,7 +564,7 @@ class ComputeStablecoinEngine:
         # Calculate initial peg target based on basket
         peg_target = Decimal("0")
         for resource, weight in basket_composition.items():
-            resource_price = await self._get_compute_unit_price(resource)
+            resource_price = await self._get_compute_unit_price_from_trading_core(resource)
             peg_target += resource_price * weight
             
         # Create basket coin
@@ -547,19 +586,51 @@ class ComputeStablecoinEngine:
         
         return coin
         
-    async def _value_collateral(
+    async def trade_stablecoin(
+        self,
+        user_id: str,
+        coin_id: str,
+        side: str,  # "buy" or "sell"
+        amount: Decimal,
+        order_type: str = "market"
+    ) -> Dict[str, Any]:
+        """Trade stablecoin through trading-core"""
+        
+        coin = self.stablecoins.get(coin_id)
+        if not coin:
+            raise ValueError(f"Stablecoin {coin_id} not found")
+            
+        # Get market ID
+        market_id = f"STABLE_{coin.symbol}"
+        
+        # Submit order through trading-core
+        order_result = await self.trading_core.submit_derivatives_order(
+            user_id=user_id,
+            market_id=market_id,
+            side=side,
+            quantity=str(amount),
+            order_type=order_type,
+            metadata={
+                "coin_id": coin_id,
+                "peg_target": str(coin.peg_target),
+                "coin_type": coin.coin_type.value
+            }
+        )
+        
+        return order_result
+        
+    async def _value_collateral_via_trading_core(
         self,
         collateral: Dict[str, Decimal],
         target_coin_type: StablecoinType
     ) -> Decimal:
-        """Value collateral in terms of target coin units"""
+        """Value collateral using trading-core prices"""
         
         total_value = Decimal("0")
         
         for resource_type, amount in collateral.items():
-            # Get resource price
-            spot_data = await self.spot_market.get_spot_price(resource_type)
-            resource_price = Decimal(spot_data.get("last_trade_price", "0"))
+            # Get resource price from trading-core
+            resource_price = await self._get_spot_price_from_trading_core(resource_type)
             
             if resource_price == 0:
                 continue
@@ -594,34 +665,43 @@ class ComputeStablecoinEngine:
     ) -> CollateralVault:
         """Lock collateral in vault"""
         
-        # Create vault
-        vault = CollateralVault(
-            vault_id=f"VAULT_{uuid.uuid4().hex}",
-            coin_id=coin.coin_id,
-            collateral_type="mixed",  # Multiple resource types
-            locked_amount=sum(collateral.values()),
-            value_locked=total_value
-        )
+        # Create vault for each resource type
+        vault_id = f"VAULT_{uuid.uuid4().hex}"
         
-        # Lock each resource type
         for resource_type, amount in collateral.items():
-            # Reserve capacity with partners
-            providers = await self._reserve_compute_capacity(resource_type, amount)
-            vault.providers.extend(providers)
+            vault = CollateralVault(
+                vault_id=vault_id,
+                coin_id=coin.coin_id,
+                user_id="COLLATERAL_POOL",  # Aggregate vault
+                resource_type=resource_type,
+                locked_amount=amount,
+                value_locked=total_value * (amount / sum(collateral.values()))
+            )
             
-        # Store vault
-        self.vaults[coin.coin_id].append(vault)
-        await self._store_vault(vault)
-        
+            self.vaults[coin.coin_id].append(vault)
+            await self._store_vault(vault)
+            
+            # Lock actual resources via trading-core
+            await self.trading_core.allocate_compute_resource(
+                resource_type=resource_type,
+                quantity=str(amount),
+                allocation_type="collateral_lock",
+                specifications={
+                    "vault_id": vault_id,
+                    "coin_id": coin.coin_id,
+                    "lock_duration_hours": "720"  # 30 days
+                }
+            )
+            
         return vault
         
-    async def _allocate_compute_for_redemption(
+    async def _allocate_compute_via_trading_core(
         self,
         coin: ComputeStablecoin,
         compute_value: Decimal,
         preferred_resource: Optional[str]
     ) -> Dict[str, Any]:
-        """Allocate compute resources for redemption"""
+        """Allocate compute resources through trading-core"""
         
         allocated_resources = {}
         
@@ -632,39 +712,45 @@ class ComputeStablecoinEngine:
             for resource_type, weight in composition.items():
                 amount_needed = compute_value * weight
                 
-                # Try to allocate from spot market
-                spot_order = await self.spot_market.submit_order({
-                    "user_id": "STABLECOIN_REDEMPTION",
-                    "order_type": "market",
-                    "side": "buy",
-                    "resource_type": resource_type,
-                    "quantity": amount_needed
-                })
+                # Submit compute order via trading-core
+                order_result = await self.trading_core.submit_compute_order(
+                    user_id="STABLECOIN_REDEMPTION",
+                    resource_type=resource_type,
+                    market_type="spot",
+                    quantity=str(amount_needed),
+                    specifications={
+                        "allocation_type": "redemption",
+                        "coin_id": coin.coin_id,
+                        "priority": "high"
+                    }
+                )
                 
-                if spot_order["success"]:
+                if order_result.get("success"):
                     allocated_resources[resource_type] = {
                         "amount": str(amount_needed),
-                        "order_id": spot_order["order_id"],
-                        "trades": spot_order.get("trades", [])
+                        "order_result": order_result
                     }
                     
         else:
             # Single resource type
             resource_type = preferred_resource or self._get_default_resource(coin.coin_type)
             
-            spot_order = await self.spot_market.submit_order({
-                "user_id": "STABLECOIN_REDEMPTION",
-                "order_type": "market",
-                "side": "buy",
-                "resource_type": resource_type,
-                "quantity": compute_value
-            })
+            order_result = await self.trading_core.submit_compute_order(
+                user_id="STABLECOIN_REDEMPTION",
+                resource_type=resource_type,
+                market_type="spot",
+                quantity=str(compute_value),
+                specifications={
+                    "allocation_type": "redemption",
+                    "coin_id": coin.coin_id,
+                    "priority": "high"
+                }
+            )
             
-            if spot_order["success"]:
+            if order_result.get("success"):
                 allocated_resources[resource_type] = {
                     "amount": str(compute_value),
-                    "order_id": spot_order["order_id"],
-                    "trades": spot_order.get("trades", [])
+                    "order_result": order_result
                 }
                 
         if not allocated_resources:
@@ -695,19 +781,26 @@ class ComputeStablecoinEngine:
             
             await self._update_vault(vault)
             
-    async def _get_market_price(
+    async def _get_market_price_from_trading_core(
         self,
         coin: ComputeStablecoin
     ) -> Decimal:
-        """Get market price from DEX or oracle"""
+        """Get market price from trading-core"""
         
-        # Check if coin is traded on DEX
-        # For now, simulate with small random deviation
-        base_price = coin.peg_target
-        deviation = Decimal(str(np.random.normal(0, 0.01)))  # 1% std dev
+        market_id = f"STABLE_{coin.symbol}"
         
-        market_price = base_price * (Decimal("1") + deviation)
+        # Get orderbook data
+        orderbook = await self.trading_core.get_orderbook(market_id, depth=1)
         
+        if orderbook and orderbook.get("bids") and orderbook.get("asks"):
+            best_bid = Decimal(orderbook["bids"][0]["price"])
+            best_ask = Decimal(orderbook["asks"][0]["price"])
+            market_price = (best_bid + best_ask) / 2
+        else:
+            # Fallback to peg target with small deviation
+            deviation = Decimal(str(np.random.normal(0, 0.01)))  # 1% std dev
+            market_price = coin.peg_target * (Decimal("1") + deviation)
+            
         # Store price sample
         self.price_history[coin.coin_id].append((datetime.utcnow(), market_price))
         
@@ -719,6 +812,24 @@ class ComputeStablecoinEngine:
         ]
         
         return market_price
+        
+    async def _get_spot_price_from_trading_core(self, resource_type: str) -> Decimal:
+        """Get spot price from trading-core"""
+        spot_market_id = f"COMPUTE_SPOT_{resource_type}_global"
+        orderbook = await self.trading_core.get_orderbook(spot_market_id, depth=1)
+        
+        if orderbook and orderbook.get("bids") and orderbook.get("asks"):
+            best_bid = Decimal(orderbook["bids"][0]["price"])
+            best_ask = Decimal(orderbook["asks"][0]["price"])
+            return (best_bid + best_ask) / 2
+        else:
+            # Fallback to oracle
+            oracle_price = await self.oracle.get_aggregated_price(f"COMPUTE_{resource_type}")
+            return oracle_price.price if oracle_price else Decimal("10")
+            
+    async def _get_compute_unit_price_from_trading_core(self, resource_type: str) -> Decimal:
+        """Get price of compute unit from trading-core"""
+        return await self._get_spot_price_from_trading_core(resource_type)
         
     async def _get_total_collateral_value(
         self,
@@ -737,8 +848,8 @@ class ComputeStablecoinEngine:
         while True:
             try:
                 for coin in self.stablecoins.values():
-                    # Sample price
-                    market_price = await self._get_market_price(coin)
+                    # Sample price from trading-core
+                    market_price = await self._get_market_price_from_trading_core(coin)
                     
                     # Check deviation
                     deviation = abs(market_price - coin.peg_target) / coin.peg_target
@@ -763,7 +874,7 @@ class ComputeStablecoinEngine:
             try:
                 for coin in self.stablecoins.values():
                     # Get current price
-                    market_price = await self._get_market_price(coin)
+                    market_price = await self._get_market_price_from_trading_core(coin)
                     deviation = (market_price - coin.peg_target) / coin.peg_target
                     
                     # Skip if within threshold
@@ -808,8 +919,8 @@ class ComputeStablecoinEngine:
             coin.total_supply += mint_amount
             coin.circulating_supply += mint_amount
             
-            # Distribute to arbitrageurs
-            await self._enable_arbitrage(coin, mint_amount, "mint")
+            # Distribute to arbitrageurs via trading-core
+            await self._enable_arbitrage_via_trading_core(coin, mint_amount, "mint")
             
             event = StabilizationEvent(
                 event_id=f"STAB_{uuid.uuid4().hex}",
@@ -828,8 +939,8 @@ class ComputeStablecoinEngine:
             coin.total_supply -= burn_amount
             coin.circulating_supply -= burn_amount
             
-            # Buy and burn from market
-            await self._buy_and_burn(coin, burn_amount)
+            # Buy and burn from market via trading-core
+            await self._buy_and_burn_via_trading_core(coin, burn_amount)
             
             event = StabilizationEvent(
                 event_id=f"STAB_{uuid.uuid4().hex}",
@@ -897,25 +1008,34 @@ class ComputeStablecoinEngine:
                 
             await self._update_stablecoin(coin)
             
-    async def _enable_arbitrage(
+    async def _enable_arbitrage_via_trading_core(
         self,
         coin: ComputeStablecoin,
         amount: Decimal,
         action: str
     ):
-        """Enable arbitrage to restore peg"""
+        """Enable arbitrage through trading-core"""
         
-        # Create arbitrage pool
-        await self.ignite.put(
-            f"arbitrage_pool:{coin.coin_id}",
-            {
-                "amount": str(amount),
-                "action": action,
-                "incentive": str(self.stabilization_params["arbitrage_incentive"]),
-                "expires": datetime.utcnow() + timedelta(hours=1)
-            }
-        )
+        market_id = f"STABLE_{coin.symbol}"
         
+        # Create arbitrage order
+        if action == "mint":
+            # Sell newly minted coins at slight discount
+            price = coin.peg_target * (Decimal("1") - self.stabilization_params["arbitrage_incentive"])
+            
+            await self.trading_core.submit_derivatives_order(
+                user_id="STABILIZATION_ENGINE",
+                market_id=market_id,
+                side="sell",
+                quantity=str(amount),
+                order_type="limit",
+                price=str(price),
+                metadata={
+                    "arbitrage_type": "mint_stabilization",
+                    "incentive": str(self.stabilization_params["arbitrage_incentive"])
+                }
+            )
+            
         # Emit arbitrage opportunity
         await self.pulsar.publish('compute.stablecoin.arbitrage', {
             'coin_id': coin.coin_id,
@@ -924,39 +1044,34 @@ class ComputeStablecoinEngine:
             'incentive': str(self.stabilization_params["arbitrage_incentive"])
         })
         
-    async def _buy_and_burn(
+    async def _buy_and_burn_via_trading_core(
         self,
         coin: ComputeStablecoin,
         amount: Decimal
     ):
-        """Buy coins from market and burn them"""
+        """Buy coins from market and burn them via trading-core"""
         
-        # In production, interact with DEX
-        # For now, simulate by reducing from largest holders
+        market_id = f"STABLE_{coin.symbol}"
         
-        # Find holders
-        holders = [
-            (user_id, balance)
-            for user_id, balances in self.balances.items()
-            for coin_id, balance in balances.items()
-            if coin_id == coin.coin_id and balance > 0
-        ]
+        # Submit buy order at slight premium
+        price = coin.peg_target * (Decimal("1") + self.stabilization_params["arbitrage_incentive"])
         
-        # Sort by balance
-        holders.sort(key=lambda x: x[1], reverse=True)
+        order_result = await self.trading_core.submit_derivatives_order(
+            user_id="STABILIZATION_ENGINE",
+            market_id=market_id,
+            side="buy",
+            quantity=str(amount),
+            order_type="limit",
+            price=str(price),
+            metadata={
+                "burn_order": True,
+                "stabilization_action": "buy_and_burn"
+            }
+        )
         
-        # Buy from holders
-        remaining = amount
-        for user_id, balance in holders:
-            if remaining <= 0:
-                break
-                
-            buy_amount = min(remaining, balance * Decimal("0.1"))  # Max 10% from each
-            self.balances[user_id][coin.coin_id] -= buy_amount
-            remaining -= buy_amount
-            
-            # Pay premium to seller
-            # In production, transfer value
+        if order_result.get("success"):
+            # Coins are automatically burned by reducing supply
+            logger.info(f"Bought and burned {amount} {coin.symbol} for stabilization")
             
     async def _create_arbitrage_incentive(
         self,
@@ -988,24 +1103,15 @@ class ComputeStablecoinEngine:
         while True:
             try:
                 for coin in self.stablecoins.values():
-                    if coin.collateral_ratio == 0:
-                        continue
+                    if coin.peg_mechanism in [PegMechanism.COLLATERALIZED, PegMechanism.HYBRID]:
+                        # Check collateral health
+                        collateral_value = await self._get_total_collateral_value(coin)
+                        required_collateral = coin.circulating_supply * coin.peg_target * coin.collateral_ratio
                         
-                    # Check collateral health
-                    total_collateral = await self._get_total_collateral_value(coin)
-                    required_collateral = coin.circulating_supply * coin.peg_target * coin.collateral_ratio
-                    
-                    if total_collateral < required_collateral * Decimal("0.95"):
-                        # Under-collateralized
-                        logger.warning(
-                            f"Under-collateralization detected for {coin.symbol}: "
-                            f"{total_collateral} < {required_collateral}"
-                        )
-                        
-                        # Trigger liquidations or request more collateral
-                        await self._handle_under_collateralization(coin)
-                        
-                await asyncio.sleep(300)  # Check every 5 minutes
+                        if collateral_value < required_collateral * Decimal("0.9"):  # 90% threshold
+                            await self._handle_under_collateralization(coin)
+                            
+                await asyncio.sleep(300)  # Every 5 minutes
                 
             except asyncio.CancelledError:
                 break
@@ -1061,11 +1167,6 @@ class ComputeStablecoinEngine:
         except:
             pass
             
-    async def _get_compute_unit_price(self, resource_type: str) -> Decimal:
-        """Get price of compute unit"""
-        spot_data = await self.spot_market.get_spot_price(resource_type)
-        return Decimal(spot_data.get("last_trade_price", "10"))
-        
     async def _get_flops_per_unit(self, resource_type: str) -> Decimal:
         """Get FLOPS per unit of resource"""
         # Simplified conversion
@@ -1104,16 +1205,6 @@ class ComputeStablecoinEngine:
         else:
             return "gpu"  # Default
             
-    async def _reserve_compute_capacity(
-        self,
-        resource_type: str,
-        amount: Decimal
-    ) -> List[str]:
-        """Reserve compute capacity for collateral"""
-        # In production, actually reserve with providers
-        # For now, return mock providers
-        return [f"provider_{i}" for i in range(3)]
-        
     async def _deploy_stablecoin_contract(self, coin: ComputeStablecoin):
         """Deploy stablecoin smart contract"""
         # Deploy ERC20 contract on blockchain

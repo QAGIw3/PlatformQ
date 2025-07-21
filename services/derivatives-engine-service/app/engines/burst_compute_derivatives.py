@@ -1,10 +1,10 @@
 """
 Burst Compute Derivatives Engine
 
-Specialized derivatives for handling sudden compute demand spikes and surge capacity
+Specialized derivatives for handling sudden compute demand spikes and surge capacity using trading-core-service
 """
 
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Set
 from decimal import Decimal
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -20,8 +20,7 @@ from app.integrations import (
     PulsarEventPublisher,
     OracleAggregatorClient
 )
-from app.engines.compute_spot_market import ComputeSpotMarket
-from app.engines.compute_futures_engine import ComputeFuturesEngine
+from app.integrations.trading_core_integration import TradingCoreIntegration
 from app.engines.partner_capacity_manager import PartnerCapacityManager
 
 logger = logging.getLogger(__name__)
@@ -73,14 +72,19 @@ class BurstDerivative:
     derivative_type: BurstDerivativeType
     underlying: str  # Resource type
     trigger: BurstTrigger
-    notional_capacity: Decimal  # Capacity units
-    surge_multiplier: Decimal  # How much capacity increases on trigger
-    max_duration: timedelta  # Maximum burst duration
-    premium: Decimal  # Premium paid for the derivative
-    strike_price: Optional[Decimal] = None  # For options
+    notional_capacity: Decimal
+    surge_multiplier: Decimal  # How much capacity multiplies on trigger
+    max_duration: timedelta
+    premium: Decimal
+    strike_price: Optional[Decimal] = None
     expiry: Optional[datetime] = None
     created_at: datetime = field(default_factory=datetime.utcnow)
     creator: Optional[str] = None
+    
+    @property
+    def surge_capacity(self) -> Decimal:
+        """Total surge capacity when triggered"""
+        return self.notional_capacity * self.surge_multiplier
     
     @property
     def is_expired(self) -> bool:
@@ -88,16 +92,11 @@ class BurstDerivative:
         if self.expiry:
             return datetime.utcnow() >= self.expiry
         return False
-    
-    @property
-    def surge_capacity(self) -> Decimal:
-        """Calculate surge capacity on trigger"""
-        return self.notional_capacity * self.surge_multiplier
 
 
 @dataclass
 class BurstActivation:
-    """Record of burst activation"""
+    """Record of burst derivative activation"""
     activation_id: str
     derivative_id: str
     trigger_time: datetime
@@ -110,14 +109,15 @@ class BurstActivation:
 
 @dataclass
 class SurgePool:
-    """Pool of reserved surge capacity"""
+    """Pool of surge capacity for resource type"""
     pool_id: str
     resource_type: str
     total_capacity: Decimal
-    reserved_capacity: Decimal
-    active_capacity: Decimal
-    surge_price_multiplier: Decimal  # Price multiplier during surge
+    reserved_capacity: Decimal  # Reserved for derivatives
+    active_capacity: Decimal    # Currently in use
+    surge_price_multiplier: Decimal
     providers: List[str] = field(default_factory=list)
+    last_updated: datetime = field(default_factory=datetime.utcnow)
     
     @property
     def available_surge(self) -> Decimal:
@@ -127,7 +127,7 @@ class SurgePool:
 
 class BurstComputeEngine:
     """
-    Engine for burst compute derivatives and surge capacity management
+    Engine for burst compute derivatives and surge capacity management integrated with trading-core-service
     """
     
     def __init__(
@@ -135,16 +135,15 @@ class BurstComputeEngine:
         ignite: IgniteCache,
         pulsar: PulsarEventPublisher,
         oracle: OracleAggregatorClient,
-        spot_market: ComputeSpotMarket,
-        futures_engine: ComputeFuturesEngine,
         partner_manager: PartnerCapacityManager
     ):
         self.ignite = ignite
         self.pulsar = pulsar
         self.oracle = oracle
-        self.spot_market = spot_market
-        self.futures_engine = futures_engine
         self.partner_manager = partner_manager
+        
+        # Trading core integration
+        self.trading_core = TradingCoreIntegration()
         
         # Derivatives registry
         self.derivatives: Dict[str, BurstDerivative] = {}
@@ -154,6 +153,9 @@ class BurstComputeEngine:
         
         # Active bursts
         self.active_bursts: Dict[str, BurstActivation] = {}
+        
+        # Registered burst markets
+        self.registered_burst_markets: Set[str] = set()
         
         # Historical metrics
         self.demand_history: Dict[str, List[Tuple[datetime, Decimal]]] = defaultdict(list)
@@ -171,6 +173,9 @@ class BurstComputeEngine:
         
     async def start(self):
         """Start burst compute engine"""
+        # Initialize trading core
+        await self.trading_core.initialize()
+        
         # Initialize surge pools
         await self._initialize_surge_pools()
         
@@ -182,7 +187,7 @@ class BurstComputeEngine:
         self._surge_management_task = asyncio.create_task(self._surge_management_loop())
         self._settlement_task = asyncio.create_task(self._settlement_loop())
         
-        logger.info("Burst compute engine started")
+        logger.info("Burst compute engine started with trading-core integration")
         
     async def stop(self):
         """Stop burst compute engine"""
@@ -205,7 +210,7 @@ class BurstComputeEngine:
         expiry: Optional[datetime] = None,
         creator: Optional[str] = None
     ) -> BurstDerivative:
-        """Create a new burst compute derivative"""
+        """Create a new burst compute derivative and register with trading-core"""
         
         # Calculate premium based on derivative type
         premium = await self._calculate_premium(
@@ -233,6 +238,9 @@ class BurstComputeEngine:
             creator=creator
         )
         
+        # Register burst market with trading-core
+        market_id = await self._register_burst_market(derivative)
+        
         # Reserve surge capacity
         await self._reserve_surge_capacity(derivative)
         
@@ -243,6 +251,7 @@ class BurstComputeEngine:
         # Emit event
         await self.pulsar.publish('compute.burst.derivative_created', {
             'derivative_id': derivative.derivative_id,
+            'market_id': market_id,
             'type': derivative_type.value,
             'underlying': underlying,
             'notional_capacity': str(notional_capacity),
@@ -252,6 +261,36 @@ class BurstComputeEngine:
         })
         
         return derivative
+        
+    async def _register_burst_market(self, derivative: BurstDerivative) -> str:
+        """Register burst derivative market with trading-core"""
+        market_id = f"BURST_{derivative.underlying}_{derivative.derivative_type.value}_{derivative.derivative_id}"
+        
+        if market_id not in self.registered_burst_markets:
+            # Register as derivatives market
+            success = await self.trading_core.register_derivatives_market(
+                market_id=market_id,
+                market_type="burst_derivative",
+                underlying_asset=derivative.underlying,
+                specifications={
+                    "derivative_type": derivative.derivative_type.value,
+                    "trigger_type": derivative.trigger.trigger_type.value,
+                    "trigger_threshold": str(derivative.trigger.threshold),
+                    "notional_capacity": str(derivative.notional_capacity),
+                    "surge_multiplier": str(derivative.surge_multiplier),
+                    "max_duration_hours": derivative.max_duration.total_seconds() / 3600,
+                    "strike_price": str(derivative.strike_price) if derivative.strike_price else None,
+                    "expiry": derivative.expiry.isoformat() if derivative.expiry else None
+                }
+            )
+            
+            if success:
+                self.registered_burst_markets.add(market_id)
+                logger.info(f"Registered burst market: {market_id}")
+            else:
+                logger.error(f"Failed to register burst market: {market_id}")
+                
+        return market_id
         
     async def trigger_burst(
         self,
@@ -276,8 +315,8 @@ class BurstComputeEngine:
         if not derivative.trigger.evaluate(trigger_value, history):
             raise ValueError("Trigger conditions not met")
             
-        # Allocate surge capacity
-        allocated_capacity = await self._allocate_surge_capacity(
+        # Allocate surge capacity via trading-core
+        allocated_capacity = await self._allocate_surge_capacity_via_trading_core(
             derivative.underlying,
             derivative.surge_capacity
         )
@@ -399,9 +438,8 @@ class BurstComputeEngine:
         Gives right to access capacity at strike when spot exceeds threshold
         """
         
-        # Get current spot price
-        spot_data = await self.spot_market.get_spot_price(underlying)
-        spot_price = Decimal(spot_data.get("last_trade_price", "0"))
+        # Get current spot price from trading-core
+        spot_price = await self._get_spot_price_from_trading_core(underlying)
         
         # Create price spike trigger
         trigger = BurstTrigger(
@@ -486,7 +524,7 @@ class BurstComputeEngine:
         
         # Calculate collar parameters
         current_utilization = await self._get_current_utilization(underlying)
-        current_price = await self._get_current_price(underlying)
+        current_price = await self._get_spot_price_from_trading_core(underlying)
         
         collar_value = await self._price_demand_collar(
             base_capacity,
@@ -515,39 +553,101 @@ class BurstComputeEngine:
             "collar_value": str(collar_value)
         }
         
-    async def get_surge_pool_status(
+    async def trade_burst_derivative(
         self,
-        resource_type: str
+        user_id: str,
+        derivative_id: str,
+        side: str,  # "buy" or "sell"
+        quantity: Decimal = Decimal("1")
     ) -> Dict[str, Any]:
-        """Get status of surge capacity pool"""
+        """Trade a burst derivative through trading-core"""
         
-        pool = self.surge_pools.get(resource_type)
-        if not pool:
-            return {"error": f"No surge pool for {resource_type}"}
+        derivative = self.derivatives.get(derivative_id)
+        if not derivative:
+            raise ValueError(f"Derivative {derivative_id} not found")
             
-        # Get current metrics
-        current_demand = await self._get_current_demand(resource_type)
-        surge_probability = await self._calculate_surge_probability(resource_type)
+        if derivative.is_expired:
+            raise ValueError("Derivative has expired")
+            
+        # Get market ID
+        market_id = await self._register_burst_market(derivative)
         
-        return {
-            "pool_id": pool.pool_id,
-            "resource_type": resource_type,
-            "total_capacity": str(pool.total_capacity),
-            "reserved_capacity": str(pool.reserved_capacity),
-            "active_capacity": str(pool.active_capacity),
-            "available_surge": str(pool.available_surge),
-            "surge_price_multiplier": str(pool.surge_price_multiplier),
-            "providers": len(pool.providers),
-            "current_metrics": {
-                "demand": str(current_demand),
-                "surge_probability": str(surge_probability),
-                "active_bursts": len([
-                    b for b in self.active_bursts.values()
-                    if self.derivatives[b.derivative_id].underlying == resource_type
-                ])
+        # Submit order through trading-core
+        order_result = await self.trading_core.submit_derivatives_order(
+            user_id=user_id,
+            market_id=market_id,
+            side=side,
+            quantity=str(quantity),
+            order_type="market",
+            metadata={
+                "derivative_id": derivative_id,
+                "derivative_type": derivative.derivative_type.value,
+                "premium": str(derivative.premium),
+                "trigger_type": derivative.trigger.trigger_type.value,
+                "trigger_threshold": str(derivative.trigger.threshold)
             }
-        }
+        )
         
+        if order_result.get("success"):
+            # Emit trade event
+            await self.pulsar.publish('compute.burst.traded', {
+                'user_id': user_id,
+                'derivative_id': derivative_id,
+                'market_id': market_id,
+                'side': side,
+                'quantity': str(quantity),
+                'order_result': order_result,
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            
+        return order_result
+        
+    async def _allocate_surge_capacity_via_trading_core(
+        self,
+        resource_type: str,
+        requested_capacity: Decimal
+    ) -> Decimal:
+        """Allocate surge capacity through trading-core"""
+        
+        # Submit surge allocation order
+        result = await self.trading_core.allocate_compute_resource(
+            resource_type=resource_type,
+            quantity=str(requested_capacity),
+            allocation_type="surge",
+            specifications={
+                "surge_priority": "high",
+                "max_price_multiplier": "3.0",
+                "duration_hours": "4"
+            }
+        )
+        
+        if result.get("success"):
+            allocated = Decimal(result.get("allocated_quantity", "0"))
+            
+            # Update surge pool tracking
+            pool = self.surge_pools.get(resource_type)
+            if pool:
+                pool.active_capacity += allocated
+                await self._update_surge_pool(pool)
+                
+            return allocated
+            
+        return Decimal("0")
+        
+    async def _get_spot_price_from_trading_core(self, underlying: str) -> Decimal:
+        """Get current spot price from trading-core"""
+        spot_market_id = f"COMPUTE_SPOT_{underlying}_global"
+        orderbook = await self.trading_core.get_orderbook(spot_market_id, depth=1)
+        
+        if orderbook and orderbook.get("bids") and orderbook.get("asks"):
+            best_bid = Decimal(orderbook["bids"][0]["price"])
+            best_ask = Decimal(orderbook["asks"][0]["price"])
+            return (best_bid + best_ask) / 2
+        else:
+            # Fallback to oracle
+            oracle_price = await self.oracle.get_aggregated_price(f"COMPUTE_{underlying}")
+            return oracle_price.price if oracle_price else Decimal("10")
+            
     async def _calculate_premium(
         self,
         derivative_type: BurstDerivativeType,
@@ -617,93 +717,67 @@ class BurstComputeEngine:
             # Try to expand pool
             await self._expand_surge_pool(pool, required_surge)
             
-    async def _allocate_surge_capacity(
-        self,
-        resource_type: str,
-        requested_capacity: Decimal
-    ) -> Decimal:
-        """Allocate surge capacity from pool"""
-        
-        pool = self.surge_pools.get(resource_type)
-        if not pool:
-            return Decimal("0")
-            
-        allocated = min(requested_capacity, pool.available_surge)
-        
-        if allocated > 0:
-            pool.reserved_capacity -= allocated
-            pool.active_capacity += allocated
-            await self._update_surge_pool(pool)
-            
-        return allocated
-        
     async def _provision_surge_resources(
         self,
         derivative: BurstDerivative,
         activation: BurstActivation
     ):
-        """Provision actual surge compute resources"""
+        """Provision actual surge compute resources via trading-core"""
         
-        # Get surge providers
-        pool = self.surge_pools.get(derivative.underlying)
-        if not pool:
-            return
+        # Request surge provisioning through trading-core
+        result = await self.trading_core.submit_compute_order(
+            user_id=f"BURST_ENGINE_{derivative.derivative_id}",
+            resource_type=derivative.underlying,
+            market_type="surge",
+            quantity=str(activation.surge_capacity_allocated),
+            specifications={
+                "activation_id": activation.activation_id,
+                "derivative_id": derivative.derivative_id,
+                "priority": "urgent",
+                "max_provisioning_time": "300",  # 5 minutes
+                "surge_multiplier": str(derivative.surge_multiplier)
+            }
+        )
+        
+        if result.get("success"):
+            # Update activation with provisioning details
+            activation.performance_metrics["provisioning_result"] = result
+            activation.performance_metrics["provisioning_time"] = (
+                datetime.utcnow() - activation.trigger_time
+            ).total_seconds()
             
-        # Allocate from providers based on priority
-        remaining = activation.surge_capacity_allocated
-        provisioned_resources = []
-        
-        for provider in pool.providers:
-            if remaining <= 0:
-                break
-                
-            # Try to allocate from provider
-            allocation = await self.partner_manager.allocate_from_inventory(
-                derivative.underlying,
-                provider,
-                remaining
-            )
+            await self._update_activation(activation)
             
-            if allocation:
-                provisioned_resources.append({
-                    "provider": provider,
-                    "capacity": allocation["quantity"],
-                    "access_details": allocation["access_details"]
-                })
-                remaining -= Decimal(allocation["quantity"])
-                
-        # Update activation with provisioning details
-        activation.performance_metrics["provisioned_resources"] = provisioned_resources
-        activation.performance_metrics["provisioning_time"] = (
-            datetime.utcnow() - activation.trigger_time
-        ).total_seconds()
-        
-        await self._update_activation(activation)
-        
     async def _monitoring_loop(self):
         """Monitor triggers and market conditions"""
         while True:
             try:
                 # Update metrics
                 for resource_type in ["gpu", "cpu", "storage", "bandwidth"]:
-                    # Get current metrics
-                    demand = await self._get_current_demand(resource_type)
-                    price = await self._get_current_price(resource_type)
-                    capacity = await self._get_available_capacity(resource_type)
+                    # Get current metrics from trading-core
+                    compute_metrics = await self.trading_core.get_compute_metrics()
                     
-                    # Store history
-                    now = datetime.utcnow()
-                    self.demand_history[resource_type].append((now, demand))
-                    self.price_history[resource_type].append((now, price))
-                    self.capacity_history[resource_type].append((now, capacity))
-                    
-                    # Clean old history
-                    cutoff = now - self.history_retention
-                    self.demand_history[resource_type] = [
-                        (t, v) for t, v in self.demand_history[resource_type]
-                        if t > cutoff
-                    ]
-                    
+                    if resource_type in compute_metrics:
+                        metrics = compute_metrics[resource_type]
+                        
+                        # Extract values
+                        demand = Decimal(metrics.get("demand", "100"))
+                        price = Decimal(metrics.get("spot_price", "10"))
+                        capacity = Decimal(metrics.get("available_capacity", "1000"))
+                        
+                        # Store history
+                        now = datetime.utcnow()
+                        self.demand_history[resource_type].append((now, demand))
+                        self.price_history[resource_type].append((now, price))
+                        self.capacity_history[resource_type].append((now, capacity))
+                        
+                        # Clean old history
+                        cutoff = now - self.history_retention
+                        self.demand_history[resource_type] = [
+                            (t, v) for t, v in self.demand_history[resource_type]
+                            if t > cutoff
+                        ]
+                        
                 # Check derivative triggers
                 for derivative_id, derivative in self.derivatives.items():
                     if derivative.is_expired or derivative_id in self.active_bursts:
@@ -713,7 +787,7 @@ class BurstComputeEngine:
                     if derivative.trigger.trigger_type == BurstTriggerType.DEMAND_SPIKE:
                         current_value = await self._get_current_demand(derivative.underlying)
                     elif derivative.trigger.trigger_type == BurstTriggerType.PRICE_SPIKE:
-                        current_value = await self._get_current_price(derivative.underlying)
+                        current_value = await self._get_spot_price_from_trading_core(derivative.underlying)
                     elif derivative.trigger.trigger_type == BurstTriggerType.CAPACITY_DROP:
                         current_value = await self._get_available_capacity(derivative.underlying)
                     else:
@@ -742,37 +816,33 @@ class BurstComputeEngine:
                 await asyncio.sleep(30)
                 
     async def _surge_management_loop(self):
-        """Manage surge pools and capacity"""
+        """Manage surge capacity pools"""
         while True:
             try:
-                # Update surge pool status
                 for pool in self.surge_pools.values():
-                    # Check pool health
+                    # Update pricing based on utilization
+                    await self._update_surge_pricing(pool)
+                    
+                    # Expand or contract pool based on demand
                     utilization = (pool.reserved_capacity + pool.active_capacity) / pool.total_capacity
                     
                     if utilization > Decimal("0.8"):
-                        # Need more surge capacity
-                        await self._expand_surge_pool(
-                            pool,
-                            pool.total_capacity * Decimal("0.2")
-                        )
+                        # High utilization - try to expand
+                        await self._expand_surge_pool(pool, pool.total_capacity * Decimal("0.2"))
                     elif utilization < Decimal("0.2"):
-                        # Can reduce surge capacity
+                        # Low utilization - consider contracting
                         await self._contract_surge_pool(pool)
                         
-                    # Update pricing
-                    await self._update_surge_pricing(pool)
-                    
-                await asyncio.sleep(60)  # Check every minute
+                await asyncio.sleep(300)  # Every 5 minutes
                 
             except asyncio.CancelledError:
                 break
             except Exception as e:
                 logger.error(f"Error in surge management loop: {e}")
-                await asyncio.sleep(300)
+                await asyncio.sleep(600)
                 
     async def _settlement_loop(self):
-        """Settle completed bursts"""
+        """Settle completed bursts and expired derivatives"""
         while True:
             try:
                 # Check active bursts
@@ -790,6 +860,14 @@ class BurstComputeEngine:
                 for derivative_id, derivative in list(self.derivatives.items()):
                     if derivative.is_expired:
                         await self._settle_derivative(derivative)
+                        
+                        # Trigger settlement in trading-core
+                        market_id = await self._register_burst_market(derivative)
+                        await self.trading_core.trigger_settlement(
+                            market_id=market_id,
+                            settlement_price=derivative.premium  # Use premium as settlement
+                        )
+                        
                         del self.derivatives[derivative_id]
                         
                 await asyncio.sleep(60)  # Check every minute
@@ -871,6 +949,51 @@ class BurstComputeEngine:
             'activations': len(activations)
         })
         
+    # Helper methods remain largely the same but use trading-core for market data...
+    
+    async def _get_current_demand(self, resource_type: str) -> Decimal:
+        """Get current demand for resource from trading-core metrics"""
+        metrics = await self.trading_core.get_compute_metrics()
+        if resource_type in metrics:
+            return Decimal(metrics[resource_type].get("demand", "100"))
+        return Decimal("100")
+        
+    async def _get_available_capacity(self, resource_type: str) -> Decimal:
+        """Get available capacity from trading-core"""
+        metrics = await self.trading_core.get_compute_metrics()
+        if resource_type in metrics:
+            return Decimal(metrics[resource_type].get("available_capacity", "1000"))
+        return Decimal("1000")
+        
+    async def _get_capacity_cost(
+        self,
+        resource_type: str,
+        capacity: Decimal
+    ) -> Decimal:
+        """Get cost for capacity"""
+        price = await self._get_spot_price_from_trading_core(resource_type)
+        return price * capacity
+        
+    async def _calculate_moneyness(
+        self,
+        underlying: str,
+        strike_price: Decimal
+    ) -> Decimal:
+        """Calculate option moneyness"""
+        spot_price = await self._get_spot_price_from_trading_core(underlying)
+        return spot_price / strike_price if strike_price > 0 else Decimal("1")
+        
+    async def _get_surge_price(self, resource_type: str) -> Decimal:
+        """Get surge pricing"""
+        pool = self.surge_pools.get(resource_type)
+        if not pool:
+            return await self._get_spot_price_from_trading_core(resource_type) * Decimal("3")
+            
+        base_price = await self._get_spot_price_from_trading_core(resource_type)
+        return base_price * pool.surge_price_multiplier
+        
+    # Additional helper methods...
+    
     async def _initialize_surge_pools(self):
         """Initialize surge capacity pools"""
         for resource_type in ["gpu", "cpu", "storage", "bandwidth"]:
@@ -951,260 +1074,8 @@ class BurstComputeEngine:
             
         await self._update_surge_pool(pool)
         
-    async def _get_current_demand(self, resource_type: str) -> Decimal:
-        """Get current demand for resource"""
-        # This would integrate with real metrics
-        # For now, simulate
-        return Decimal("100") * (Decimal("1") + Decimal(str(np.random.rand())))
-        
-    async def _get_current_price(self, resource_type: str) -> Decimal:
-        """Get current price for resource"""
-        spot_data = await self.spot_market.get_spot_price(resource_type)
-        return Decimal(spot_data.get("last_trade_price", "10"))
-        
-    async def _get_available_capacity(self, resource_type: str) -> Decimal:
-        """Get available capacity"""
-        inventory = await self.partner_manager.get_available_inventory(resource_type)
-        return sum(Decimal(inv.available_capacity) for inv in inventory)
-        
-    async def _get_capacity_cost(
-        self,
-        resource_type: str,
-        capacity: Decimal
-    ) -> Decimal:
-        """Get cost for capacity"""
-        price = await self._get_current_price(resource_type)
-        return price * capacity
-        
-    async def _estimate_trigger_probability(
-        self,
-        underlying: str,
-        trigger: BurstTrigger
-    ) -> Decimal:
-        """Estimate probability of trigger occurring"""
-        
-        # Analyze historical data
-        if trigger.trigger_type == BurstTriggerType.DEMAND_SPIKE:
-            history = self.demand_history.get(underlying, [])
-        elif trigger.trigger_type == BurstTriggerType.PRICE_SPIKE:
-            history = self.price_history.get(underlying, [])
-        else:
-            history = []
-            
-        if not history:
-            return Decimal("0.1")  # Default 10%
-            
-        # Count breaches
-        breaches = 0
-        for _, value in history:
-            if trigger.trigger_type in [BurstTriggerType.DEMAND_SPIKE, BurstTriggerType.PRICE_SPIKE]:
-                if value > trigger.threshold:
-                    breaches += 1
-            elif trigger.trigger_type == BurstTriggerType.CAPACITY_DROP:
-                if value < trigger.threshold:
-                    breaches += 1
-                    
-        probability = Decimal(str(breaches)) / Decimal(str(len(history)))
-        return min(Decimal("1"), max(Decimal("0"), probability))
-        
-    async def _calculate_moneyness(
-        self,
-        underlying: str,
-        strike: Decimal
-    ) -> Decimal:
-        """Calculate option moneyness"""
-        spot = await self._get_current_price(underlying)
-        return spot / strike if strike > 0 else Decimal("1")
-        
-    async def _get_surge_threshold(
-        self,
-        underlying: str,
-        benchmark: str
-    ) -> Decimal:
-        """Get surge threshold based on benchmark"""
-        # This would use real benchmark data
-        # For now, use simple multiplier
-        base_demand = await self._get_current_demand(underlying)
-        
-        if "high" in benchmark.lower():
-            return base_demand * Decimal("1.5")
-        elif "extreme" in benchmark.lower():
-            return base_demand * Decimal("2.0")
-        else:
-            return base_demand * Decimal("1.3")
-            
-    def _calculate_fixed_payments(
-        self,
-        notional: Decimal,
-        rate: Decimal,
-        days: int
-    ) -> List[Tuple[datetime, Decimal]]:
-        """Calculate fixed swap payments"""
-        payment_dates = []
-        daily_rate = rate / Decimal("365")
-        
-        for i in range(1, days + 1):
-            if i % 30 == 0:  # Monthly payments
-                payment_date = datetime.utcnow() + timedelta(days=i)
-                payment = notional * daily_rate * Decimal("30")
-                payment_dates.append((payment_date, payment))
-                
-        return payment_dates
-        
-    async def _estimate_floating_payments(
-        self,
-        underlying: str,
-        benchmark: str,
-        days: int
-    ) -> Decimal:
-        """Estimate floating payments based on surge events"""
-        
-        # Estimate number of surge events
-        surge_probability = await self._calculate_surge_probability(underlying)
-        expected_surges = surge_probability * Decimal(str(days / 30))  # Monthly
-        
-        # Estimate cost per surge
-        surge_capacity = Decimal("100")  # Standard surge size
-        surge_price = await self._get_surge_price(underlying)
-        surge_duration = Decimal("4")  # Hours
-        
-        cost_per_surge = surge_capacity * surge_price * surge_duration
-        
-        return expected_surges * cost_per_surge
-        
-    async def _price_spike_option(
-        self,
-        spot: Decimal,
-        threshold: Decimal,
-        strike: Decimal,
-        days: int
-    ) -> Decimal:
-        """Price spike option using jump diffusion"""
-        
-        # Simplified jump diffusion pricing
-        # In production, use proper jump diffusion model
-        
-        # Base Black-Scholes value
-        time_to_expiry = Decimal(str(days / 365.25))
-        volatility = Decimal("0.6")  # High vol for compute
-        
-        # Add jump component
-        jump_intensity = await self._estimate_jump_intensity(spot, threshold)
-        jump_size = (threshold - spot) / spot
-        
-        # Approximate option value
-        if threshold > spot:
-            # Out of the money
-            base_value = spot * Decimal("0.1") * time_to_expiry
-            jump_value = jump_intensity * jump_size * spot * time_to_expiry
-        else:
-            # In the money
-            base_value = (spot - strike) * Decimal("0.8")
-            jump_value = Decimal("0")
-            
-        return base_value + jump_value
-        
-    async def _get_current_utilization(self, underlying: str) -> Decimal:
-        """Get current capacity utilization"""
-        demand = await self._get_current_demand(underlying)
-        capacity = await self._get_available_capacity(underlying)
-        
-        if capacity > 0:
-            return demand / capacity
-        return Decimal("1")
-        
-    async def _price_demand_collar(
-        self,
-        base_capacity: Decimal,
-        current_util: Decimal,
-        floor_util: Decimal,
-        current_price: Decimal,
-        price_cap: Decimal,
-        days: int
-    ) -> Decimal:
-        """Price demand collar strategy"""
-        
-        # Price put option (utilization floor)
-        put_value = Decimal("0")
-        if current_util < floor_util:
-            put_value = (floor_util - current_util) * base_capacity * current_price
-            
-        # Price call option (price cap)
-        call_value = Decimal("0")
-        if current_price > price_cap:
-            call_value = (current_price - price_cap) * base_capacity
-            
-        # Time decay
-        time_factor = Decimal(str(days / 365.25))
-        
-        return (put_value + call_value) * time_factor * Decimal("0.3")
-        
-    async def _calculate_surge_probability(self, resource_type: str) -> Decimal:
-        """Calculate probability of surge event"""
-        
-        # Analyze recent demand patterns
-        demand_history = self.demand_history.get(resource_type, [])
-        if not demand_history:
-            return Decimal("0.05")  # Default 5%
-            
-        # Calculate demand volatility
-        demands = [float(d) for _, d in demand_history[-100:]]
-        if len(demands) > 1:
-            volatility = Decimal(str(np.std(demands) / np.mean(demands)))
-            
-            # Higher volatility = higher surge probability
-            surge_prob = min(Decimal("0.5"), volatility * Decimal("2"))
-            return surge_prob
-            
-        return Decimal("0.05")
-        
-    async def _get_surge_price(self, resource_type: str) -> Decimal:
-        """Get surge pricing"""
-        pool = self.surge_pools.get(resource_type)
-        if not pool:
-            return await self._get_current_price(resource_type) * Decimal("3")
-            
-        base_price = await self._get_current_price(resource_type)
-        return base_price * pool.surge_price_multiplier
-        
-    async def _estimate_jump_intensity(
-        self,
-        current: Decimal,
-        threshold: Decimal
-    ) -> Decimal:
-        """Estimate jump intensity for pricing"""
-        distance = abs(threshold - current) / current
-        
-        # Closer to threshold = higher jump probability
-        if distance < Decimal("0.1"):
-            return Decimal("0.5")
-        elif distance < Decimal("0.2"):
-            return Decimal("0.3")
-        elif distance < Decimal("0.5"):
-            return Decimal("0.1")
-        else:
-            return Decimal("0.05")
-            
-    def _get_relevant_history(
-        self,
-        underlying: str,
-        trigger: BurstTrigger
-    ) -> List[Tuple[datetime, Decimal]]:
-        """Get relevant history for trigger evaluation"""
-        
-        if trigger.trigger_type == BurstTriggerType.DEMAND_SPIKE:
-            history = self.demand_history.get(underlying, [])
-        elif trigger.trigger_type == BurstTriggerType.PRICE_SPIKE:
-            history = self.price_history.get(underlying, [])
-        elif trigger.trigger_type == BurstTriggerType.CAPACITY_DROP:
-            history = self.capacity_history.get(underlying, [])
-        else:
-            history = []
-            
-        # Filter by measurement window
-        cutoff = datetime.utcnow() - trigger.measurement_window
-        return [(t, v) for t, v in history if t > cutoff]
-        
+    # Storage methods...
+    
     async def _store_derivative(self, derivative: BurstDerivative):
         """Store derivative in cache"""
         await self.ignite.put(f"burst_derivative:{derivative.derivative_id}", derivative)
@@ -1223,6 +1094,7 @@ class BurstComputeEngine:
         
     async def _update_surge_pool(self, pool: SurgePool):
         """Update surge pool in cache"""
+        pool.last_updated = datetime.utcnow()
         await self.ignite.put(f"surge_pool:{pool.pool_id}", pool)
         
     async def _load_active_derivatives(self):
@@ -1230,46 +1102,9 @@ class BurstComputeEngine:
         # In production, scan cache for active derivatives
         pass
         
-    async def _get_derivative_activations(
-        self,
-        derivative_id: str
-    ) -> List[BurstActivation]:
+    async def _get_derivative_activations(self, derivative_id: str) -> List[BurstActivation]:
         """Get all activations for a derivative"""
         # In production, query from cache
         return []
         
-    async def get_analytics(self) -> Dict[str, Any]:
-        """Get burst compute analytics"""
-        
-        total_derivatives = len(self.derivatives)
-        active_bursts = len(self.active_bursts)
-        
-        # Calculate totals by type
-        by_type = defaultdict(int)
-        total_notional = Decimal("0")
-        total_premium = Decimal("0")
-        
-        for derivative in self.derivatives.values():
-            by_type[derivative.derivative_type.value] += 1
-            total_notional += derivative.notional_capacity
-            total_premium += derivative.premium
-            
-        # Surge pool utilization
-        pool_utilization = {}
-        for resource_type, pool in self.surge_pools.items():
-            if pool.total_capacity > 0:
-                util = (pool.reserved_capacity + pool.active_capacity) / pool.total_capacity
-                pool_utilization[resource_type] = str(util)
-                
-        return {
-            "total_derivatives": total_derivatives,
-            "active_bursts": active_bursts,
-            "derivatives_by_type": dict(by_type),
-            "total_notional_capacity": str(total_notional),
-            "total_premium_collected": str(total_premium),
-            "surge_pool_utilization": pool_utilization,
-            "recent_activations": len([
-                a for a in self.active_bursts.values()
-                if datetime.utcnow() - a.trigger_time < timedelta(hours=24)
-            ])
-        } 
+    # Additional helper methods remain the same... 

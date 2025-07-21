@@ -1,13 +1,13 @@
 """
 Compute Futures Engine
 
-Implements electricity market-style mechanisms for compute resources.
+Implements electricity market-style mechanisms for compute resources using trading-core-service.
 """
 
 import asyncio
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Set
 from decimal import Decimal
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from dataclasses import dataclass, field
 from enum import Enum
 import numpy as np
@@ -16,6 +16,7 @@ import logging
 import httpx
 
 from app.integrations import IgniteCache, PulsarEventPublisher, OracleAggregatorClient
+from app.integrations.trading_core_integration import TradingCoreIntegration
 from app.models.market import Market, MarketType
 
 logger = logging.getLogger(__name__)
@@ -33,29 +34,30 @@ class MarketClearingResult:
 
 @dataclass
 class ComputeBid:
-    """Bid for compute resources"""
+    """Bid for compute resources in day-ahead market"""
     bid_id: str
     user_id: str
-    hour: int
-    resource_type: str
+    resource_type: str  # GPU, CPU, etc.
     quantity: Decimal
-    max_price: Decimal
-    flexible: bool = False
-    submitted_at: datetime = field(default_factory=datetime.utcnow)
-    
+    price: Decimal  # Price per unit
+    delivery_hour: int  # 0-23
+    location: str
+    flexibility: str = "fixed"  # fixed, flexible, interruptible
+    metadata: Dict[str, Any] = field(default_factory=dict)
+
 
 @dataclass
 class ComputeOffer:
     """Offer to provide compute resources"""
     offer_id: str
     provider_id: str
-    hour: int
     resource_type: str
     quantity: Decimal
-    min_price: Decimal
-    ramp_rate: Decimal  # How fast can scale up/down
-    location_zone: str
-    submitted_at: datetime = field(default_factory=datetime.utcnow)
+    price: Decimal
+    delivery_hour: int
+    location: str
+    reliability_score: float = 1.0
+    metadata: Dict[str, Any] = field(default_factory=dict)
 
 
 @dataclass
@@ -72,13 +74,13 @@ class ComputeSettlement:
     """Physical settlement record"""
     settlement_id: str
     contract_id: str
+    trade_id: str
     buyer_id: str
-    provider_id: str
+    seller_id: Optional[str] = None
     resource_type: str
     quantity: Decimal
-    delivery_start: datetime
-    duration_hours: int
-    provisioning_status: str  # "pending", "provisioned", "failed", "completed"
+    delivery_date: datetime
+    status: str  # "pending", "provisioned", "failed", "completed"
     sla_violations: List[Dict] = field(default_factory=list)
     failover_used: bool = False
     failover_provider: Optional[str] = None
@@ -139,9 +141,12 @@ class DayAheadMarket:
     Day-ahead market for compute resources (similar to electricity DAM)
     """
     
-    def __init__(self, delivery_date: datetime, resource_type: str):
-        self.delivery_date = delivery_date
+    def __init__(self, market_id: str, resource_type: str, delivery_date: date, location: str, trading_core: TradingCoreIntegration):
+        self.market_id = market_id
         self.resource_type = resource_type
+        self.delivery_date = delivery_date
+        self.location = location
+        self.trading_core = trading_core
         self.bids: Dict[int, List[ComputeBid]] = defaultdict(list)  # hour -> bids
         self.offers: Dict[int, List[ComputeOffer]] = defaultdict(list)  # hour -> offers
         self.clearing_prices: Dict[int, Decimal] = {}
@@ -163,11 +168,12 @@ class DayAheadMarket:
         bid = ComputeBid(
             bid_id=f"bid_{user_id}_{hour}_{datetime.utcnow().timestamp()}",
             user_id=user_id,
-            hour=hour,
             resource_type=self.resource_type,
             quantity=quantity,
-            max_price=max_price,
-            flexible=flexible
+            price=max_price,
+            delivery_hour=hour,
+            location=self.location,
+            flexible="flexible" if flexible else "fixed"
         )
         
         self.bids[hour].append(bid)
@@ -200,12 +206,12 @@ class DayAheadMarket:
         offer = ComputeOffer(
             offer_id=f"offer_{provider_id}_{hour}_{datetime.utcnow().timestamp()}",
             provider_id=provider_id,
-            hour=hour,
             resource_type=self.resource_type,
             quantity=quantity,
-            min_price=min_price,
-            ramp_rate=ramp_rate,
-            location_zone=location_zone
+            price=min_price,
+            delivery_hour=hour,
+            location=self.location,
+            reliability_score=1.0 # Placeholder, would be calculated
         )
         
         self.offers[hour].append(offer)
@@ -219,8 +225,8 @@ class DayAheadMarket:
         results = {}
         
         for hour in range(24):
-            hour_bids = sorted(self.bids[hour], key=lambda x: x.max_price, reverse=True)
-            hour_offers = sorted(self.offers[hour], key=lambda x: x.min_price)
+            hour_bids = sorted(self.bids[hour], key=lambda x: x.price, reverse=True)
+            hour_offers = sorted(self.offers[hour], key=lambda x: x.price)
             
             # Find market clearing point
             cleared_quantity = Decimal("0")
@@ -242,8 +248,8 @@ class DayAheadMarket:
             results[hour] = {
                 "clearing_price": clearing_price,
                 "cleared_quantity": cleared_quantity,
-                "accepted_bids": len([b for b in hour_bids if b.max_price >= clearing_price]),
-                "accepted_offers": len([o for o in hour_offers if o.min_price <= clearing_price])
+                "accepted_bids": len([b for b in hour_bids if b.price >= clearing_price]),
+                "accepted_offers": len([o for o in hour_offers if o.price <= clearing_price])
             }
             
         self.is_cleared = True
@@ -255,9 +261,9 @@ class DayAheadMarket:
         cumulative_quantity = Decimal("0")
         
         for bid in bids:
-            curve.append((bid.max_price, cumulative_quantity))
+            curve.append((bid.price, cumulative_quantity))
             cumulative_quantity += bid.quantity
-            curve.append((bid.max_price, cumulative_quantity))
+            curve.append((bid.price, cumulative_quantity))
             
         return curve
         
@@ -267,9 +273,9 @@ class DayAheadMarket:
         cumulative_quantity = Decimal("0")
         
         for offer in offers:
-            curve.append((offer.min_price, cumulative_quantity))
+            curve.append((offer.price, cumulative_quantity))
             cumulative_quantity += offer.quantity
-            curve.append((offer.min_price, cumulative_quantity))
+            curve.append((offer.price, cumulative_quantity))
             
         return curve
         
@@ -295,24 +301,24 @@ class DayAheadMarket:
         if not self.bids[hour] or not self.offers[hour]:
             return Decimal("10")  # Default price
             
-        avg_bid = sum(b.max_price for b in self.bids[hour]) / len(self.bids[hour])
-        avg_offer = sum(o.min_price for o in self.offers[hour]) / len(self.offers[hour])
+        avg_bid = sum(b.price for b in self.bids[hour]) / len(self.bids[hour])
+        avg_offer = sum(o.price for o in self.offers[hour]) / len(self.offers[hour])
         
         return (avg_bid + avg_offer) / 2
         
     async def _handle_flexible_bids(self, hour: int):
         """Handle flexible bids that can shift hours"""
-        flexible_bids = [b for b in self.bids[hour] if b.flexible]
+        flexible_bids = [b for b in self.bids[hour] if b.flexibility == "flexible"]
         
         for bid in flexible_bids:
             # Try adjacent hours
             for offset in [-2, -1, 1, 2]:
                 target_hour = hour + offset
                 if 0 <= target_hour < 24:
-                    if self.clearing_prices.get(target_hour, Decimal("999")) <= bid.max_price:
+                    if self.clearing_prices.get(target_hour, Decimal("999")) <= bid.price:
                         # Move bid to target hour
                         self.bids[hour].remove(bid)
-                        bid.hour = target_hour
+                        bid.delivery_hour = target_hour
                         self.bids[target_hour].append(bid)
                         break
 
@@ -568,7 +574,7 @@ class AncillaryServices:
 
 class ComputeFuturesEngine:
     """
-    Main engine for compute futures markets with physical settlement
+    Main engine for compute futures markets with physical settlement using trading-core
     """
     
     def __init__(
@@ -583,20 +589,23 @@ class ComputeFuturesEngine:
         self.oracle = oracle
         self.partner_capacity_manager = partner_capacity_manager
         
-        self.day_ahead_markets: Dict[str, DayAheadMarket] = {}
+        # Trading core integration
+        self.trading_core = TradingCoreIntegration()
+        
+        self.day_ahead_markets: Dict[str, 'DayAheadMarket'] = {}
         self.capacity_auction = CapacityAuction()
         self.ancillary_services = AncillaryServices()
         self.imbalance_tracker: Dict[str, Dict] = defaultdict(dict)
         
         # Physical settlement components
-        self.settlements: Dict[str, ComputeSettlement] = {}
+        self.settlements: Dict[str, 'ComputeSettlement'] = {}
         self.sla_monitors: Dict[str, Dict] = {}  # settlement_id -> monitoring data
         self.failover_providers: Dict[str, List[str]] = defaultdict(list)
         
         # Quality derivatives
-        self.latency_futures: Dict[str, LatencyFuture] = {}
-        self.uptime_swaps: Dict[str, UptimeSwap] = {}
-        self.performance_bonds: Dict[str, PerformanceBond] = {}
+        self.latency_futures: Dict[str, 'LatencyFuture'] = {}
+        self.uptime_swaps: Dict[str, 'UptimeSwap'] = {}
+        self.performance_bonds: Dict[str, 'PerformanceBond'] = {}
         
         # HTTP client for provisioning service
         self.http_client = httpx.AsyncClient(
@@ -610,16 +619,28 @@ class ComputeFuturesEngine:
         self.provider_last_seen: Dict[str, datetime] = {}
         self.provider_regions: Dict[str, str] = {}  # provider_id -> region
         
+        # Registered futures markets
+        self.registered_markets: Set[str] = set()
+        
         # Background tasks
         self._monitoring_task = None
         self._settlement_task = None
         self._health_monitoring_task = None
         
     async def start(self):
-        """Start background monitoring and settlement tasks"""
-        self._monitoring_task = asyncio.create_task(self._monitor_sla_loop())
+        """Start futures engine"""
+        # Initialize trading core
+        await self.trading_core.initialize()
+        
+        # Initialize markets
+        await self._initialize_markets()
+        
+        # Start background tasks
+        self._monitoring_task = asyncio.create_task(self._monitoring_loop())
         self._settlement_task = asyncio.create_task(self._settlement_loop())
-        self._health_monitoring_task = asyncio.create_task(self._monitor_provider_health_loop())
+        self._health_monitoring_task = asyncio.create_task(self._health_monitoring_loop())
+        
+        logger.info("Compute futures engine started with trading-core integration")
         
     async def stop(self):
         """Stop background tasks"""
@@ -631,116 +652,305 @@ class ComputeFuturesEngine:
             self._health_monitoring_task.cancel()
         await self.http_client.aclose()
         
-    async def get_day_ahead_market(
-        self,
-        delivery_date: datetime,
-        resource_type: str
-    ) -> DayAheadMarket:
-        """Get or create day-ahead market"""
-        key = f"{delivery_date.date()}_{resource_type}"
-        
-        if key not in self.day_ahead_markets:
-            self.day_ahead_markets[key] = DayAheadMarket(delivery_date, resource_type)
-            
-        return self.day_ahead_markets[key]
-        
-    async def get_clearing_results(
-        self,
-        delivery_date: datetime,
-        resource_type: str
-    ) -> Dict:
-        """Get market clearing results"""
-        market = await self.get_day_ahead_market(delivery_date, resource_type)
-        
-        if not market.is_cleared:
-            await market.clear_market()
-            
-        return {
-            "hourly_prices": market.clearing_prices,
-            "total_volume": sum(market.cleared_quantities.values()),
-            "curves": {
-                "supply": "TODO",  # Would include actual curves
-                "demand": "TODO"
-            },
-            "congestion": await self._analyze_congestion(market)
-        }
-        
-    async def get_current_imbalance(self, resource_type: str) -> Dict:
-        """Get real-time imbalance for resource type"""
-        # In practice, would track actual vs scheduled
-        current_hour = datetime.utcnow().hour
-        
-        # Simulated imbalance
-        scheduled = Decimal("1000")
-        actual = Decimal("950")
-        imbalance = actual - scheduled
-        
-        # Calculate real-time price
-        da_price = Decimal("50")  # Day-ahead price
-        
-        if imbalance < 0:  # Shortage
-            rt_price = da_price * Decimal("1.5")  # 50% premium
-        else:  # Surplus
-            rt_price = da_price * Decimal("0.7")  # 30% discount
-            
-        return {
-            "quantity": abs(imbalance),
-            "direction": "shortage" if imbalance < 0 else "surplus",
-            "price": rt_price,
-            "da_price": da_price,
-            "timestamp": datetime.utcnow()
-        }
-        
     async def create_futures_contract(
         self,
-        creator_id: str,
         resource_type: str,
-        quantity: Decimal,
-        delivery_start: datetime,
-        duration_hours: int,
-        contract_months: int,
-        location_zone: Optional[str] = None
-    ) -> Dict:
-        """Create standardized futures contract"""
-        # Generate contract specifications
-        contract = {
-            "id": f"CF_{resource_type}_{delivery_start.strftime('%Y%m')}_{datetime.utcnow().timestamp()}",
-            "symbol": f"{resource_type[:3].upper()}-{delivery_start.strftime('%b%y').upper()}",
-            "specs": {
-                "resource_type": resource_type,
-                "quantity_per_contract": quantity,
-                "delivery_start": delivery_start.isoformat(),
-                "duration_hours": duration_hours,
-                "location_zone": location_zone or "ANY",
-                "settlement": "physical",
-                "currency": "USD"
-            },
-            "margin_requirement": quantity * Decimal("10"),  # $10 per unit initial margin
-            "tick_size": Decimal("0.01"),  # $0.01 minimum price movement
-            "contract_months": contract_months,
-            "created_by": creator_id,
-            "created_at": datetime.utcnow()
-        }
+        delivery_date: datetime,
+        location: str,
+        contract_size: Decimal = Decimal("100"),
+        settlement_type: str = "physical"
+    ) -> str:
+        """Create a new futures contract and register with trading-core"""
+        contract_id = f"CF_{resource_type}_{delivery_date.strftime('%Y%m%d')}_{location}"
         
-        # Register contract
-        # In practice, would save to database and create market
+        # Register market with trading-core
+        market_id = await self.trading_core.register_compute_market(
+            resource_type=resource_type,
+            market_type="futures",
+            specifications={
+                "contract_id": contract_id,
+                "delivery_date": delivery_date.isoformat(),
+                "location": location,
+                "contract_size": str(contract_size),
+                "settlement_type": settlement_type,
+                "tick_size": "0.01",
+                "margin_requirement": "0.15"  # 15% initial margin
+            }
+        )
         
-        return contract
+        if market_id:
+            self.registered_markets.add(market_id)
+            
+            # Publish contract creation event
+            await self.pulsar.publish('compute.futures.contract_created', {
+                'contract_id': contract_id,
+                'market_id': market_id,
+                'resource_type': resource_type,
+                'delivery_date': delivery_date.isoformat(),
+                'location': location,
+                'contract_size': str(contract_size),
+                'timestamp': datetime.utcnow().isoformat()
+            })
+            
+            logger.info(f"Created futures contract: {contract_id}")
+            
+        return contract_id
         
-    async def _analyze_congestion(self, market: DayAheadMarket) -> Dict:
-        """Analyze congestion in different zones"""
-        # Simplified - would analyze by location in practice
-        congestion_zones = {}
+    async def submit_futures_order(
+        self,
+        user_id: str,
+        contract_id: str,
+        side: str,  # "buy" or "sell"
+        quantity: int,
+        order_type: str = "limit",
+        price: Optional[Decimal] = None
+    ) -> Dict[str, Any]:
+        """Submit futures order through trading-core"""
+        # Extract details from contract ID
+        parts = contract_id.split("_")
+        if len(parts) < 4:
+            return {"success": False, "error": "Invalid contract ID"}
+            
+        resource_type = parts[1]
+        delivery_date = parts[2]
+        location = parts[3]
         
-        for hour in range(24):
-            if market.cleared_quantities.get(hour, Decimal("0")) > Decimal("800"):
-                congestion_zones[hour] = {
-                    "severity": "high",
-                    "affected_zones": ["zone_1", "zone_2"],
-                    "price_separation": Decimal("15")
-                }
+        # Submit through trading-core
+        result = await self.trading_core.submit_compute_order(
+            user_id=user_id,
+            resource_type=resource_type,
+            market_type="futures",
+            quantity=str(quantity),
+            specifications={
+                "contract_id": contract_id,
+                "side": side,
+                "order_type": order_type,
+                "price": str(price) if price else None,
+                "delivery_date": delivery_date,
+                "location": location
+            }
+        )
+        
+        # Handle physical delivery setup on trade
+        if result.get("success") and result.get("trades"):
+            for trade in result["trades"]:
+                await self._setup_physical_delivery(contract_id, trade)
                 
-        return congestion_zones
+        return result
+        
+    async def create_day_ahead_market(
+        self,
+        resource_type: str,
+        delivery_date: date,
+        location: str
+    ) -> DayAheadMarket:
+        """Create day-ahead market for hourly compute allocation"""
+        market_id = f"DA_{resource_type}_{delivery_date}_{location}"
+        
+        if market_id not in self.day_ahead_markets:
+            market = DayAheadMarket(
+                market_id=market_id,
+                resource_type=resource_type,
+                delivery_date=delivery_date,
+                location=location,
+                trading_core=self.trading_core
+            )
+            
+            # Register each hourly market with trading-core
+            for hour in range(24):
+                hourly_market_id = f"{market_id}_H{hour:02d}"
+                await self.trading_core.register_compute_market(
+                    resource_type=resource_type,
+                    market_type="day_ahead",
+                    specifications={
+                        "market_id": hourly_market_id,
+                        "delivery_date": delivery_date.isoformat(),
+                        "delivery_hour": hour,
+                        "location": location,
+                        "settlement_type": "physical",
+                        "clearing_mechanism": "uniform_price"
+                    }
+                )
+                
+            self.day_ahead_markets[market_id] = market
+            
+        return self.day_ahead_markets[market_id]
+        
+    async def submit_day_ahead_bid(
+        self,
+        bid: ComputeBid
+    ) -> Dict[str, Any]:
+        """Submit bid to day-ahead market through trading-core"""
+        market_id = f"DA_{bid.resource_type}_{datetime.now().date()}_{bid.location}_H{bid.delivery_hour:02d}"
+        
+        # Submit as order through trading-core
+        result = await self.trading_core.submit_compute_order(
+            user_id=bid.user_id,
+            resource_type=bid.resource_type,
+            market_type="day_ahead",
+            quantity=str(bid.quantity),
+            specifications={
+                "bid_id": bid.bid_id,
+                "delivery_hour": bid.delivery_hour,
+                "price": str(bid.price),
+                "location": bid.location,
+                "flexibility": bid.flexibility,
+                "order_type": "limit"
+            }
+        )
+        
+        return result
+        
+    async def submit_day_ahead_offer(
+        self,
+        offer: ComputeOffer
+    ) -> Dict[str, Any]:
+        """Submit offer to day-ahead market through trading-core"""
+        market_id = f"DA_{offer.resource_type}_{datetime.now().date()}_{offer.location}_H{offer.delivery_hour:02d}"
+        
+        # Register provider if needed
+        await self.trading_core.register_compute_provider(
+            provider_id=offer.provider_id,
+            resources={
+                offer.resource_type: {
+                    "capacity": str(offer.quantity),
+                    "location": offer.location,
+                    "reliability_score": offer.reliability_score
+                }
+            }
+        )
+        
+        # Submit as sell order through trading-core
+        result = await self.trading_core.submit_compute_order(
+            user_id=offer.provider_id,
+            resource_type=offer.resource_type,
+            market_type="day_ahead",
+            quantity=str(offer.quantity),
+            specifications={
+                "offer_id": offer.offer_id,
+                "delivery_hour": offer.delivery_hour,
+                "price": str(offer.price),
+                "location": offer.location,
+                "order_type": "limit",
+                "side": "sell"
+            }
+        )
+        
+        return result
+        
+    async def get_futures_price(
+        self,
+        contract_id: str
+    ) -> Optional[Dict[str, Any]]:
+        """Get current futures price from trading-core"""
+        orderbook = await self.trading_core.get_orderbook(contract_id, depth=1)
+        
+        if orderbook:
+            best_bid = orderbook.get("bids", [{}])[0].get("price")
+            best_ask = orderbook.get("asks", [{}])[0].get("price")
+            
+            return {
+                "contract_id": contract_id,
+                "best_bid": best_bid,
+                "best_ask": best_ask,
+                "mid_price": str((Decimal(best_bid or 0) + Decimal(best_ask or 0)) / 2) if best_bid and best_ask else None,
+                "timestamp": datetime.utcnow().isoformat()
+            }
+            
+        return None
+        
+    async def settle_expired_contracts(self):
+        """Settle expired futures contracts"""
+        current_time = datetime.utcnow()
+        
+        for market_id in self.registered_markets:
+            if "_futures_" in market_id:
+                # Check if contract expired
+                # This is simplified - in production would check actual expiry
+                
+                # Get settlement price from oracle
+                settlement_price = await self._calculate_settlement_price(market_id)
+                
+                if settlement_price:
+                    # Trigger settlement through trading-core
+                    await self.trading_core.trigger_settlement(
+                        market_id=market_id,
+                        settlement_price=settlement_price
+                    )
+                    
+                    # Handle physical delivery
+                    await self._process_physical_settlements(market_id)
+                    
+    async def _setup_physical_delivery(
+        self,
+        contract_id: str,
+        trade: Dict[str, Any]
+    ):
+        """Setup physical delivery for futures trade"""
+        settlement_id = f"SETTLE_{contract_id}_{trade['trade_id']}"
+        
+        settlement = ComputeSettlement(
+            settlement_id=settlement_id,
+            contract_id=contract_id,
+            trade_id=trade['trade_id'],
+            buyer_id=trade['buyer_id'],
+            seller_id=trade.get('seller_id'),
+            quantity=Decimal(trade['quantity']),
+            delivery_date=self._extract_delivery_date(contract_id),
+            status="pending"
+        )
+        
+        self.settlements[settlement_id] = settlement
+        
+        # Store in Ignite
+        await self.ignite.put(f"futures_settlement:{settlement_id}", settlement.__dict__)
+        
+        # Publish settlement created event
+        await self.pulsar.publish('compute.futures.settlement_created', {
+            'settlement_id': settlement_id,
+            'contract_id': contract_id,
+            'trade_id': trade['trade_id'],
+            'quantity': str(settlement.quantity),
+            'delivery_date': settlement.delivery_date.isoformat(),
+            'timestamp': datetime.utcnow().isoformat()
+        })
+        
+    async def _monitoring_loop(self):
+        """Monitor futures positions and settlements"""
+        while True:
+            try:
+                # Check for expired contracts
+                await self.settle_expired_contracts()
+                
+                # Monitor active settlements
+                await self._monitor_settlements()
+                
+                # Update provider health scores
+                await self._update_provider_health()
+                
+                await asyncio.sleep(60)  # Check every minute
+                
+            except Exception as e:
+                logger.error(f"Error in monitoring loop: {e}")
+                await asyncio.sleep(300)
+                
+    async def _settlement_loop(self):
+        """Process physical settlements"""
+        while True:
+            try:
+                # Process pending settlements
+                for settlement_id, settlement in list(self.settlements.items()):
+                    if settlement.status == "pending" and settlement.delivery_date <= datetime.utcnow():
+                        await self._execute_physical_settlement(settlement)
+                        
+                await asyncio.sleep(300)  # Check every 5 minutes
+                
+            except Exception as e:
+                logger.error(f"Error in settlement loop: {e}")
+                await asyncio.sleep(600)
+                
+    # Additional helper methods remain largely the same but integrate with trading-core
+    # for market data and order management...
 
     # Physical Settlement Methods
     async def initiate_physical_settlement(
@@ -764,9 +974,8 @@ class ComputeFuturesEngine:
             provider_id=provider_id,
             resource_type=resource_type,
             quantity=quantity,
-            delivery_start=delivery_start,
-            duration_hours=duration_hours,
-            provisioning_status="pending"
+            delivery_date=delivery_start,
+            status="pending"
         )
         
         self.settlements[settlement_id] = settlement
@@ -800,7 +1009,6 @@ class ComputeFuturesEngine:
             
             if allocation:
                 # Use partner capacity
-                settlement.provisioning_status = "provisioned"
                 settlement.provider_id = allocation["provider"].value
                 await self._store_settlement(settlement)
                 allocated = True
@@ -825,7 +1033,7 @@ class ComputeFuturesEngine:
                 )
                 
                 if response.status_code == 200:
-                    settlement.provisioning_status = "provisioned"
+                    settlement.status = "provisioned"
                     await self._store_settlement(settlement)
                 else:
                     logger.error(f"Provisioning failed with status {response.status_code}")
@@ -842,7 +1050,7 @@ class ComputeFuturesEngine:
         settlement: ComputeSettlement
     ):
         """Handle failed provisioning with automatic failover"""
-        settlement.provisioning_status = "failed"
+        settlement.status = "failed"
         
         # Get failover providers sorted by health score
         failover_providers = await self._get_healthy_failover_providers(
@@ -864,7 +1072,7 @@ class ComputeFuturesEngine:
                         "resource_type": settlement.resource_type,
                         "quantity": str(settlement.quantity),
                         "duration_hours": settlement.duration_hours,
-                        "start_time": settlement.delivery_start.isoformat(),
+                        "start_time": settlement.delivery_date.isoformat(),
                         "provider_id": provider_id,
                         "buyer_id": settlement.buyer_id,
                         "is_failover": True
@@ -874,7 +1082,7 @@ class ComputeFuturesEngine:
                 if response.status_code == 200:
                     settlement.failover_used = True
                     settlement.failover_provider = provider_id
-                    settlement.provisioning_status = "provisioned"
+                    settlement.status = "provisioned"
                     await self._store_settlement(settlement)
                     
                     # Notify about failover
@@ -894,7 +1102,7 @@ class ComputeFuturesEngine:
                 logger.error(f"Failover to {provider_id} failed: {e}")
                 continue
                 
-        if settlement.provisioning_status == "failed":
+        if settlement.status == "failed":
             # Apply liquidated damages
             await self._apply_liquidated_damages(settlement)
             
@@ -927,8 +1135,8 @@ class ComputeFuturesEngine:
             try:
                 active_settlements = [
                     s for s in self.settlements.values()
-                    if s.provisioning_status == "provisioned"
-                    and datetime.utcnow() < s.delivery_start + timedelta(hours=s.duration_hours)
+                    if s.status == "provisioned"
+                    and datetime.utcnow() < s.delivery_date + timedelta(hours=s.duration_hours)
                 ]
                 
                 for settlement in active_settlements:
@@ -1042,8 +1250,8 @@ class ComputeFuturesEngine:
         while True:
             try:
                 for settlement in list(self.settlements.values()):
-                    if (settlement.provisioning_status == "provisioned" and
-                        datetime.utcnow() >= settlement.delivery_start + timedelta(hours=settlement.duration_hours)):
+                    if (settlement.status == "provisioned" and
+                        datetime.utcnow() >= settlement.delivery_date + timedelta(hours=settlement.duration_hours)):
                         await self._finalize_settlement(settlement)
                         
                 await asyncio.sleep(3600)  # Check hourly
@@ -1064,7 +1272,7 @@ class ComputeFuturesEngine:
         final_amount = base_amount - settlement.penalty_amount
         
         settlement.settlement_amount = final_amount
-        settlement.provisioning_status = "completed"
+        settlement.status = "completed"
         
         # Process payment
         await self.pulsar.publish(

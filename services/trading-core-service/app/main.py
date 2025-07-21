@@ -1,40 +1,37 @@
-"""Trading Core Service - Unified trading engine for all product types."""
+"""Trading Core Service - Unified high-performance trading engine."""
 
 import asyncio
 import logging
 from contextlib import asynccontextmanager
-from typing import Dict, Any
 
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse
-import uvicorn
+from prometheus_client import make_asgi_app
 
 from .config import Settings
 from .state import IgniteStateManager
-from .events import FlinkEventProcessor  
+from .events import FlinkEventProcessor
 from .core import (
     MatchingEngine, MatchingAlgorithm,
     OrderManager, PositionManager, MarketManager
 )
-from .dependencies import init_dependencies, cleanup_dependencies
-from .api import (
-    orders_router, markets_router, positions_router,
-    trades_router, websocket_router
-)
+from .integrations import DerivativesAdapter, ComputeMarketAdapter
+from .integrations.market_intelligence_integration import MarketIntelligenceIntegration
+from .api import orders, markets, positions, websocket, internal
+from .dependencies import init_dependencies
 
 
 # Configure logging
 logging.basicConfig(
     level=logging.INFO,
-    format="%(asctime)s - %(name)s - %(levelname)s - %(message)s"
+    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
 )
 logger = logging.getLogger(__name__)
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage application lifecycle."""
+    """Application lifespan manager."""
     logger.info("Starting Trading Core Service...")
     
     # Initialize settings
@@ -42,7 +39,7 @@ async def lifespan(app: FastAPI):
     
     # Initialize state manager
     state_manager = IgniteStateManager(settings)
-    await state_manager.connect()
+    await state_manager.initialize()
     
     # Initialize event processor
     event_processor = FlinkEventProcessor(settings)
@@ -56,7 +53,7 @@ async def lifespan(app: FastAPI):
     )
     await matching_engine.initialize()
     
-    # Initialize managers
+    # Initialize core managers
     order_manager = OrderManager(
         state_manager=state_manager,
         matching_engine=matching_engine,
@@ -73,38 +70,61 @@ async def lifespan(app: FastAPI):
         event_processor=event_processor
     )
     
-    # Initialize dependencies
-    init_dependencies(
-        settings=settings,
-        state_manager=state_manager,
-        event_processor=event_processor,
+    # Initialize adapters
+    derivatives_adapter = DerivativesAdapter(
         matching_engine=matching_engine,
-        order_manager=order_manager,
-        position_manager=position_manager,
-        market_manager=market_manager
+        state_manager=state_manager,
+        event_processor=event_processor
     )
     
-    # Start background tasks
-    asyncio.create_task(market_update_loop(market_manager))
-    asyncio.create_task(position_monitoring_loop(position_manager))
+    compute_adapter = ComputeMarketAdapter(
+        matching_engine=matching_engine,
+        state_manager=state_manager,
+        event_processor=event_processor
+    )
     
-    # Start Flink processing
-    # asyncio.create_task(event_processor.start())
+    # Initialize market intelligence integration
+    market_intelligence = MarketIntelligenceIntegration(
+        matching_engine=matching_engine
+    )
+    await market_intelligence.initialize()
+    
+    # Store in app state for access in endpoints
+    app.state.market_intelligence = market_intelligence
+    
+    # Initialize dependencies
+    init_dependencies(
+        order_manager=order_manager,
+        position_manager=position_manager,
+        market_manager=market_manager,
+        matching_engine=matching_engine,
+        state_manager=state_manager,
+        event_processor=event_processor,
+        derivatives_adapter=derivatives_adapter,
+        compute_adapter=compute_adapter
+    )
+    
+    # Create default markets
+    await market_manager.create_default_markets()
     
     logger.info("Trading Core Service started successfully")
     
     yield
     
-    # Cleanup
+    # Shutdown
     logger.info("Shutting down Trading Core Service...")
-    await cleanup_dependencies()
-    logger.info("Trading Core Service shut down")
+    
+    await matching_engine.shutdown()
+    await event_processor.stop()
+    await state_manager.disconnect()
+    
+    logger.info("Trading Core Service stopped")
 
 
-# Create FastAPI application
+# Create FastAPI app
 app = FastAPI(
     title="Trading Core Service",
-    description="Unified trading engine for all product types",
+    description="Unified high-performance trading engine with Flink and Ignite",
     version="1.0.0",
     lifespan=lifespan
 )
@@ -118,13 +138,16 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
+# Include API routers
+app.include_router(orders.router, prefix="/api/v1")
+app.include_router(markets.router, prefix="/api/v1")
+app.include_router(positions.router, prefix="/api/v1")
+app.include_router(websocket.router, prefix="/api/v1/ws")
+app.include_router(internal.router)  # Internal API for service-to-service
 
-# Include routers
-app.include_router(orders_router, prefix="/api/v1")
-app.include_router(markets_router, prefix="/api/v1")
-app.include_router(positions_router, prefix="/api/v1")
-app.include_router(trades_router, prefix="/api/v1")
-app.include_router(websocket_router, prefix="/api/v1")
+# Mount Prometheus metrics endpoint
+metrics_app = make_asgi_app()
+app.mount("/metrics", metrics_app)
 
 
 @app.get("/")
@@ -134,101 +157,29 @@ async def root():
         "service": "Trading Core Service",
         "version": "1.0.0",
         "status": "operational",
-        "endpoints": {
-            "orders": "/api/v1/orders",
-            "markets": "/api/v1/markets",
-            "positions": "/api/v1/positions",
-            "trades": "/api/v1/trades",
-            "websocket": "/api/v1/ws/market"
-        }
+        "features": [
+            "High-performance order matching",
+            "Apache Flink event processing",
+            "Apache Ignite distributed state",
+            "WebSocket real-time feeds",
+            "Sub-millisecond latency",
+            "Circuit breaker protection",
+            "Derivatives integration",
+            "Compute market unification",
+            "Market intelligence ML integration"
+        ]
     }
 
 
 @app.get("/health")
-async def health_check():
+async def health():
     """Health check endpoint."""
-    # Would check actual component health
     return {
         "status": "healthy",
-        "components": {
-            "state_manager": "connected",
-            "event_processor": "running",
-            "matching_engine": "operational",
-            "websocket": "available"
-        }
+        "service": "trading-core-service"
     }
-
-
-@app.get("/metrics")
-async def metrics():
-    """Service metrics endpoint."""
-    from .dependencies import (
-        get_matching_engine, get_order_manager,
-        get_position_manager, get_market_manager
-    )
-    
-    matching_engine = get_matching_engine()
-    order_manager = get_order_manager()
-    position_manager = get_position_manager()
-    market_manager = get_market_manager()
-    
-    return {
-        "matching_engine": matching_engine.get_metrics(),
-        "order_manager": order_manager.get_metrics(),
-        "position_manager": position_manager.get_metrics(),
-        "market_manager": market_manager.get_metrics()
-    }
-
-
-# Background tasks
-async def market_update_loop(market_manager: MarketManager):
-    """Periodically check circuit breakers and market status."""
-    while True:
-        try:
-            await asyncio.sleep(30)  # Check every 30 seconds
-            await market_manager.check_circuit_breakers()
-        except Exception as e:
-            logger.error(f"Error in market update loop: {e}")
-
-
-async def position_monitoring_loop(position_manager: PositionManager):
-    """Monitor positions for liquidations."""
-    while True:
-        try:
-            await asyncio.sleep(60)  # Check every minute
-            liquidations = await position_manager.check_liquidations()
-            if liquidations:
-                logger.warning(f"Found {len(liquidations)} positions for liquidation")
-        except Exception as e:
-            logger.error(f"Error in position monitoring loop: {e}")
-
-
-# Exception handlers
-@app.exception_handler(ValueError)
-async def value_error_handler(request, exc):
-    """Handle validation errors."""
-    return JSONResponse(
-        status_code=400,
-        content={"detail": str(exc)}
-    )
-
-
-@app.exception_handler(Exception)
-async def general_exception_handler(request, exc):
-    """Handle general exceptions."""
-    logger.error(f"Unhandled exception: {exc}")
-    return JSONResponse(
-        status_code=500,
-        content={"detail": "Internal server error"}
-    )
 
 
 if __name__ == "__main__":
-    # Run with uvicorn
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=8020,
-        reload=True,
-        log_level="info"
-    ) 
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

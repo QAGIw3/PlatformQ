@@ -1,10 +1,10 @@
 """
 Compute Options Engine
 
-Options market for compute resources with specialized pricing and hedging
+Options market for compute resources integrated with trading-core-service
 """
 
-from typing import Dict, List, Optional, Tuple, Any
+from typing import Dict, List, Optional, Tuple, Any, Set
 from decimal import Decimal
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -20,10 +20,9 @@ from app.integrations import (
     PulsarEventPublisher,
     OracleAggregatorClient
 )
+from app.integrations.trading_core_integration import TradingCoreIntegration
 from app.engines.options_amm import OptionsAMM, AMMConfig
 from app.engines.pricing import BlackScholesEngine, Greeks
-from app.engines.compute_spot_market import ComputeSpotMarket
-from app.engines.compute_futures_engine import ComputeFuturesEngine
 from app.engines.margin_engine import MarginEngine, CollateralType
 
 logger = logging.getLogger(__name__)
@@ -39,10 +38,9 @@ class ComputeOptionType(Enum):
 
 class ExerciseStyle(Enum):
     """Option exercise styles"""
-    EUROPEAN = "european"  # Exercise only at expiry
-    AMERICAN = "american"  # Exercise any time
-    BERMUDAN = "bermudan"  # Exercise at specific dates
-    ASIAN = "asian"       # Based on average price
+    EUROPEAN = "european"
+    AMERICAN = "american"
+    ASIAN = "asian"
 
 
 @dataclass
@@ -115,7 +113,7 @@ class ComputeVolatilitySurface:
 
 class ComputeOptionsEngine:
     """
-    Engine for compute resource options with specialized features
+    Engine for compute resource options integrated with trading-core-service
     """
     
     def __init__(
@@ -123,8 +121,6 @@ class ComputeOptionsEngine:
         ignite: IgniteCache,
         pulsar: PulsarEventPublisher,
         oracle: OracleAggregatorClient,
-        spot_market: ComputeSpotMarket,
-        futures_engine: ComputeFuturesEngine,
         pricing_engine: BlackScholesEngine,
         options_amm: OptionsAMM,
         margin_engine: Optional[MarginEngine] = None
@@ -132,11 +128,12 @@ class ComputeOptionsEngine:
         self.ignite = ignite
         self.pulsar = pulsar
         self.oracle = oracle
-        self.spot_market = spot_market
-        self.futures_engine = futures_engine
         self.pricing_engine = pricing_engine
         self.options_amm = options_amm
         self.margin_engine = margin_engine
+        
+        # Trading core integration
+        self.trading_core = TradingCoreIntegration()
         
         # Options registry
         self.options: Dict[str, ComputeOption] = {}
@@ -151,6 +148,9 @@ class ComputeOptionsEngine:
         # Market maker inventory
         self.mm_inventory: Dict[str, Decimal] = {}
         
+        # Registered option markets
+        self.registered_option_markets: Set[str] = set()
+        
         # Hedging parameters
         self.hedge_enabled = True
         self.hedge_threshold = Decimal("100")  # Delta threshold
@@ -163,6 +163,9 @@ class ComputeOptionsEngine:
         
     async def start(self):
         """Start options engine"""
+        # Initialize trading core
+        await self.trading_core.initialize()
+        
         # Load existing options
         await self._load_active_options()
         
@@ -171,7 +174,7 @@ class ComputeOptionsEngine:
         self._hedging_task = asyncio.create_task(self._hedging_loop())
         self._settlement_task = asyncio.create_task(self._settlement_loop())
         
-        logger.info("Compute options engine started")
+        logger.info("Compute options engine started with trading-core integration")
         
     async def stop(self):
         """Stop options engine"""
@@ -194,7 +197,7 @@ class ComputeOptionsEngine:
         quality_tier: Optional[str] = None,
         creator: Optional[str] = None
     ) -> ComputeOption:
-        """Create a new compute option"""
+        """Create a new compute option and register with trading-core"""
         
         # Validate parameters
         if expiry <= datetime.utcnow():
@@ -220,6 +223,9 @@ class ComputeOptionsEngine:
             creator=creator
         )
         
+        # Register option market with trading-core
+        market_id = await self._register_option_market(option)
+        
         # Store option
         self.options[option.option_id] = option
         await self._store_option(option)
@@ -236,6 +242,7 @@ class ComputeOptionsEngine:
         # Emit event
         await self.pulsar.publish('compute.options.created', {
             'option_id': option.option_id,
+            'market_id': market_id,
             'underlying': underlying,
             'option_type': option_type.value,
             'strike': str(strike_price),
@@ -246,6 +253,35 @@ class ComputeOptionsEngine:
         })
         
         return option
+        
+    async def _register_option_market(self, option: ComputeOption) -> str:
+        """Register option market with trading-core"""
+        market_id = f"OPTION_{option.underlying}_{option.strike_price}_{option.expiry.strftime('%Y%m%d')}_{option.option_type.value}"
+        
+        if market_id not in self.registered_option_markets:
+            # Register as derivatives market
+            success = await self.trading_core.register_derivatives_market(
+                market_id=market_id,
+                market_type="option",
+                underlying_asset=option.underlying,
+                specifications={
+                    "option_type": option.option_type.value,
+                    "exercise_style": option.exercise_style.value,
+                    "strike_price": str(option.strike_price),
+                    "expiry": option.expiry.isoformat(),
+                    "contract_size": str(option.contract_size),
+                    "location": option.location,
+                    "quality_tier": option.quality_tier
+                }
+            )
+            
+            if success:
+                self.registered_option_markets.add(market_id)
+                logger.info(f"Registered option market: {market_id}")
+            else:
+                logger.error(f"Failed to register option market: {market_id}")
+                
+        return market_id
         
     async def price_option(
         self,
@@ -258,15 +294,24 @@ class ComputeOptionsEngine:
         
         # Get spot price if not provided
         if spot_price is None:
-            spot_data = await self.spot_market.get_spot_price(
-                option.underlying,
-                option.location
-            )
-            spot_price = Decimal(spot_data.get("last_trade_price", "0"))
+            # Get from trading-core via compute market
+            spot_market_id = f"COMPUTE_SPOT_{option.underlying}_{option.location or 'global'}"
+            spot_data = await self.trading_core.get_orderbook(spot_market_id, depth=1)
             
-        if spot_price == 0:
-            raise ValueError("Cannot price option without spot price")
-            
+            if spot_data and spot_data.get("bids") and spot_data.get("asks"):
+                best_bid = Decimal(spot_data["bids"][0]["price"])
+                best_ask = Decimal(spot_data["asks"][0]["price"])
+                spot_price = (best_bid + best_ask) / 2
+            else:
+                # Fallback to oracle
+                oracle_price = await self.oracle.get_aggregated_price(
+                    f"COMPUTE_{option.underlying}"
+                )
+                if oracle_price:
+                    spot_price = oracle_price.price
+                else:
+                    raise ValueError("Cannot price option without spot price")
+                    
         # Get volatility if not provided
         if volatility is None:
             volatility = await self._get_implied_volatility(
@@ -341,7 +386,7 @@ class ComputeOptionsEngine:
         order_type: str = "market",  # "market" or "limit"
         limit_price: Optional[Decimal] = None
     ) -> Dict[str, Any]:
-        """Trade a compute option"""
+        """Trade a compute option through trading-core"""
         
         # Get option
         option = self.options.get(option_id)
@@ -352,65 +397,36 @@ class ComputeOptionsEngine:
         if option.is_expired:
             raise ValueError("Option has expired")
             
-        # Get current price
+        # Get market ID
+        market_id = await self._register_option_market(option)
+        
+        # Get current price for validation
         price_data = await self.price_option(option)
         current_price = Decimal(price_data["price"])
         
-        # Execute trade based on order type
-        if order_type == "market":
-            execution_price = current_price
-        else:
-            if not limit_price:
-                raise ValueError("Limit price required for limit orders")
-            if side == "buy" and limit_price < current_price:
-                return {"success": False, "reason": "Limit price below market"}
-            if side == "sell" and limit_price > current_price:
-                return {"success": False, "reason": "Limit price above market"}
-            execution_price = limit_price
-            
-        # Calculate trade value
-        trade_quantity = quantity if side == "buy" else -quantity
-        trade_value = abs(trade_quantity * execution_price)
+        # Submit order through trading-core
+        order_result = await self.trading_core.submit_derivatives_order(
+            user_id=user_id,
+            market_id=market_id,
+            side=side,
+            quantity=str(quantity),
+            order_type=order_type,
+            price=str(limit_price) if limit_price else None,
+            metadata={
+                "option_id": option_id,
+                "current_price": str(current_price),
+                "spot_price": price_data["spot_price"],
+                "volatility": price_data["volatility"],
+                "greeks": price_data["greeks"]
+            }
+        )
         
-        # Check user margin/collateral
-        if self.margin_engine:
-            # Calculate margin requirement
-            spot_price = Decimal(price_data["spot_price"])
-            volatility = Decimal(price_data["volatility"])
+        if not order_result.get("success"):
+            return order_result
             
-            # For options, use notional value
-            notional_value = option.contract_size * spot_price * quantity
-            
-            margin_req = await self.margin_engine.calculate_margin_requirement(
-                user_id=user_id,
-                position_type="options",
-                position_value=notional_value,
-                underlying_price=spot_price,
-                volatility=volatility,
-                position_details={
-                    "option_id": option_id,
-                    "strike": option.strike_price,
-                    "expiry": option.expiry,
-                    "type": option.option_type.value,
-                    "quantity": quantity,
-                    "side": side
-                }
-            )
-            
-            # Check sufficiency
-            is_sufficient, margin_details = await self.margin_engine.check_margin_sufficiency(
-                user_id, margin_req.total_required, "options"
-            )
-            
-            if not is_sufficient:
-                return {
-                    "success": False,
-                    "reason": "Insufficient margin",
-                    "required_margin": str(margin_req.total_required),
-                    "available_margin": margin_details["available_margin"],
-                    "shortfall": margin_details["shortfall"],
-                    "margin_details": margin_details
-                }
+        # Update local position tracking
+        trade_quantity = quantity if side == "buy" else -quantity
+        execution_price = Decimal(order_result.get("execution_price", current_price))
         
         # Create or update position
         position_id = f"{user_id}_{option_id}"
@@ -460,27 +476,29 @@ class ComputeOptionsEngine:
         await self.pulsar.publish('compute.options.trade', {
             'user_id': user_id,
             'option_id': option_id,
+            'market_id': market_id,
             'quantity': str(quantity),
             'side': side,
             'execution_price': str(execution_price),
-            'trade_value': str(trade_value),
+            'order_result': order_result,
             'timestamp': datetime.utcnow().isoformat()
         })
         
         return {
             "success": True,
             "option_id": option_id,
+            "market_id": market_id,
             "quantity": str(quantity),
             "side": side,
             "execution_price": str(execution_price),
-            "trade_value": str(trade_value),
             "position": {
                 "position_id": position.position_id,
                 "total_quantity": str(position.quantity),
                 "average_price": str(position.entry_price),
                 "unrealized_pnl": str(position.unrealized_pnl or 0),
                 "realized_pnl": str(position.realized_pnl)
-            }
+            },
+            "order_result": order_result
         }
         
     async def exercise_option(
@@ -515,12 +533,16 @@ class ComputeOptionsEngine:
             raise ValueError(f"Exercise not supported for {option.exercise_style.value} options")
             
         # Get current spot price
-        spot_data = await self.spot_market.get_spot_price(
-            option.underlying,
-            option.location
-        )
-        spot_price = Decimal(spot_data.get("last_trade_price", "0"))
+        spot_market_id = f"COMPUTE_SPOT_{option.underlying}_{option.location or 'global'}"
+        spot_data = await self.trading_core.get_orderbook(spot_market_id, depth=1)
         
+        if spot_data and spot_data.get("bids") and spot_data.get("asks"):
+            best_bid = Decimal(spot_data["bids"][0]["price"])
+            best_ask = Decimal(spot_data["asks"][0]["price"])
+            spot_price = (best_bid + best_ask) / 2
+        else:
+            raise ValueError("Cannot get spot price for exercise")
+            
         # Check if exercise is profitable
         intrinsic_value = self._calculate_intrinsic_value(option, spot_price)
         if intrinsic_value <= 0:
@@ -541,36 +563,39 @@ class ComputeOptionsEngine:
             compute_value = quantity * option.contract_size * spot_price
             profit = compute_value - compute_cost
             
-            # Create spot order to acquire compute
-            spot_order = await self.spot_market.submit_order({
-                "user_id": user_id,
-                "order_type": "market",
-                "side": "buy",
-                "resource_type": option.underlying,
-                "quantity": quantity * option.contract_size,
-                "location_preference": option.location,
-                "metadata": {
-                    "option_exercise": option_id
+            # Create spot order to acquire compute via trading-core
+            spot_order = await self.trading_core.submit_compute_order(
+                user_id=user_id,
+                resource_type=option.underlying,
+                market_type="spot",
+                quantity=str(quantity * option.contract_size),
+                specifications={
+                    "location": option.location or "any",
+                    "quality_tier": option.quality_tier or "standard",
+                    "option_exercise": option_id,
+                    "exercise_type": "call"
                 }
-            })
+            )
         else:
             # Put option - user sells compute at strike price
             compute_value = quantity * option.contract_size * option.strike_price
             compute_cost = quantity * option.contract_size * spot_price
             profit = compute_value - compute_cost
             
-            # Create spot order to sell compute
-            spot_order = await self.spot_market.submit_order({
-                "user_id": user_id,
-                "order_type": "market",
-                "side": "sell",
-                "resource_type": option.underlying,
-                "quantity": quantity * option.contract_size,
-                "location_preference": option.location,
-                "metadata": {
-                    "option_exercise": option_id
+            # Create spot order to sell compute via trading-core
+            spot_order = await self.trading_core.submit_compute_order(
+                user_id=user_id,
+                resource_type=option.underlying,
+                market_type="spot",
+                quantity=str(quantity * option.contract_size),
+                specifications={
+                    "location": option.location or "any",
+                    "quality_tier": option.quality_tier or "standard",
+                    "option_exercise": option_id,
+                    "exercise_type": "put",
+                    "side": "sell"
                 }
-            })
+            )
             
         # Update position
         position.quantity -= quantity
@@ -585,6 +610,7 @@ class ComputeOptionsEngine:
             'strike_price': str(option.strike_price),
             'spot_price': str(spot_price),
             'profit': str(profit),
+            'spot_order': spot_order,
             'timestamp': datetime.utcnow().isoformat()
         })
         
@@ -605,11 +631,15 @@ class ComputeOptionsEngine:
     ) -> ComputeVolatilitySurface:
         """Create implied volatility surface from market prices"""
         
-        # Get spot price
-        spot_data = await self.spot_market.get_spot_price(underlying)
-        spot_price = Decimal(spot_data.get("last_trade_price", "0"))
+        # Get spot price from trading-core
+        spot_market_id = f"COMPUTE_SPOT_{underlying}_global"
+        spot_data = await self.trading_core.get_orderbook(spot_market_id, depth=1)
         
-        if spot_price == 0:
+        if spot_data and spot_data.get("bids") and spot_data.get("asks"):
+            best_bid = Decimal(spot_data["bids"][0]["price"])
+            best_ask = Decimal(spot_data["asks"][0]["price"])
+            spot_price = (best_bid + best_ask) / 2
+        else:
             raise ValueError("Cannot create vol surface without spot price")
             
         # Define strike range (70% to 130% of spot)
@@ -860,7 +890,7 @@ class ComputeOptionsEngine:
                 await asyncio.sleep(30)
                 
     async def _hedging_loop(self):
-        """Dynamic hedging of option positions"""
+        """Dynamic hedging of option positions using trading-core"""
         while True:
             try:
                 if not self.hedge_enabled:
@@ -899,24 +929,27 @@ class ComputeOptionsEngine:
                 # Hedge positions
                 for underlying, delta in total_delta.items():
                     if abs(delta) > self.hedge_threshold:
-                        # Hedge delta with spot
+                        # Hedge delta with spot via trading-core
                         hedge_size = delta  # Buy delta amount of underlying
                         
-                        await self.spot_market.submit_order({
-                            "user_id": "OPTION_HEDGER",
-                            "order_type": "market",
-                            "side": "buy" if hedge_size > 0 else "sell",
-                            "resource_type": underlying,
-                            "quantity": abs(hedge_size),
-                            "metadata": {
+                        hedge_result = await self.trading_core.submit_compute_order(
+                            user_id="OPTION_HEDGER",
+                            resource_type=underlying,
+                            market_type="spot",
+                            quantity=str(abs(hedge_size)),
+                            specifications={
+                                "side": "buy" if hedge_size > 0 else "sell",
                                 "hedge_type": "delta",
                                 "total_delta": str(delta),
                                 "total_gamma": str(total_gamma.get(underlying, 0))
                             }
-                        })
+                        )
                         
-                        logger.info(f"Hedged {hedge_size} delta for {underlying}")
-                        
+                        if hedge_result.get("success"):
+                            logger.info(f"Hedged {hedge_size} delta for {underlying}")
+                        else:
+                            logger.error(f"Failed to hedge delta for {underlying}: {hedge_result}")
+                            
                 await asyncio.sleep(self.hedge_interval)
                 
             except asyncio.CancelledError:
@@ -947,13 +980,21 @@ class ComputeOptionsEngine:
                 
     async def _settle_option(self, option: ComputeOption):
         """Settle an expired option"""
-        # Get final spot price
-        spot_data = await self.spot_market.get_spot_price(
-            option.underlying,
-            option.location
-        )
-        spot_price = Decimal(spot_data.get("last_trade_price", "0"))
+        # Get final spot price from trading-core
+        spot_market_id = f"COMPUTE_SPOT_{option.underlying}_{option.location or 'global'}"
+        spot_data = await self.trading_core.get_orderbook(spot_market_id, depth=1)
         
+        if spot_data and spot_data.get("bids") and spot_data.get("asks"):
+            best_bid = Decimal(spot_data["bids"][0]["price"])
+            best_ask = Decimal(spot_data["asks"][0]["price"])
+            spot_price = (best_bid + best_ask) / 2
+        else:
+            # Fallback to oracle
+            oracle_price = await self.oracle.get_aggregated_price(
+                f"COMPUTE_{option.underlying}"
+            )
+            spot_price = oracle_price.price if oracle_price else Decimal("0")
+            
         # Calculate settlement value
         settlement_value = self._calculate_intrinsic_value(option, spot_price)
         
@@ -976,6 +1017,13 @@ class ComputeOptionsEngine:
                 position.quantity = Decimal("0")
                 await self._update_position(position)
                 
+        # Trigger settlement in trading-core for the option market
+        market_id = await self._register_option_market(option)
+        await self.trading_core.trigger_settlement(
+            market_id=market_id,
+            settlement_price=spot_price
+        )
+        
         # Emit settlement event
         await self.pulsar.publish('compute.options.settled', {
             'option_id': option.option_id,
