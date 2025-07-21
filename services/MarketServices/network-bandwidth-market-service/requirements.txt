@@ -1,0 +1,34 @@
+# Core dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+python-multipart==0.0.6
+
+# Apache Ignite
+pyignite==0.6.1
+
+# Elasticsearch
+elasticsearch==8.11.0
+
+# Web3 for blockchain
+web3==6.11.3
+
+# Apache Pulsar
+pulsar-client==3.3.0
+
+# Consul for service discovery
+python-consul==1.1.0
+
+# Monitoring
+prometheus-fastapi-instrumentator==6.1.0
+
+# Utilities
+numpy==1.26.2
+python-dateutil==2.8.2
+httpx==0.25.2
+
+# Development
+pytest==7.4.3
+pytest-asyncio==0.21.1
+black==23.11.0
+isort==5.12.0 
