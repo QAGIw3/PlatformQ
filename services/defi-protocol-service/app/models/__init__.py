@@ -8,10 +8,16 @@ from .insurance import (
     RiskTier, ClaimStatus, PoolTier, StakePosition, 
     InsuranceClaim, DeficitEvent, InsuranceMetrics
 )
+from .infrastructure import (
+    ResourceType, ServiceTier, ResourceSpec, ResourceLoan,
+    ResourceValuation, AMMPool, LiquidityPosition, ChainId
+)
 
 __all__ = [
     "Auction", "Bid", "AuctionType", "AuctionStatus",
     "Loan", "LoanOffer", "LoanStatus", "CollateralType", "LiquidationEvent",
     "RiskTier", "ClaimStatus", "PoolTier", "StakePosition",
-    "InsuranceClaim", "DeficitEvent", "InsuranceMetrics"
+    "InsuranceClaim", "DeficitEvent", "InsuranceMetrics",
+    "ResourceType", "ServiceTier", "ResourceSpec", "ResourceLoan",
+    "ResourceValuation", "AMMPool", "LiquidityPosition", "ChainId"
 ]

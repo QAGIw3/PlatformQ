@@ -42,7 +42,7 @@ from .protocols.liquidity import LiquidityProtocol
 from .protocols.insurance import InsuranceProtocol
 from .services.risk_calculator import RiskCalculator
 from .services.price_oracle import PriceOracle
-from .api import lending, auctions, yield_farming, liquidity, analytics, insurance
+from .api import lending, auctions, yield_farming, liquidity, analytics, insurance, infrastructure, infrastructure_amm, infrastructure_risk, infrastructure_insurance
 
 # Import Vault/Consul integration
 from .vault_consul_integration import VaultConsulIntegration
@@ -291,6 +291,10 @@ app.include_router(yield_farming.router, prefix="/api/v1/yield-farming", tags=["
 app.include_router(liquidity.router, prefix="/api/v1/liquidity", tags=["liquidity"])
 app.include_router(analytics.router, prefix="/api/v1/analytics", tags=["analytics"])
 app.include_router(insurance.router, prefix="/api/v1/insurance", tags=["insurance"])
+app.include_router(infrastructure.router, prefix="/api/v1/infrastructure", tags=["infrastructure"])
+app.include_router(infrastructure_amm.router, prefix="/api/v1/infrastructure/amm", tags=["infrastructure-amm"])
+app.include_router(infrastructure_risk.router, prefix="/api/v1/infrastructure/risk", tags=["infrastructure-risk"])
+app.include_router(infrastructure_insurance.router, prefix="/api/v1/infrastructure/insurance", tags=["infrastructure-insurance"])
 
 # Root endpoint
 @app.get("/")

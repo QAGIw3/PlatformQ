@@ -19,6 +19,7 @@ from app.config import settings
 from app.grpc.settlement_service import SettlementCoordinatorService
 from app.cache.ignite_cache import cache_manager
 from app.models.settlement import Settlement, RiskAssessment, ProviderMetrics
+from app.api import flash  # Import flash router
 
 # Configure logging
 logging.basicConfig(
@@ -96,6 +97,9 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include routers
+app.include_router(flash.router, prefix=settings.api_prefix)
 
 
 # Health check endpoints
