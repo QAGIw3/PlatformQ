@@ -4,14 +4,19 @@ Dependencies for DeFi Protocol Service
 Provides dependency injection for protocols and services.
 """
 
-from typing import Optional
+from typing import Optional, Dict, Any
 from functools import lru_cache
 import os
+from fastapi import HTTPException, Header
 
 from platformq_shared.blockchain import BlockchainClient
 from .protocols.staking_protocol import StakingProtocol
 from .protocols.vault_protocol import VaultProtocol
 from .protocols.derivatives_protocol import DerivativesProtocol
+from .protocols.compute_resource_vault import ComputeResourceVault
+from .protocols.compute_resource_lending import ComputeResourceLending
+from .protocols.compute_resource_derivatives import ComputeResourceDerivatives
+from .protocols.compute_resource_insurance import ComputeResourceInsurance
 
 
 # Cached instances
@@ -19,6 +24,10 @@ _blockchain_client: Optional[BlockchainClient] = None
 _staking_protocol: Optional[StakingProtocol] = None
 _vault_protocol: Optional[VaultProtocol] = None
 _derivatives_protocol: Optional[DerivativesProtocol] = None
+_compute_vault_protocol: Optional[ComputeResourceVault] = None
+_compute_lending_protocol: Optional[ComputeResourceLending] = None
+_compute_derivatives_protocol: Optional[ComputeResourceDerivatives] = None
+_compute_insurance_protocol: Optional[ComputeResourceInsurance] = None
 
 
 @lru_cache()
@@ -96,10 +105,122 @@ async def get_derivatives_protocol() -> DerivativesProtocol:
     return _derivatives_protocol
 
 
-def get_current_user() -> str:
+async def get_compute_vault_protocol() -> ComputeResourceVault:
+    """Get compute resource vault protocol instance"""
+    global _compute_vault_protocol
+    
+    if _compute_vault_protocol is None:
+        blockchain = get_blockchain_client()
+        
+        _compute_vault_protocol = ComputeResourceVault(
+            blockchain_client=blockchain,
+            vault_factory_address=os.getenv("COMPUTE_VAULT_FACTORY_ADDRESS"),
+            resource_token_address=os.getenv("RESOURCE_TOKEN_ADDRESS"),
+            amm_address=os.getenv("RESOURCE_AMM_ADDRESS"),
+            lending_address=os.getenv("COMPUTE_LENDING_ADDRESS"),
+            staking_address=os.getenv("STAKING_CONTRACT_ADDRESS"),
+            quantum_market_address=os.getenv("QUANTUM_MARKET_ADDRESS"),
+            ai_market_address=os.getenv("AI_MARKET_ADDRESS"),
+            network_market_address=os.getenv("NETWORK_MARKET_ADDRESS"),
+            oracle_address=os.getenv("COMPUTE_ORACLE_ADDRESS"),
+            aggregator_address=os.getenv("MARKET_AGGREGATOR_ADDRESS")
+        )
+        
+        await _compute_vault_protocol.initialize()
+    
+    return _compute_vault_protocol
+
+
+async def get_compute_lending_protocol() -> ComputeResourceLending:
+    """Get compute resource lending protocol instance"""
+    global _compute_lending_protocol
+    
+    if _compute_lending_protocol is None:
+        blockchain = get_blockchain_client()
+        
+        _compute_lending_protocol = ComputeResourceLending(
+            blockchain_client=blockchain,
+            lending_pool_address=os.getenv("COMPUTE_LENDING_POOL_ADDRESS"),
+            oracle_address=os.getenv("COMPUTE_ORACLE_ADDRESS"),
+            quantum_market_address=os.getenv("QUANTUM_MARKET_ADDRESS"),
+            ai_market_address=os.getenv("AI_MARKET_ADDRESS"),
+            network_market_address=os.getenv("NETWORK_MARKET_ADDRESS"),
+            aggregator_address=os.getenv("MARKET_AGGREGATOR_ADDRESS")
+        )
+        
+        await _compute_lending_protocol.initialize()
+    
+    return _compute_lending_protocol
+
+
+async def get_compute_derivatives_protocol() -> ComputeResourceDerivatives:
+    """Get compute resource derivatives protocol instance"""
+    global _compute_derivatives_protocol
+    
+    if _compute_derivatives_protocol is None:
+        blockchain = get_blockchain_client()
+        
+        _compute_derivatives_protocol = ComputeResourceDerivatives(
+            blockchain_client=blockchain,
+            derivatives_factory_address=os.getenv("COMPUTE_DERIVATIVES_FACTORY_ADDRESS"),
+            oracle_address=os.getenv("COMPUTE_ORACLE_ADDRESS"),
+            quantum_market_address=os.getenv("QUANTUM_MARKET_ADDRESS"),
+            ai_market_address=os.getenv("AI_MARKET_ADDRESS"),
+            network_market_address=os.getenv("NETWORK_MARKET_ADDRESS"),
+            pricing_engine_address=os.getenv("PRICING_ENGINE_ADDRESS")
+        )
+        
+        await _compute_derivatives_protocol.initialize()
+    
+    return _compute_derivatives_protocol
+
+
+async def get_compute_insurance_protocol() -> ComputeResourceInsurance:
+    """Get compute resource insurance protocol instance"""
+    global _compute_insurance_protocol
+    
+    if _compute_insurance_protocol is None:
+        blockchain = get_blockchain_client()
+        
+        _compute_insurance_protocol = ComputeResourceInsurance(
+            blockchain_client=blockchain,
+            insurance_factory_address=os.getenv("COMPUTE_INSURANCE_FACTORY_ADDRESS"),
+            oracle_address=os.getenv("COMPUTE_ORACLE_ADDRESS"),
+            quantum_market_address=os.getenv("QUANTUM_MARKET_ADDRESS"),
+            ai_market_address=os.getenv("AI_MARKET_ADDRESS"),
+            network_market_address=os.getenv("NETWORK_MARKET_ADDRESS"),
+            quality_oracle_address=os.getenv("QUALITY_ORACLE_ADDRESS"),
+            availability_monitor_address=os.getenv("AVAILABILITY_MONITOR_ADDRESS"),
+            treasury_address=os.getenv("INSURANCE_TREASURY_ADDRESS")
+        )
+        
+        await _compute_insurance_protocol.initialize()
+    
+    return _compute_insurance_protocol
+
+
+def get_current_user() -> Dict[str, Any]:
     """
     Get current user address from authentication.
     In production, this would validate JWT and extract address.
     """
-    # For development, return a test address
-    return os.getenv("DEFAULT_USER_ADDRESS", "0x0000000000000000000000000000000000000000") 
+    # For development, return a test user
+    return {
+        "address": os.getenv("DEFAULT_USER_ADDRESS", "0x0000000000000000000000000000000000000000"),
+        "roles": ["user"]
+    }
+
+
+async def verify_api_key(x_api_key: str = Header(...)) -> str:
+    """
+    Verify API key for service-to-service authentication
+    """
+    valid_api_keys = os.getenv("VALID_API_KEYS", "").split(",")
+    
+    if not valid_api_keys or x_api_key not in valid_api_keys:
+        raise HTTPException(
+            status_code=403,
+            detail="Invalid API key"
+        )
+    
+    return x_api_key 
