@@ -11,7 +11,7 @@ service_intentions = [
         action = "allow"
       },
       {
-        name   = "amm-service"
+        name   = "market-making-service"
         action = "allow"
       }
     ]
@@ -24,7 +24,7 @@ service_intentions = [
         action = "allow"
       },
       {
-        name   = "amm-service"
+        name   = "market-making-service"
         action = "allow"
       }
     ]
@@ -37,7 +37,7 @@ service_intentions = [
     name = "oracle-service"
     sources = [
       {
-        name   = "amm-service"
+        name   = "market-making-service"
         action = "allow"
       },
       {
@@ -124,7 +124,7 @@ service_intentions = [
     name = "cassandra"
     sources = [
       {
-        name   = "amm-service"
+        name   = "market-making-service"
         action = "allow"
       },
       {

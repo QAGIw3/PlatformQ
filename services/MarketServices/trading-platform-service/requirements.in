@@ -47,6 +47,7 @@ xgboost
 # Shared libraries
 platformq-shared
 platformq-events
+platformq-trading-common
 
 # Monitoring
 prometheus-client

@@ -9,6 +9,8 @@ from fastapi import Depends, HTTPException, Header, Request
 import logging
 
 from platformq_shared import ServiceClient
+from app.social_trading.copy import CopyTradingExecutor
+from app.social_trading.reputation import ReputationEngine
 
 logger = logging.getLogger(__name__)
 
@@ -54,7 +56,7 @@ def get_strategy_engine(request: Request):
     return engine
 
 
-def get_copy_executor(request: Request):
+def get_copy_executor(request: Request) -> CopyTradingExecutor:
     """Get copy trading executor from app state"""
     executor = getattr(request.app.state, "copy_executor", None)
     if not executor:
@@ -70,7 +72,7 @@ def get_market_engine(request: Request):
     return engine
 
 
-def get_reputation_engine(request: Request):
+def get_reputation_engine(request: Request) -> ReputationEngine:
     """Get reputation engine from app state"""
     engine = getattr(request.app.state, "reputation_engine", None)
     if not engine:

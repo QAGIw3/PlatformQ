@@ -146,51 +146,51 @@ services:
     command: run --server --addr :8181
     volumes:
     - ./infra/docker-compose/opa:/policies:ro
-  amm-service:
+  market-making-service:
     build:
-      context: ./services/amm-service
+      context: ./services/MarketServices/market-making-service
       dockerfile: Dockerfile
-    container_name: amm-service
+    container_name: market-making-service
     restart: unless-stopped
     networks:
     - consul
     environment:
-    - CONSUL_HTTP_ADDR=consul-agent-amm:8500
-    - SERVICE_NAME=amm-service
+    - CONSUL_HTTP_ADDR=consul-agent-market-making:8500
+    - SERVICE_NAME=market-making-service
     - SERVICE_PORT=8000
     depends_on:
-    - consul-agent-amm
-  consul-agent-amm:
+    - consul-agent-market-making
+  consul-agent-market-making:
     image: consul:1.16
-    container_name: consul-agent-amm
+    container_name: consul-agent-market-making
     restart: unless-stopped
     volumes:
     - ./consul/config/consul-client.hcl:/consul/config/consul-client.hcl:ro
-    - ./consul/services/amm-service.json:/consul/config/amm-service.json:ro
+    - ./consul/services/market-making-service.json:/consul/config/market-making-service.json:ro
     networks:
     - consul
     environment:
     - CONSUL_BIND_INTERFACE=eth0
     - CONSUL_CLIENT_INTERFACE=eth0
-    command: agent -node=amm-node -config-file=/consul/config/consul-client.hcl -config-file=/consul/config/amm-service.json
+    command: agent -node=market-making-node -config-file=/consul/config/consul-client.hcl -config-file=/consul/config/market-making-service.json
     depends_on:
     - consul-server-1
     - consul-server-2
     - consul-server-3
-  amm-sidecar:
+  market-making-sidecar:
     image: envoyproxy/envoy-alpine:v1.27.0
-    container_name: amm-sidecar
+    container_name: market-making-sidecar
     restart: unless-stopped
     networks:
     - consul
     environment:
-    - CONSUL_HTTP_ADDR=consul-agent-amm:8500
-    - SERVICE_NAME=amm-service
+    - CONSUL_HTTP_ADDR=consul-agent-market-making:8500
+    - SERVICE_NAME=market-making-service
     - SERVICE_PORT=8000
-    command: sh -c "consul connect envoy -sidecar-for amm-service -admin-bind 0.0.0.0:19001"
+    command: sh -c "consul connect envoy -sidecar-for market-making-service -admin-bind 0.0.0.0:19001"
     depends_on:
-    - consul-agent-amm
-    - amm-service
+    - consul-agent-market-making
+    - market-making-service
   analytics-service:
     build:
       context: ./services/analytics-service

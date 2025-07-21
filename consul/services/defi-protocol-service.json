@@ -57,7 +57,7 @@
               }
             },
             {
-              "destination_name": "amm-service",
+              "destination_name": "market-making-service",
               "local_bind_port": 5028,
               "config": {
                 "protocol": "http",

@@ -88,11 +88,11 @@ key_prefix "config/market-data-service/" {
 EOF
 
 # AMM Service
-consul acl policy create -name "amm-service-policy" -rules @- <<EOF
-service "amm-service" {
+consul acl policy create -name "market-making-service-policy" -rules @- <<EOF
+service "market-making-service" {
   policy = "write"
 }
-service "amm-service-sidecar-proxy" {
+service "market-making-service-sidecar-proxy" {
   policy = "write"
 }
 service_prefix "" {
@@ -104,7 +104,7 @@ node_prefix "" {
 agent_prefix "" {
   policy = "read"
 }
-key_prefix "config/amm-service/" {
+key_prefix "config/market-making-service/" {
   policy = "write"
 }
 EOF
@@ -143,8 +143,8 @@ echo "Market Data Service Token: $MARKET_DATA_TOKEN"
 
 # AMM Service Token
 AMM_TOKEN=$(consul acl token create \
-  -description "Token for amm-service" \
-  -policy-name "amm-service-policy" \
+  -description "Token for market-making-service" \
+  -policy-name "market-making-service-policy" \
   -format=json | jq -r '.SecretID')
 echo "AMM Service Token: $AMM_TOKEN"
 
@@ -173,9 +173,9 @@ consul intention create -allow market-data-service options-service
 consul intention create -allow market-data-service futures-service
 
 # Allow AMM service to access dependencies
-consul intention create -allow amm-service options-service
-consul intention create -allow amm-service futures-service
-consul intention create -allow amm-service oracle-service
+consul intention create -allow market-making-service options-service
+consul intention create -allow market-making-service futures-service
+consul intention create -allow market-making-service oracle-service
 
 # Allow social trading to access dependencies
 consul intention create -allow social-trading-service order-matching-service
@@ -186,7 +186,7 @@ consul intention create -allow social-trading-service graph-intelligence
 # Allow all services to access infrastructure
 consul intention create -allow '*' ignite-cache
 consul intention create -allow '*' pulsar
-consul intention create -allow amm-service cassandra
+consul intention create -allow market-making-service cassandra
 consul intention create -allow social-trading-service cassandra
 consul intention create -allow social-trading-service janusgraph
 
@@ -197,7 +197,7 @@ consul intention create -deny '*' '*'
 echo "Loading initial configuration into KV store..."
 
 # AMM Service Configuration
-consul kv put config/amm-service/settings @- <<EOF
+consul kv put config/market-making-service/settings @- <<EOF
 {
   "base_fee_bps": 30,
   "min_fee_bps": 1,

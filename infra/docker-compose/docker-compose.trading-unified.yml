@@ -1,0 +1,132 @@
+version: '3.8'
+
+services:
+  # Unified Ignite Cluster
+  ignite-unified:
+    image: apacheignite/ignite:2.15.0
+    environment:
+      - IGNITE_WORK_DIR=/ignite/work
+      - IGNITE_QUIET=false
+      - JVM_OPTS=-Xms2g -Xmx8g -server -XX:+UseG1GC -XX:+AlwaysPreTouch
+    ports:
+      - "10800:10800"  # Client connection
+      - "11211:11211"  # REST API
+      - "47100:47100"  # Discovery
+      - "47500:47500"  # Communication
+    volumes:
+      - ./ignite/unified-config.xml:/ignite/config/unified-config.xml:ro
+      - ignite-unified-work:/ignite/work
+      - ignite-unified-wal:/ignite/wal
+      - ignite-unified-storage:/ignite/storage
+    command: |
+      /bin/bash -c "
+        ${IGNITE_HOME}/bin/ignite.sh /ignite/config/unified-config.xml
+      "
+    networks:
+      - trading-network
+    deploy:
+      resources:
+        limits:
+          memory: 10G
+          cpus: '4'
+        reservations:
+          memory: 8G
+          cpus: '2'
+
+  # Trading Core Service (Performance Optimized)
+  trading-core:
+    build:
+      context: ../../services/MarketServices/trading-core-service
+      dockerfile: Dockerfile
+    environment:
+      - SERVICE_NAME=trading-core
+      - IGNITE_HOST=ignite-unified
+      - IGNITE_PORT=10800
+      - IGNITE_CACHE_PREFIX=trading
+      - FLINK_JOBMANAGER_URL=http://flink-jobmanager:8081
+      - PULSAR_URL=pulsar://pulsar:6650
+      - ENABLE_DIRECT_COMM=true
+      - DIRECT_COMM_BATCH_SIZE=1000
+      - ORDER_PROCESSING_THREADS=8
+    ports:
+      - "8020:8020"
+    volumes:
+      - ../../services/MarketServices/shared:/app/services/MarketServices/shared:ro
+    networks:
+      - trading-network
+    depends_on:
+      - ignite-unified
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+          cpus: '2'
+        reservations:
+          memory: 2G
+          cpus: '1'
+
+  # Trading Platform Service (Social Features)
+  trading-platform:
+    build:
+      context: ../../services/MarketServices/trading-platform-service
+      dockerfile: Dockerfile
+    environment:
+      - SERVICE_NAME=trading-platform
+      - IGNITE_HOST=ignite-unified
+      - IGNITE_PORT=10800
+      - TRADING_CORE_URL=http://trading-core:8020  # Fallback for non-critical ops
+      - ENABLE_DIRECT_COMM=true
+      - COPY_TRADE_BATCH_SIZE=100
+      - COPY_TRADE_BATCH_WINDOW_MS=10
+      - REPUTATION_UPDATE_INTERVAL=3600
+    ports:
+      - "8030:8030"
+    volumes:
+      - ../../services/MarketServices/shared:/app/services/MarketServices/shared:ro
+    networks:
+      - trading-network
+    depends_on:
+      - ignite-unified
+      - trading-core
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+          cpus: '1'
+        reservations:
+          memory: 1G
+          cpus: '0.5'
+
+  # Performance monitoring
+  prometheus:
+    image: prom/prometheus:latest
+    volumes:
+      - ./prometheus-trading.yml:/etc/prometheus/prometheus.yml:ro
+    ports:
+      - "9090:9090"
+    networks:
+      - trading-network
+
+  grafana:
+    image: grafana/grafana:latest
+    environment:
+      - GF_SECURITY_ADMIN_PASSWORD=admin
+    volumes:
+      - ./grafana/dashboards:/var/lib/grafana/dashboards:ro
+      - ./grafana/provisioning:/etc/grafana/provisioning:ro
+    ports:
+      - "3000:3000"
+    networks:
+      - trading-network
+
+networks:
+  trading-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16
+
+volumes:
+  ignite-unified-work:
+  ignite-unified-wal:
+  ignite-unified-storage: 

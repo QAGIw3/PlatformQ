@@ -22,13 +22,17 @@ import os
 from app.shared.order_matching import UnifiedMatchingEngine
 from app.api import unified_trading
 
-# Social Trading Components
-from app.social_trading.trading.strategy_engine import StrategyEngine
-from app.social_trading.trading.copy_executor import CopyTradingExecutor
+# Social Trading Components - Updated imports
+from app.social_trading.copy.copy_executor import CopyTradingExecutor
 from app.social_trading.reputation.reputation_engine import ReputationEngine
-from app.social_trading.analytics.performance_tracker import PerformanceTracker
-from app.social_trading.copy.portfolio_copier import PortfolioCopier
-from app.social_trading.dao.trader_dao import TraderDAO
+from app.social_trading.models import TraderProfile, TradingStrategy, CopyTradingRelation
+
+# API Routers - Updated imports
+from app.social_trading.api import (
+    social_router,
+    automated_router,
+    strategy_markets_router
+)
 
 # Prediction Markets Components
 from app.prediction_markets.markets.market_engine import MarketEngine
@@ -36,24 +40,6 @@ from app.prediction_markets.markets.conditional_engine import ConditionalMarketE
 from app.prediction_markets.resolution.oracle_resolver import OracleResolver
 from app.prediction_markets.liquidity.amm_pool import PredictionAMM
 from app.prediction_markets.governance.market_dao import MarketGovernanceDAO
-
-# API Routers
-from app.social_trading.api import (
-    strategies as social_strategies,
-    copy_trading,
-    reputation as social_reputation,
-    analytics as social_analytics,
-    social,
-    strategy_markets,
-    automated_trading
-)
-from app.prediction_markets.api import (
-    markets as prediction_markets,
-    conditional,
-    resolution,
-    liquidity,
-    governance as prediction_governance
-)
 
 # Import Vault/Consul integration
 from app.vault_consul_integration import VaultConsulIntegration
@@ -143,26 +129,38 @@ async def lifespan(app: FastAPI):
     )
     
     # Social Trading components
-    strategy_engine = StrategyEngine(
-        vault_consul=vault_consul
-    )
-    copy_executor = CopyTradingExecutor(
-        matching_engine=matching_engine,
-        vault_consul=vault_consul
-    )
-    reputation_engine = ReputationEngine(
-        vault_consul=vault_consul
-    )
-    performance_tracker = PerformanceTracker(
-        vault_consul=vault_consul
-    )
-    portfolio_copier = PortfolioCopier(
-        copy_executor=copy_executor,
-        vault_consul=vault_consul
-    )
-    trader_dao = TraderDAO(
-        vault_consul=vault_consul
-    )
+    # Get settings from environment or defaults
+    class Settings:
+        # Apache Ignite
+        ignite_host = os.getenv("IGNITE_HOST", "localhost")
+        ignite_port = int(os.getenv("IGNITE_PORT", "10800"))
+        
+        # Apache Pulsar
+        pulsar_url = os.getenv("PULSAR_URL", "pulsar://localhost:6650")
+        
+        # External services
+        order_matching_service_url = os.getenv("ORDER_MATCHING_SERVICE_URL", "http://localhost:8003")
+        risk_service_url = os.getenv("RISK_SERVICE_URL", "http://localhost:8004")
+        
+        # Copy Trading Parameters
+        max_copy_allocation = float(os.getenv("MAX_COPY_ALLOCATION", "0.5"))
+        
+        # Reputation System
+        reputation_update_interval = int(os.getenv("REPUTATION_UPDATE_INTERVAL", "3600"))
+        reputation_decay_rate = float(os.getenv("REPUTATION_DECAY_RATE", "0.95"))
+        min_trades_for_reputation = int(os.getenv("MIN_TRADES_FOR_REPUTATION", "10"))
+        
+        # Social Features
+        max_posts_per_day = int(os.getenv("MAX_POSTS_PER_DAY", "50"))
+    
+    settings = Settings()
+    
+    copy_executor = CopyTradingExecutor(settings)
+    reputation_engine = ReputationEngine(settings)
+    
+    # Start components
+    await copy_executor.start()
+    await reputation_engine.start()
     
     # Prediction Markets components
     market_engine = MarketEngine(
@@ -212,6 +210,12 @@ async def lifespan(app: FastAPI):
     
     copy_executor.on_copy_trade = on_copy_trade_executed
     
+    # Store components in app state
+    app.state.vault_consul = vault_consul
+    app.state.copy_executor = copy_executor
+    app.state.reputation_engine = reputation_engine
+    app.state.settings = settings
+    
     # Start background tasks
     asyncio.create_task(monitor_exchange_health())
     asyncio.create_task(update_trading_metrics())
@@ -223,6 +227,10 @@ async def lifespan(app: FastAPI):
     
     # Cleanup
     logger.info("Shutting down Trading Platform Service...")
+    
+    # Stop social trading components
+    await copy_executor.stop()
+    await reputation_engine.stop()
     
     await vault_consul.deregister_service()
     await vault_consul.shutdown()
@@ -248,20 +256,12 @@ app.add_middleware(
 )
 
 # Include Social Trading API routers
-app.include_router(social_strategies.router, prefix="/api/v1/social", tags=["social-strategies"])
-app.include_router(copy_trading.router, prefix="/api/v1/social", tags=["copy-trading"])
-app.include_router(social_reputation.router, prefix="/api/v1/social", tags=["social-reputation"])
-app.include_router(social_analytics.router, prefix="/api/v1/social", tags=["social-analytics"])
-app.include_router(social.router, prefix="/api/v1/social", tags=["social"])
-app.include_router(strategy_markets.router, prefix="/api/v1/social", tags=["strategy-markets"])
-app.include_router(automated_trading.router, prefix="/api/v1/social", tags=["automated-trading"])
+app.include_router(social_router, prefix="/api/v1", tags=["social-trading"])
+app.include_router(automated_router, prefix="/api/v1/social", tags=["automated-trading"])
+app.include_router(strategy_markets_router, prefix="/api/v1/social", tags=["strategy-markets"])
 
-# Include Prediction Markets API routers
-app.include_router(prediction_markets.router, prefix="/api/v1/prediction", tags=["prediction-markets"])
-app.include_router(prediction_trading.router, prefix="/api/v1/prediction", tags=["prediction-trading"])
-app.include_router(resolution.router, prefix="/api/v1/prediction", tags=["resolution"])
-app.include_router(prediction_analytics.router, prefix="/api/v1/prediction", tags=["prediction-analytics"])
-app.include_router(prediction_governance.router, prefix="/api/v1/prediction", tags=["prediction-governance"])
+# Include Prediction Markets API routers (if they exist)
+# app.include_router(prediction_markets.router, prefix="/api/v1/prediction", tags=["prediction-markets"])
 
 # Include Unified Trading API router
 app.include_router(unified_trading.router, prefix="/api/v1", tags=["unified-trading"])

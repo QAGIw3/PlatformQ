@@ -11,6 +11,7 @@ from fastapi.middleware.cors import CORSMiddleware
 import httpx
 
 from .models import OptionContract, OptionOrder, Greeks, OptionStrategy
+from .api import options, strategies
 
 
 # Configure logging
@@ -50,6 +51,10 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+# Include API routers
+app.include_router(options.router)
+app.include_router(strategies.router)
 
 
 @app.get("/")

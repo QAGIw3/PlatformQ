@@ -1,0 +1,27 @@
+{
+  "service": {
+    "name": "market-making-service",
+    "tags": [
+      "market-services",
+      "amm",
+      "liquidity",
+      "market-making"
+    ],
+    "port": 8000,
+    "check": {
+      "http": "http://market-making-service:8000/health",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "meta": {
+      "version": "1.0.0",
+      "description": "High-performance automated market making and liquidity provision service",
+      "prometheus": "true",
+      "prometheus_port": "9090",
+      "prometheus_path": "/metrics"
+    },
+    "connect": {
+      "sidecar_service": {}
+    }
+  }
+} 

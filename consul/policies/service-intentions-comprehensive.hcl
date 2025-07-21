@@ -73,7 +73,7 @@ Kind = "service-intentions"
 Name = "cassandra"
 Sources = [
   {
-    Name = "amm-service"
+    Name = "market-making-service"
     Action = "allow"
   },
   {
@@ -254,7 +254,7 @@ Kind = "service-intentions"
 Name = "market-data-service"
 Sources = [
   {
-    Name = "amm-service"
+    Name = "market-making-service"
     Action = "allow"
   },
   {
@@ -500,7 +500,7 @@ Sources = [
 ---
 # AMM Service access
 Kind = "service-intentions"
-Name = "amm-service"
+Name = "market-making-service"
 Sources = [
   {
     Name = "defi-protocol-service"

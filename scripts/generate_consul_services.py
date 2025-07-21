@@ -110,7 +110,7 @@ SERVICE_CONFIGS = {
             "protocols": "lending,staking,yield_farming"
         },
         "upstreams": [
-            "auth-service", "blockchain-gateway-service", "amm-service",
+            "auth-service", "blockchain-gateway-service", "market-making-service",
             "ignite-cache", "pulsar", "cassandra"
         ]
     },

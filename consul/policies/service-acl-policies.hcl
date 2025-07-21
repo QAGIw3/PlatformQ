@@ -23,11 +23,11 @@ service "market-data-service-sidecar-proxy" {
 }
 
 # AMM Service Policy
-service "amm-service" {
+service "market-making-service" {
   policy = "write"
 }
 
-service "amm-service-sidecar-proxy" {
+service "market-making-service-sidecar-proxy" {
   policy = "write"
 }
 
@@ -76,7 +76,7 @@ key_prefix "config/market-data-service/" {
   policy = "write"
 }
 
-key_prefix "config/amm-service/" {
+key_prefix "config/market-making-service/" {
   policy = "write"
 }
 

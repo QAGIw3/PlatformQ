@@ -1,0 +1,234 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<beans xmlns="http://www.springframework.org/schema/beans"
+       xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+       xsi:schemaLocation="
+        http://www.springframework.org/schema/beans
+        http://www.springframework.org/schema/beans/spring-beans.xsd">
+
+    <bean class="org.apache.ignite.configuration.IgniteConfiguration">
+        <property name="igniteInstanceName" value="trading-unified"/>
+        
+        <!-- Performance optimizations -->
+        <property name="systemThreadPoolSize" value="16"/>
+        <property name="publicThreadPoolSize" value="32"/>
+        <property name="queryThreadPoolSize" value="16"/>
+        <property name="stripedPoolSize" value="8"/>
+        
+        <!-- Network configuration for low latency -->
+        <property name="communicationSpi">
+            <bean class="org.apache.ignite.spi.communication.tcp.TcpCommunicationSpi">
+                <property name="messageQueueLimit" value="1024"/>
+                <property name="socketWriteTimeout" value="1000"/>
+                <property name="selectorsCount" value="8"/>
+                <property name="connectionsPerNode" value="4"/>
+            </bean>
+        </property>
+        
+        <!-- Discovery configuration -->
+        <property name="discoverySpi">
+            <bean class="org.apache.ignite.spi.discovery.tcp.TcpDiscoverySpi">
+                <property name="ipFinder">
+                    <bean class="org.apache.ignite.spi.discovery.tcp.ipfinder.vm.TcpDiscoveryVmIpFinder">
+                        <property name="addresses">
+                            <list>
+                                <value>ignite-unified:47500..47509</value>
+                            </list>
+                        </property>
+                    </bean>
+                </property>
+                <property name="socketTimeout" value="5000"/>
+                <property name="ackTimeout" value="5000"/>
+            </bean>
+        </property>
+        
+        <!-- Data Storage Configuration -->
+        <property name="dataStorageConfiguration">
+            <bean class="org.apache.ignite.configuration.DataStorageConfiguration">
+                <!-- 2GB default region -->
+                <property name="defaultDataRegionConfiguration">
+                    <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                        <property name="name" value="Default_Region"/>
+                        <property name="initialSize" value="#{1L * 1024 * 1024 * 1024}"/>
+                        <property name="maxSize" value="#{2L * 1024 * 1024 * 1024}"/>
+                        <property name="pageEvictionMode" value="RANDOM_LRU"/>
+                        <property name="persistenceEnabled" value="true"/>
+                    </bean>
+                </property>
+                
+                <!-- Hot data region for orderbooks and active orders -->
+                <property name="dataRegionConfigurations">
+                    <list>
+                        <bean class="org.apache.ignite.configuration.DataRegionConfiguration">
+                            <property name="name" value="HotData_Region"/>
+                            <property name="initialSize" value="#{512L * 1024 * 1024}"/>
+                            <property name="maxSize" value="#{4L * 1024 * 1024 * 1024}"/>
+                            <property name="pageEvictionMode" value="DISABLED"/>
+                            <property name="persistenceEnabled" value="false"/>
+                        </bean>
+                    </list>
+                </property>
+                
+                <property name="walMode" value="LOG_ONLY"/>
+                <property name="walSegmentSize" value="#{128 * 1024 * 1024}"/>
+                <property name="checkpointFrequency" value="30000"/>
+            </bean>
+        </property>
+        
+        <!-- Cache configurations -->
+        <property name="cacheConfiguration">
+            <list>
+                <!-- Shared Market Cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="markets"/>
+                    <property name="cacheMode" value="REPLICATED"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="readFromBackup" value="true"/>
+                </bean>
+                
+                <!-- Orderbook Cache (Hot Data) -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="orderbook_cache"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="dataRegionName" value="HotData_Region"/>
+                    <property name="onheapCacheEnabled" value="true"/>
+                    <property name="evictionPolicyFactory">
+                        <bean class="org.apache.ignite.cache.eviction.lru.LruEvictionPolicyFactory">
+                            <property name="maxSize" value="100000"/>
+                        </bean>
+                    </property>
+                </bean>
+                
+                <!-- Order Cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="order_cache"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="affinity">
+                        <bean class="org.apache.ignite.cache.affinity.rendezvous.RendezvousAffinityFunction">
+                            <property name="partitions" value="1024"/>
+                        </bean>
+                    </property>
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="HOURS"/>
+                                    <constructor-arg value="24"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+                
+                <!-- User State Cache (Shared) -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="user_state"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="2"/>
+                    <property name="atomicityMode" value="TRANSACTIONAL"/>
+                    <property name="writeSynchronizationMode" value="FULL_SYNC"/>
+                </bean>
+                
+                <!-- Copy Relations Cache -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="copy_relations"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="1"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="indexedTypes">
+                        <list>
+                            <value>java.lang.String</value>
+                            <value>org.apache.ignite.binary.BinaryObject</value>
+                        </list>
+                    </property>
+                    <property name="queryEntities">
+                        <list>
+                            <bean class="org.apache.ignite.cache.QueryEntity">
+                                <property name="keyType" value="java.lang.String"/>
+                                <property name="valueType" value="CopyTradingRelation"/>
+                                <property name="fields">
+                                    <map>
+                                        <entry key="leader_id" value="java.lang.String"/>
+                                        <entry key="follower_id" value="java.lang.String"/>
+                                        <entry key="is_active" value="java.lang.Boolean"/>
+                                    </map>
+                                </property>
+                                <property name="indexes">
+                                    <list>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="leader_id"/>
+                                        </bean>
+                                        <bean class="org.apache.ignite.cache.QueryIndex">
+                                            <constructor-arg value="follower_id"/>
+                                        </bean>
+                                    </list>
+                                </property>
+                            </bean>
+                        </list>
+                    </property>
+                </bean>
+                
+                <!-- Direct Communication Messaging Caches -->
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="messaging:trading-core"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="0"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="dataRegionName" value="HotData_Region"/>
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="SECONDS"/>
+                                    <constructor-arg value="10"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+                
+                <bean class="org.apache.ignite.configuration.CacheConfiguration">
+                    <property name="name" value="messaging:trading-platform"/>
+                    <property name="cacheMode" value="PARTITIONED"/>
+                    <property name="backups" value="0"/>
+                    <property name="atomicityMode" value="ATOMIC"/>
+                    <property name="dataRegionName" value="HotData_Region"/>
+                    <property name="expiryPolicyFactory">
+                        <bean class="javax.cache.expiry.CreatedExpiryPolicy" factory-method="factoryOf">
+                            <constructor-arg>
+                                <bean class="javax.cache.expiry.Duration">
+                                    <constructor-arg value="SECONDS"/>
+                                    <constructor-arg value="10"/>
+                                </bean>
+                            </constructor-arg>
+                        </bean>
+                    </property>
+                </bean>
+            </list>
+        </property>
+        
+        <!-- Binary configuration for efficient serialization -->
+        <property name="binaryConfiguration">
+            <bean class="org.apache.ignite.configuration.BinaryConfiguration">
+                <property name="compactFooter" value="true"/>
+                <property name="idMapper">
+                    <bean class="org.apache.ignite.binary.BinaryBasicIdMapper">
+                        <property name="lowerCase" value="true"/>
+                    </bean>
+                </property>
+            </bean>
+        </property>
+        
+        <!-- Client connector configuration -->
+        <property name="clientConnectorConfiguration">
+            <bean class="org.apache.ignite.configuration.ClientConnectorConfiguration">
+                <property name="port" value="10800"/>
+                <property name="portRange" value="10"/>
+                <property name="threadPoolSize" value="16"/>
+            </bean>
+        </property>
+    </bean>
+</beans> 
