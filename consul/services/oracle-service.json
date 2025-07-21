@@ -1,0 +1,28 @@
+{
+  "service": {
+    "name": "oracle-service",
+    "tags": [
+      "oracle",
+      "measurement",
+      "quality",
+      "verification",
+      "api"
+    ],
+    "port": 8027,
+    "meta": {
+      "version": "1.0.0",
+      "description": "Decentralized oracle for compute resource quality",
+      "protocols": "http"
+    },
+    "check": {
+      "http": "http://localhost:8027/health",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "weights": {
+      "passing": 10,
+      "warning": 5
+    },
+    "enable_tag_override": false
+  }
+} 

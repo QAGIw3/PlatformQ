@@ -1,0 +1,28 @@
+{
+  "service": {
+    "name": "market-aggregator-service",
+    "tags": [
+      "market",
+      "aggregator",
+      "bundles",
+      "arbitrage",
+      "api"
+    ],
+    "port": 8028,
+    "meta": {
+      "version": "1.0.0",
+      "description": "Unified market aggregator for compute resources",
+      "protocols": "http"
+    },
+    "check": {
+      "http": "http://localhost:8028/health",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "weights": {
+      "passing": 10,
+      "warning": 5
+    },
+    "enable_tag_override": false
+  }
+} 

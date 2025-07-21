@@ -1,0 +1,41 @@
+version: '3.8'
+
+services:
+  market-aggregator-service:
+    build: .
+    container_name: market-aggregator-service
+    ports:
+      - "8028:8028"
+    environment:
+      - HOST=0.0.0.0
+      - PORT=8028
+      - LOG_LEVEL=INFO
+      - QUANTUM_MARKET_URL=http://quantum-market-service:8024
+      - AI_MARKET_URL=http://ai-compute-market-service:8025
+      - NETWORK_MARKET_URL=http://network-bandwidth-market-service:8026
+      - ORACLE_SERVICE_URL=http://oracle-service:8027
+      - IGNITE_HOST=ignite
+      - PULSAR_URL=pulsar://pulsar:6650
+      - ELASTICSEARCH_URL=http://elasticsearch:9200
+      - CONSUL_HOST=consul
+      - VAULT_URL=http://vault:8200
+      - BUNDLE_OPTIMIZATION_ENABLED=true
+      - ARBITRAGE_DETECTION_ENABLED=true
+      - OPTIMIZATION_ALGORITHM=genetic
+    depends_on:
+      - ignite
+      - pulsar
+      - elasticsearch
+      - consul
+    networks:
+      - platformq-network
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8028/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+networks:
+  platformq-network:
+    external: true 
