@@ -49,14 +49,46 @@ def create_application(
         logger.info("Starting Data Catalog Hub...")
         
         # Initialize infrastructure
+        logger.info("Initializing infrastructure components...")
         await container.atlas_client().initialize()
         await container.ignite_cache_adapter().initialize()
+        await container.elasticsearch_client().info()  # Test ES connection
         
-        # Initialize services
+        # Initialize core catalog components
+        logger.info("Initializing core catalog components...")
+        await container.schema_registry().initialize()
+        await container.lineage_processor().initialize()
+        await container.classifier().initialize()
+        await container.glossary_manager().initialize()
+        
+        # Initialize enhanced catalog components
+        logger.info("Initializing enhanced catalog components...")
+        await container.medallion_discovery_engine().initialize()
+        await container.access_analytics_engine().initialize()
+        await container.ai_glossary_enhancements().initialize()
+        await container.quality_integration_engine().initialize()
+        await container.catalog_search_integration().initialize()
+        
+        # Initialize AI components
+        logger.info("Initializing AI components...")
+        await container.embedding_manager().initialize()
+        await container.unified_query_analyzer().initialize()
+        
+        # Initialize search service
+        logger.info("Initializing search service...")
         await container.unified_search_service().initialize()
+        
+        # Initialize analytics
+        logger.info("Initializing analytics components...")
+        await container.search_analytics_tracker().initialize()
+        await container.knowledge_graph_integrator().initialize()
         
         # Register event handlers
         setup_event_handlers(container)
+        
+        # Start event processors
+        logger.info("Starting event processors...")
+        await start_event_processors(container)
         
         logger.info("Data Catalog Hub started successfully")
         
@@ -65,9 +97,16 @@ def create_application(
         # Shutdown
         logger.info("Shutting down Data Catalog Hub...")
         
-        # Cleanup resources
+        # Stop event processors
+        await stop_event_processors(container)
+        
+        # Cleanup services
+        await container.unified_search_service().cleanup() if hasattr(container.unified_search_service(), 'cleanup') else None
+        
+        # Cleanup infrastructure
         await container.atlas_client().cleanup()
         await container.ignite_cache_adapter().cleanup()
+        await container.elasticsearch_client().close()
         
         logger.info("Data Catalog Hub shutdown complete")
     
@@ -175,6 +214,20 @@ def setup_event_handlers(container: Container):
     event_bus.register_handler("QualityAssessed", update_quality_metrics)
     
     logger.info("Event handlers registered")
+
+
+async def start_event_processors(container: Container):
+    """Start background event processors"""
+    # These would be actual event processors in production
+    # For now, this is a placeholder
+    logger.info("Event processors started")
+
+
+async def stop_event_processors(container: Container):
+    """Stop background event processors"""
+    # These would stop actual event processors in production
+    # For now, this is a placeholder
+    logger.info("Event processors stopped")
 
 
 # Export for wire decorator

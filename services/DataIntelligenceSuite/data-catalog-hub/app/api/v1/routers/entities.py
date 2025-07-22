@@ -5,7 +5,7 @@ Thin router for entity operations.
 """
 
 from typing import Optional
-from fastapi import APIRouter, Depends, HTTPException, Query, Path
+from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
 
 from app.api.v1.dependencies import get_entity_service, get_current_user
 from app.api.v1.models.requests.entity_requests import (
@@ -59,7 +59,7 @@ async def get_entity(
 @router.put("/{guid}", response_model=EntityResponse)
 async def update_entity(
     guid: str = Path(..., description="Entity GUID"),
-    request: UpdateEntityRequest,
+    request: UpdateEntityRequest = Body(...),
     entity_service: EntityService = Depends(get_entity_service)
 ):
     """Update an entity"""

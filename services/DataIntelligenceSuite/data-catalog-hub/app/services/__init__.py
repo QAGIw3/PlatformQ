@@ -1,46 +1,23 @@
 """
-Search and indexing services for Data Catalog Hub
+Services Package
 
-This module provides both legacy services (for backward compatibility)
-and new consolidated services following improved architecture.
+Domain services for the Data Catalog Hub.
 """
 
-# Legacy services (maintained for backward compatibility)
-from .indexer import IndexingService
-from .es_vector_search import ElasticsearchVectorService
-from .hybrid_search import HybridSearchService
-from .query_understanding import QueryUnderstandingService
-from .ai_search_enhancement import AISearchEnhancement
-from .search_analytics import SearchAnalyticsService
-from .vector_search import VectorSearchService
-from .enhanced_vector_search import EnhancedVectorSearchService
-
-# New consolidated architecture
-from .search_orchestrator import SearchOrchestrator
-from .interfaces import SearchResult, SearchOptions
-from .adapters import LegacySearchAdapter
-from .ai import EmbeddingManager, UnifiedQueryAnalyzer
-from .storage import IgniteCacheAdapter
-from .strategies import TextSearchStrategy, ExactMatchStrategy
+from .interfaces import ServiceResult, SearchResult, SearchOptions
+from . import catalog
+from . import search
+from . import ai
+from . import storage
+from . import adapters
 
 __all__ = [
-    # Legacy exports
-    'IndexingService',
-    'ElasticsearchVectorService',
-    'HybridSearchService',
-    'QueryUnderstandingService',
-    'AISearchEnhancement',
-    'SearchAnalyticsService',
-    'VectorSearchService',
-    'EnhancedVectorSearchService',
-    # New consolidated exports
-    'SearchOrchestrator',
-    'SearchResult',
+    'ServiceResult',
+    'SearchResult', 
     'SearchOptions',
-    'LegacySearchAdapter',
-    'EmbeddingManager',
-    'UnifiedQueryAnalyzer',
-    'IgniteCacheAdapter',
-    'TextSearchStrategy',
-    'ExactMatchStrategy'
+    'catalog',
+    'search',
+    'ai',
+    'storage',
+    'adapters'
 ] 

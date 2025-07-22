@@ -1,37 +1,9 @@
 """
-API endpoints for Data Catalog Hub
+API Package
+
+Exports the v1 API implementation.
 """
 
-from . import (
-    entities,
-    classifications,
-    glossary,
-    lineage,
-    schemas,
-    search,
-    monitoring,
-    health,
-    discovery,
-    intelligent_search,
-    analytics,
-    quality,
-    unified_search,
-    vector_endpoints
-)
+from . import v1
 
-__all__ = [
-    "entities",
-    "classifications",
-    "glossary",
-    "lineage",
-    "schemas",
-    "search",
-    "monitoring",
-    "health",
-    "discovery",
-    "intelligent_search",
-    "analytics",
-    "quality",
-    "unified_search",
-    "vector_endpoints"
-] 
+__all__ = ['v1'] 

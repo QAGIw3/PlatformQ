@@ -33,6 +33,11 @@ from app.services.catalog import (
 from app.services.search import UnifiedSearchService
 from app.services.ai import EmbeddingManager, UnifiedQueryAnalyzer
 from app.services.storage import IgniteCacheAdapter
+from app.services.adapters.search_migration_adapter import (
+    VectorSearchServiceAdapter,
+    ESVectorSearchServiceAdapter,
+    HybridSearchServiceAdapter
+)
 
 # Import repositories
 from app.infrastructure.repositories import (
@@ -220,8 +225,8 @@ class Container(containers.DeclarativeContainer):
         event_bus=event_bus
     )
     
-    # Search Service
-    unified_search_service = providers.Factory(
+    # Search Components
+    unified_search_service = providers.Singleton(
         UnifiedSearchService,
         es_client=elasticsearch_client,
         query_analyzer=query_analyzer,
@@ -229,6 +234,22 @@ class Container(containers.DeclarativeContainer):
         cache_adapter=ignite_cache_adapter,
         catalog_search=catalog_search_integration,
         event_bus=event_bus
+    )
+    
+    # Legacy search service adapters (for backward compatibility)
+    vector_search_service = providers.Singleton(
+        lambda unified: VectorSearchServiceAdapter(unified),
+        unified=unified_search_service
+    )
+    
+    es_vector_search_service = providers.Singleton(
+        lambda unified: ESVectorSearchServiceAdapter(unified),
+        unified=unified_search_service
+    )
+    
+    hybrid_search_service = providers.Singleton(
+        lambda unified: HybridSearchServiceAdapter(unified),
+        unified=unified_search_service
     )
     
     # Analytics Services

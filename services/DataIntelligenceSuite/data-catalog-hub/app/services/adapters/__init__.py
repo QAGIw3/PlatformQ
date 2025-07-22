@@ -1,11 +1,17 @@
 """
-Adapters for Data Catalog Hub
+Adapter Services
 
-Provides backward compatibility adapters for migrating to new architecture.
+Provides compatibility adapters for migration.
 """
 
-from .legacy_search_adapter import LegacySearchAdapter
+from .search_migration_adapter import (
+    VectorSearchServiceAdapter,
+    ESVectorSearchServiceAdapter,
+    HybridSearchServiceAdapter
+)
 
 __all__ = [
-    'LegacySearchAdapter'
+    'VectorSearchServiceAdapter',
+    'ESVectorSearchServiceAdapter',
+    'HybridSearchServiceAdapter'
 ] 
