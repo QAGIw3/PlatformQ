@@ -272,10 +272,10 @@ async def get_available_features(
 
 @router.post("/batch/process")
 async def batch_process_historical(
+    background_tasks: BackgroundTasks,
     start_date: datetime = Query(..., description="Start date"),
     end_date: datetime = Query(..., description="End date"),
     event_types: List[str] = Query(..., description="Event types to process"),
-    background_tasks: BackgroundTasks,
     trading_medallion: TradingMedallionArchitecture = Depends(get_trading_medallion)
 ):
     """Batch process historical trading data"""

@@ -83,16 +83,17 @@ class TradingRiskNetwork:
     """Analyzes and manages trading risk propagation networks"""
     
     def __init__(self, gremlin_url: str, event_publisher=None):
+        """Initialize trading risk network"""
         self.gremlin_url = gremlin_url
+        self.g = self._connect()
         self.event_publisher = event_publisher
-        self.g = None
-        self._connect()
+        self.direct_alerts = None  # Will be set by main.py if available
         
         # Risk thresholds
         self.risk_thresholds = {
-            TraderRiskLevel.LOW: 0.3,
+            TraderRiskLevel.LOW: 0.0,
             TraderRiskLevel.MEDIUM: 0.5,
-            TraderRiskLevel.HIGH: 0.7,
+            TraderRiskLevel.HIGH: 0.75,
             TraderRiskLevel.CRITICAL: 0.9
         }
         
@@ -290,16 +291,22 @@ class TradingRiskNetwork:
             from networkx.algorithms import community
             communities = community.louvain_communities(risk_graph, weight='weight')
             
-            # Filter significant clusters
-            significant_clusters = []
-            for cluster in communities:
-                if len(cluster) >= 3:  # At least 3 traders
-                    cluster_risk = self._calculate_cluster_risk(cluster)
-                    if cluster_risk > 0.6:
-                        significant_clusters.append(cluster)
+            # Filter and alert on significant clusters
+            clusters = []
+            for idx, cluster in enumerate(communities):
+                if len(cluster) >= 3:
+                    clusters.append(cluster)
+                    
+                    # Alert for high-risk clusters
+                    if self.direct_alerts:
+                        cluster_risk = self._calculate_cluster_risk(cluster)
+                        await self.direct_alerts.alert_risk_cluster(
+                            cluster_id=idx,
+                            cluster_traders=list(cluster),
+                            cluster_risk_score=cluster_risk
+                        )
             
-            logger.info(f"Detected {len(significant_clusters)} significant risk clusters")
-            return significant_clusters
+            return clusters
             
         except Exception as e:
             logger.error(f"Error detecting risk clusters: {e}")
@@ -407,10 +414,32 @@ class TradingRiskNetwork:
             
             simulation_results['total_affected'] = len(all_affected)
             
+            # Calculate total losses
+            total_losses = sum(w.get('losses', 0) for w in simulation_results['waves'])
+            simulation_results['total_losses'] = total_losses
+            
+            # Send cascade warning if impact is significant
+            if self.direct_alerts and len(simulation_results['affected_traders']) > 10:
+                cascade_paths = []
+                for wave in simulation_results['waves']:
+                    for trader in wave.get('affected_traders', []):
+                        cascade_paths.append([failing_trader, trader])
+                
+                estimated_impact = {
+                    "total_exposure": total_losses,
+                    "affected_count": len(simulation_results['affected_traders']),
+                    "cascade_depth": len(simulation_results['waves'])
+                }
+                
+                await self.direct_alerts.send_cascade_warning(
+                    source_trader=failing_trader,
+                    cascade_path=cascade_paths,
+                    estimated_impact=estimated_impact
+                )
+            
             # Generate recommendations
-            simulation_results['recommendations'] = self._generate_cascade_mitigation_recommendations(
-                simulation_results
-            )
+            recommendations = self._generate_cascade_mitigation_recommendations(simulation_results)
+            simulation_results['recommendations'] = recommendations
             
             return simulation_results
             
@@ -638,15 +667,36 @@ class TradingRiskNetwork:
                 break
     
     async def _publish_systemic_risk_alert(self, result: RiskPropagationResult):
-        """Publish systemic risk alert event"""
-        if self.event_publisher:
-            await self.event_publisher.publish_event({
-                'event_type': 'systemic_risk_alert',
-                'affected_traders': result.affected_traders[:50],  # Limit size
-                'total_affected': len(result.affected_traders),
-                'total_exposure': str(result.total_exposure),
-                'cascade_depth': result.cascade_depth,
-                'systemic_risk_score': result.systemic_risk_score,
-                'timestamp': datetime.utcnow().isoformat(),
-                'mitigation_required': True
-            }) 
+        """Publish systemic risk alert"""
+        if result.systemic_risk_score > 0.8:
+            severity = "critical" if result.systemic_risk_score > 0.9 else "high"
+            
+            risk_data = {
+                "systemic_risk_score": result.systemic_risk_score,
+                "total_exposure": str(result.total_exposure),
+                "cascade_depth": result.cascade_depth,
+                "affected_count": len(result.affected_traders)
+            }
+            
+            # Use direct alerts for immediate notification
+            if self.direct_alerts:
+                await self.direct_alerts.broadcast_systemic_risk_alert(
+                    risk_data=risk_data,
+                    affected_traders=result.affected_traders[:100],  # Limit to 100
+                    severity=severity
+                )
+            
+            # Also publish traditional event if available
+            if self.event_publisher:
+                await self.event_publisher.publish(
+                    "risk.systemic.alert",
+                    {
+                        "timestamp": datetime.utcnow().isoformat(),
+                        "severity": severity,
+                        "affected_traders": result.affected_traders,
+                        "total_exposure": str(result.total_exposure),
+                        "cascade_depth": result.cascade_depth,
+                        "systemic_risk_score": result.systemic_risk_score,
+                        "mitigation_actions": result.mitigation_actions
+                    }
+                ) 

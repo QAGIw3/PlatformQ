@@ -1,0 +1,52 @@
+version: '3.8'
+
+services:
+  cognitive-orchestration-service:
+    build:
+      context: ../../services/DataIntelligenceSuite/cognitive-orchestration-service
+      dockerfile: Dockerfile
+    container_name: cognitive-orchestration-service
+    environment:
+      - ENVIRONMENT=development
+      - DATA_PLATFORM_URL=http://data-platform-service:8000
+      - ML_PLATFORM_URL=http://unified-ml-platform-service:8000
+      - GRAPH_INTELLIGENCE_URL=http://graph-intelligence-service:8000
+      - ANALYTICS_SERVICE_URL=http://analytics-service:8000
+      - IGNITE_HOST=ignite
+      - IGNITE_PORT=10800
+      - PULSAR_URL=pulsar://pulsar:6650
+      - PULSAR_NAMESPACE=platformq/orchestration
+      - OPTIMIZATION_INTERVAL=300
+      - METRICS_INTERVAL=60
+      - PREDICTION_WINDOW=3600
+      - COST_WEIGHT=0.3
+      - PERFORMANCE_WEIGHT=0.5
+      - RELIABILITY_WEIGHT=0.2
+      - JWT_SECRET_KEY=${JWT_SECRET_KEY:-your-secret-key-here}
+    ports:
+      - "8015:8000"
+    networks:
+      - platformq-network
+    depends_on:
+      - ignite
+      - pulsar
+      - data-platform-service
+      - unified-ml-platform-service
+    volumes:
+      - cognitive-orchestration-models:/app/models
+      - cognitive-orchestration-logs:/app/logs
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 3s
+      retries: 3
+      start_period: 40s
+    restart: unless-stopped
+
+volumes:
+  cognitive-orchestration-models:
+  cognitive-orchestration-logs:
+
+networks:
+  platformq-network:
+    external: true 

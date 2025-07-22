@@ -28,32 +28,65 @@ trading_risk_network = None
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Application lifespan events"""
-    global vault_consul, trading_risk_network
-    
+    """Application lifespan manager"""
+    # Startup
     logger.info("Starting Trading Risk Intelligence Service...")
     
     # Initialize Vault/Consul integration
     vault_consul = VaultConsulIntegration()
     await vault_consul.initialize()
     
-    # Initialize trading risk network
-    trading_risk_network = TradingRiskNetwork(
-        gremlin_url=vault_consul.janusgraph_config.get('gremlin_url', 'ws://janusgraph:8182/gremlin')
+    # Get JanusGraph connection from Vault
+    gremlin_url = vault_consul.janusgraph_config.get(
+        "gremlin_url", 
+        "ws://janusgraph:8182/gremlin"
     )
     
+    # Initialize risk network
+    risk_network = TradingRiskNetwork(gremlin_url)
+    
+    # Initialize direct alerts (if Ignite is available)
+    direct_alerts = None
+    try:
+        from pyignite import Client as IgniteClient
+        from .integrations.direct_alerts import DirectAlertsIntegration
+        
+        ignite_client = IgniteClient()
+        ignite_client.connect([('ignite', 10800)])
+        
+        direct_alerts = DirectAlertsIntegration(
+            service_id="trading-risk-intelligence",
+            ignite_client=ignite_client
+        )
+        await direct_alerts.start()
+        
+        # Pass to risk network
+        risk_network.direct_alerts = direct_alerts
+        
+        logger.info("Direct alerts integration enabled")
+    except Exception as e:
+        logger.warning(f"Direct alerts not available: {e}")
+    
     # Store in app state
+    app.state.trading_risk_network = risk_network
     app.state.vault_consul = vault_consul
-    app.state.trading_risk_network = trading_risk_network
+    app.state.direct_alerts = direct_alerts
     
     logger.info("Trading Risk Intelligence Service started successfully")
     
     yield
     
-    # Cleanup
+    # Shutdown
     logger.info("Shutting down Trading Risk Intelligence Service...")
-    await vault_consul.close()
-    logger.info("Trading Risk Intelligence Service shutdown complete")
+    
+    # Stop direct alerts
+    if app.state.direct_alerts:
+        await app.state.direct_alerts.stop()
+    
+    # Close Vault/Consul connections
+    await app.state.vault_consul.close()
+    
+    logger.info("Trading Risk Intelligence Service stopped")
 
 
 # Create FastAPI app

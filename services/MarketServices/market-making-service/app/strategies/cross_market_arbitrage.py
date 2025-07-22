@@ -22,6 +22,7 @@ from app.engines.compute_spot_market import ComputeSpotMarket, OrderType, OrderS
 from app.engines.compute_futures_engine import ComputeFuturesEngine
 from app.engines.compute_options_engine import ComputeOptionsEngine, OptionType
 from app.integrations import IgniteCache, PulsarEventPublisher, OracleAggregatorClient
+from app.risk import RiskChecker
 
 logger = logging.getLogger(__name__)
 
@@ -158,13 +159,15 @@ class CrossMarketArbitrage:
                  options_engine: ComputeOptionsEngine,
                  ignite: IgniteCache,
                  pulsar: PulsarEventPublisher,
-                 oracle: OracleAggregatorClient):
+                 oracle: OracleAggregatorClient,
+                 risk_checker: Optional[RiskChecker] = None):
         self.spot_market = spot_market
         self.futures_engine = futures_engine
         self.options_engine = options_engine
         self.ignite = ignite
         self.pulsar = pulsar
         self.oracle = oracle
+        self.risk_checker = risk_checker
         
         self.configs: Dict[str, CrossMarketArbConfig] = {}
         self.active_positions: Dict[str, Dict[str, ArbitragePosition]] = {}
@@ -588,6 +591,36 @@ class CrossMarketArbitrage:
         """Execute a single leg of an arbitrage trade"""
         try:
             market = leg["market"]
+            
+            # Perform risk check if available
+            if self.risk_checker:
+                # Prepare order details for risk check
+                order_details = {
+                    "symbol": f"COMPUTE_{position.signal.resource_type.upper()}",
+                    "side": leg["side"],
+                    "order_type": "market" if not config.use_limit_orders else "limit"
+                }
+                
+                if market == "spot":
+                    order_details["quantity"] = float(leg.get("quantity", 100))
+                    order_details["price"] = float(leg.get("price", 0)) if config.use_limit_orders else None
+                elif market == "futures":
+                    order_details["quantity"] = float(leg.get("contracts", 1))
+                    order_details["price"] = float(leg.get("price", 0)) if config.use_limit_orders else None
+                elif market == "options":
+                    order_details["quantity"] = float(leg.get("contracts", 1))
+                    order_details["option_type"] = leg.get("type", "call")
+                    order_details["strike"] = float(leg.get("strike", 0))
+                    
+                # Check pre-trade risk
+                risk_check = await self.risk_checker.check_pre_trade_risk(
+                    user_id=position.position_id,  # Using position_id as user context
+                    order=order_details
+                )
+                
+                if not risk_check.get("approved", False):
+                    logger.warning(f"Risk check failed for arbitrage leg: {risk_check.get('reason', 'Unknown')}")
+                    return False
             
             if market == "spot":
                 # Execute spot trade

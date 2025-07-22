@@ -17,6 +17,7 @@ from collections import deque
 
 from app.integrations.trading_core_integration import TradingCoreIntegration
 from app.integrations import IgniteCache, PulsarEventPublisher, OracleAggregatorClient
+from app.risk import RiskChecker
 
 logger = logging.getLogger(__name__)
 
@@ -109,10 +110,12 @@ class GridTradingStrategy:
     def __init__(self,
                  ignite: IgniteCache,
                  pulsar: PulsarEventPublisher,
-                 oracle: OracleAggregatorClient):
+                 oracle: OracleAggregatorClient,
+                 risk_checker: Optional[RiskChecker] = None):
         self.ignite = ignite
         self.pulsar = pulsar
         self.oracle = oracle
+        self.risk_checker = risk_checker
         
         # Trading core integration
         self.trading_core = TradingCoreIntegration()
@@ -472,6 +475,41 @@ class GridTradingStrategy:
         """Place a single grid order"""
         grid = self.grids[grid_id]
         config = grid["config"]
+        
+        # Perform risk check if available
+        if self.risk_checker:
+            try:
+                # Check pre-trade risk
+                risk_check = await self.risk_checker.check_pre_trade_risk(
+                    user_id=grid["user_id"],
+                    order={
+                        "symbol": f"COMPUTE_{config.resource_type.upper()}",
+                        "side": side,
+                        "quantity": float(size),
+                        "price": float(level.price) if config.use_limit_orders else None,
+                        "order_type": "limit" if config.use_limit_orders else "market"
+                    }
+                )
+                
+                if not risk_check.get("approved", False):
+                    logger.warning(f"Risk check failed for grid order: {risk_check.get('reason', 'Unknown')}")
+                    return False
+                    
+                # Check margin requirements
+                margin_check = await self.risk_checker.check_margin(
+                    user_id=grid["user_id"],
+                    required_margin=float(level.price * size * Decimal("0.1"))  # 10% margin
+                )
+                
+                if not margin_check.get("sufficient", False):
+                    logger.warning(f"Insufficient margin for grid order: {margin_check.get('available_margin', 0)}")
+                    return False
+                    
+            except Exception as e:
+                logger.error(f"Risk check error: {e}")
+                # Decide whether to proceed without risk check
+                if self.risk_checker.settings.RISK_CHECK_REQUIRED:
+                    return False
         
         # Submit order via trading-core
         result = await self.trading_core.submit_compute_order(

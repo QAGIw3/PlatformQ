@@ -136,6 +136,22 @@ class DataPlatformSettings(BaseSettings):
     feature_cost_optimization: bool = Field(True, env="FEATURE_COST_OPTIMIZATION")
     feature_ml_recommendations: bool = Field(True, env="FEATURE_ML_RECOMMENDATIONS")
     
+    # Phase 1 Enhancement Feature Flags
+    feature_dih_enabled: bool = Field(True, env="FEATURE_DIH_ENABLED")
+    feature_intelligent_mesh: bool = Field(True, env="FEATURE_INTELLIGENT_MESH")
+    feature_self_healing_quality: bool = Field(True, env="FEATURE_SELF_HEALING_QUALITY")
+    feature_cognitive_orchestration: bool = Field(True, env="FEATURE_COGNITIVE_ORCHESTRATION")
+    
+    # Intelligent Mesh settings
+    mesh_auto_discovery: bool = Field(True, env="MESH_AUTO_DISCOVERY")
+    mesh_prediction_window: int = Field(86400, env="MESH_PREDICTION_WINDOW")  # 24 hours
+    mesh_prefetch_threshold: float = Field(0.8, env="MESH_PREFETCH_THRESHOLD")
+    
+    # Self-healing quality settings
+    quality_auto_remediation: bool = Field(True, env="QUALITY_AUTO_REMEDIATION")
+    quality_approval_threshold: float = Field(0.9, env="QUALITY_APPROVAL_THRESHOLD")
+    quality_monitoring_interval: int = Field(300, env="QUALITY_MONITORING_INTERVAL")  # 5 minutes
+    
     class Config:
         env_file = ".env"
         env_file_encoding = "utf-8"

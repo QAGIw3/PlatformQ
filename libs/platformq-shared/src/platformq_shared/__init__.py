@@ -1,69 +1,75 @@
-from .cache import CacheManager, get_cache_manager
-from .config import (
-    ServiceConfig,
-    ConfigLoader,
-    init_config,
-    get_config,
-    config,
-    feature_flag
-)
-from .config_manager import (
-    ConfigurationManager,
-    init_config_manager,
-    get_config_manager,
-    ConfigSource,
-    ConfigValue
-)
+"""
+PlatformQ Shared Library
+
+Common utilities and base classes for all PlatformQ services.
+"""
 
 # Version
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
-# Public API
+# Core modules
+from .service_client import ServiceClient
+from .utils import generate_correlation_id, setup_logging
+
+# New unified modules
+from .auth import (
+    AuthType,
+    UserRole,
+    AuthConfig,
+    AuthenticatedUser,
+    UnifiedAuth,
+    get_auth_instance,
+    get_current_user,
+    get_current_trader,
+    get_current_admin,
+    get_service_auth,
+    require_roles,
+    require_permissions
+)
+
+from .service_base import (
+    ServiceConfig,
+    ServiceMetrics,
+    PlatformQService
+)
+
+from .monitoring import (
+    MetricType,
+    AlertSeverity,
+    StandardMetrics,
+    UnifiedMonitoring,
+    monitor_operation
+)
+
 __all__ = [
-    # Base service
-    "create_base_app",
-    # Error handling
-    "ErrorCode",
-    "AppException",
-    "ErrorHandlerMiddleware",
-    "error_handler",
-    # Database
-    "Base",
-    "get_db",
-    "init_db",
-    "get_session_factory",
-    # Repository pattern
-    "BaseRepository",
-    "AsyncBaseRepository",
-    "RepositoryError",
-    # Service client
+    # Core
     "ServiceClient",
-    "ServiceResponse",
-    "ServiceError",
-    # Event framework
-    "EventProcessor",
-    "event_handler",
+    "generate_correlation_id",
+    "setup_logging",
+    
     # Auth
+    "AuthType",
+    "UserRole", 
+    "AuthConfig",
+    "AuthenticatedUser",
+    "UnifiedAuth",
+    "get_auth_instance",
     "get_current_user",
-    "require_auth",
-    "create_access_token",
-    "verify_password",
-    "get_password_hash",
-    # Cache
-    "CacheManager",
-    "get_cache_manager",
-    # Config
+    "get_current_trader",
+    "get_current_admin",
+    "get_service_auth",
+    "require_roles",
+    "require_permissions",
+    
+    # Service Base
     "ServiceConfig",
-    "ConfigLoader",
-    "init_config",
-    "get_config",
-    "config",
-    "feature_flag",
-    "ConfigurationManager",
-    "init_config_manager",
-    "get_config_manager",
-    "ConfigSource",
-    "ConfigValue",
+    "ServiceMetrics",
+    "PlatformQService",
+    
     # Monitoring
-    "setup_prometheus_metrics",
+    "MetricType",
+    "AlertSeverity",
+    "StandardMetrics",
+    "UnifiedMonitoring",
+    "monitor_operation"
 ] 

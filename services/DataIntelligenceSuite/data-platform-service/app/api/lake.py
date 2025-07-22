@@ -344,19 +344,172 @@ async def compact_dataset(
     dataset_id: str,
     request: Request,
     tenant_id: str = Query(..., description="Tenant ID"),
-    target_file_size_mb: int = Query(128, ge=1, le=1024)
+    target_file_size_mb: int = Query(128, ge=1, le=1024),
+    strategy: Optional[str] = Query("hybrid", description="Compaction strategy"),
+    source_path: Optional[str] = Query(None, description="Source path override")
 ):
     """Compact small files in dataset"""
-    job_id = str(uuid.uuid4())
+    if not hasattr(request.app.state, 'compaction_service'):
+        raise HTTPException(status_code=503, detail="Compaction service not available")
+    
+    compaction_service = request.app.state.compaction_service
+    
+    try:
+        # Determine source path
+        if not source_path:
+            # Default to silver zone if not specified
+            source_path = f"s3://{tenant_id}-lake/silver/datasets/{dataset_id}"
+        
+        # Submit compaction job
+        from ..lake.data_compaction import CompactionStrategy
+        job_id = await compaction_service.submit_compaction_job(
+            dataset=dataset_id,
+            source_path=source_path,
+            strategy=CompactionStrategy(strategy) if strategy else None,
+            config_overrides={
+                "max_file_size_mb": target_file_size_mb,
+                "tenant_id": tenant_id
+            }
+        )
+        
+        return {
+            "job_id": job_id,
+            "dataset_id": dataset_id,
+            "status": "submitted",
+            "target_file_size_mb": target_file_size_mb,
+            "strategy": strategy,
+            "source_path": source_path,
+            "started_at": datetime.utcnow()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to submit compaction job: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/compaction/jobs/{job_id}")
+async def get_compaction_job_status(
+    job_id: str,
+    request: Request
+):
+    """Get compaction job status"""
+    if not hasattr(request.app.state, 'compaction_service'):
+        raise HTTPException(status_code=503, detail="Compaction service not available")
+    
+    compaction_service = request.app.state.compaction_service
+    
+    job = await compaction_service.get_job_status(job_id)
+    if not job:
+        raise HTTPException(status_code=404, detail="Job not found")
     
     return {
-        "job_id": job_id,
-        "dataset_id": dataset_id,
-        "status": "started",
-        "target_file_size_mb": target_file_size_mb,
-        "estimated_time_seconds": 300,
-        "started_at": datetime.utcnow()
+        "job_id": job.job_id,
+        "dataset": job.dataset,
+        "status": job.status.value,
+        "source_path": job.source_path,
+        "target_path": job.target_path,
+        "strategy": job.strategy.value,
+        "started_at": job.started_at.isoformat() if job.started_at else None,
+        "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+        "files_processed": job.files_processed,
+        "bytes_processed": job.bytes_processed,
+        "bytes_saved": job.bytes_saved,
+        "error_message": job.error_message,
+        "metadata": job.metadata
     }
+
+
+@router.get("/compaction/jobs")
+async def list_compaction_jobs(
+    request: Request,
+    dataset: Optional[str] = Query(None, description="Filter by dataset"),
+    status: Optional[str] = Query(None, description="Filter by status"),
+    limit: int = Query(100, ge=1, le=1000)
+):
+    """List compaction jobs"""
+    if not hasattr(request.app.state, 'compaction_service'):
+        raise HTTPException(status_code=503, detail="Compaction service not available")
+    
+    compaction_service = request.app.state.compaction_service
+    
+    from ..lake.data_compaction import CompactionStatus
+    
+    jobs = await compaction_service.list_jobs(
+        dataset=dataset,
+        status=CompactionStatus(status) if status else None,
+        limit=limit
+    )
+    
+    return {
+        "jobs": [
+            {
+                "job_id": job.job_id,
+                "dataset": job.dataset,
+                "status": job.status.value,
+                "started_at": job.started_at.isoformat() if job.started_at else None,
+                "completed_at": job.completed_at.isoformat() if job.completed_at else None,
+                "files_processed": job.files_processed,
+                "bytes_saved": job.bytes_saved
+            }
+            for job in jobs
+        ],
+        "count": len(jobs)
+    }
+
+
+@router.delete("/compaction/jobs/{job_id}")
+async def cancel_compaction_job(
+    job_id: str,
+    request: Request
+):
+    """Cancel a compaction job"""
+    if not hasattr(request.app.state, 'compaction_service'):
+        raise HTTPException(status_code=503, detail="Compaction service not available")
+    
+    compaction_service = request.app.state.compaction_service
+    
+    cancelled = await compaction_service.cancel_job(job_id)
+    if not cancelled:
+        raise HTTPException(status_code=404, detail="Job not found or already completed")
+    
+    return {"message": f"Job {job_id} cancelled successfully"}
+
+
+@router.post("/compaction/analyze")
+async def analyze_dataset_compaction(
+    request: Request,
+    dataset: str = Query(..., description="Dataset name"),
+    path: str = Query(..., description="Dataset path in lake")
+):
+    """Analyze dataset for compaction opportunities"""
+    if not hasattr(request.app.state, 'compaction_service'):
+        raise HTTPException(status_code=503, detail="Compaction service not available")
+    
+    compaction_service = request.app.state.compaction_service
+    
+    try:
+        analysis = await compaction_service.analyze_dataset(dataset, path)
+        
+        return {
+            "dataset": analysis["dataset"],
+            "path": analysis["path"],
+            "summary": {
+                "total_files": analysis["total_files"],
+                "total_size_gb": round(analysis["total_size_gb"], 2),
+                "small_files": analysis["small_files"],
+                "partitions": analysis["partitions"]
+            },
+            "compaction_opportunities": {
+                "candidates": len(analysis["compaction_candidates"]),
+                "potential_savings_gb": round(analysis["potential_savings_gb"], 2),
+                "recommended_strategy": analysis["recommended_strategy"].value
+            },
+            "top_candidates": analysis["compaction_candidates"][:10]  # Limit to top 10
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to analyze dataset: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
 
 
 @router.post("/optimize/{dataset_id}")

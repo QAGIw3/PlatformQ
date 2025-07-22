@@ -26,6 +26,7 @@ from app.engines.compute_options_engine import (
 from app.engines.pricing import BlackScholesEngine, Greeks
 from app.engines.volatility_surface import VolatilitySurfaceEngine
 from app.integrations import IgniteCache, PulsarEventPublisher, OracleAggregatorClient
+from app.risk import RiskChecker
 
 logger = logging.getLogger(__name__)
 
@@ -130,13 +131,15 @@ class DeltaNeutralOptionsMM:
                  vol_surface: VolatilitySurfaceEngine,
                  ignite: IgniteCache,
                  pulsar: PulsarEventPublisher,
-                 oracle: OracleAggregatorClient):
+                 oracle: OracleAggregatorClient,
+                 risk_checker: Optional[RiskChecker] = None):
         self.options_engine = options_engine
         self.pricing_engine = pricing_engine
         self.vol_surface = vol_surface
         self.ignite = ignite
         self.pulsar = pulsar
         self.oracle = oracle
+        self.risk_checker = risk_checker
         
         # Trading core integration
         self.trading_core = TradingCoreIntegration()
@@ -478,42 +481,92 @@ class DeltaNeutralOptionsMM:
                 
         # Place new orders if needed
         if not quote.bid_order_id and quote.bid_price and quote.bid_size:
-            result = await self.trading_core.submit_derivatives_order(
-                user_id=f"MM_{strategy_id}",
-                market_id=market_id,
-                side="buy",
-                quantity=str(quote.bid_size),
-                order_type="limit",
-                price=str(quote.bid_price),
-                metadata={
-                    "strategy_id": strategy_id,
-                    "option_id": option_id,
-                    "order_type": "quote_bid",
-                    "theoretical_value": str(quote.theoretical_value)
-                }
-            )
+            # Perform risk check if available
+            should_place_order = True
+            if self.risk_checker:
+                try:
+                    risk_check = await self.risk_checker.check_pre_trade_risk(
+                        user_id=f"MM_{strategy_id}",
+                        order={
+                            "symbol": option_id,
+                            "side": "buy",
+                            "quantity": float(quote.bid_size),
+                            "price": float(quote.bid_price),
+                            "order_type": "limit",
+                            "option_type": "option"
+                        }
+                    )
+                    
+                    if not risk_check.get("approved", False):
+                        logger.warning(f"Risk check failed for bid quote: {risk_check.get('reason', 'Unknown')}")
+                        should_place_order = False
+                except Exception as e:
+                    logger.error(f"Risk check error: {e}")
+                    if self.risk_checker.settings.RISK_CHECK_REQUIRED:
+                        should_place_order = False
             
-            if result.get("success"):
-                quote.bid_order_id = result.get("order_id")
+            if should_place_order:
+                result = await self.trading_core.submit_derivatives_order(
+                    user_id=f"MM_{strategy_id}",
+                    market_id=market_id,
+                    side="buy",
+                    quantity=str(quote.bid_size),
+                    order_type="limit",
+                    price=str(quote.bid_price),
+                    metadata={
+                        "strategy_id": strategy_id,
+                        "option_id": option_id,
+                        "order_type": "quote_bid",
+                        "theoretical_value": str(quote.theoretical_value)
+                    }
+                )
+                
+                if result.get("success"):
+                    quote.bid_order_id = result.get("order_id")
                 
         if not quote.ask_order_id and quote.ask_price and quote.ask_size:
-            result = await self.trading_core.submit_derivatives_order(
-                user_id=f"MM_{strategy_id}",
-                market_id=market_id,
-                side="sell",
-                quantity=str(quote.ask_size),
-                order_type="limit",
-                price=str(quote.ask_price),
-                metadata={
-                    "strategy_id": strategy_id,
-                    "option_id": option_id,
-                    "order_type": "quote_ask",
-                    "theoretical_value": str(quote.theoretical_value)
-                }
-            )
+            # Perform risk check if available
+            should_place_order = True
+            if self.risk_checker:
+                try:
+                    risk_check = await self.risk_checker.check_pre_trade_risk(
+                        user_id=f"MM_{strategy_id}",
+                        order={
+                            "symbol": option_id,
+                            "side": "sell",
+                            "quantity": float(quote.ask_size),
+                            "price": float(quote.ask_price),
+                            "order_type": "limit",
+                            "option_type": "option"
+                        }
+                    )
+                    
+                    if not risk_check.get("approved", False):
+                        logger.warning(f"Risk check failed for ask quote: {risk_check.get('reason', 'Unknown')}")
+                        should_place_order = False
+                except Exception as e:
+                    logger.error(f"Risk check error: {e}")
+                    if self.risk_checker.settings.RISK_CHECK_REQUIRED:
+                        should_place_order = False
             
-            if result.get("success"):
-                quote.ask_order_id = result.get("order_id")
+            if should_place_order:
+                result = await self.trading_core.submit_derivatives_order(
+                    user_id=f"MM_{strategy_id}",
+                    market_id=market_id,
+                    side="sell",
+                    quantity=str(quote.ask_size),
+                    order_type="limit",
+                    price=str(quote.ask_price),
+                    metadata={
+                        "strategy_id": strategy_id,
+                        "option_id": option_id,
+                        "order_type": "quote_ask",
+                        "theoretical_value": str(quote.theoretical_value)
+                    }
+                )
+                
+                if result.get("success"):
+                    quote.ask_order_id = result.get("order_id")
                 
     async def _ensure_option_market_registered(self, option_id: str) -> str:
         """Ensure option market is registered with trading-core"""

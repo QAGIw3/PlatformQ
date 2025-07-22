@@ -1,107 +1,73 @@
 {
   "service": {
+    "id": "risk-engine-service-001",
     "name": "risk-engine-service",
     "tags": [
+      "api",
       "risk",
-      "engine",
-      "calculation",
-      "api"
+      "monitoring",
+      "ml",
+      "real-time",
+      "direct-comm"
     ],
-    "port": 8000,
+    "address": "risk-engine-service",
+    "port": 8021,
     "meta": {
-      "version": "1.0.0",
+      "version": "2.0.0",
       "protocol": "http",
-      "risk_models": "var,cvar,montecarlo"
+      "service_type": "core",
+      "direct_comm_enabled": "true",
+      "ml_enabled": "true",
+      "monitoring_enabled": "true",
+      "flink_enabled": "true"
     },
     "check": {
       "id": "risk-engine-service-health",
-      "name": "HTTP Health Check",
-      "http": "http://localhost:8000/health",
-      "method": "GET",
+      "name": "Risk Engine Service Health Check",
+      "http": "http://risk-engine-service:8021/health",
       "interval": "10s",
       "timeout": "5s"
     },
+    "weights": {
+      "passing": 10,
+      "warning": 5
+    },
+    "enable_tag_override": false,
     "connect": {
       "sidecar_service": {
-        "port": 21040,
+        "port": 20021,
         "proxy": {
-          "local_service_address": "127.0.0.1",
-          "local_service_port": 8000,
-          "config": {
-            "protocol": "http",
-            "envoy_prometheus_bind_addr": "0.0.0.0:9142"
-          },
           "upstreams": [
             {
-              "destination_name": "auth-service",
-              "local_bind_port": 5040,
-              "config": {
-                "protocol": "http",
-                "limits": {
-                  "max_connections": 100,
-                  "max_pending_requests": 50,
-                  "max_concurrent_requests": 50
-                }
-              }
-            },
-            {
-              "destination_name": "market-data-service",
-              "local_bind_port": 5041,
-              "config": {
-                "protocol": "http",
-                "limits": {
-                  "max_connections": 100,
-                  "max_pending_requests": 50,
-                  "max_concurrent_requests": 50
-                }
-              }
-            },
-            {
-              "destination_name": "graph-intelligence-service",
-              "local_bind_port": 5042,
-              "config": {
-                "protocol": "http",
-                "limits": {
-                  "max_connections": 100,
-                  "max_pending_requests": 50,
-                  "max_concurrent_requests": 50
-                }
-              }
-            },
-            {
-              "destination_name": "ignite-cache",
-              "local_bind_port": 5043,
-              "config": {
-                "protocol": "tcp"
-              }
+              "destination_name": "ignite",
+              "local_bind_port": 10800
             },
             {
               "destination_name": "pulsar",
-              "local_bind_port": 5044,
-              "config": {
-                "protocol": "tcp"
-              }
+              "local_bind_port": 6650
             },
             {
               "destination_name": "cassandra",
-              "local_bind_port": 5045,
-              "config": {
-                "protocol": "tcp"
-              }
+              "local_bind_port": 9042
+            },
+            {
+              "destination_name": "elasticsearch",
+              "local_bind_port": 9200
+            },
+            {
+              "destination_name": "market-data-service",
+              "local_bind_port": 8080
+            },
+            {
+              "destination_name": "position-service",
+              "local_bind_port": 8081
+            },
+            {
+              "destination_name": "mlflow",
+              "local_bind_port": 5000
             }
           ]
-        },
-        "checks": [
-          {
-            "name": "Connect Sidecar Listening",
-            "tcp": "127.0.0.1:21040",
-            "interval": "10s"
-          },
-          {
-            "name": "Connect Sidecar Alive",
-            "alias_service": "risk-engine-service"
-          }
-        ]
+        }
       }
     }
   }

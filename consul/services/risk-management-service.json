@@ -2,24 +2,25 @@
   "service": {
     "name": "risk-management-service",
     "tags": [
-      "risk-management",
-      "limits",
-      "monitoring",
-      "api"
+      "deprecated",
+      "merged-into-risk-engine"
     ],
-    "port": 8000,
+    "port": 8082,
     "meta": {
-      "version": "1.0.0",
+      "version": "2.0.0-deprecated",
       "protocol": "http",
-      "risk_types": "market,credit,operational,liquidity"
+      "deprecated": "true",
+      "replacement_service": "risk-engine-service",
+      "deprecation_notice": "This service has been merged into risk-engine-service. Please update your integrations to use risk-engine-service instead."
     },
     "check": {
       "id": "risk-management-service-health",
-      "name": "HTTP Health Check",
-      "http": "http://localhost:8000/health",
+      "name": "Deprecated Service Check",
+      "http": "http://localhost:8082/health",
       "method": "GET",
-      "interval": "10s",
-      "timeout": "5s"
+      "interval": "30s",
+      "timeout": "5s",
+      "notes": "This service is deprecated and merged into risk-engine-service"
     },
     "connect": {
       "sidecar_service": {

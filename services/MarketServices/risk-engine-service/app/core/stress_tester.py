@@ -51,26 +51,26 @@ class StressTester:
             severity="moderate"
         ))
         
-        # Interest rate shock
+        # Liquidity crisis
         scenarios.append(StressTestScenario(
-            scenario_id="rate_hike",
-            name="Interest Rate Spike",
-            description="50bp rate increase",
-            market_shocks={"default": Decimal("-0.02")},
-            volatility_shocks={"default": Decimal("1.2")},
-            interest_rate_shock=Decimal("0.005"),
-            severity="mild"
+            scenario_id="liquidity_crisis",
+            name="Liquidity Crisis",
+            description="Severe liquidity constraints",
+            market_shocks={"default": Decimal("-0.05")},
+            volatility_shocks={"default": Decimal("1.5")},
+            liquidity_haircuts={"default": Decimal("0.7")},
+            severity="severe"
         ))
         
-        # Correlation breakdown
+        # Black swan event
         scenarios.append(StressTestScenario(
-            scenario_id="correlation_breakdown",
-            name="Correlation Breakdown",
-            description="All correlations go to 1 in crisis",
-            market_shocks={"default": Decimal("-0.15")},
-            volatility_shocks={"default": Decimal("1.5")},
-            correlation_shocks={"all": {"all": Decimal("1.0")}},
-            severity="severe"
+            scenario_id="black_swan",
+            name="Black Swan Event",
+            description="Extreme market dislocation",
+            market_shocks={"default": Decimal("-0.35")},
+            volatility_shocks={"default": Decimal("5.0")},
+            liquidity_haircuts={"default": Decimal("0.9")},
+            severity="extreme"
         ))
         
         return scenarios
@@ -81,68 +81,175 @@ class StressTester:
         market_data: Dict[str, Dict[str, Any]],
         scenarios: Optional[List[Dict[str, Any]]] = None
     ) -> Dict[str, Any]:
-        """Run stress tests on a portfolio."""
+        """Run multiple stress test scenarios."""
         if scenarios is None:
-            scenarios = self.default_scenarios
-        else:
-            # Convert dict scenarios to StressTestScenario objects
-            scenarios = [self._dict_to_scenario(s) for s in scenarios]
+            scenarios = self.config.get("stress_test_scenarios", [])
         
         results = {}
-        worst_case = None
-        worst_loss = Decimal("0")
+        worst_case = {
+            "scenario": None,
+            "loss": Decimal("0")
+        }
         
-        # Calculate baseline portfolio value
-        baseline_value = self._calculate_portfolio_value(positions, market_data)
-        
-        for scenario in scenarios:
-            # Apply scenario shocks
-            shocked_market_data = self._apply_shocks(market_data, scenario)
+        for scenario_dict in scenarios:
+            # Convert dict to StressTestScenario if needed
+            if isinstance(scenario_dict, dict):
+                scenario = StressTestScenario(
+                    scenario_id=scenario_dict.get("name", "custom"),
+                    name=scenario_dict.get("name", "Custom Scenario"),
+                    description=scenario_dict.get("description", ""),
+                    market_shocks={"default": Decimal(str(scenario_dict.get("price_change", "-0.1")))},
+                    volatility_shocks={"default": Decimal(str(scenario_dict.get("vol_multiplier", "2.0")))},
+                    severity=scenario_dict.get("severity", "moderate"),
+                    created_by="system",
+                    created_at=datetime.utcnow()
+                )
+            else:
+                scenario = scenario_dict
             
-            # Calculate stressed portfolio value
-            stressed_value = self._calculate_portfolio_value(positions, shocked_market_data)
-            
-            # Calculate loss
-            loss = baseline_value - stressed_value
-            loss_percentage = (loss / baseline_value * Decimal("100")) if baseline_value > 0 else Decimal("0")
-            
-            # Calculate stressed margins
-            stressed_margins = await self._calculate_stressed_margins(
-                positions,
-                shocked_market_data,
-                scenario
+            # Run the scenario
+            result = await self.run_scenario(
+                scenario=scenario,
+                positions=positions,
+                market_data=market_data
             )
             
-            results[scenario.scenario_id] = {
-                "scenario_name": scenario.name,
-                "baseline_value": baseline_value,
-                "stressed_value": stressed_value,
-                "loss": loss,
-                "loss_percentage": loss_percentage,
-                "stressed_margins": stressed_margins,
-                "severity": scenario.severity
+            results[scenario.name] = {
+                "loss": str(result.loss_amount),
+                "loss_percentage": str(result.loss_percentage),
+                "var_breach": result.var_breach,
+                "margin_call": result.margin_call,
+                "liquidations": len(result.liquidations)
             }
             
             # Track worst case
-            if loss > worst_loss:
-                worst_loss = loss
-                worst_case = scenario.scenario_id
+            if result.loss_amount > worst_case["loss"]:
+                worst_case["scenario"] = scenario.name
+                worst_case["loss"] = result.loss_amount
         
-        # Add worst case summary
-        if worst_case:
-            results["worst_case"] = results[worst_case].copy()
-            results["worst_case"]["scenario_id"] = worst_case
-        
-        # Calculate aggregate metrics
-        results["summary"] = {
-            "scenarios_run": len(scenarios),
-            "baseline_value": baseline_value,
-            "worst_loss": worst_loss,
-            "worst_loss_percentage": (worst_loss / baseline_value * Decimal("100")) if baseline_value > 0 else Decimal("0"),
-            "timestamp": datetime.utcnow()
+        return {
+            "scenarios": results,
+            "worst_case": worst_case,
+            "timestamp": datetime.utcnow().isoformat()
         }
+    
+    async def run_scenario(
+        self,
+        scenario: StressTestScenario,
+        positions: List[Dict[str, Any]],
+        market_data: Dict[str, Dict[str, Any]],
+        include_correlations: bool = True,
+        include_liquidity: bool = True
+    ) -> "StressTestResult":
+        """Run a single stress test scenario."""
+        from ..models import StressTestResult
         
-        return results
+        # Calculate initial portfolio value
+        portfolio_value = Decimal("0")
+        position_values = {}
+        
+        for position in positions:
+            market_id = position.get("market_id")
+            position_id = position.get("position_id")
+            
+            if market_id in market_data:
+                mark_price = Decimal(str(market_data[market_id].get("price", "0")))
+                quantity = Decimal(str(position.get("quantity", "0")))
+                contract_size = Decimal(str(position.get("contract_size", "1")))
+                position_value = abs(quantity) * contract_size * mark_price
+                
+                portfolio_value += position_value
+                position_values[position_id] = position_value
+        
+        # Apply stress scenario
+        stressed_value = Decimal("0")
+        position_impacts = {}
+        liquidations = []
+        
+        for position in positions:
+            market_id = position.get("market_id")
+            position_id = position.get("position_id")
+            
+            if market_id not in market_data:
+                continue
+            
+            # Get market shock for this asset
+            shock = scenario.market_shocks.get(market_id, scenario.market_shocks.get("default", Decimal("0")))
+            
+            # Calculate stressed price
+            current_price = Decimal(str(market_data[market_id].get("price", "0")))
+            stressed_price = current_price * (Decimal("1") + shock)
+            
+            # Apply liquidity haircut if enabled
+            if include_liquidity:
+                haircut = scenario.liquidity_haircuts.get(
+                    market_id, 
+                    scenario.liquidity_haircuts.get("default", Decimal("0"))
+                )
+                stressed_price = stressed_price * (Decimal("1") - haircut)
+            
+            # Calculate stressed position value
+            quantity = Decimal(str(position.get("quantity", "0")))
+            contract_size = Decimal(str(position.get("contract_size", "1")))
+            side = position.get("side", "long")
+            
+            if side == "long":
+                stressed_position_value = quantity * contract_size * stressed_price
+            else:  # short
+                stressed_position_value = -quantity * contract_size * stressed_price
+            
+            stressed_value += abs(stressed_position_value)
+            
+            # Calculate position impact
+            original_value = position_values.get(position_id, Decimal("0"))
+            loss = original_value - abs(stressed_position_value)
+            
+            position_impacts[position_id] = {
+                "original_value": str(original_value),
+                "stressed_value": str(abs(stressed_position_value)),
+                "loss": str(loss),
+                "loss_percentage": str(loss / original_value * 100) if original_value > 0 else "0"
+            }
+            
+            # Check for liquidation
+            margin_ratio = position.get("margin_ratio", Decimal("999"))
+            stressed_margin_ratio = margin_ratio * (abs(stressed_position_value) / original_value) if original_value > 0 else Decimal("0")
+            
+            if stressed_margin_ratio < self.config.get("liquidation_margin_ratio", Decimal("1.1")):
+                liquidations.append(position_id)
+        
+        # Calculate overall metrics
+        loss_amount = portfolio_value - stressed_value
+        loss_percentage = loss_amount / portfolio_value if portfolio_value > 0 else Decimal("0")
+        
+        # Check for VaR breach (simplified)
+        var_breach = loss_percentage > Decimal("0.05")  # 5% threshold
+        
+        # Check for margin call
+        margin_call = loss_percentage > Decimal("0.03")  # 3% threshold
+        
+        # Calculate stressed risk metrics
+        stressed_var = loss_amount * Decimal("1.2")  # Simplified
+        stressed_leverage = Decimal("10") * (Decimal("1") + loss_percentage)  # Simplified
+        stressed_margin_ratio = Decimal("2") * (Decimal("1") - loss_percentage)  # Simplified
+        
+        return StressTestResult(
+            test_id=f"test_{datetime.utcnow().timestamp()}",
+            scenario_id=scenario.scenario_id,
+            portfolio_id="portfolio_combined",  # Simplified
+            portfolio_value=portfolio_value,
+            stressed_value=stressed_value,
+            loss_amount=loss_amount,
+            loss_percentage=loss_percentage,
+            stressed_var=stressed_var,
+            stressed_leverage=stressed_leverage,
+            stressed_margin_ratio=stressed_margin_ratio,
+            var_breach=var_breach,
+            margin_call=margin_call,
+            liquidations=liquidations,
+            position_impacts=position_impacts,
+            execution_time_ms=100.0  # Simplified
+        )
     
     def _dict_to_scenario(self, scenario_dict: Dict[str, Any]) -> StressTestScenario:
         """Convert dictionary to StressTestScenario object."""

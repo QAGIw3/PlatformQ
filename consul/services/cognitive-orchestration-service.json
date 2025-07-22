@@ -1,0 +1,23 @@
+{
+  "service": {
+    "name": "cognitive-orchestration-service",
+    "id": "cognitive-orchestration-service-1",
+    "tags": ["dataintelligence", "orchestration", "ml", "phase1"],
+    "port": 8000,
+    "meta": {
+      "version": "1.0.0",
+      "description": "AI-driven orchestration for autonomous optimization",
+      "team": "data-intelligence",
+      "phase": "1"
+    },
+    "check": {
+      "http": "http://cognitive-orchestration-service:8000/health",
+      "interval": "30s",
+      "timeout": "3s"
+    },
+    "weights": {
+      "passing": 10,
+      "warning": 5
+    }
+  }
+} 

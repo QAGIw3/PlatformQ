@@ -38,6 +38,11 @@ from .cross_market_arbitrage import (
     ArbStatistics
 )
 
+from .strategy_runner import (
+    StrategyRunner,
+    get_strategy_runner
+)
+
 __all__ = [
     'GridTradingStrategy',
     'GridConfig', 
@@ -56,5 +61,7 @@ __all__ = [
     'CrossMarketArbitrage',
     'CrossMarketArbConfig',
     'ArbitrageType',
-    'ArbStatistics'
+    'ArbStatistics',
+    'StrategyRunner',
+    'get_strategy_runner'
 ] 

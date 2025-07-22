@@ -1,216 +1,282 @@
 # Risk Engine Service
 
+A comprehensive real-time risk assessment and management service that combines traditional risk calculations with advanced ML-based predictive capabilities for the PlatformQ derivatives trading platform.
+
 ## Overview
 
-The Risk Engine Service provides real-time risk assessment, margin calculation, and portfolio risk management for the PlatformQ trading platform. It integrates with Apache Flink for streaming risk analytics and Apache Ignite for distributed risk state management, enabling microsecond-latency risk decisions.
+The Risk Engine Service is a critical component providing:
+
+### Core Risk Management
+- **Real-time Risk Calculations**: Position-level and portfolio-level risk metrics
+- **Margin Management**: Dynamic margin requirements and real-time margin monitoring
+- **Value at Risk (VaR)**: Historical simulation and parametric VaR calculations  
+- **Stress Testing**: Comprehensive stress scenarios for extreme market conditions
+- **Position Limits**: Configurable limits with real-time enforcement
+
+### ML-Enhanced Capabilities
+- **Volatility Prediction**: Random Forest models predict future volatility
+- **Anomaly Detection**: Isolation Forest identifies unusual market behavior
+- **Liquidation Probability**: ML models assess position-specific liquidation risk
+- **Dynamic Risk Parameters**: Risk parameters adapt to market conditions
+- **Stress Testing**: ML-powered stress scenarios (flash crash, black swan, etc.)
+
+### Real-time Monitoring
+- **Continuous Risk Monitoring**: Monitor trader portfolios in real-time
+- **WebSocket Updates**: Real-time risk updates via WebSocket connections
+- **Alert System**: Multi-level alerts for various risk scenarios
+- **Margin Call Management**: Automated margin call generation and tracking
 
 ## Architecture
-
-### Key Components
-
-1. **Risk Calculator**: Real-time position and portfolio risk assessment
-2. **Margin Calculator**: Dynamic margin requirements based on market conditions
-3. **VaR Calculator**: Value at Risk calculation using multiple methodologies
-4. **Stress Tester**: Scenario-based stress testing for extreme market conditions
-5. **Liquidation Engine**: Automated position liquidation for margin violations
-6. **Flink Risk Processor**: Streaming risk analytics and alerting
-7. **Ignite Risk Cache**: Distributed cache for risk metrics and limits
-
-### Technology Stack
-
-- **FastAPI**: High-performance REST API framework
-- **Apache Flink**: Real-time risk analytics and event processing
-- **Apache Ignite**: Distributed risk state and cache management
-- **Apache Pulsar**: Event streaming for risk events
-- **NumPy/SciPy**: Numerical computations for risk models
-- **scikit-learn**: Machine learning for risk prediction
-- **Prometheus**: Metrics and monitoring
-
-## Features
-
-- **Real-time Risk Monitoring**: Microsecond-latency risk calculations
-- **Portfolio Risk**: Cross-asset portfolio risk aggregation
-- **Dynamic Margins**: Market-based margin adjustments
-- **VaR Models**: Historical, Parametric, and Monte Carlo VaR
-- **Stress Testing**: Configurable market scenarios
-- **Risk Limits**: Position, exposure, and leverage limits
-- **Liquidation Management**: Automated and manual liquidation
-- **ML Risk Models**: Predictive risk analytics
-
-## API Endpoints
-
-### Risk Assessment
-- `GET /api/v1/risk/portfolio/{user_id}` - Get portfolio risk metrics
-- `GET /api/v1/risk/position/{position_id}` - Get position risk
-- `POST /api/v1/risk/calculate` - Calculate risk for hypothetical position
-
-### Margin Management
-- `GET /api/v1/margin/{user_id}` - Get margin requirements
-- `GET /api/v1/margin/available/{user_id}` - Get available margin
-- `POST /api/v1/margin/call/{user_id}` - Issue margin call
-
-### VaR and Stress Testing
-- `GET /api/v1/var/{portfolio_id}` - Calculate VaR
-- `POST /api/v1/stress-test` - Run stress test scenarios
-- `GET /api/v1/stress-test/results/{test_id}` - Get stress test results
-
-### Risk Limits
-- `GET /api/v1/limits/{user_id}` - Get risk limits
-- `PUT /api/v1/limits/{user_id}` - Update risk limits
-- `GET /api/v1/limits/breaches` - Get limit breaches
-
-## Configuration
-
-Key configuration parameters in `app/config.py`:
-
-```python
-# Risk Parameters
-VAR_CONFIDENCE_LEVEL = 0.99
-VAR_TIME_HORIZON = 1  # days
-MARGIN_BUFFER = 1.2
-LIQUIDATION_THRESHOLD = 0.8
-
-# Flink Configuration
-FLINK_WINDOW_SIZE = 60  # seconds
-FLINK_PARALLELISM = 4
-
-# Ignite Configuration
-IGNITE_RISK_CACHE = "risk_metrics"
-IGNITE_CACHE_EXPIRY = 300  # seconds
-
-# ML Models
-RISK_MODEL_PATH = "/models/risk_predictor.pkl"
-UPDATE_FREQUENCY = 3600  # seconds
-```
-
-## Risk Models
-
-### Value at Risk (VaR)
-- **Historical VaR**: Based on historical price movements
-- **Parametric VaR**: Assumes normal distribution
-- **Monte Carlo VaR**: Simulation-based approach
-
-### Margin Calculation
-- **Initial Margin**: Based on position size and volatility
-- **Maintenance Margin**: Minimum required margin
-- **Variation Margin**: Daily P&L adjustments
-
-### Stress Testing
-- **Market Crash**: -20% to -50% price movements
-- **Volatility Spike**: 2x to 5x volatility increase
-- **Liquidity Crisis**: Widened spreads and reduced depth
-- **Custom Scenarios**: User-defined stress scenarios
-
-## Integration
-
-### Dependencies
-- **Trading Core Service**: Position and trade data
-- **Market Data Service**: Real-time price feeds
-- **Auth Service**: User authentication
-- **Apache Ignite**: Distributed state
-- **Apache Flink**: Stream processing
-- **Apache Pulsar**: Event streaming
-
-### Event Streams
-- **Position Updates**: Real-time position changes
-- **Market Data**: Price and volatility updates
-- **Risk Alerts**: Limit breaches and margin calls
-- **Liquidation Events**: Forced closures
-
-## Monitoring
-
-Prometheus metrics exposed at `/metrics`:
-
-- `risk_calculations_total`: Total risk calculations
-- `risk_calculation_latency_seconds`: Calculation latency
-- `margin_calls_total`: Number of margin calls
-- `liquidations_total`: Number of liquidations
-- `var_breaches_total`: VaR limit breaches
-- `risk_limit_utilization`: Risk limit usage percentage
-
-## Development
-
-### Project Structure
 
 ```
 risk-engine-service/
 ├── app/
-│   ├── api/          # REST API endpoints
-│   ├── core/         # Risk calculation engines
-│   ├── models/       # Pydantic models
-│   ├── ml/           # Machine learning models
-│   ├── events/       # Flink event processing
-│   ├── state/        # Ignite state management
-│   ├── config.py     # Configuration
-│   └── main.py       # FastAPI application
-├── scripts/          # Utility scripts
-├── tests/           # Unit and integration tests
-└── requirements.in  # Python dependencies
+│   ├── api/              # REST API endpoints
+│   │   ├── risk.py       # Risk calculation endpoints
+│   │   ├── margin.py     # Margin management endpoints
+│   │   ├── var.py        # VaR calculation endpoints
+│   │   ├── stress.py     # Stress testing endpoints
+│   │   ├── limits.py     # Position limit endpoints
+│   │   ├── monitoring.py # Real-time monitoring endpoints
+│   │   └── direct.py     # Direct communication endpoints
+│   ├── core/             # Core business logic
+│   │   ├── risk_calculator.py    # Risk calculations
+│   │   ├── var_calculator.py     # VaR engine
+│   │   ├── stress_tester.py      # Stress testing
+│   │   ├── ml_risk_engine.py     # ML-based risk engine
+│   │   └── risk_monitor.py       # Real-time monitoring
+│   ├── models/           # Data models
+│   │   ├── risk.py       # Risk models and structures
+│   │   ├── margin.py     # Margin models
+│   │   ├── var.py        # VaR models
+│   │   └── stress.py     # Stress test models
+│   ├── ml/               # Machine learning components
+│   │   └── risk_prediction.py    # ML prediction models
+│   ├── state/            # State management
+│   │   └── state_manager.py      # Ignite-based state
+│   ├── integrations/     # External integrations
+│   │   ├── direct_comm_integration.py  # Direct communication
+│   │   └── flink_integration.py        # Flink streaming
+│   ├── config.py         # Service configuration
+│   ├── dependencies.py   # Dependency injection
+│   └── main.py          # FastAPI application
+├── requirements.in       # Python dependencies
+└── Dockerfile           # Container definition
 ```
 
-### Testing
+## Features
 
-```bash
-# Run unit tests
-pytest tests/unit
+### Risk Calculation Engine
+- Portfolio-level risk aggregation
+- Greeks calculation for options
+- Correlation-based risk adjustments
+- Real-time P&L tracking
+- Cross-margining support
 
-# Run integration tests
-pytest tests/integration
+### Margin System
+- Initial and maintenance margin calculations
+- Cross-product margin optimization
+- Real-time margin monitoring
+- Margin call generation
+- Collateral management
 
-# Run risk model backtests
-python scripts/backtest_risk_models.py
+### VaR Engine
+- Historical simulation VaR
+- Parametric VaR
+- Monte Carlo VaR
+- Conditional VaR (CVaR)
+- Backtesting framework
+
+### Stress Testing
+- Predefined stress scenarios
+- Custom scenario builder
+- Historical scenario replay
+- Sensitivity analysis
+- Portfolio stress results
+
+### Position Limits
+- Per-trader limits
+- Per-product limits
+- Concentration limits
+- Exposure limits
+- Real-time limit checking
+
+### ML Risk Models
+
+#### Volatility Predictor
+- **Model**: Random Forest Regressor
+- **Features**: Market metrics, technical indicators, microstructure data
+- **Output**: Predicted volatility for next period
+
+#### Anomaly Detector
+- **Model**: Isolation Forest
+- **Features**: Same as volatility predictor
+- **Output**: Anomaly score (0-1, higher is more anomalous)
+
+#### Liquidation Predictor
+- **Model**: Random Forest Classifier
+- **Features**: Position health, leverage, market conditions, user history
+- **Output**: Probability of liquidation
+
+## API Endpoints
+
+### Risk Management
+- `POST /api/v1/risk/calculate` - Calculate risk for positions
+- `GET /api/v1/risk/portfolio/{user_id}` - Get portfolio risk
+- `POST /api/v1/risk/batch` - Batch risk calculation
+
+### Margin Management
+- `GET /api/v1/margin/requirements` - Get margin requirements
+- `GET /api/v1/margin/status/{user_id}` - Check margin status
+- `POST /api/v1/margin/call` - Generate margin call
+
+### VaR Calculations
+- `POST /api/v1/var/calculate` - Calculate VaR
+- `GET /api/v1/var/historical/{portfolio_id}` - Historical VaR
+- `POST /api/v1/var/backtest` - Backtest VaR model
+
+### Stress Testing
+- `POST /api/v1/stress/test` - Run stress test
+- `GET /api/v1/stress/scenarios` - List scenarios
+- `POST /api/v1/stress/custom` - Custom stress test
+
+### Position Limits
+- `POST /api/v1/limits/set/{user_id}` - Set position limits
+- `GET /api/v1/limits/check/{user_id}` - Check limit compliance
+- `GET /api/v1/limits/usage/{user_id}` - Get limit usage
+
+### Real-time Monitoring
+- `POST /api/v1/monitoring/users/{user_id}/start` - Start monitoring
+- `POST /api/v1/monitoring/users/{user_id}/stop` - Stop monitoring
+- `GET /api/v1/monitoring/users/{user_id}/check` - Check user risk
+- `GET /api/v1/monitoring/status` - Overall monitoring status
+- `POST /api/v1/monitoring/market/{market_id}/assess` - ML market assessment
+- `POST /api/v1/monitoring/position/{position_id}/assess` - ML position assessment
+- `WS /api/v1/monitoring/ws/{user_id}` - WebSocket for real-time updates
+
+### Direct Communication
+- `POST /api/v1/direct/risk-check` - Ultra-low latency risk check
+- `POST /api/v1/direct/margin-check` - Direct margin verification
+
+## Configuration
+
+Key configuration parameters:
+
+```python
+# Risk calculation settings
+RISK_CALCULATION_INTERVAL_SECONDS = 5
+VAR_CONFIDENCE_LEVEL = 0.95
+
+# Default risk limits
+DEFAULT_MAX_LEVERAGE = 20
+DEFAULT_MIN_MARGIN_LEVEL = 120  # 120%
+DEFAULT_CONCENTRATION_LIMIT = 30  # 30%
+
+# Margin thresholds
+LIQUIDATION_THRESHOLD = 100  # 100%
+MARGIN_CALL_THRESHOLD = 130  # 130%
+WARNING_THRESHOLD = 150  # 150%
+
+# ML settings
+ML_MODEL_UPDATE_INTERVAL = 3600  # 1 hour
+ML_PREDICTION_CACHE_TTL = 30  # 30 seconds
 ```
+
+## Integration
+
+### Dependencies
+- **Apache Ignite**: Distributed state and caching
+- **Apache Pulsar**: Event streaming for risk events
+- **Apache Flink**: Real-time risk analytics
+- **Cassandra**: Historical data storage
+- **Elasticsearch**: Risk metrics search and analytics
+- **MLflow**: ML model management
+
+### Event Publishing
+The service publishes various events:
+- Risk limit breaches
+- Margin calls
+- Liquidation warnings
+- Market anomalies
+- Position updates
 
 ## Performance
 
-- **Risk Calculation**: < 10ms per portfolio
-- **Margin Updates**: < 5ms latency
-- **VaR Computation**: < 100ms for 1000 positions
-- **Stress Tests**: < 1 second per scenario
-- **Event Processing**: < 50ms end-to-end
+### Latency Targets
+- Risk calculation: < 10ms
+- Margin check: < 5ms  
+- VaR calculation: < 100ms
+- Stress test: < 500ms
+- Direct communication: < 1ms
+- ML predictions: < 50ms (cached: < 1ms)
 
-## Machine Learning
+### Scalability
+- Horizontal scaling via multiple instances
+- Ignite distributed cache for shared state
+- Flink for distributed risk processing
+- Supports 100,000+ concurrent positions
+- 10,000+ monitored users
 
-### Risk Prediction Models
-- **XGBoost**: For non-linear risk patterns
-- **LSTM**: For time-series risk forecasting
-- **Ensemble**: Combined model for robustness
+## Running the Service
 
-### Feature Engineering
-- Price volatility and returns
-- Volume and liquidity metrics
-- Correlation matrices
-- Market microstructure features
+### Local Development
+```bash
+# Install dependencies
+pip install -r requirements.txt
+
+# Run the service
+uvicorn app.main:app --reload --port 8021
+```
+
+### Docker
+```bash
+# Build image
+docker build -t risk-engine-service .
+
+# Run container
+docker run -p 8021:8021 risk-engine-service
+```
+
+### Environment Variables
+```bash
+RISK_ENGINE_SERVICE_PORT=8021
+RISK_ENGINE_PULSAR_URL=pulsar://pulsar:6650
+RISK_ENGINE_IGNITE_ADDRESSES=["ignite:10800"]
+RISK_ENGINE_CASSANDRA_HOSTS=["cassandra"]
+RISK_ENGINE_ELASTICSEARCH_URL=http://elasticsearch:9200
+```
+
+## Monitoring
+
+### Prometheus Metrics
+- `risk_calculations_total` - Total risk calculations
+- `var_calculations_total` - VaR calculations by method
+- `margin_calls_total` - Margin calls generated
+- `stress_tests_total` - Stress tests performed
+- `position_limit_breaches_total` - Limit violations
+- `monitored_users_total` - Users being monitored
+- `ml_predictions_total` - ML predictions made
+- `risk_alerts_total` - Risk alerts by severity
+
+### Health Checks
+- `GET /health` - Service health status
+- `GET /ready` - Readiness check
+- `GET /metrics` - Prometheus metrics
 
 ## Security
 
-- **Authentication**: JWT-based via Auth Service
-- **Authorization**: Role-based (risk managers, traders, admins)
-- **Encryption**: TLS for all communications
-- **Audit Trail**: All risk decisions logged
-- **Data Privacy**: PII handling compliance
+- JWT-based authentication
+- Role-based access control
+- Service-to-service auth for direct communication
+- Vault integration for secrets
+- TLS for all external communication
 
-## Deployment
+## Future Enhancements
 
-### Scaling Considerations
-1. **Horizontal Scaling**: Add more service instances
-2. **Flink Scaling**: Increase task parallelism
-3. **Ignite Scaling**: Add cache nodes for capacity
-4. **Model Serving**: Use model serving infrastructure
-
-### High Availability
-- Multi-instance deployment
-- Ignite cluster with replication
-- Flink checkpointing
-- Circuit breakers for dependencies
-
-## Alerts and Notifications
-
-- **Margin Calls**: Automated notifications
-- **Risk Breaches**: Real-time alerts
-- **System Health**: Performance degradation alerts
-- **Model Drift**: ML model performance monitoring
-
-## Contributing
-
-See the main PlatformQ [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines. 
+1. **Deep Learning Models**: LSTM/Transformer for time series
+2. **Reinforcement Learning**: Adaptive risk limits
+3. **Graph Neural Networks**: Correlation and contagion risk
+4. **Real-time Model Training**: Online learning
+5. **Explainable AI**: Model interpretability
+6. **Risk Dashboard**: Real-time visualization
+7. **Advanced Scenarios**: More sophisticated stress tests 

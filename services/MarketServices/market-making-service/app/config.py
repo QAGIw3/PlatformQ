@@ -10,6 +10,7 @@ class Settings(BaseSettings):
     
     # Service info
     SERVICE_NAME: str = "market-making-service"
+    SERVICE_ID: str = "market-making-001"  # For direct communication
     SERVICE_PORT: int = 8000
     DEBUG: bool = False
     
@@ -31,6 +32,11 @@ class Settings(BaseSettings):
     RISK_ENGINE_SERVICE_URL: str = "http://risk-engine-service:8000"
     ORACLE_SERVICE_URL: str = "http://oracle-service:8000"
     ANALYTICS_SERVICE_URL: str = "http://analytics-service:8000"
+    
+    # Direct Communication
+    ENABLE_DIRECT_COMM: bool = True
+    DIRECT_COMM_BATCH_SIZE: int = 100
+    DIRECT_COMM_TIMEOUT_MS: int = 50  # 50ms timeout
     
     # Market making parameters
     DEFAULT_SPREAD_BPS: int = 20  # basis points
@@ -67,9 +73,8 @@ class Settings(BaseSettings):
     ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
     model_config = SettingsConfigDict(
-        env_file=".env",
-        env_file_encoding="utf-8",
-        case_sensitive=True
+        env_prefix="MM_",
+        case_sensitive=False
     )
 
 

@@ -3,6 +3,7 @@
 import asyncio
 import logging
 import time
+import zlib
 from typing import Dict, Any, Optional, Callable, Set
 from collections import defaultdict
 import msgpack
@@ -13,6 +14,9 @@ from pyignite.exceptions import CacheError
 
 from .message_types import MessageType, DirectMessage
 from .exceptions import CommunicationError, TimeoutError, ConnectionError
+from .circuit_breaker import CircuitBreaker, CircuitBreakerConfig
+from .message_batcher import MessageBatcher, BatchConfig
+from .message_replay import MessageReplayStore
 
 
 # Use uvloop for better async performance
@@ -22,13 +26,17 @@ logger = logging.getLogger(__name__)
 
 
 class DirectCommunicator:
-    """Ultra-low latency service-to-service communication."""
+    """Ultra-low latency service-to-service communication with reliability features."""
     
     def __init__(self, 
                  service_id: str, 
                  ignite_client: IgniteClient,
                  batch_size: int = 100,
-                 process_interval_ms: float = 1.0):
+                 process_interval_ms: float = 1.0,
+                 enable_circuit_breaker: bool = True,
+                 enable_batching: bool = True,
+                 enable_compression: bool = True,
+                 enable_replay: bool = True):
         """
         Initialize direct communicator.
         
@@ -37,11 +45,21 @@ class DirectCommunicator:
             ignite_client: Connected Ignite client
             batch_size: Number of messages to process in batch
             process_interval_ms: Message processing interval in milliseconds
+            enable_circuit_breaker: Enable circuit breaker pattern
+            enable_batching: Enable message batching
+            enable_compression: Enable payload compression
+            enable_replay: Enable message replay for critical alerts
         """
         self.service_id = service_id
         self.ignite = ignite_client
         self.batch_size = batch_size
         self.process_interval_ms = process_interval_ms
+        
+        # Feature flags
+        self.enable_circuit_breaker = enable_circuit_breaker
+        self.enable_batching = enable_batching
+        self.enable_compression = enable_compression
+        self.enable_replay = enable_replay
         
         # Message handlers
         self._handlers: Dict[MessageType, Callable] = {}
@@ -51,12 +69,42 @@ class DirectCommunicator:
         self._message_queue: asyncio.Queue = asyncio.Queue(maxsize=10000)
         self._priority_queue: asyncio.PriorityQueue = asyncio.PriorityQueue()
         
+        # Circuit breakers per target service
+        self._circuit_breakers: Dict[str, CircuitBreaker] = {}
+        
+        # Message batcher
+        self._batcher = None
+        if enable_batching:
+            self._batcher = MessageBatcher(
+                send_func=self._send_direct_internal,
+                config=BatchConfig(
+                    max_batch_size=batch_size,
+                    max_wait_time_ms=10.0,
+                    compression_threshold_bytes=10240
+                )
+            )
+            
+        # Message replay store for critical alerts
+        self._replay_store = None
+        if enable_replay:
+            self._replay_store = MessageReplayStore(
+                send_func=self._send_direct_internal,
+                ignite_client=ignite_client,
+                max_store_size=10000
+            )
+        
+        # Compression settings
+        self._compression_threshold = 1024  # Compress payloads > 1KB
+        
         # Statistics
         self._stats = {
             "messages_sent": 0,
             "messages_received": 0,
             "errors": 0,
-            "avg_latency_us": 0
+            "avg_latency_us": 0,
+            "circuit_breaker_opens": 0,
+            "messages_compressed": 0,
+            "bytes_saved": 0
         }
         
         # Running state
@@ -75,11 +123,30 @@ class DirectCommunicator:
         self._tasks.add(asyncio.create_task(self._process_responses()))
         self._tasks.add(asyncio.create_task(self._heartbeat_task()))
         
+        # Start batcher
+        if self._batcher:
+            await self._batcher.start()
+            
+        # Start replay store
+        if self._replay_store:
+            await self._replay_store.start()
+            
+        # Register batch message handler
+        await self.register_handler(9999, self._handle_batch_message)
+        
         logger.info(f"DirectCommunicator started for service: {self.service_id}")
         
     async def stop(self):
         """Stop the communicator and cleanup."""
         self._running = False
+        
+        # Stop batcher
+        if self._batcher:
+            await self._batcher.stop()
+            
+        # Stop replay store
+        if self._replay_store:
+            await self._replay_store.stop()
         
         # Cancel all tasks
         for task in self._tasks:
@@ -112,7 +179,9 @@ class DirectCommunicator:
                          wait_response: bool = False,
                          timeout_ms: float = 100.0,
                          priority: int = 0,
-                         ttl_ms: Optional[int] = None) -> Optional[Any]:
+                         ttl_ms: Optional[int] = None,
+                         batch_eligible: bool = False,
+                         require_ack: bool = False) -> Optional[Any]:
         """
         Send message directly through shared memory.
         
@@ -124,15 +193,103 @@ class DirectCommunicator:
             timeout_ms: Timeout in milliseconds
             priority: Message priority (higher = more urgent)
             ttl_ms: Time to live in milliseconds
+            batch_eligible: Whether message can be batched
+            require_ack: Whether acknowledgment is required
             
         Returns:
             Response data if wait_response=True, None otherwise
         """
+        # Check if we should batch this message
+        if self._batcher and batch_eligible and not wait_response:
+            batched = await self._batcher.add_message(
+                target_service=target_service,
+                msg_type=msg_type,
+                data=data,
+                priority=priority
+            )
+            if batched:
+                return None
+                
+        # Send directly
+        return await self._send_direct_internal(
+            target_service=target_service,
+            msg_type=msg_type,
+            data=data,
+            wait_response=wait_response,
+            timeout_ms=timeout_ms,
+            priority=priority,
+            ttl_ms=ttl_ms,
+            require_ack=require_ack
+        )
+        
+    async def _send_direct_internal(self,
+                                   target_service: str,
+                                   msg_type: MessageType,
+                                   data: Dict[str, Any],
+                                   wait_response: bool = False,
+                                   timeout_ms: float = 100.0,
+                                   priority: int = 0,
+                                   ttl_ms: Optional[int] = None,
+                                   require_ack: bool = False) -> Optional[Any]:
+        """Internal send method with circuit breaker and compression."""
         start_time = time.time_ns()
         
+        # Get or create circuit breaker for target
+        if self.enable_circuit_breaker:
+            if target_service not in self._circuit_breakers:
+                self._circuit_breakers[target_service] = CircuitBreaker(
+                    CircuitBreakerConfig(
+                        name=f"CB-{target_service}",
+                        failure_threshold=5,
+                        recovery_timeout=30.0
+                    )
+                )
+            
+            circuit_breaker = self._circuit_breakers[target_service]
+            
+            try:
+                # Use circuit breaker
+                return await circuit_breaker.call(
+                    self._do_send,
+                    target_service, msg_type, data, wait_response,
+                    timeout_ms, priority, ttl_ms, require_ack, start_time
+                )
+            except Exception as e:
+                if "Circuit breaker" in str(e) and "is OPEN" in str(e):
+                    self._stats["circuit_breaker_opens"] += 1
+                raise e
+        else:
+            # Send without circuit breaker
+            return await self._do_send(
+                target_service, msg_type, data, wait_response,
+                timeout_ms, priority, ttl_ms, require_ack, start_time
+            )
+            
+    async def _do_send(self,
+                      target_service: str,
+                      msg_type: MessageType,
+                      data: Dict[str, Any],
+                      wait_response: bool,
+                      timeout_ms: float,
+                      priority: int,
+                      ttl_ms: Optional[int],
+                      require_ack: bool,
+                      start_time: int) -> Optional[Any]:
+        """Execute the actual send operation."""
         try:
-            # Serialize with msgpack (faster than JSON)
+            # Serialize with msgpack
             payload = msgpack.packb(data, use_bin_type=True)
+            original_size = len(payload)
+            
+            # Compress if enabled and beneficial
+            compressed = False
+            if self.enable_compression and original_size > self._compression_threshold:
+                compressed_payload = zlib.compress(payload, level=6)
+                if len(compressed_payload) < original_size * 0.9:  # At least 10% savings
+                    payload = compressed_payload
+                    compressed = True
+                    self._stats["messages_compressed"] += 1
+                    self._stats["bytes_saved"] += original_size - len(payload)
             
             # Create correlation ID
             correlation_id = f"{self.service_id}:{start_time}"
@@ -145,8 +302,24 @@ class DirectCommunicator:
                 payload=payload,
                 timestamp_ns=start_time,
                 priority=priority,
-                ttl_ms=ttl_ms
+                ttl_ms=ttl_ms,
+                metadata={
+                    "compressed": compressed,
+                    "original_size": original_size
+                }
             )
+            
+            # Store for replay if required
+            if self._replay_store and require_ack:
+                await self._replay_store.store_message(
+                    message_id=correlation_id,
+                    target_service=target_service,
+                    msg_type=msg_type,
+                    data=data,
+                    priority=priority,
+                    ack_required=True,
+                    replay_after_ms=timeout_ms * 2  # Replay after 2x timeout
+                )
             
             # Use Ignite messaging for direct memory transfer
             cache_name = f"messaging:{target_service}"
@@ -195,6 +368,42 @@ class DirectCommunicator:
             self._stats["errors"] += 1
             logger.error(f"Error sending message: {e}")
             raise CommunicationError(f"Failed to send message: {e}")
+            
+    async def _handle_batch_message(self, data: Dict[str, Any], msg: DirectMessage) -> None:
+        """Handle incoming batch message."""
+        try:
+            # Extract payload
+            payload = data.get("payload")
+            compressed = data.get("compressed", False)
+            
+            # Decompress if needed
+            if compressed:
+                payload = zlib.decompress(payload)
+                
+            # Deserialize batch
+            batch_data = msgpack.unpackb(payload, raw=False)
+            
+            # Process each message in batch
+            for msg_data in batch_data.get("messages", []):
+                msg_type = msg_data.get("type")
+                msg_payload = msg_data.get("data")
+                
+                handler = self._handlers.get(msg_type)
+                if handler:
+                    # Create a minimal message object
+                    batch_msg = DirectMessage(
+                        msg_type=msg_type,
+                        sender_id=msg.sender_id,
+                        correlation_id=f"{msg.correlation_id}:{msg_type}",
+                        payload=msgpack.packb(msg_payload, use_bin_type=True),
+                        timestamp_ns=msg.timestamp_ns,
+                        priority=msg.priority
+                    )
+                    
+                    await self._process_message(batch_msg, handler)
+                    
+        except Exception as e:
+            logger.error(f"Error processing batch message: {e}")
             
     async def broadcast(self,
                        msg_type: MessageType,
@@ -278,8 +487,22 @@ class DirectCommunicator:
     async def _process_message(self, msg: DirectMessage, handler: Callable) -> Optional[Any]:
         """Process a single message."""
         try:
+            # Check if payload is compressed
+            compressed = msg.metadata and msg.metadata.get("compressed", False)
+            payload = msg.payload
+            
+            # Decompress if needed
+            if compressed:
+                payload = zlib.decompress(payload)
+            
             # Deserialize payload
-            data = msgpack.unpackb(msg.payload, raw=False)
+            data = msgpack.unpackb(payload, raw=False)
+            
+            # Check if this is a replay requiring acknowledgment
+            if "_message_id" in data and self._replay_store:
+                message_id = data["_message_id"]
+                await self._replay_store.acknowledge_message(message_id)
+                logger.debug(f"Acknowledged message {message_id}")
             
             # Execute handler
             result = await handler(data, msg)
@@ -370,5 +593,33 @@ class DirectCommunicator:
         )
         
     def get_stats(self) -> Dict[str, Any]:
-        """Get communication statistics."""
-        return self._stats.copy() 
+        """Get comprehensive communication statistics."""
+        stats = self._stats.copy()
+        
+        # Add circuit breaker stats
+        if self.enable_circuit_breaker:
+            cb_stats = {}
+            for service, cb in self._circuit_breakers.items():
+                cb_stats[service] = cb.get_stats()
+            stats["circuit_breakers"] = cb_stats
+            
+        # Add batcher stats
+        if self._batcher:
+            stats["batching"] = self._batcher.get_stats()
+            
+        # Add replay store stats
+        if self._replay_store:
+            stats["replay"] = self._replay_store.get_stats()
+            
+        # Add compression stats
+        if self.enable_compression:
+            stats["compression"] = {
+                "messages_compressed": self._stats["messages_compressed"],
+                "bytes_saved": self._stats["bytes_saved"],
+                "compression_ratio": round(
+                    self._stats["bytes_saved"] / max(self._stats["messages_compressed"], 1),
+                    2
+                ) if self._stats["messages_compressed"] > 0 else 0
+            }
+            
+        return stats 

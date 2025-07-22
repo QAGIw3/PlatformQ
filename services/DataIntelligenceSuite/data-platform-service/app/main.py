@@ -26,7 +26,7 @@ from .vault_consul_integration import (
 )
 from .models import Query, QueryResult, Dataset, DataQualityReport
 from .analytics import DruidAnalyticsEngine
-from .api import query, catalog, governance, quality, lake, pipelines, features, lineage, admin, integrations, dih_router, trading_lake
+from .api import query, catalog, governance, quality, lake, pipelines, features, lineage, admin, integrations, dih_router, trading_lake, market_intelligence_api
 from .api.v1 import quality_remediation
 from .lake.medallion_architecture import MedallionArchitecture
 from .lake.ingestion_engine import IngestionEngine
@@ -34,6 +34,24 @@ from .lake.transformation_engine import TransformationEngine
 from .lake.trading_medallion import TradingMedallionArchitecture
 from .lake.ml_medallion import MLMedallionArchitecture
 from .lake.data_compaction import DataCompactionService
+from .pipelines.trading_realtime_pipeline import TradingRealtimePipeline
+from .pipelines.seatunnel_manager import SeaTunnelPipelineManager
+from .integrations.service_orchestrator import ServiceOrchestrator
+from .integrations.ml_platform import MLPlatformIntegration
+from .integrations.event_router import EventRouterIntegration
+from .integrations.analytics import AnalyticsIntegration
+from .integrations.storage import StorageIntegration
+
+from app.dih.digital_integration_hub import DigitalIntegrationHub, ConsistencyLevel
+from app.dih.example_integrations import (
+    setup_user_session_cache,
+    setup_asset_metadata_cache,
+    setup_realtime_metrics_cache,
+    setup_transaction_cache,
+    setup_ml_feature_cache
+)
+from app.mesh.intelligent_data_mesh import IntelligentDataMesh
+from app.quality.self_healing_quality import SelfHealingDataQuality
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
@@ -106,6 +124,34 @@ class DataPlatformService:
             )
             self.app.state.trading_medallion = self.trading_medallion
             
+            # Initialize SeaTunnel Pipeline Manager
+            pipeline_manager = SeaTunnelPipelineManager()
+            
+            # Initialize Trading Real-time Pipeline
+            trading_pipeline = TradingRealtimePipeline(
+                pipeline_manager=pipeline_manager,
+                trading_medallion=self.trading_medallion
+            )
+            await trading_pipeline.initialize()
+            self.app.state.trading_pipeline = trading_pipeline
+            
+            # Initialize Service Integrations
+            ml_integration = MLPlatformIntegration()
+            event_integration = EventRouterIntegration()
+            analytics_integration = AnalyticsIntegration()
+            storage_integration = StorageIntegration()
+            
+            # Initialize Service Orchestrator
+            service_orchestrator = ServiceOrchestrator(
+                ml_integration=ml_integration,
+                event_integration=event_integration,
+                analytics_integration=analytics_integration,
+                storage_integration=storage_integration
+            )
+            self.app.state.service_orchestrator = service_orchestrator
+            
+            logger.info("Initialized trading pipeline and service orchestrator")
+            
             # Initialize ML Medallion Architecture
             self.ml_medallion_architecture = MLMedallionArchitecture(
                 minio_client=vault_client.minio_client,
@@ -118,13 +164,27 @@ class DataPlatformService:
                 minio_client=vault_client.minio_client,
                 consul_client=consul_client
             )
+            await self.compaction_service.initialize()
             self.app.state.compaction_service = self.compaction_service
             
             # Set up routes
             self._setup_routes()
             
-            # Include trading lake router
-            self.app.include_router(trading_lake.router, prefix="/api/v1/lake")
+            # Include all API routers
+            self.app.include_router(query.router, prefix="/api/v1")
+            self.app.include_router(catalog.router, prefix="/api/v1")
+            self.app.include_router(governance.router, prefix="/api/v1")
+            self.app.include_router(quality.router, prefix="/api/v1")
+            self.app.include_router(lake.router, prefix="/api/v1")
+            self.app.include_router(pipelines.router, prefix="/api/v1")
+            self.app.include_router(features.router, prefix="/api/v1")
+            self.app.include_router(lineage.router, prefix="/api/v1")
+            self.app.include_router(admin.router, prefix="/api/v1")
+            self.app.include_router(integrations.router, prefix="/api/v1")
+            self.app.include_router(dih_router.router, prefix="/api/v1")
+            self.app.include_router(trading_lake.router, prefix="/api/v1")
+            self.app.include_router(market_intelligence_api.router, prefix="/api/v1")
+            self.app.include_router(quality_remediation.router, prefix="/api/v1")
             
             # Add security middleware
             security_middleware = SecurityMiddleware(
@@ -138,6 +198,52 @@ class DataPlatformService:
             asyncio.create_task(self._health_check_loop())
             asyncio.create_task(self._data_quality_monitor())
             asyncio.create_task(self._retention_policy_enforcer())
+            
+            # Initialize DIH
+            if settings.feature_dih_enabled:
+                logger.info("Initializing Digital Integration Hub...")
+                dih = DigitalIntegrationHub(
+                    ignite_nodes=[(settings.ignite_host, settings.ignite_port)],
+                    default_consistency=ConsistencyLevel.STRONG
+                )
+                await dih.initialize()
+                
+                # Set up standard cache regions
+                await setup_user_session_cache(dih)
+                await setup_asset_metadata_cache(dih)
+                await setup_realtime_metrics_cache(dih)
+                await setup_transaction_cache(dih)
+                await setup_ml_feature_cache(dih)
+                
+                app.state.dih = dih
+                logger.info("DIH initialized successfully")
+                
+                # Initialize Intelligent Data Mesh (Phase 1)
+                logger.info("Initializing Intelligent Data Mesh...")
+                intelligent_mesh = IntelligentDataMesh(
+                    dih=dih,
+                    lake_manager=lake_manager,
+                    federated_engine=federated_engine,
+                    lineage_tracker=lineage_tracker,
+                    cache_manager=cache_manager
+                )
+                await intelligent_mesh.start()
+                app.state.intelligent_mesh = intelligent_mesh
+                logger.info("Intelligent Data Mesh initialized successfully")
+
+            # Initialize Self-Healing Data Quality (Phase 1)
+            if settings.feature_self_healing_quality:
+                logger.info("Initializing Self-Healing Data Quality...")
+                self_healing_quality = SelfHealingDataQuality(
+                    quality_profiler=quality_profiler,
+                    remediation_orchestrator=remediation_orchestrator,
+                    lake_manager=lake_manager,
+                    lineage_tracker=lineage_tracker,
+                    pipeline_coordinator=pipeline_coordinator
+                )
+                await self_healing_quality.start()
+                app.state.self_healing_quality = self_healing_quality
+                logger.info("Self-Healing Data Quality initialized successfully")
             
             logger.info("Data Platform Service started successfully")
             
@@ -162,6 +268,18 @@ class DataPlatformService:
         # Deregister from Consul
         if self.consul_integration:
             await self.consul_integration.consul.deregister_service()
+            
+        # Stop Phase 1 components
+        if hasattr(self.app.state, 'intelligent_mesh'):
+            await self.app.state.intelligent_mesh.stop()
+            
+        if hasattr(self.app.state, 'self_healing_quality'):
+            await self.app.state.self_healing_quality.stop()
+            
+        # Shutdown compaction service
+        if self.compaction_service:
+            await self.compaction_service.shutdown()
+            logger.info("Shutdown compaction service")
             
         logger.info("Data Platform Service shutdown complete")
         
@@ -578,12 +696,120 @@ class DataPlatformService:
         async def rotate_encryption_keys():
             """Rotate column encryption keys"""
             try:
-                await self.vault_integration.rotate_encryption_keys()
-                return {"status": "success", "message": "Encryption keys rotated"}
+                rotated_keys = await self.vault_integration.rotate_encryption_keys()
+                return {"message": "Keys rotated successfully", "rotated_keys": rotated_keys}
             except Exception as e:
                 logger.error(f"Key rotation failed: {e}")
                 raise HTTPException(500, f"Key rotation failed: {str(e)}")
                 
+    # Intelligent Data Mesh API endpoints (Phase 1)
+    
+    @self.app.post("/api/v1/mesh/products")
+    async def register_mesh_product(self, product_data: Dict[str, Any]):
+        """Register a data product in the intelligent mesh"""
+        try:
+            if not hasattr(self.app.state, 'intelligent_mesh'):
+                raise HTTPException(status_code=503, detail="Intelligent mesh not initialized")
+                
+            from app.mesh.intelligent_data_mesh import DataProduct, DataProductType
+            
+            mesh = self.app.state.intelligent_mesh
+            product = DataProduct(
+                product_id=f"dp_{product_data['name']}_{datetime.utcnow().timestamp()}",
+                name=product_data['name'],
+                type=DataProductType(product_data['type']),
+                owner=product_data['owner'],
+                location=product_data['location'],
+                schema=product_data.get('schema', {}),
+                quality_score=product_data.get('quality_score', 0.8),
+                access_patterns=[],
+                dependencies=product_data.get('dependencies', []),
+                metadata=product_data.get('metadata', {})
+            )
+            
+            product_id = await mesh.register_data_product(product)
+            
+            return {
+                "product_id": product_id,
+                "status": "registered",
+                "message": f"Data product {product_data['name']} registered successfully"
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to register mesh product: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @self.app.get("/api/v1/mesh/products")
+    async def list_mesh_products(self):
+        """List data products in the mesh"""
+        try:
+            if not hasattr(self.app.state, 'intelligent_mesh'):
+                raise HTTPException(status_code=503, detail="Intelligent mesh not initialized")
+                
+            mesh = self.app.state.intelligent_mesh
+            products = list(mesh.data_products.values())
+            
+            return {
+                "products": [
+                    {
+                        "product_id": p.product_id,
+                        "name": p.name,
+                        "type": p.type.value,
+                        "owner": p.owner,
+                        "quality_score": p.quality_score
+                    }
+                    for p in products
+                ],
+                "total_count": len(products)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to list mesh products: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @self.app.post("/api/v1/mesh/predict-needs")
+    async def predict_mesh_needs(self, time_horizon: str = "24h", confidence_threshold: float = 0.8):
+        """Predict future data access needs"""
+        try:
+            if not hasattr(self.app.state, 'intelligent_mesh'):
+                raise HTTPException(status_code=503, detail="Intelligent mesh not initialized")
+                
+            mesh = self.app.state.intelligent_mesh
+            predictions = await mesh.predict_data_needs(
+                time_horizon=time_horizon,
+                confidence_threshold=confidence_threshold
+            )
+            
+            return {
+                "predictions": predictions[:50],  # Limit to top 50
+                "time_horizon": time_horizon,
+                "prediction_count": len(predictions)
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to predict mesh needs: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+    
+    @self.app.get("/api/v1/mesh/statistics")
+    async def get_mesh_statistics(self):
+        """Get data mesh statistics"""
+        try:
+            if not hasattr(self.app.state, 'intelligent_mesh'):
+                raise HTTPException(status_code=503, detail="Intelligent mesh not initialized")
+                
+            mesh = self.app.state.intelligent_mesh
+            
+            return {
+                "total_products": len(mesh.data_products),
+                "access_patterns_learned": len(mesh.access_patterns),
+                "total_accesses_tracked": len(mesh.access_history),
+                "mesh_status": "active" if mesh._running else "stopped"
+            }
+            
+        except Exception as e:
+            logger.error(f"Failed to get mesh statistics: {e}")
+            raise HTTPException(status_code=500, detail=str(e))
+        
     async def _check_vault_health(self) -> bool:
         """Check Vault connectivity"""
         try:
