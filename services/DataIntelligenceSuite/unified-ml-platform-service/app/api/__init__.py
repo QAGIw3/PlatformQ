@@ -7,10 +7,7 @@ from . import (
     training,
     serving,
     federated,
-    neuromorphic,
-    marketplace,
     monitoring,
-    features,
     experiments
 )
 
@@ -19,9 +16,6 @@ __all__ = [
     "training",
     "serving",
     "federated",
-    "neuromorphic",
-    "marketplace",
     "monitoring",
-    "features",
     "experiments"
 ]

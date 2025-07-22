@@ -1,294 +1,274 @@
-# DataIntelligenceSuite
+# Data Intelligence Suite
+
+A comprehensive suite of data and AI services providing advanced analytics, machine learning, and intelligent data processing capabilities for PlatformQ.
 
 ## Overview
 
-The DataIntelligenceSuite is a **unified data intelligence platform** that consolidates data ingestion, processing, quality management, and ML operations into 9 core services. This represents a major architectural evolution from 45+ separate components to a streamlined, efficient platform.
+The Data Intelligence Suite is a collection of specialized microservices that work together to provide:
+- Real-time and batch data analytics
+- Machine learning model training and serving
+- Feature engineering and management
+- Neuromorphic computing capabilities
+- Data integration and ETL pipelines
+- ML model marketplace
 
-## 🏗️ Architecture
+## Architecture
 
-### Core Services (9 Consolidated Services)
+```
+┌─────────────────────────────────────────────────────────────────────────┐
+│                        Data Intelligence Suite                           │
+├─────────────────────────────────────────────────────────────────────────┤
+│                                                                         │
+│  ┌─────────────────┐  ┌─────────────────┐  ┌─────────────────────┐   │
+│  │   Analytics     │  │  Batch Process  │  │   Data Ingestion    │   │
+│  │    Service      │  │     Service     │  │      Service        │   │
+│  └────────┬────────┘  └────────┬────────┘  └──────────┬─────────┘   │
+│           │                     │                       │              │
+│  ┌────────┴────────┐  ┌────────┴────────┐  ┌──────────┴─────────┐   │
+│  │  Feature Store  │  │  Neuromorphic   │  │  ML Marketplace    │   │
+│  │    Service      │  │    Service      │  │     Service        │   │
+│  └────────┬────────┘  └────────┬────────┘  └──────────┬─────────┘   │
+│           │                     │                       │              │
+│  ┌────────┴────────────────────┴───────────────────────┴─────────┐   │
+│  │                    Shared Infrastructure                       │   │
+│  │  ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────────┐ │   │
+│  │  │  Apache  │  │  Apache  │  │  Apache  │  │   Apache     │ │   │
+│  │  │  Ignite  │  │  Pulsar  │  │  Flink   │  │   Spark      │ │   │
+│  │  └──────────┘  └──────────┘  └──────────┘  └──────────────┘ │   │
+│  └────────────────────────────────────────────────────────────────┘   │
+│                                                                         │
+└─────────────────────────────────────────────────────────────────────────┘
+```
 
-1. **Data Ingestion Service** (Port 8010) [Enhanced ✨]
-   - Medallion architecture (Bronze/Silver/Gold layers)
-   - Data lifecycle management (Hot/Warm/Cold tiering)
-   - CDC operations
-   - Stream & batch ingestion
-   - Schema registry
-   - External connectors (CRM, ERP, APIs, Webhooks)
-   - Cost optimization & automated retention
+## Services
 
-2. **Stream Processing Service** (Port 8011)
-   - Real-time event processing (Flink-based)
-   - Complex Event Processing (CEP)
-   - Fraud detection & risk analytics
-   - Consolidates 19+ Flink jobs
+### Core Services
 
-3. **Batch Processing Service** (Port 8012)
-   - Large-scale analytics (Spark-based)
-   - ML model training
-   - ETL/ELT pipelines
-   - Consolidates 14+ Spark jobs
-   - Specialized file processing (CAD, 3D, multimedia)
+#### 1. **Analytics Service** (`analytics-service/`)
+Real-time analytics and monitoring with Apache Druid integration.
+- Time-series analysis
+- Real-time dashboards
+- Anomaly detection
+- Predictive analytics
 
-4. **Graph Processing Service** (Port 8013)
-   - JanusGraph operations
-   - GraphX analytics
-   - Trust scoring & community detection
-   - Real-time graph updates
+#### 2. **Batch Processing Service** (`batch-processing-service/`)
+Large-scale batch data processing using Apache Spark.
+- ETL pipelines
+- Data transformations
+- Batch ML training
+- Data quality checks
 
-5. **Quality Engine Service** (Port 8014)
-   - Data validation & profiling
-   - Anomaly detection
-   - Quality rules management
-   - Auto-remediation
+#### 3. **Data Ingestion Service** (`data-ingestion-service/`)
+Unified data ingestion from multiple sources.
+- Multi-source connectors
+- Data validation
+- Schema management
+- Real-time streaming
 
-6. **MLOps Service** (Port 8015)
-   - Model registry & versioning
-   - Training orchestration
-   - Model monitoring & drift detection
-   - A/B testing framework
+#### 4. **Data Catalog Hub** (`data-catalog-hub/`)
+Centralized metadata management and data discovery.
+- Data lineage tracking
+- Schema registry
+- Data quality metrics
+- Access control
 
-7. **Unified Orchestration Service** (Port 8019)
-   - DAG management & scheduling
-   - Pipeline optimization
-   - Resource allocation
-   - Dependency resolution
-   - Kubernetes job management
+#### 5. **Data Query Service** (`data-query-service/`)
+Unified query interface for all data sources.
+- SQL query engine
+- Cross-source joins
+- Query optimization
+- Result caching
 
-8. **Data Catalog Hub** (Port 8017) [Unified Catalog + Search 🤖]
-   - Combined metadata management & intelligent search
-   - Natural language queries with intent detection
-   - Vector & hybrid search capabilities
-   - Automated medallion layer discovery
-   - AI-powered business glossary mapping
-   - Quality score integration & trust levels
-   - Access pattern analytics & optimization
-   - Comprehensive lineage tracking & impact analysis
+#### 6. **DIH Service** (`dih-service/`)
+Digital Integration Hub for real-time data access.
+- In-memory caching with Apache Ignite
+- Multi-source data integration
+- CDC (Change Data Capture)
+- ACID transactions
 
-9. **GraphQL Gateway** (Port 8000)
-   - Unified GraphQL interface
-   - REST endpoints  
-   - WebSocket support
-   - Rate limiting & authentication
-   - Connector & processor operations
+### ML Services
 
-### Supporting Services
+#### 7. **Unified ML Platform Service** (`unified-ml-platform-service/`)
+Comprehensive ML platform for model lifecycle management.
+- Model training orchestration
+- Model serving and deployment
+- MLOps and monitoring
+- Federated learning
+- AutoML capabilities
 
-10. **Search Service** (Port 8031) [AI-Powered 🤖]
-    - Unified search across ALL platform services
-    - AI-powered semantic search & intent understanding
-    - Personalized results based on user behavior
-    - Real-time search analytics & insights
-    - Auto-categorization & smart suggestions
-    - Cross-service data indexing
+#### 8. **Feature Store Service** (`feature-store-service/`)
+Centralized feature management for ML pipelines.
+- Online/offline feature serving
+- Feature versioning
+- Real-time feature updates
+- Feature statistics
 
-## 🚀 Key Features
+#### 9. **Neuromorphic Computing Service** (`neuromorphic-computing-service/`)
+Brain-inspired computing with spiking neural networks.
+- Ultra-low power AI
+- Event-driven processing
+- Real-time anomaly detection
+- Hardware acceleration support
 
-### Unified Processing
-- **Stream & Batch**: Single platform for both real-time and batch processing
-- **Job Management**: Unified API for submitting and managing all processing jobs
-- **Resource Optimization**: Shared clusters for better resource utilization
+#### 10. **ML Marketplace Service** (`ml-marketplace-service/`)
+Decentralized marketplace for ML models.
+- Model publishing and discovery
+- Ratings and reviews
+- Monetization support
+- Personalized recommendations
 
-### Data Intelligence
-- **360° Data View**: Complete visibility across all data assets
-- **Smart Processing**: ML-driven optimization and auto-scaling
-- **Quality First**: Built-in quality checks and remediation
+### Supporting Components
 
-### Enterprise Ready
-- **Multi-tenant**: Full isolation between tenants
-- **Scalable**: Horizontal scaling for all services
-- **Secure**: End-to-end encryption and audit trails
+#### 11. **Data Intelligence Common** (`data-intelligence-common/`)
+Shared libraries and utilities for all services.
+- Common data models
+- Utility functions
+- Integration helpers
+- Base service classes
 
-## 📊 Consolidated Components
+## Technology Stack
 
-### From Flink Jobs (19 jobs → Stream Processing Service)
-- activity-stream-job
-- complex-event-processing-job
-- fraud-detection-job
-- risk-analytics-job
-- model-monitoring-job
-- graph-analytics-job
-- data-quality-job
-- simulation-engine-job
-- derivatives-cep-job
-- ... and 10+ more
+### Data Processing
+- **Apache Spark**: Large-scale batch processing and ML
+- **Apache Flink**: Stream processing and real-time analytics
+- **Apache SeaTunnel**: Data integration and ETL
 
-### From Spark Jobs (14 jobs → Batch Processing Service)
-- asset_classifier
-- anomaly_predictor
-- derivatives_ml_training
-- federated_learning
-- simulation_ml_training
-- graphx analytics
-- ... and 8+ more
+### Storage & Caching
+- **Apache Ignite**: In-memory computing and caching
+- **Apache Cassandra**: Distributed wide-column store
+- **MinIO**: Object storage for ML artifacts
+- **JanusGraph**: Graph database for relationships
 
-### From Services (14 services → 10 unified services)
-- Resolved port conflicts
-- Eliminated overlapping functionality
-- Reduced complexity by 75%
-- Migrated connector-service → data-ingestion-service & batch-processing-service
-- Consolidated data-lake-service → data-ingestion-service
-- Enhanced search-service with AI and unified integration
+### Messaging & Streaming
+- **Apache Pulsar**: Event streaming and messaging
+- **Apache Avro**: Data serialization
 
-## 🔧 Quick Start
+### Analytics
+- **Apache Druid**: Real-time analytics database
+- **Elasticsearch**: Search and analytics engine
+- **Apache Superset**: Data visualization
+
+### Machine Learning
+- **PyTorch**: Deep learning framework
+- **Scikit-learn**: Traditional ML algorithms
+- **MLflow**: ML lifecycle management
+- **Milvus**: Vector database for embeddings
+
+## Getting Started
 
 ### Prerequisites
-```bash
-# Required infrastructure
-- Apache Pulsar (messaging)
-- Apache Cassandra (hot storage)
-- MinIO (object storage)
-- Apache Ignite (caching)
-- JanusGraph (graph database)
-- Elasticsearch (search & analytics)
-```
+- Docker and Docker Compose
+- Python 3.11+
+- Java 11+ (for Spark and Flink)
+- Node.js 16+ (for dashboards)
 
-### Deployment
+### Quick Start
+
+1. **Start Infrastructure Services**
 ```bash
-# Deploy all services
+# Start Ignite, Pulsar, and other dependencies
 docker-compose -f docker-compose.dataintelligence.yml up -d
-
-# Verify health
-curl http://localhost:8005/health  # API Gateway
-curl http://localhost:8011/health  # Stream Processing
-curl http://localhost:8012/health  # Batch Processing
 ```
 
-### Submit a Job
-```python
-# Stream processing job
-from dataintelligence import StreamClient
-
-client = StreamClient()
-job = client.submit_job({
-    "type": "cep",
-    "pattern": "fraud_detection",
-    "input_topics": ["transactions"],
-    "output_topic": "fraud_alerts"
-})
-
-# Batch processing job
-from dataintelligence import BatchClient
-
-client = BatchClient()
-job = client.submit_job({
-    "type": "ml_training",
-    "model": "asset_classifier",
-    "training_data": "s3://data/train",
-    "resource_profile": "medium"
-})
-```
-
-## 📈 Performance Improvements
-
-| Metric | Before | After | Improvement |
-|--------|--------|-------|-------------|
-| Components | 45+ | 9 | 80% reduction |
-| Resource Usage | ~200GB RAM | ~80GB RAM | 60% reduction |
-| Deployment Time | 45+ deployments | 9 services | 5x faster |
-| Code Duplication | ~40% | <10% | 75% reduction |
-| Job Submission | Multiple APIs | Single API | Unified |
-
-## 🔍 Service Communication
-
-```mermaid
-graph TD
-    API[API Gateway] --> Stream[Stream Processing]
-    API --> Batch[Batch Processing]
-    API --> MLOps[MLOps Service]
-    
-    Stream --> Catalog[Data Catalog Hub]
-    Batch --> Catalog
-    
-    Stream --> Quality[Quality Engine]
-    Batch --> Quality
-    
-    MLOps --> Stream
-    MLOps --> Batch
-    
-    Workflow[Workflow Engine] --> Stream
-    Workflow --> Batch
-    
-    Ingestion[Data Ingestion] --> Stream
-    Ingestion --> Catalog
-```
-
-## 📚 Documentation
-
-- [Architecture Overview](./docs/architecture.md)
-- [API Reference](./docs/api-reference.md)
-- [Migration Guide](./REORGANIZATION_PLAN.md)
-- [Implementation Priorities](./IMPLEMENTATION_PRIORITIES.md)
-- Individual Service Docs:
-  - [Stream Processing](./stream-processing-service/README.md)
-  - [Batch Processing](./batch-processing-service/README.md)
-  - [MLOps Service](./mlops-service/README.md)
-  - [Graph Processing](./graph-processing-service/README.md)
-
-## 🛠️ Development
-
-### Local Development
+2. **Deploy Individual Services**
 ```bash
-# Clone repository
-git clone <repo>
-cd services/DataIntelligenceSuite
+# Deploy analytics service
+cd analytics-service
+docker build -t analytics-service:latest .
+docker run -d --name analytics-service -p 8001:8000 analytics-service:latest
 
-# Install dependencies
+# Deploy feature store service
+cd ../feature-store-service
+docker build -t feature-store-service:latest .
+docker run -d --name feature-store-service -p 8002:8000 feature-store-service:latest
+
+# Deploy other services similarly...
+```
+
+3. **Verify Services**
+```bash
+# Check health endpoints
+curl http://localhost:8001/health
+curl http://localhost:8002/health
+```
+
+## Development
+
+### Local Development Setup
+
+1. **Install Python Dependencies**
+```bash
+cd analytics-service
 pip install -r requirements.txt
+```
 
-# Run tests
+2. **Run Service Locally**
+```bash
+python -m uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
+```
+
+### Testing
+
+```bash
+# Run unit tests
 pytest tests/
 
-# Start service locally
-python -m stream_processing_service
+# Run integration tests
+pytest tests/integration/
+
+# Run with coverage
+pytest --cov=app tests/
 ```
 
-### Contributing
-See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
+## Configuration
 
-## 📊 Monitoring
+Each service can be configured via environment variables:
 
-- **Prometheus**: http://localhost:9090
-- **Grafana**: http://localhost:3000
-- **Jaeger**: http://localhost:16686
+```bash
+# Common configurations
+IGNITE_HOST=ignite
+IGNITE_PORT=10800
+PULSAR_URL=pulsar://pulsar:6650
+LOG_LEVEL=INFO
 
-## 🔐 Security
+# Service-specific configurations
+# See individual service README files
+```
+
+## API Documentation
+
+Each service exposes OpenAPI documentation at:
+- `http://<service-host>:<port>/docs` - Swagger UI
+- `http://<service-host>:<port>/redoc` - ReDoc
+
+## Monitoring
+
+### Metrics
+- Prometheus metrics exposed at `/metrics`
+- Custom dashboards in Grafana
+- Service-specific metrics per README
+
+### Logging
+- Structured JSON logging
+- Centralized log aggregation
+- Log levels: DEBUG, INFO, WARNING, ERROR
+
+### Tracing
+- OpenTelemetry integration
+- Distributed tracing with Jaeger
+- Request correlation IDs
+
+## Security
 
 - Service-to-service mTLS
 - API authentication via JWT
+- Role-based access control (RBAC)
 - Data encryption at rest and in transit
-- Comprehensive audit logging
 
-## 🚀 Implementation Status
+## Contributing
 
-### Core Services
-- ✅ **Stream Processing Service** - Real-time data processing with Flink
-- ✅ **Batch Processing Service** - Large-scale batch processing with Spark + file processors
-- ✅ **Unified Graph Service** - Graph operations with JanusGraph/GraphX
-- ✅ **Unified Quality Service** - Comprehensive data quality management
-- ⚠️ **Unified ML Platform Service** - ML operations and model lifecycle
-- ✅ **Unified Orchestration Service** - Workflow management with Airflow/SeaTunnel/K8s
-- 🔄 **Data Catalog Hub** - Unified metadata management and intelligent search
-- ✅ **Data Ingestion Service** - Multi-source data ingestion with SeaTunnel + connectors
-- ✅ **GraphQL Gateway** - Unified GraphQL API for all services
+Please refer to the [Contributing Guide](../../CONTRIBUTING.md) for development standards and practices.
 
-## 🚦 Status
+## License
 
-| Service | Status | Health Endpoint | Key Features |
-|---------|--------|-----------------|--------------|
-| GraphQL Gateway | ✅ Active | http://localhost:8000/health | Unified API |
-| Data Ingestion | ✅ Enhanced | http://localhost:8010/health | Medallion + Lifecycle |
-| Stream Processing | ✅ Active | http://localhost:8011/health | Real-time Flink |
-| Batch Processing | ✅ Enhanced | http://localhost:8012/health | Spark + File Processors |
-| Graph Processing | ✅ Active | http://localhost:8013/health | JanusGraph |
-| Quality Engine | ✅ Active | http://localhost:8014/health | Data Quality |
-| MLOps Service | ✅ Active | http://localhost:8015/health | Model Management |
-| Data Catalog Hub | ✅ Unified | http://localhost:8017/api/v1/health | Catalog + AI Search |
-
-| Unified Orchestration | ✅ Enhanced | http://localhost:8019/health | Workflow + K8s |
-
-## 📞 Support
-
-- **Slack**: #data-intelligence-suite
-- **Email**: data-intelligence@platformq.io
-- **Issues**: GitHub Issues 
+This suite is part of the PlatformQ project and follows the project's licensing terms. 

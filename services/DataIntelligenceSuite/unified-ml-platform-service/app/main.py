@@ -3,7 +3,7 @@ Unified ML Platform Service
 
 Comprehensive machine learning platform consolidating:
 - Model training, serving, and lifecycle management
-- MLOps and model marketplace
+- MLOps capabilities
 - Federated learning capabilities
 - Neuromorphic computing
 - Feature store and model registry
@@ -25,15 +25,12 @@ from platformq_event_framework import BaseEventProcessor, EventMetrics
 from .vault_consul_integration import VaultConsulIntegration
 from .core.config import settings
 from .core.model_registry import UnifiedModelRegistry
-from .core.feature_store import FeatureStore
 from .core.training_orchestrator import TrainingOrchestrator
 from .core.serving_engine import ModelServingEngine
 from .core.monitoring import ModelMonitor
-from .core.marketplace import ModelMarketplace
 
 # Import modules
 from .modules.federated_learning import FederatedLearningCoordinator
-from .modules.neuromorphic import NeuromorphicEngine
 from .modules.mlops import MLOpsManager
 from .modules.automl import AutoMLEngine
 
@@ -43,10 +40,7 @@ from .api import (
     training,
     serving,
     federated,
-    neuromorphic,
-    marketplace,
     monitoring,
-    features,
     experiments
 )
 
@@ -62,13 +56,10 @@ logger = logging.getLogger(__name__)
 # Global instances
 vault_consul: Optional[VaultConsulIntegration] = None
 model_registry: Optional[UnifiedModelRegistry] = None
-feature_store: Optional[FeatureStore] = None
 training_orchestrator: Optional[TrainingOrchestrator] = None
 serving_engine: Optional[ModelServingEngine] = None
 model_monitor: Optional[ModelMonitor] = None
-marketplace: Optional[ModelMarketplace] = None
 federated_coordinator: Optional[FederatedLearningCoordinator] = None
-neuromorphic_engine: Optional[NeuromorphicEngine] = None
 mlops_manager: Optional[MLOpsManager] = None
 automl_engine: Optional[AutoMLEngine] = None
 event_handler: Optional[UnifiedMLEventHandler] = None
@@ -85,8 +76,8 @@ async def get_vault_consul() -> VaultConsulIntegration:
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global vault_consul, model_registry, feature_store, training_orchestrator, serving_engine
-    global model_monitor, marketplace, federated_coordinator, neuromorphic_engine
+    global vault_consul, model_registry, training_orchestrator, serving_engine
+    global model_monitor, federated_coordinator
     global mlops_manager, automl_engine, event_handler, ml_lineage_tracker
     
     # Startup
@@ -100,7 +91,6 @@ async def lifespan(app: FastAPI):
     mlflow_config = await vault_consul.get_mlflow_config()
     training_config = await vault_consul.get_training_config()
     serving_config = await vault_consul.get_serving_config()
-    feature_store_config = await vault_consul.get_feature_store_config()
     
     # Initialize configuration
     config_loader = ConfigLoader()
@@ -118,18 +108,11 @@ async def lifespan(app: FastAPI):
     await model_registry.initialize()
     app.state.model_registry = model_registry
     
-    # Initialize feature store with Vault configuration
-    feature_store = FeatureStore(
-        config=feature_store_config,
-        encryption_integration=vault_consul
-    )
-    await feature_store.initialize()
-    app.state.feature_store = feature_store
+    # Feature store has been extracted to a separate service
     
     # Initialize training orchestrator with credentials
     training_orchestrator = TrainingOrchestrator(
         model_registry=model_registry,
-        feature_store=feature_store,
         training_config=training_config,
         vault_integration=vault_consul
     )
@@ -139,7 +122,6 @@ async def lifespan(app: FastAPI):
     # Initialize model serving engine with serving credentials
     serving_engine = ModelServingEngine(
         model_registry=model_registry,
-        feature_store=feature_store,
         serving_config=serving_config,
         vault_integration=vault_consul
     )
@@ -158,20 +140,11 @@ async def lifespan(app: FastAPI):
     await model_monitor.initialize()
     app.state.model_monitor = model_monitor
     
-    # Initialize model marketplace with blockchain integration
-    marketplace = ModelMarketplace(
-        model_registry=model_registry,
-        vault_integration=vault_consul,
-        blockchain_gateway_url=config.get("blockchain_gateway_url", "http://blockchain-gateway-service:8000"),
-        derivatives_engine_url=config.get("derivatives_engine_url", "http://derivatives-engine-service:8000")
-    )
-    await marketplace.initialize()
-    app.state.marketplace = marketplace
+    # Model marketplace has been extracted to a separate service
     
     # Initialize federated learning coordinator with certificates
     federated_coordinator = FederatedLearningCoordinator(
         model_registry=model_registry,
-        feature_store=feature_store,
         vault_integration=vault_consul,
         ignite_host=config.get("ignite_host", "ignite"),
         verifiable_credential_service_url=config.get("vc_service_url", "http://verifiable-credential-service:8000")
@@ -179,14 +152,7 @@ async def lifespan(app: FastAPI):
     await federated_coordinator.initialize()
     app.state.federated_coordinator = federated_coordinator
     
-    # Initialize neuromorphic engine
-    neuromorphic_config = await vault_consul._get_consul_config("neuromorphic-config")
-    neuromorphic_engine = NeuromorphicEngine(
-        model_registry=model_registry,
-        config=neuromorphic_config
-    )
-    await neuromorphic_engine.initialize()
-    app.state.neuromorphic_engine = neuromorphic_engine
+    # Neuromorphic engine has been extracted to a separate service
     
     # Initialize MLOps manager
     mlops_manager = MLOpsManager(
@@ -382,9 +348,6 @@ async def lifespan(app: FastAPI):
     if model_registry:
         await model_registry.close()
         
-    if marketplace:
-        await marketplace.close()
-        
     if vault_consul:
         await vault_consul.close()
     
@@ -411,10 +374,7 @@ app.include_router(models.router, prefix="/api/v1/models", tags=["models"])
 app.include_router(training.router, prefix="/api/v1/training", tags=["training"])
 app.include_router(serving.router, prefix="/api/v1/serving", tags=["serving"])
 app.include_router(federated.router, prefix="/api/v1/federated", tags=["federated"])
-app.include_router(neuromorphic.router, prefix="/api/v1/neuromorphic", tags=["neuromorphic"])
-app.include_router(marketplace.router, prefix="/api/v1/marketplace", tags=["marketplace"])
 app.include_router(monitoring.router, prefix="/api/v1/monitoring", tags=["monitoring"])
-app.include_router(features.router, prefix="/api/v1/features", tags=["features"])
 app.include_router(experiments.router, prefix="/api/v1/experiments", tags=["experiments"])
 app.include_router(ml_lineage_router, tags=["ml-lineage"])
 
@@ -468,13 +428,6 @@ async def root():
                 "online_learning": True,
                 "low_latency": True
             },
-            "marketplace": {
-                "model_trading": True,
-                "licensing": True,
-                "royalties": True,
-                "blockchain_integration": True,
-                "signed_metadata": True
-            },
             "monitoring": {
                 "drift_detection": True,
                 "performance_tracking": True,
@@ -492,128 +445,28 @@ async def root():
     }
 
 
-# Health check endpoint with Vault/Consul status
+# Health check endpoint
 @app.get("/health")
 async def health_check():
-    """Comprehensive health check for all ML platform components"""
-    health_status = {
+    return {
         "status": "healthy",
-        "components": {}
+        "service": "unified-ml-platform-service",
+        "timestamp": datetime.utcnow().isoformat()
     }
-    
-    # Check Vault/Consul integration
-    if vault_consul:
-        try:
-            # Check Vault
-            if vault_consul.vault_client.is_authenticated():
-                health_status["components"]["vault"] = "healthy"
-            else:
-                health_status["components"]["vault"] = "unhealthy: not authenticated"
-                health_status["status"] = "degraded"
-            
-            # Check Consul
-            consul_health = await vault_consul.consul_client.health.node("consul")
-            if consul_health:
-                health_status["components"]["consul"] = "healthy"
-            else:
-                health_status["components"]["consul"] = "unhealthy"
-                health_status["status"] = "degraded"
-        except Exception as e:
-            health_status["components"]["security_integration"] = f"unhealthy: {str(e)}"
-            health_status["status"] = "degraded"
-    
-    # Check model registry
-    if model_registry:
-        try:
-            await model_registry.health_check()
-            health_status["components"]["model_registry"] = "healthy"
-        except Exception as e:
-            health_status["components"]["model_registry"] = f"unhealthy: {str(e)}"
-            health_status["status"] = "degraded"
-    
-    # Check feature store
-    if feature_store:
-        try:
-            await feature_store.health_check()
-            health_status["components"]["feature_store"] = "healthy"
-        except Exception as e:
-            health_status["components"]["feature_store"] = f"unhealthy: {str(e)}"
-            health_status["status"] = "degraded"
-    
-    # Check training orchestrator
-    if training_orchestrator:
-        try:
-            await training_orchestrator.health_check()
-            health_status["components"]["training_orchestrator"] = "healthy"
-        except Exception as e:
-            health_status["components"]["training_orchestrator"] = f"unhealthy: {str(e)}"
-            health_status["status"] = "degraded"
-    
-    # Check serving engine
-    if serving_engine:
-        try:
-            await serving_engine.health_check()
-            health_status["components"]["serving_engine"] = "healthy"
-        except Exception as e:
-            health_status["components"]["serving_engine"] = f"unhealthy: {str(e)}"
-            health_status["status"] = "degraded"
-    
-    return health_status
 
 
-# Encrypted model artifact endpoint
-@app.post("/api/v1/models/{model_name}/encrypt-artifact")
-async def encrypt_model_artifact(
-    model_name: str,
-    artifact_data: bytes,
-    vc: VaultConsulIntegration = Depends(get_vault_consul)
-):
-    """Encrypt model artifact using Vault Transit engine"""
-    try:
-        encrypted = await vc.encrypt_model_artifact(
-            artifact_data,
-            context=f"model:{model_name}"
-        )
-        return {
-            "model_name": model_name,
-            "encrypted_artifact": encrypted,
-            "encryption_key": vc._encryption_keys['model_artifacts']
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+# Metrics endpoint
+@app.get("/metrics")
+async def get_metrics():
+    """Get service metrics"""
+    return {
+        "models_registered": await model_registry.get_model_count() if model_registry else 0,
+        "active_training_jobs": training_orchestrator.get_active_jobs_count() if training_orchestrator else 0,
+        "models_serving": serving_engine.get_serving_count() if serving_engine else 0,
+        "federated_rounds": federated_coordinator.get_total_rounds() if federated_coordinator else 0
+    }
 
 
-# Model metadata signing endpoint
-@app.post("/api/v1/marketplace/{model_name}/sign-metadata")
-async def sign_model_metadata(
-    model_name: str,
-    metadata: Dict[str, Any],
-    vc: VaultConsulIntegration = Depends(get_vault_consul)
-):
-    """Sign model metadata for marketplace listing"""
-    try:
-        signature = await vc.sign_model_metadata(metadata)
-        return {
-            "model_name": model_name,
-            "signature": signature,
-            "signed_at": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-# Federated learning certificate endpoint
-@app.get("/api/v1/federated/certificates/{node_id}")
-async def get_federated_certificate(
-    node_id: str,
-    vc: VaultConsulIntegration = Depends(get_vault_consul)
-):
-    """Get certificate for federated learning node"""
-    try:
-        cert = await vc.get_federated_node_certificate(node_id)
-        return {
-            "node_id": node_id,
-            "certificate": cert
-        }
-    except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e)) 
+if __name__ == "__main__":
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8015) 

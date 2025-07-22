@@ -1,7 +1,7 @@
 """
 # Unified ML Platform Service
 
-Comprehensive machine learning platform consolidating model training, serving, MLOps, federated learning, and neuromorphic computing capabilities with event-driven architecture.
+Comprehensive machine learning platform consolidating model training, serving, MLOps, and federated learning capabilities with event-driven architecture.
 
 ## Overview
 
@@ -10,12 +10,16 @@ The Unified ML Platform Service provides:
 - **Model Serving**: High-performance inference with auto-scaling
 - **MLOps**: Complete lifecycle management with versioning and monitoring
 - **Federated Learning**: Privacy-preserving distributed training
-- **Neuromorphic Computing**: Spike-based neural network processing
-- **Feature Store**: Centralized feature management and serving
 - **AutoML**: Automated model selection and hyperparameter tuning
 - **Event-Driven Architecture**: Real-time ML lifecycle event processing
 - **Model Lineage**: Comprehensive ML model lineage tracking with impact analysis
 - **Data Lake Integration**: Seamless training data management
+
+### Note on Extracted Services
+The following capabilities have been extracted to dedicated services for better modularity:
+- **Feature Store**: Now available as `feature-store-service`
+- **Neuromorphic Computing**: Now available as `neuromorphic-computing-service`
+- **ML Marketplace**: Now available as `ml-marketplace-service`
 
 ## Event-Driven Architecture
 
@@ -26,7 +30,6 @@ The service integrates with the platform's event-driven architecture for compreh
 - **Model Events**: Registered, deployed, retired
 - **Inference Events**: Requests and results
 - **Monitoring Events**: Drift detection, performance degradation
-- **Feature Events**: Feature computation and updates
 - **Experiment Events**: Experiment lifecycle
 - **Federated Learning Events**: Round coordination
 
@@ -201,7 +204,7 @@ async def on_drift_detected(drift_info):
 - Tracks predictions
 
 ### Trading Platform Service
-- Provides ML models for trading
+- Provides ML models for trading strategies
 - Receives performance feedback
 
 ### Analytics Service

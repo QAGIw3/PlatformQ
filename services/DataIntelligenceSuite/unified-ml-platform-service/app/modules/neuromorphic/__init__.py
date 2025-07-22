@@ -1,27 +1,11 @@
 """
 Neuromorphic Computing Module for Unified ML Platform
 
-Provides brain-inspired computing capabilities with spiking neural networks
+Note: The neuromorphic computing functionality has been extracted to the 
+neuromorphic-computing-service for better modularity and scalability.
 """
 
-from .neuromorphic_engine import (
-    NeuromorphicEngine,
-    NeuromorphicConfig,
-    NeuromorphicFramework,
-    SpikeCoding,
-    SpikeEvent,
-    NeuromorphicMetrics,
-    SpikingNeuralNetwork,
-    SpikingLayer
-)
+# This module is now a placeholder as the functionality has been 
+# moved to the dedicated neuromorphic-computing-service
 
-__all__ = [
-    "NeuromorphicEngine",
-    "NeuromorphicConfig",
-    "NeuromorphicFramework",
-    "SpikeCoding",
-    "SpikeEvent",
-    "NeuromorphicMetrics",
-    "SpikingNeuralNetwork",
-    "SpikingLayer"
-] 
+__all__ = [] 

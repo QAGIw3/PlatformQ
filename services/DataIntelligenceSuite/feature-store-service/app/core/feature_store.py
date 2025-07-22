@@ -1,5 +1,5 @@
 """
-Unified Feature Store for PlatformQ ML Platform
+Feature Store for PlatformQ ML Platform
 
 Provides centralized feature management with:
 - Online serving via Apache Ignite (<5ms latency)
@@ -20,12 +20,9 @@ from enum import Enum
 
 from pyignite import Client as IgniteClient
 from pyignite.datatypes import String, DoubleArray, LongArray, BoolArray
-from pulsar import Client as PulsarClient, Producer, Consumer
+from pulsar import Client as PulsarClient, Producer, Consumer, ConsumerType
 import pyarrow as pa
 import pyarrow.parquet as pq
-
-from platformq_shared.iceberg_client import IcebergClient
-from platformq_shared.config import ConfigLoader
 
 logger = logging.getLogger(__name__)
 
@@ -80,15 +77,13 @@ class FeatureValue:
 
 class FeatureStore:
     """
-    Unified Feature Store implementation
+    Feature Store implementation using Apache Ignite
     """
     
     def __init__(self,
-                 ignite_host: str = "localhost",
+                 ignite_host: str = "ignite",
                  ignite_port: int = 10800,
-                 pulsar_url: str = "pulsar://localhost:6650",
-                 iceberg_catalog: str = "platformq",
-                 config_loader: Optional[ConfigLoader] = None):
+                 pulsar_url: str = "pulsar://pulsar:6650"):
         """
         Initialize Feature Store
         
@@ -96,11 +91,7 @@ class FeatureStore:
             ignite_host: Apache Ignite host
             ignite_port: Apache Ignite port
             pulsar_url: Apache Pulsar broker URL
-            iceberg_catalog: Iceberg catalog name
-            config_loader: Configuration loader
         """
-        self.config_loader = config_loader or ConfigLoader()
-        
         # Initialize Ignite client for online serving
         self.ignite_client = IgniteClient()
         self.ignite_client.connect(ignite_host, ignite_port)
@@ -108,9 +99,6 @@ class FeatureStore:
         # Initialize Pulsar client for real-time updates
         self.pulsar_client = PulsarClient(pulsar_url)
         self._init_pulsar_topics()
-        
-        # Initialize Iceberg client for offline serving
-        self.iceberg_client = IcebergClient(catalog_name=iceberg_catalog)
         
         # Feature registry cache
         self._feature_registry: Dict[str, FeatureDefinition] = {}
@@ -141,13 +129,18 @@ class FeatureStore:
             "feature_store_stats"
         )
         
+        # Feature registry cache
+        self.registry_cache = self.ignite_client.get_or_create_cache(
+            "feature_store_registry"
+        )
+        
         logger.info("Initialized Ignite caches for feature store")
         
     def _init_pulsar_topics(self):
         """Initialize Pulsar topics for feature updates"""
-        self.feature_update_topic = "persistent://platformq/features/updates"
-        self.feature_request_topic = "persistent://platformq/features/requests"
-        self.feature_log_topic = "persistent://platformq/features/logs"
+        self.feature_update_topic = "persistent://public/default/feature-updates"
+        self.feature_request_topic = "persistent://public/default/feature-requests"
+        self.feature_log_topic = "persistent://public/default/feature-logs"
         
         # Create producers
         self.update_producer = self.pulsar_client.create_producer(
@@ -165,66 +158,33 @@ class FeatureStore:
         )
         
     def _load_feature_registry(self):
-        """Load feature definitions from storage"""
+        """Load feature definitions from Ignite cache"""
         try:
-            # Load from Iceberg table
-            registry_df = self.iceberg_client.read_table(
-                "feature_registry",
-                namespace="ml"
-            )
-            
-            for _, row in registry_df.iterrows():
-                feature = FeatureDefinition(
-                    name=row['name'],
-                    description=row['description'],
-                    feature_type=FeatureType(row['feature_type']),
-                    data_type=row['data_type'],
-                    shape=tuple(row['shape']) if row['shape'] else None,
-                    default_value=row['default_value'],
-                    tags=row['tags'].split(',') if row['tags'] else [],
-                    owner=row['owner'],
-                    created_at=row['created_at'],
-                    updated_at=row['updated_at'],
-                    version=row['version'],
-                    status=FeatureStatus(row['status']),
-                    metadata=json.loads(row['metadata']) if row['metadata'] else {}
-                )
-                self._feature_registry[feature.name] = feature
+            # Load from Ignite registry cache
+            for key, value in self.registry_cache.scan():
+                if isinstance(value, dict):
+                    feature = FeatureDefinition(
+                        name=value['name'],
+                        description=value['description'],
+                        feature_type=FeatureType(value['feature_type']),
+                        data_type=value['data_type'],
+                        shape=tuple(value['shape']) if value.get('shape') else None,
+                        default_value=value.get('default_value'),
+                        tags=value.get('tags', []),
+                        owner=value.get('owner', ''),
+                        created_at=datetime.fromisoformat(value['created_at']),
+                        updated_at=datetime.fromisoformat(value['updated_at']),
+                        version=value.get('version', 1),
+                        status=FeatureStatus(value.get('status', 'active')),
+                        metadata=value.get('metadata', {})
+                    )
+                    self._feature_registry[feature.name] = feature
                 
             logger.info(f"Loaded {len(self._feature_registry)} features from registry")
             
         except Exception as e:
             logger.warning(f"Could not load feature registry: {e}")
-            # Initialize empty registry
-            self._create_feature_registry_table()
             
-    def _create_feature_registry_table(self):
-        """Create feature registry table in Iceberg"""
-        schema = pa.schema([
-            ('name', pa.string()),
-            ('description', pa.string()),
-            ('feature_type', pa.string()),
-            ('data_type', pa.string()),
-            ('shape', pa.list_(pa.int64())),
-            ('default_value', pa.string()),
-            ('tags', pa.string()),
-            ('owner', pa.string()),
-            ('created_at', pa.timestamp('us')),
-            ('updated_at', pa.timestamp('us')),
-            ('version', pa.int64()),
-            ('status', pa.string()),
-            ('metadata', pa.string())
-        ])
-        
-        # Create empty table
-        empty_df = pd.DataFrame(columns=schema.names)
-        self.iceberg_client.write_table(
-            empty_df,
-            "feature_registry",
-            namespace="ml",
-            mode="create"
-        )
-        
     async def register_feature(self, feature: FeatureDefinition) -> bool:
         """
         Register a new feature or update existing
@@ -248,43 +208,24 @@ class FeatureStore:
             # Update registry
             self._feature_registry[feature.name] = feature
             
-            # Persist to Iceberg
+            # Persist to Ignite
             feature_data = {
                 'name': feature.name,
                 'description': feature.description,
                 'feature_type': feature.feature_type.value,
                 'data_type': feature.data_type,
                 'shape': list(feature.shape) if feature.shape else None,
-                'default_value': str(feature.default_value),
-                'tags': ','.join(feature.tags),
+                'default_value': feature.default_value,
+                'tags': feature.tags,
                 'owner': feature.owner,
-                'created_at': feature.created_at,
-                'updated_at': feature.updated_at,
+                'created_at': feature.created_at.isoformat(),
+                'updated_at': feature.updated_at.isoformat(),
                 'version': feature.version,
                 'status': feature.status.value,
-                'metadata': json.dumps(feature.metadata)
+                'metadata': feature.metadata
             }
             
-            # Upsert to registry table
-            filter_expr = self.iceberg_client.eq('name', feature.name)
-            
-            try:
-                # Try to update existing
-                self.iceberg_client.update_table(
-                    'feature_registry',
-                    namespace='ml',
-                    updates=feature_data,
-                    filter_expr=filter_expr
-                )
-            except:
-                # Insert new
-                df = pd.DataFrame([feature_data])
-                self.iceberg_client.write_table(
-                    df,
-                    'feature_registry',
-                    namespace='ml',
-                    mode='append'
-                )
+            self.registry_cache.put(feature.name, feature_data)
                 
             # Publish update event
             await self._publish_feature_event('feature_registered', feature)
@@ -468,60 +409,6 @@ class FeatureStore:
             
         return pd.DataFrame(data)
         
-    def get_historical_features(self,
-                               entity_ids: List[str],
-                               feature_names: List[str],
-                               start_time: datetime,
-                               end_time: Optional[datetime] = None) -> pd.DataFrame:
-        """
-        Get historical features (offline serving)
-        
-        Args:
-            entity_ids: List of entity identifiers
-            feature_names: List of feature names
-            start_time: Start of time range
-            end_time: End of time range (default: now)
-            
-        Returns:
-            DataFrame with historical feature values
-        """
-        try:
-            # Build filter expression
-            filters = [
-                self.iceberg_client.in_('entity_id', entity_ids),
-                self.iceberg_client.in_('feature_name', feature_names),
-                self.iceberg_client.gte('event_timestamp', start_time)
-            ]
-            
-            if end_time:
-                filters.append(self.iceberg_client.lte('event_timestamp', end_time))
-                
-            filter_expr = self.iceberg_client.and_(*filters)
-            
-            # Read from offline store
-            df = self.iceberg_client.read_table(
-                'feature_values',
-                namespace='ml',
-                filter_expr=filter_expr
-            )
-            
-            # Pivot to wide format
-            if not df.empty:
-                df_pivot = df.pivot_table(
-                    index=['entity_id', 'event_timestamp'],
-                    columns='feature_name',
-                    values='value',
-                    aggfunc='last'
-                ).reset_index()
-                
-                return df_pivot
-            else:
-                return pd.DataFrame()
-                
-        except Exception as e:
-            logger.error(f"Failed to get historical features: {e}")
-            return pd.DataFrame()
-            
     def get_feature_statistics(self,
                               feature_name: str,
                               window: Optional[timedelta] = None) -> Dict[str, Any]:
@@ -547,8 +434,7 @@ class FeatureStore:
             if cached_stats:
                 return cached_stats
             else:
-                # Calculate from offline store
-                return self._calculate_feature_statistics(feature_name, window)
+                return {}
                 
         except Exception as e:
             logger.error(f"Failed to get feature statistics: {e}")
@@ -621,82 +507,11 @@ class FeatureStore:
         except Exception as e:
             logger.warning(f"Failed to update stats for {feature_name}: {e}")
             
-    def _calculate_feature_statistics(self,
-                                     feature_name: str,
-                                     window: Optional[timedelta] = None) -> Dict[str, Any]:
-        """Calculate feature statistics from offline store"""
-        try:
-            # Build filter
-            filters = [self.iceberg_client.eq('feature_name', feature_name)]
-            
-            if window:
-                start_time = datetime.utcnow() - window
-                filters.append(self.iceberg_client.gte('event_timestamp', start_time))
-                
-            filter_expr = self.iceberg_client.and_(*filters)
-            
-            # Read data
-            df = self.iceberg_client.read_table(
-                'feature_values',
-                namespace='ml',
-                columns=['value'],
-                filter_expr=filter_expr
-            )
-            
-            if df.empty:
-                return {}
-                
-            # Calculate statistics
-            feature_def = self._feature_registry.get(feature_name)
-            
-            if feature_def and feature_def.feature_type == FeatureType.NUMERIC:
-                stats = {
-                    'count': len(df),
-                    'mean': df['value'].mean(),
-                    'std': df['value'].std(),
-                    'min': df['value'].min(),
-                    'max': df['value'].max(),
-                    'q25': df['value'].quantile(0.25),
-                    'q50': df['value'].quantile(0.50),
-                    'q75': df['value'].quantile(0.75),
-                    'unique': df['value'].nunique(),
-                    'null_count': df['value'].isnull().sum()
-                }
-            else:
-                # Categorical or other types
-                stats = {
-                    'count': len(df),
-                    'unique': df['value'].nunique(),
-                    'top_values': df['value'].value_counts().head(10).to_dict(),
-                    'null_count': df['value'].isnull().sum()
-                }
-                
-            # Cache stats
-            stats_key = f"stats:{feature_name}"
-            if window:
-                stats_key = f"{stats_key}:{int(window.total_seconds())}"
-                
-            self.stats_cache.put(stats_key, stats, ttl=3600)  # 1 hour TTL
-            
-            return stats
-            
-        except Exception as e:
-            logger.error(f"Failed to calculate statistics: {e}")
-            return {}
-            
     def _start_background_tasks(self):
         """Start background processing tasks"""
         # Feature update processor
         task1 = asyncio.create_task(self._process_feature_updates())
         self._background_tasks.append(task1)
-        
-        # Offline store sync
-        task2 = asyncio.create_task(self._sync_to_offline_store())
-        self._background_tasks.append(task2)
-        
-        # Stats refresh
-        task3 = asyncio.create_task(self._refresh_statistics())
-        self._background_tasks.append(task3)
         
         logger.info("Started feature store background tasks")
         
@@ -726,72 +541,6 @@ class FeatureStore:
             except Exception:
                 # Timeout - continue
                 await asyncio.sleep(0.1)
-                
-    async def _sync_to_offline_store(self):
-        """Periodically sync online features to offline store"""
-        while self._running:
-            try:
-                await asyncio.sleep(60)  # Sync every minute
-                
-                # Get all cached features
-                batch = []
-                
-                for key in self.feature_cache.get_all().keys():
-                    entity_id, feature_name = key.split(':', 1)
-                    value_data = self.feature_cache.get(key)
-                    
-                    if value_data:
-                        batch.append({
-                            'entity_id': entity_id,
-                            'feature_name': feature_name,
-                            'value': str(value_data['value']),  # Convert to string
-                            'timestamp': datetime.fromisoformat(value_data['timestamp']),
-                            'event_timestamp': datetime.fromisoformat(value_data['event_timestamp'])
-                        })
-                        
-                    # Write batch
-                    if len(batch) >= 1000:
-                        df = pd.DataFrame(batch)
-                        self.iceberg_client.write_table(
-                            df,
-                            'feature_values',
-                            namespace='ml',
-                            mode='append'
-                        )
-                        batch = []
-                        
-                # Write remaining
-                if batch:
-                    df = pd.DataFrame(batch)
-                    self.iceberg_client.write_table(
-                        df,
-                        'feature_values',
-                        namespace='ml',
-                        mode='append'
-                    )
-                    
-                logger.info(f"Synced {len(batch)} features to offline store")
-                
-            except Exception as e:
-                logger.error(f"Error syncing to offline store: {e}")
-                
-    async def _refresh_statistics(self):
-        """Periodically refresh feature statistics"""
-        while self._running:
-            try:
-                await asyncio.sleep(300)  # Every 5 minutes
-                
-                # Refresh stats for active features
-                for feature_name, feature_def in self._feature_registry.items():
-                    if feature_def.status == FeatureStatus.ACTIVE:
-                        # Refresh 1-hour window stats
-                        self._calculate_feature_statistics(
-                            feature_name,
-                            window=timedelta(hours=1)
-                        )
-                        
-            except Exception as e:
-                logger.error(f"Error refreshing statistics: {e}")
                 
     def close(self):
         """Clean up resources"""

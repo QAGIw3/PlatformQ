@@ -32,21 +32,14 @@ tensorflow-serving-api>=2.13.0
 tritonclient[all]>=2.34.0  # NVIDIA Triton client
 kserve>=0.11.0  # KServe for Knative
 
-# Feature Store
-feast>=0.31.0
-pyignite[async]
-
 # Federated Learning
 syft>=0.8.0  # PySyft for federated learning
 flower>=1.4.0  # Flower federated learning framework
 tenseal>=0.3.0  # Homomorphic encryption
 opacus>=1.4.0  # Differential privacy for PyTorch
 
-# Neuromorphic Computing
-nengo>=3.2.0  # Neuromorphic simulator
-bindsnet>=0.3.0  # Spiking neural networks
-norse>=0.0.7  # PyTorch spiking neural networks
-brian2>=2.5.0  # Neural simulator
+# Note: Feature Store and Neuromorphic Computing dependencies have been moved
+# to their respective separate services (feature-store-service and neuromorphic-computing-service)
 
 # Model Monitoring & Explainability
 evidently>=0.3.0  # ML monitoring

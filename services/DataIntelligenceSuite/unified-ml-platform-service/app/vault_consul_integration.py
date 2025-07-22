@@ -7,7 +7,6 @@ Manages:
 - Model serving secrets
 - Feature store credentials
 - Model artifact encryption
-- Marketplace API keys
 - Federated learning certificates
 """
 
@@ -56,7 +55,6 @@ class VaultConsulIntegration:
         self._serving_credentials = {}
         self._feature_store_config = {}
         self._encryption_keys = {}
-        self._marketplace_keys = {}
         self._federated_certs = {}
         
         # Rotation tracking
@@ -86,7 +84,6 @@ class VaultConsulIntegration:
             await self._initialize_serving_credentials()
             await self._initialize_feature_store_config()
             await self._initialize_encryption_keys()
-            await self._initialize_marketplace_keys()
             await self._initialize_federated_certificates()
             
             # Load ML platform configurations from Consul
@@ -252,70 +249,20 @@ class VaultConsulIntegration:
     async def _initialize_encryption_keys(self):
         """Initialize encryption keys for model artifacts"""
         try:
-            # Create or get model encryption key in Transit engine
-            try:
-                self.vault_client.read(f"{self.vault_transit_path}/keys/ml-model-artifacts")
-            except:
-                # Create new encryption key
-                self.vault_client.write(
-                    f"{self.vault_transit_path}/keys/ml-model-artifacts",
-                    type="aes256-gcm96",
-                    derived=True,
-                    exportable=False
-                )
+            # Create or get existing encryption key for model artifacts
+            self._encryption_keys['model_artifacts'] = await self._get_or_create_encryption_key(
+                'model-artifacts'
+            )
             
-            # Create or get feature encryption key
-            try:
-                self.vault_client.read(f"{self.vault_transit_path}/keys/ml-features")
-            except:
-                self.vault_client.write(
-                    f"{self.vault_transit_path}/keys/ml-features",
-                    type="aes256-gcm96",
-                    derived=True,
-                    exportable=False
-                )
+            # Create or get signing key for model metadata
+            self._encryption_keys['model_metadata'] = await self._get_or_create_encryption_key(
+                'model-metadata'
+            )
             
-            # Create or get prediction encryption key
-            try:
-                self.vault_client.read(f"{self.vault_transit_path}/keys/ml-predictions")
-            except:
-                self.vault_client.write(
-                    f"{self.vault_transit_path}/keys/ml-predictions",
-                    type="aes256-gcm96",
-                    derived=True,
-                    exportable=False
-                )
-            
-            self._encryption_keys = {
-                'model_artifacts': 'ml-model-artifacts',
-                'features': 'ml-features',
-                'predictions': 'ml-predictions'
-            }
+            logger.info("Initialized encryption keys")
             
         except Exception as e:
             logger.error(f"Failed to initialize encryption keys: {e}")
-            raise
-
-    async def _initialize_marketplace_keys(self):
-        """Initialize marketplace integration keys"""
-        try:
-            # Model licensing keys
-            licensing_keys = {
-                'api_key': self._generate_api_key(32),
-                'signing_key': self._generate_api_key(64),
-                'blockchain_wallet': await self._get_marketplace_wallet()
-            }
-            
-            # Store in Vault
-            self.vault_client.write(
-                f"{self.vault_ml_path}/marketplace-keys",
-                **licensing_keys
-            )
-            
-            self._marketplace_keys = licensing_keys
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize marketplace keys: {e}")
             raise
 
     async def _initialize_federated_certificates(self):
@@ -436,14 +383,16 @@ class VaultConsulIntegration:
     async def encrypt_model_artifact(self, data: bytes, context: str = "") -> str:
         """Encrypt model artifact using Transit engine"""
         try:
-            # Base64 encode the data
+            import base64
+            
+            # Encode data to base64
             encoded_data = base64.b64encode(data).decode('utf-8')
             
             # Encrypt using Transit engine
-            response = self.vault_client.write(
-                f"{self.vault_transit_path}/encrypt/{self._encryption_keys['model_artifacts']}",
+            response = self.vault_client.secrets.transit.encrypt_data(
+                name=self._encryption_keys['model_artifacts'],
                 plaintext=encoded_data,
-                context=base64.b64encode(context.encode()).decode('utf-8') if context else None
+                context=context
             )
             
             return response['data']['ciphertext']
@@ -451,19 +400,21 @@ class VaultConsulIntegration:
         except Exception as e:
             logger.error(f"Failed to encrypt model artifact: {e}")
             raise
-
+            
     async def decrypt_model_artifact(self, ciphertext: str, context: str = "") -> bytes:
         """Decrypt model artifact using Transit engine"""
         try:
             # Decrypt using Transit engine
-            response = self.vault_client.write(
-                f"{self.vault_transit_path}/decrypt/{self._encryption_keys['model_artifacts']}",
+            response = self.vault_client.secrets.transit.decrypt_data(
+                name=self._encryption_keys['model_artifacts'],
                 ciphertext=ciphertext,
-                context=base64.b64encode(context.encode()).decode('utf-8') if context else None
+                context=context
             )
             
-            # Base64 decode the result
+            # Decode from base64
+            import base64
             plaintext = base64.b64decode(response['data']['plaintext'])
+            
             return plaintext
             
         except Exception as e:
@@ -478,8 +429,8 @@ class VaultConsulIntegration:
             encoded_data = base64.b64encode(feature_bytes).decode('utf-8')
             
             # Encrypt
-            response = self.vault_client.write(
-                f"{self.vault_transit_path}/encrypt/{self._encryption_keys['features']}",
+            response = self.vault_client.secrets.transit.encrypt_data(
+                name=self._encryption_keys['features'],
                 plaintext=encoded_data
             )
             
@@ -487,24 +438,6 @@ class VaultConsulIntegration:
             
         except Exception as e:
             logger.error(f"Failed to encrypt features: {e}")
-            raise
-
-    async def sign_model_metadata(self, metadata: Dict[str, Any]) -> str:
-        """Sign model metadata for marketplace"""
-        try:
-            # Serialize metadata
-            metadata_bytes = json.dumps(metadata, sort_keys=True).encode()
-            
-            # Use marketplace signing key
-            signature = self._sign_data(
-                metadata_bytes,
-                self._marketplace_keys['signing_key']
-            )
-            
-            return base64.b64encode(signature).decode('utf-8')
-            
-        except Exception as e:
-            logger.error(f"Failed to sign model metadata: {e}")
             raise
 
     async def get_federated_node_certificate(self, node_id: str) -> Dict[str, str]:
@@ -662,10 +595,17 @@ class VaultConsulIntegration:
         creds = await self._get_or_create_database_credentials("feast")
         return f"postgresql://{creds['username']}:{creds['password']}@{creds['host']}:{creds['port']}/{creds['database']}"
 
-    async def _get_marketplace_wallet(self) -> str:
-        """Get or create marketplace blockchain wallet"""
-        # This would integrate with blockchain gateway service
-        return "0x" + self._generate_api_key(40)
+    async def _get_or_create_encryption_key(self, key_name: str) -> str:
+        """Get or create an encryption key in the Transit engine"""
+        try:
+            self.vault_client.secrets.transit.create_key(name=key_name)
+            return key_name
+        except hvac.exceptions.InvalidPath:
+            # Key already exists, just return its name
+            return key_name
+        except Exception as e:
+            logger.error(f"Failed to create/get Transit key {key_name}: {e}")
+            raise
 
     async def _get_or_create_federated_ca(self) -> str:
         """Get or create federated learning CA certificate"""
@@ -737,14 +677,21 @@ class VaultConsulIntegration:
                 logger.error(f"Rotation failed: {e}")
 
     async def close(self):
-        """Cleanup resources"""
-        # Cancel rotation tasks
-        for task in self._rotation_tasks.values():
-            task.cancel()
-        
-        # Deregister from Consul
-        service_id = f"{self.service_name}-{os.environ.get('HOSTNAME', 'local')}"
-        await self.consul_client.agent.service.deregister(service_id)
-        
-        # Close Consul client
-        await self.consul_client.close() 
+        """Close connections and cleanup"""
+        try:
+            # Cancel rotation tasks
+            for task in self._rotation_tasks.values():
+                task.cancel()
+                
+            # Cancel lease renewal tasks
+            for task in self._lease_renewal_tasks.values():
+                task.cancel()
+                
+            # Deregister from Consul
+            if self.consul_client:
+                await self.consul_client.agent.service.deregister(self.service_name)
+                
+            logger.info("Vault and Consul integration closed")
+            
+        except Exception as e:
+            logger.error(f"Error closing Vault/Consul integration: {e}") 
