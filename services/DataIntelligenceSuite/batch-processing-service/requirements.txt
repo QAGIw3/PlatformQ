@@ -45,9 +45,11 @@ fastparquet==2023.10.1
 
 # Utilities
 httpx==0.25.2
+aiohttp==3.9.1
 aiofiles==23.2.1
 python-multipart==0.0.6
 python-json-logger==2.0.7
+psutil==5.9.6
 
 # Testing
 pytest==7.4.3

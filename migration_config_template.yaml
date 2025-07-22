@@ -1,0 +1,10 @@
+migration_options:
+  batch_size: 100
+  parallel_workers: 4
+  retry_attempts: 3
+  timeout_seconds: 300
+new_services:
+  unified-quality-service: http://unified-quality-service:8000
+old_services:
+  data-quality-service: http://data-quality-service:8000
+  quality-engine-service: http://quality-engine-service:8000

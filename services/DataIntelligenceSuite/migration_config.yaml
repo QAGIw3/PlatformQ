@@ -1,0 +1,58 @@
+old_services:
+  # Quality services to consolidate
+  data-quality-service: http://data-quality-service:8003
+  quality-engine-service: http://quality-engine-service:8025
+  
+  # ML services to consolidate
+  mlops-service: http://mlops-service:8015
+  mlflow-server: http://mlflow-server:5000
+  
+  # Orchestration services to consolidate
+  workflow-service: http://workflow-service:8019
+  workflow-engine: http://workflow-engine:8016
+  pipeline-orchestration-service: http://pipeline-orchestration-service:8004
+  cognitive-orchestration-service: http://cognitive-orchestration-service:8001
+  
+  # Graph services to consolidate
+  graph-intelligence-service: http://graph-intelligence-service:8010
+  graph-processing-service: http://graph-processing-service:8013
+  
+  # Monolithic service to decompose
+  data-platform-service: http://data-platform-service:8002
+
+new_services:
+  # Consolidated services
+  unified-quality-service: http://unified-quality-service:8003
+  unified-ml-platform-service: http://unified-ml-platform-service:8018
+  unified-orchestration-service: http://unified-orchestration-service:8019
+  unified-graph-service: http://unified-graph-service:8010
+  
+  # Decomposed services from data-platform
+  data-query-service: http://data-query-service:8030
+  data-lake-service: http://data-lake-service:8031
+  data-lineage-service: http://data-lineage-service:8032
+  unified-feature-store: http://unified-feature-store:8033
+
+migration_options:
+  batch_size: 100
+  parallel_workers: 4
+  retry_attempts: 3
+  timeout_seconds: 300
+  
+# Feature flags for gradual migration
+feature_flags:
+  enable_quality_migration: true
+  enable_ml_migration: true
+  enable_orchestration_migration: true
+  enable_graph_migration: true
+  enable_data_platform_decomposition: true
+  
+# Consul configuration
+consul:
+  host: localhost
+  port: 8500
+  
+# Vault configuration  
+vault:
+  address: http://localhost:8200
+  token: ${VAULT_TOKEN} 
