@@ -2,29 +2,74 @@
 
 ## Purpose
 
-The **Search Service** provides unified, powerful search capabilities across all data in the platformQ ecosystem. It leverages Elasticsearch to enable full-text search, faceted search, autocomplete, and advanced analytics across digital assets, documents, activities, graph entities, and more.
+The **Search Service** provides AI-powered, unified search capabilities across the entire platformQ ecosystem. It integrates with all platform services to deliver personalized, semantic search with real-time analytics and insights.
 
 ## Key Features
 
-- **Unified Search**: Single API to search across all entity types
-- **Full-Text Search**: Advanced text analysis with synonyms, fuzzy matching, and highlighting
-- **Faceted Search**: Filter results by type, date, tags, and custom fields
-- **Autocomplete**: Real-time search suggestions as users type
-- **Multi-language Support**: Search in multiple languages with proper analyzers
-- **Geospatial Search**: Find entities by location
-- **Advanced Analytics**: Aggregations and statistics on search results
-- **Real-time Indexing**: Automatic indexing of new data via event streams
-- **Multi-tenant Isolation**: Complete data separation between tenants
+### Core Capabilities
+- **Unified Search**: Single API searches across ALL platform services
+- **Cross-Service Integration**: Real-time indexing from 10+ services
+- **Full-Text Search**: Advanced text analysis with synonyms and fuzzy matching
+- **Faceted Search**: Dynamic filters by type, date, tags, and custom fields
+- **Multi-tenant Isolation**: Complete data separation and security
+
+### AI-Powered Features 🤖
+- **Semantic Search**: Understands query intent and context
+- **Query Enhancement**: Automatic query expansion and optimization
+- **Personalized Results**: User-specific ranking based on behavior
+- **Auto-Categorization**: AI-driven content classification and tagging
+- **Natural Language Understanding**: Processes questions and complex queries
+
+### Analytics & Insights 📊
+- **Search Analytics Dashboard**: Real-time metrics and trends
+- **Performance Tracking**: CTR, response times, zero-result queries
+- **AI-Generated Insights**: Automatic identification of search patterns
+- **Query Performance Analysis**: Detailed metrics per search term
+- **Optimization Recommendations**: Data-driven improvement suggestions
 
 ## Architecture
 
-The service consists of:
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                       Search Service 3.0                         │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────────────── Unified Search Layer ─────────────────┐ │
+│  │  • Cross-Service Integration  • Real-time Sync            │ │
+│  │  • Service Registry           • Health Monitoring          │ │
+│  └───────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ┌──────────────────── AI Enhancement Layer ─────────────────┐ │
+│  │  • Query Intent Classification  • Semantic Understanding   │ │
+│  │  • Personalization Engine      • Auto-Categorization      │ │
+│  │  • Result Re-ranking           • NLP Processing           │ │
+│  └───────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ┌──────────────────── Analytics Layer ──────────────────────┐ │
+│  │  • Search Tracking    • Performance Metrics               │ │
+│  │  • Trend Analysis     • Insight Generation                │ │
+│  └───────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ┌──────────────────── Core Search Engine ───────────────────┐ │
+│  │  Elasticsearch v8 | Vector Search | Graph Integration     │ │
+│  └───────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────────┘
+```
 
-1. **Search API**: RESTful endpoints for search operations
-2. **Elasticsearch Manager**: Handles index management and query execution
-3. **Index Templates**: Predefined mappings for each entity type
-4. **Event Consumer**: Automatically indexes data from Pulsar events
-5. **Query Builder**: Translates high-level queries to Elasticsearch DSL
+### Service Integration Points
+
+The Search Service automatically indexes data from:
+
+1. **Auth Service**: Users, roles, permissions
+2. **Digital Asset Service**: 3D models, images, documents
+3. **Verifiable Credential Service**: Credentials, schemas
+4. **Governance Service**: Proposals, votes
+5. **Compliance Service**: Policies, audits
+6. **Data Ingestion Service**: Datasets, schemas
+7. **Analytics Service**: Reports, dashboards
+8. **Blockchain Services**: Transactions, contracts
+9. **Marketplace Service**: Listings, orders
+10. **All Other Platform Services**
 
 ## Search Types
 
@@ -41,16 +86,25 @@ The service can search across:
 
 ## API Endpoints
 
-### Search Operations
+### Unified Search 🔍
+- `POST /api/v1/unified/search`: AI-powered search across all services
+- `POST /api/v1/unified/search/services/{service}`: Search specific service
+- `GET /api/v1/unified/suggestions`: Smart search suggestions
+- `POST /api/v1/unified/click`: Track result clicks
 
+### Analytics & Insights 📊
+- `GET /api/v1/unified/analytics/metrics`: Search performance metrics
+- `GET /api/v1/unified/analytics/insights`: AI-generated insights
+- `GET /api/v1/unified/analytics/query/{query}`: Query-specific analytics
+
+### Traditional Search
 - `POST /api/v1/search`: Execute a search query
 - `GET /api/v1/suggest`: Get autocomplete suggestions
 
 ### Index Management
-
-- `POST /api/v1/index/{index_type}/{doc_id}`: Index a single document
-- `DELETE /api/v1/index/{index_type}/{doc_id}`: Delete a document
-- `POST /api/v1/reindex/{index_type}`: Trigger full reindexing
+- `POST /api/v1/unified/index/service/{service}`: Index service data
+- `POST /api/v1/index/{index_type}/{doc_id}`: Index single document
+- `DELETE /api/v1/index/{index_type}/{doc_id}`: Delete document
 
 ## Search Query Structure
 

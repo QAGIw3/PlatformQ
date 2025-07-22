@@ -12,6 +12,8 @@ The Batch Processing Service provides:
 - Feature engineering
 - Batch analytics
 - Specialized file processing (3D models, CAD, multimedia, simulations)
+- Distributed rendering and processing
+- Format conversion and optimization
 
 ## Architecture
 
@@ -48,12 +50,27 @@ The Batch Processing Service provides:
 - **GraphX Analytics**: Large-scale graph processing
 - **Federated Learning**: Privacy-preserving ML
 
-### 4. File Processing
-- **CAD Processing**: FreeCAD, STEP, IGES, STL files
-- **3D Rendering**: Blender files with GPU acceleration
-- **Multimedia**: Images, audio, video processing
-- **Simulations**: OpenFOAM CFD, FlightGear data
-- **Metadata Extraction**: Automatic metadata and thumbnail generation
+### 4. File Processing (Enhanced)
+#### CAD Processing (FreeCAD Processor)
+- **Supported Formats**: FCStd, STEP, IGES, STL, OBJ, DXF, DWG
+- **Capabilities**: Format conversion, geometry analysis, mesh generation
+- **Distributed**: Parallel processing of large assemblies
+
+#### 3D Rendering (Blender Processor)
+- **Supported Formats**: .blend, .blend1, .blend2
+- **Capabilities**: Distributed GPU rendering, animation processing
+- **Features**: Scene optimization, texture baking, format export
+
+#### Multimedia Processing (Unified Processor)
+- **Image Formats**: PNG, JPG, TIFF, BMP, RAW, PSD, SVG
+- **Audio Formats**: MP3, WAV, FLAC, OGG, AAC, M4A
+- **Video Formats**: MP4, AVI, MOV, MKV, WebM, FLV
+- **Capabilities**: Transcoding, filtering, analysis, thumbnail generation
+
+#### Simulation Processing
+- **OpenFOAM**: CFD simulations, mesh processing, result visualization
+- **FlightGear**: Flight data analysis, scenario processing
+- **Features**: Distributed solver runs, result aggregation
 
 ## API Endpoints
 

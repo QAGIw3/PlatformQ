@@ -13,6 +13,7 @@ class Settings(BaseSettings):
     # Service info
     SERVICE_NAME: str = "search-service"
     VERSION: str = "2.0.0"
+    SERVICE_PORT: int = int(os.getenv("SERVICE_PORT", "8031"))
     
     # Elasticsearch v8
     ES_HOST: str = os.getenv("ELASTICSEARCH_HOST", "elasticsearch:9200")

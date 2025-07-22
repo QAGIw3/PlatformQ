@@ -548,4 +548,4 @@ class Mutation:
             success=result["success"],
             message=result["message"],
             errors=[result["message"]] if not result["success"] else []
-        ) 
+            ) 

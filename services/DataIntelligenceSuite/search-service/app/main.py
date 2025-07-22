@@ -33,7 +33,7 @@ from platformq_events import (
 
 from elasticsearch import AsyncElasticsearch
 from .vault_consul_integration import VaultConsulIntegration
-from .api import endpoints
+from .api import endpoints, unified_search
 from .api.deps import get_db_session, get_api_key_crud, get_user_crud, get_password_verifier
 from .repository import SearchIndexRepository, SearchHistoryRepository
 from .event_processors import SearchIndexEventProcessor
@@ -43,6 +43,9 @@ from .query_parser import QueryParser
 from .graph_search_integration import GraphEnrichedSearchEngine, GraphSearchOrchestrator, GraphSearchConfig
 from .services.vector_search import VectorSearchService
 from .services.es_vector_search import ESVectorSearchService
+from .services.unified_search_integration import UnifiedSearchIntegration
+from .services.ai_search_enhancement import AISearchOrchestrator
+from .services.search_analytics import SearchAnalyticsTracker, SearchAnalyticsAnalyzer, SearchInsightsGenerator
 from .core.index_mapping import INDEX_MAPPING
 from .core.config import settings
 
@@ -56,6 +59,11 @@ vector_service = None
 unified_search_engine = None
 graph_search_engine = None
 service_clients = None
+unified_search_integration = None
+ai_search_orchestrator = None
+search_analytics_tracker = None
+search_analytics_analyzer = None
+search_insights_generator = None
 
 
 async def verify_api_key(x_api_key: str = Header(None)) -> Dict[str, Any]:
@@ -78,6 +86,8 @@ async def lifespan(app: FastAPI):
     """Application lifespan manager"""
     global vault_consul, search_index_processor, es_client, vector_service
     global unified_search_engine, graph_search_engine, service_clients
+    global unified_search_integration, ai_search_orchestrator
+    global search_analytics_tracker, search_analytics_analyzer, search_insights_generator
     
     # Startup
     logger.info("Starting Search Service...")
@@ -216,6 +226,42 @@ async def lifespan(app: FastAPI):
         )
         app.state.graph_search_engine = graph_search_engine
     
+    # Initialize unified search integration
+    unified_search_integration = UnifiedSearchIntegration(
+        es_client=es_client,
+        vault_consul=vault_consul
+    )
+    await unified_search_integration.initialize()
+    app.state.unified_search_integration = unified_search_integration
+    
+    # Initialize AI search orchestrator
+    redis_client = None
+    if settings_dict.get("enable_redis", True):
+        import redis.asyncio as redis
+        redis_client = redis.from_url(
+            f"redis://{settings.REDIS_HOST}:{settings.REDIS_PORT}/{settings.REDIS_DB}"
+        )
+    
+    ai_search_orchestrator = AISearchOrchestrator(
+        es_client=es_client,
+        redis_client=redis_client,
+        openai_api_key=openai_api_key
+    )
+    app.state.ai_search_orchestrator = ai_search_orchestrator
+    
+    # Initialize search analytics
+    search_analytics_tracker = SearchAnalyticsTracker(es_client, redis_client)
+    await search_analytics_tracker.initialize()
+    app.state.search_analytics_tracker = search_analytics_tracker
+    
+    search_analytics_analyzer = SearchAnalyticsAnalyzer(es_client, redis_client)
+    app.state.search_analytics_analyzer = search_analytics_analyzer
+    
+    search_insights_generator = SearchInsightsGenerator(search_analytics_analyzer)
+    app.state.search_insights_generator = search_insights_generator
+    
+    logger.info("Initialized AI-powered search enhancements and analytics")
+    
     # Initialize event processor
     search_index_processor = SearchIndexEventProcessor(
         service_name="search-service",
@@ -285,23 +331,38 @@ app.router.lifespan_context = lifespan
 # Include service-specific routers
 app.include_router(endpoints.router, prefix="/api/v1", tags=["search"])
 app.include_router(vector_endpoints.router, prefix="/api/v1", tags=["vector_search"])
+app.include_router(unified_search.router, tags=["unified_search"])
 
 # Service root endpoint
 @app.get("/")
 def read_root():
     return {
         "service": "search-service",
-        "version": "2.0",
+        "version": "3.0",
         "features": [
             "unified-search",
+            "cross-service-search",
+            "ai-powered-search",
+            "semantic-search",
+            "personalized-results",
+            "search-analytics",
             "elasticsearch-v8",
             "vector-search",
             "graph-integration",
             "faceted-search",
             "real-time-indexing",
+            "auto-categorization",
+            "query-intent-understanding",
             "vault-secured",
             "consul-configured"
-        ]
+        ],
+        "endpoints": {
+            "unified_search": "/api/v1/unified/search",
+            "search_suggestions": "/api/v1/unified/suggestions",
+            "search_analytics": "/api/v1/unified/analytics",
+            "vector_search": "/api/v1/vector",
+            "traditional_search": "/api/v1/search"
+        }
     }
 
 

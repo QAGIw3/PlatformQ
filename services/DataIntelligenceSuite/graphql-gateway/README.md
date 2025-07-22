@@ -16,15 +16,15 @@ The GraphQL Gateway Service provides a unified GraphQL API for all DataIntellige
 
 ### Integrated Services
 
-- **Data Ingestion Service**: Source management, schema registry, external connectors
+- **Data Ingestion Service**: Medallion architecture, lifecycle management, external connectors
 - **Stream Processing Service**: Real-time pipelines, event processing
-- **Batch Processing Service**: Large-scale data transformations, file processing
+- **Batch Processing Service**: Large-scale transformations, specialized file processing
 - **Graph Processing Service**: Relationship analytics, network analysis
 - **Quality Engine Service**: Data quality checks, profiling
 - **MLOps Service**: Model management, training, serving
 - **Workflow Engine Service**: Pipeline orchestration, scheduling
 - **Data Catalog Service**: Metadata, lineage, discovery
-- **Unified Orchestration Service**: Kubernetes job management, workflow automation
+- **Unified Orchestration Service**: Kubernetes orchestration, workflow automation
 
 ## Features
 

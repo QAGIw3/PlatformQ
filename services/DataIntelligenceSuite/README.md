@@ -8,12 +8,14 @@ The DataIntelligenceSuite is a **unified data intelligence platform** that conso
 
 ### Core Services (9 Consolidated Services)
 
-1. **Data Ingestion Service** (Port 8010)
+1. **Data Ingestion Service** (Port 8010) [Enhanced ✨]
+   - Medallion architecture (Bronze/Silver/Gold layers)
+   - Data lifecycle management (Hot/Warm/Cold tiering)
    - CDC operations
    - Stream & batch ingestion
    - Schema registry
-   - Multi-source synchronization
    - External connectors (CRM, ERP, APIs, Webhooks)
+   - Cost optimization & automated retention
 
 2. **Stream Processing Service** (Port 8011)
    - Real-time event processing (Flink-based)
@@ -53,11 +55,13 @@ The DataIntelligenceSuite is a **unified data intelligence platform** that conso
    - Dependency resolution
    - Kubernetes job management
 
-8. **Data Catalog Service** (Port 8017)
-   - Metadata management
-   - Schema evolution
-   - Data lineage tracking
-   - Discovery & search
+8. **Data Catalog Service** (Port 8017) [AI-Enhanced 🤖]
+   - Automated medallion layer discovery
+   - AI-powered intelligent search
+   - Enhanced business glossary with term suggestions
+   - Quality score integration & trust levels
+   - Access pattern analytics & optimization
+   - Metadata management & lineage tracking
 
 9. **GraphQL Gateway** (Port 8000)
    - Unified GraphQL interface
@@ -65,6 +69,16 @@ The DataIntelligenceSuite is a **unified data intelligence platform** that conso
    - WebSocket support
    - Rate limiting & authentication
    - Connector & processor operations
+
+### Supporting Services
+
+10. **Search Service** (Port 8031) [AI-Powered 🤖]
+    - Unified search across ALL platform services
+    - AI-powered semantic search & intent understanding
+    - Personalized results based on user behavior
+    - Real-time search analytics & insights
+    - Auto-categorization & smart suggestions
+    - Cross-service data indexing
 
 ## 🚀 Key Features
 
@@ -106,11 +120,13 @@ The DataIntelligenceSuite is a **unified data intelligence platform** that conso
 - graphx analytics
 - ... and 8+ more
 
-### From Services (12 services → 9 unified services)
+### From Services (14 services → 10 unified services)
 - Resolved port conflicts
 - Eliminated overlapping functionality
 - Reduced complexity by 75%
-- Migrated connector-service functionality to existing services
+- Migrated connector-service → data-ingestion-service & batch-processing-service
+- Consolidated data-lake-service → data-ingestion-service
+- Enhanced search-service with AI and unified integration
 
 ## 🔧 Quick Start
 
@@ -256,17 +272,18 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
 
 ## 🚦 Status
 
-| Service | Status | Health Endpoint |
-|---------|--------|-----------------|
-| GraphQL Gateway | ✅ Active | http://localhost:8000/health |
-| Data Ingestion | ✅ Active | http://localhost:8010/health |
-| Stream Processing | ✅ Active | http://localhost:8011/health |
-| Batch Processing | ✅ Active | http://localhost:8012/health |
-| Graph Processing | ✅ Active | http://localhost:8013/health |
-| Quality Engine | ✅ Active | http://localhost:8014/health |
-| MLOps Service | ✅ Active | http://localhost:8015/health |
-| Data Catalog | ✅ Active | http://localhost:8017/health |
-| Unified Orchestration | ✅ Active | http://localhost:8019/health |
+| Service | Status | Health Endpoint | Key Features |
+|---------|--------|-----------------|--------------|
+| GraphQL Gateway | ✅ Active | http://localhost:8000/health | Unified API |
+| Data Ingestion | ✅ Enhanced | http://localhost:8010/health | Medallion + Lifecycle |
+| Stream Processing | ✅ Active | http://localhost:8011/health | Real-time Flink |
+| Batch Processing | ✅ Enhanced | http://localhost:8012/health | Spark + File Processors |
+| Graph Processing | ✅ Active | http://localhost:8013/health | JanusGraph |
+| Quality Engine | ✅ Active | http://localhost:8014/health | Data Quality |
+| MLOps Service | ✅ Active | http://localhost:8015/health | Model Management |
+| Data Catalog | ✅ Enhanced | http://localhost:8017/health | AI Discovery + Search |
+| Search Service | ✅ Enhanced | http://localhost:8019/health | AI-Powered Search |
+| Unified Orchestration | ✅ Enhanced | http://localhost:8019/health | Workflow + K8s |
 
 ## 📞 Support
 

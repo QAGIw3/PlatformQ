@@ -11,6 +11,7 @@ The Unified Orchestration Service combines:
 - **SeaTunnel Integration**: Efficient data movement with embedded orchestration
 - **Event-Driven Architecture**: React to platform events and trigger workflows
 - **Verifiable Credentials**: Workflow attestations for cross-organizational trust
+- **Kubernetes Job Management**: Direct K8s job and deployment orchestration
 
 ## Architecture
 
@@ -77,6 +78,11 @@ The Unified Orchestration Service combines:
 
 ### 7. Kubernetes Job Management
 - **Direct K8s Integration**: Create and manage Kubernetes jobs
+- **Job Orchestration**: Submit, monitor, and control K8s jobs
+- **Deployment Management**: Create and scale deployments
+- **Resource Specification**: CPU, memory, GPU allocation
+- **Log Streaming**: Real-time job log access
+- **Cleanup Policies**: Automatic job cleanup
 - **Pod Orchestration**: Deploy and scale applications
 - **Resource Management**: Control CPU, memory, GPU allocation
 - **Job Monitoring**: Track job status and logs
@@ -114,6 +120,10 @@ The Unified Orchestration Service combines:
 ### Kubernetes Management
 - `POST /k8s/jobs` - Create Kubernetes job
 - `GET /k8s/jobs/{job_name}` - Get job status
+- `DELETE /k8s/jobs/{job_name}` - Delete job
+- `GET /k8s/jobs/{job_name}/logs` - Get job logs
+- `POST /k8s/deployments` - Create deployment
+- `PUT /k8s/deployments/{name}/scale` - Scale deployment
 - `DELETE /k8s/jobs/{job_name}` - Delete job
 - `GET /k8s/jobs/{job_name}/logs` - Get job logs
 - `POST /k8s/deployments` - Create deployment

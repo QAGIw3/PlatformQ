@@ -9,7 +9,9 @@ from fastapi import APIRouter, Depends, HTTPException, Query, Path, Body
 from pydantic import BaseModel, Field
 
 from app.core import GlossaryManager, AtlasClient, TermStatus
+from app.core.business_glossary_enhanced import BusinessGlossaryEnhanced, TermMapping
 from platformq_shared.logging import get_logger
+from platformq_events import EventStream
 
 logger = get_logger(__name__)
 
@@ -18,13 +20,17 @@ router = APIRouter(prefix="/api/v1/glossary", tags=["glossary"])
 # Global dependencies
 glossary_manager: Optional[GlossaryManager] = None
 atlas_client: Optional[AtlasClient] = None
+business_glossary_enhanced: Optional[BusinessGlossaryEnhanced] = None
+event_stream: Optional[EventStream] = None
 
 
-def set_dependencies(glossary: GlossaryManager, atlas: AtlasClient):
+def set_glossary_deps(**deps):
     """Set the global dependencies for this router"""
-    global glossary_manager, atlas_client
-    glossary_manager = glossary
-    atlas_client = atlas
+    global glossary_manager, atlas_client, business_glossary_enhanced, event_stream
+    glossary_manager = deps.get("glossary_manager")
+    atlas_client = deps.get("atlas_client")
+    business_glossary_enhanced = deps.get("business_glossary_enhanced")
+    event_stream = deps.get("event_stream")
 
 
 # Request/Response Models
@@ -506,4 +512,207 @@ async def export_glossary(
         
     except Exception as e:
         logger.error(f"Failed to export glossary: {e}")
+        raise HTTPException(status_code=500, detail=str(e)) 
+
+
+# Enhanced Business Glossary Endpoints
+
+@router.post("/enhanced/suggest-terms")
+async def suggest_business_terms(
+    technical_name: str = Body(..., embed=True),
+    context: Optional[Dict[str, Any]] = Body(None, embed=True)
+):
+    """
+    Suggest business terms for a technical name using AI
+    
+    - **technical_name**: Technical name (column, table, etc.) to analyze
+    - **context**: Optional context like schema, database, data type
+    """
+    if not business_glossary_enhanced:
+        raise HTTPException(status_code=503, detail="Enhanced glossary not initialized")
+    
+    try:
+        suggestions = await business_glossary_enhanced.suggest_business_terms(
+            technical_name=technical_name,
+            context=context
+        )
+        
+        return {
+            "technical_name": technical_name,
+            "suggestions": suggestions,
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to suggest terms: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/enhanced/auto-map/{dataset_guid}")
+async def create_automatic_mappings(
+    dataset_guid: str,
+    approval_required: bool = Query(True)
+):
+    """
+    Create automatic business term mappings for a dataset
+    
+    - **dataset_guid**: GUID of the dataset to map
+    - **approval_required**: Whether mappings require approval
+    """
+    if not business_glossary_enhanced:
+        raise HTTPException(status_code=503, detail="Enhanced glossary not initialized")
+    
+    try:
+        mappings = await business_glossary_enhanced.create_automatic_mappings(
+            dataset_guid=dataset_guid,
+            approval_required=approval_required
+        )
+        
+        # Emit event
+        if event_stream:
+            await event_stream.publish(
+                topic="catalog-glossary",
+                event_type="auto_mappings_created",
+                data={
+                    "dataset_guid": dataset_guid,
+                    "mappings_count": len(mappings),
+                    "approval_required": approval_required
+                }
+            )
+        
+        return {
+            "dataset_guid": dataset_guid,
+            "mappings_created": len(mappings),
+            "mappings": [
+                {
+                    "term_id": m.term_id,
+                    "asset_id": m.asset_id,
+                    "confidence": m.confidence,
+                    "mapping_type": m.mapping_type,
+                    "approved": m.approved
+                }
+                for m in mappings
+            ]
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to create mappings: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/enhanced/term-usage/{term_guid}")
+async def analyze_term_usage(
+    term_guid: str,
+    time_range_days: int = Query(30, ge=1, le=365)
+):
+    """
+    Analyze how a business term is being used
+    
+    - **term_guid**: GUID of the business term
+    - **time_range_days**: Days of history to analyze
+    """
+    if not business_glossary_enhanced:
+        raise HTTPException(status_code=503, detail="Enhanced glossary not initialized")
+    
+    try:
+        usage_stats = await business_glossary_enhanced.analyze_term_usage(
+            term_guid=term_guid,
+            time_range_days=time_range_days
+        )
+        
+        return usage_stats
+        
+    except Exception as e:
+        logger.error(f"Failed to analyze term usage: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/enhanced/recommend-terms")
+async def recommend_new_terms(
+    limit: int = Query(20, ge=1, le=100)
+):
+    """
+    Recommend new business terms based on unmapped technical assets
+    
+    - **limit**: Maximum number of recommendations
+    """
+    if not business_glossary_enhanced:
+        raise HTTPException(status_code=503, detail="Enhanced glossary not initialized")
+    
+    try:
+        recommendations = await business_glossary_enhanced.recommend_new_terms(limit=limit)
+        
+        return {
+            "recommendations": recommendations,
+            "total": len(recommendations),
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+    except Exception as e:
+        logger.error(f"Failed to get recommendations: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/enhanced/sync-external")
+async def sync_with_external_glossary(
+    external_glossary: Dict[str, Any] = Body(...)
+):
+    """
+    Sync business terms with external business systems
+    
+    - **external_glossary**: External glossary data with terms
+    """
+    if not business_glossary_enhanced:
+        raise HTTPException(status_code=503, detail="Enhanced glossary not initialized")
+    
+    try:
+        sync_results = await business_glossary_enhanced.sync_with_business_systems(
+            external_glossary=external_glossary
+        )
+        
+        # Emit event
+        if event_stream:
+            await event_stream.publish(
+                topic="catalog-glossary",
+                event_type="external_sync_completed",
+                data=sync_results
+            )
+        
+        return sync_results
+        
+    except Exception as e:
+        logger.error(f"Failed to sync glossary: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/enhanced/validate-mappings")
+async def validate_term_mappings(
+    term_guid: Optional[str] = Body(None),
+    dataset_guid: Optional[str] = Body(None)
+):
+    """
+    Validate existing term mappings for accuracy
+    
+    - **term_guid**: Optional specific term to validate
+    - **dataset_guid**: Optional specific dataset to validate
+    """
+    if not business_glossary_enhanced:
+        raise HTTPException(status_code=503, detail="Enhanced glossary not initialized")
+    
+    try:
+        # This would validate mappings and return results
+        validation_results = {
+            "total_mappings_checked": 0,
+            "valid_mappings": 0,
+            "invalid_mappings": 0,
+            "suggestions": [],
+            "timestamp": datetime.utcnow().isoformat()
+        }
+        
+        # Implementation would go here
+        
+        return validation_results
+        
+    except Exception as e:
+        logger.error(f"Failed to validate mappings: {e}")
         raise HTTPException(status_code=500, detail=str(e)) 

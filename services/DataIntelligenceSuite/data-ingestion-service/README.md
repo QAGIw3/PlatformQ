@@ -1,37 +1,76 @@
 # Data Ingestion Service
 
-Unified service for data ingestion from multiple sources including Change Data Capture (CDC), streaming, batch processing, schema management, and external data connectors.
+Unified service for data ingestion with medallion architecture, lifecycle management, external connectors, and comprehensive data lake capabilities.
 
 ## Overview
 
-The Data Ingestion Service consolidates all data ingestion capabilities into a single, scalable service. It supports real-time CDC from databases, streaming data consumption, batch file imports, maintains a central schema registry, and now includes connector functionality for external systems integration.
+The Data Ingestion Service is a comprehensive platform that consolidates all data ingestion, lake management, and lifecycle capabilities. It features:
+- **Medallion Architecture**: Bronze, Silver, and Gold data layers with quality transitions
+- **Data Lifecycle Management**: Automated tiering across hot (Ignite), warm (Cassandra), and cold (MinIO) storage
+- **External Connectors**: Integration with CRM, ERP, APIs, and webhooks
+- **Traditional Capabilities**: CDC, streaming, batch processing, and schema management
+- **Cost Optimization**: Automated data tiering and retention policies
 
 ## Architecture
 
 ```
-┌─────────────────────────────────────────────────────────┐
-│                  Data Ingestion Service                  │
-├─────────────────────────────────────────────────────────┤
-│                                                         │
-│  ┌─────────────┐  ┌──────────────┐  ┌──────────────┐  │
-│  │     CDC     │  │   Streaming  │  │    Batch     │  │
-│  │   Manager   │  │   Ingestion  │  │  Ingestion   │  │
-│  └─────────────┘  └──────────────┘  └──────────────┘  │
-│                                                         │
-│  ┌─────────────────────────────────────────────────┐   │
-│  │              Schema Registry                     │   │
-│  └─────────────────────────────────────────────────┘   │
-│                                                         │
-│  Sources:                    Destinations:              │
-│  • PostgreSQL               • Data Lake (MinIO)         │
-│  • MySQL                    • Hot Storage (Cassandra)   │
-│  • MongoDB                  • Stream Topics (Pulsar)    │
-│  • Pulsar/Kafka            • Cache (Ignite)            │
-│  • S3/MinIO                                            │
-└─────────────────────────────────────────────────────────┘
+┌─────────────────────────────────────────────────────────────────┐
+│                     Data Ingestion Service 2.0                  │
+├─────────────────────────────────────────────────────────────────┤
+│                                                                 │
+│  ┌──────────────────────── Core Ingestion ───────────────────┐ │
+│  │ ┌─────────────┐  ┌──────────────┐  ┌──────────────┐     │ │
+│  │ │     CDC     │  │   Streaming  │  │    Batch     │     │ │
+│  │ │   Manager   │  │   Ingestion  │  │  Ingestion   │     │ │
+│  │ └─────────────┘  └──────────────┘  └──────────────┘     │ │
+│  └───────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ┌──────────────────── Medallion Architecture ───────────────┐ │
+│  │  Bronze Layer → Silver Layer → Gold Layer                 │ │
+│  │  (Raw Data)    (Cleansed)     (Business-Ready)           │ │
+│  │  ┌────────┐    ┌────────┐    ┌────────┐                 │ │
+│  │  │ MinIO  │ -> │ Delta  │ -> │Iceberg │                 │ │
+│  │  └────────┘    └────────┘    └────────┘                 │ │
+│  └───────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ┌──────────────────── Lifecycle Management ─────────────────┐ │
+│  │  HOT (Ignite) → WARM (Cassandra) → COLD (MinIO)          │ │
+│  │  < 7 days       7-30 days          > 30 days             │ │
+│  └───────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ┌──────────────────── External Connectors ──────────────────┐ │
+│  │  • SuiteCRM    • OpenStreetMap   • Generic Webhooks      │ │
+│  │  • Metasfresh  • Custom APIs     • Event Streams         │ │
+│  └───────────────────────────────────────────────────────────┘ │
+│                                                                 │
+│  ┌─────────────────────────────────────────────────────────┐  │
+│  │              Schema Registry & Governance                │  │
+│  └─────────────────────────────────────────────────────────┘  │
+└─────────────────────────────────────────────────────────────────┘
 ```
 
 ## Features
+
+### Medallion Architecture 🏅
+- **Bronze Layer**: Raw data ingestion with immutable storage
+- **Silver Layer**: Cleansed and validated data with quality checks
+- **Gold Layer**: Business-ready aggregated data
+- **Delta Lake & Iceberg**: ACID transactions and time travel
+- **Automated Transitions**: Quality-based promotions between layers
+
+### Data Lifecycle Management ♻️
+- **Automated Tiering**: Hot → Warm → Cold storage transitions
+- **Cost Optimization**: Up to 90% storage cost reduction
+- **Retention Policies**: Configurable per data type
+- **Access Pattern Analysis**: Smart data placement
+- **Archival & Deletion**: Compliance-ready data management
+
+### External Connectors 🔌
+- **CRM Integration**: SuiteCRM with unified schema
+- **ERP Integration**: Metasfresh for business data
+- **API Connectors**: OpenStreetMap and custom APIs
+- **Webhook Support**: Real-time event ingestion
+- **Scheduled Syncs**: Cron-based data pulls
 
 ### Change Data Capture (CDC)
 - Real-time database change tracking
@@ -65,6 +104,19 @@ The Data Ingestion Service consolidates all data ingestion capabilities into a s
 - Data transformation
 
 ## API Endpoints
+
+### Medallion Architecture 🏅
+- `POST /api/v1/lake/ingest/bronze` - Ingest data to bronze layer
+- `POST /api/v1/lake/transform/bronze-to-silver` - Transform to silver layer
+- `POST /api/v1/lake/aggregate/silver-to-gold` - Aggregate to gold layer
+- `GET /api/v1/lake/layers/{dataset}` - Get dataset layer information
+- `POST /api/v1/lake/optimize/{layer}/{dataset}` - Optimize storage
+
+### Data Lifecycle ♻️
+- `POST /api/v1/lake/lifecycle/policy` - Apply tiering policy
+- `GET /api/v1/lake/lifecycle/cost-report` - Get storage cost report
+- `GET /api/v1/lake/tiers/{dataset}` - Get data distribution
+- `POST /api/v1/lake/upload/bronze` - Direct file upload to bronze
 
 ### CDC Management
 - `POST /api/v1/cdc/sources` - Create CDC source
