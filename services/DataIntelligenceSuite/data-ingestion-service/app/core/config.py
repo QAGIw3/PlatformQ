@@ -129,6 +129,30 @@ class Settings(BaseSettings):
     connector_webhook_enabled: bool = True
     connector_webhook_port: int = 8011
     
+    # Medallion Architecture
+    minio_bucket_bronze: str = "lake-bronze"
+    minio_bucket_silver: str = "lake-silver"
+    minio_bucket_gold: str = "lake-gold"
+    bronze_retention_days: int = 90
+    silver_retention_days: int = 365
+    gold_retention_days: int = 1825
+    halt_on_quality_failure: bool = False
+    archive_silver: bool = False
+    enable_delta_lake: bool = True
+    enable_iceberg: bool = True
+    
+    # Data Lifecycle
+    lifecycle_enabled: bool = True
+    hot_tier_enabled: bool = True
+    warm_tier_enabled: bool = True
+    cold_tier_enabled: bool = True
+    lifecycle_check_interval: int = 3600  # 1 hour
+    cassandra_username: Optional[str] = None
+    cassandra_password: Optional[str] = None
+    elasticsearch_hosts: List[str] = ["elasticsearch:9200"]
+    elasticsearch_username: Optional[str] = None
+    elasticsearch_password: Optional[str] = None
+    
     class Config:
         env_file = ".env"
         case_sensitive = False

@@ -33,7 +33,9 @@ from app.core.stream_ingestion import StreamIngestionManager
 from app.core.batch_ingestion import BatchIngestionManager
 from app.core.schema_registry import SchemaRegistry
 from app.core.connector_manager import ConnectorManager
-from app.api import ingestion, schemas, health, metrics, connectors
+from app.core.medallion_architecture import MedallionArchitectureManager
+from app.core.lifecycle_manager import DataLifecycleManager
+from app.api import ingestion, schemas, health, metrics, connectors, lake, dependencies
 from app.middleware.error_handler import error_handler_middleware
 from app.middleware.logging import logging_middleware
 
@@ -43,13 +45,13 @@ logger = StructuredLogger.get_logger(__name__)
 # Service metadata
 SERVICE_METADATA = ServiceMetadata(
     name="data-ingestion-service",
-    version="1.0.0",
-    description="Unified data ingestion service with CDC, streaming, and batch capabilities",
-    dependencies=["seatunnel", "pulsar", "minio", "cassandra", "ignite"],
-    health_checks=["cdc", "stream", "batch", "schema_registry"],
-    capabilities=["cdc", "streaming", "batch", "schema-registry"],
-    data_sources=["postgres", "mysql", "mongodb", "pulsar", "kafka", "files"],
-    data_outputs=["data-lake", "hot-storage", "stream-topics"]
+    version="2.0.0",
+    description="Unified data ingestion service with medallion architecture, lifecycle management, and multiple source capabilities",
+    dependencies=["seatunnel", "pulsar", "minio", "cassandra", "ignite", "spark", "delta"],
+    health_checks=["cdc", "stream", "batch", "schema_registry", "medallion", "lifecycle"],
+    capabilities=["cdc", "streaming", "batch", "schema-registry", "medallion-architecture", "data-lifecycle", "connectors"],
+    data_sources=["postgres", "mysql", "mongodb", "pulsar", "kafka", "files", "apis", "webhooks"],
+    data_outputs=["data-lake", "hot-storage", "stream-topics", "bronze-layer", "silver-layer", "gold-layer"]
 )
 
 # Global instances
@@ -58,6 +60,8 @@ stream_manager: Optional[StreamIngestionManager] = None
 batch_manager: Optional[BatchIngestionManager] = None
 schema_registry: Optional[SchemaRegistry] = None
 connector_manager: Optional[ConnectorManager] = None
+medallion_manager: Optional[MedallionArchitectureManager] = None
+lifecycle_manager: Optional[DataLifecycleManager] = None
 
 
 class DataIngestionService(DataIntelligenceBaseService):
@@ -70,10 +74,12 @@ class DataIngestionService(DataIntelligenceBaseService):
         self.batch_manager = None
         self.schema_registry = None
         self.connector_manager = None
+        self.medallion_manager = None
+        self.lifecycle_manager = None
     
     async def initialize_service(self):
         """Initialize service-specific components"""
-        global cdc_manager, stream_manager, batch_manager, schema_registry, connector_manager
+        global cdc_manager, stream_manager, batch_manager, schema_registry, connector_manager, medallion_manager, lifecycle_manager
         
         logger.info("Initializing Data Ingestion Service components...")
         
@@ -115,6 +121,24 @@ class DataIngestionService(DataIntelligenceBaseService):
         connector_manager = ConnectorManager(settings, seatunnel_manager, schema_registry)
         self.connector_manager = connector_manager
         
+        # Initialize Spark session for medallion architecture
+        from pyspark.sql import SparkSession
+        spark = SparkSession.builder \
+            .appName("DataIngestionService") \
+            .config("spark.jars.packages", "io.delta:delta-core_2.12:2.1.0") \
+            .config("spark.hadoop.fs.s3a.access.key", settings.minio_access_key) \
+            .config("spark.hadoop.fs.s3a.secret.key", settings.minio_secret_key) \
+            .config("spark.hadoop.fs.s3a.endpoint", f"http://{settings.minio_endpoint}") \
+            .config("spark.hadoop.fs.s3a.path.style.access", "true") \
+            .getOrCreate()
+        
+        medallion_manager = MedallionArchitectureManager(settings, schema_registry, spark)
+        self.medallion_manager = medallion_manager
+        
+        lifecycle_manager = DataLifecycleManager(settings)
+        await lifecycle_manager.initialize()
+        self.lifecycle_manager = lifecycle_manager
+        
         # Cross-reference components
         cdc_manager.set_schema_registry(schema_registry)
         stream_manager.set_schema_registry(schema_registry)
@@ -138,18 +162,30 @@ class DataIngestionService(DataIntelligenceBaseService):
         health.batch_manager = batch_manager
         health.schema_registry = schema_registry
         
+        # Inject medallion and lifecycle managers
+        dependencies.medallion_manager = medallion_manager
+        dependencies.lifecycle_manager = lifecycle_manager
+        
         # Register health checks
         self.health_manager.register_check("cdc", cdc_manager.health_check)
         self.health_manager.register_check("stream", stream_manager.health_check)
         self.health_manager.register_check("batch", batch_manager.health_check)
         self.health_manager.register_check("schema_registry", schema_registry.health_check)
         self.health_manager.register_check("connectors", lambda: {"status": "healthy", "active_connectors": len(connector_manager.connectors)})
+        self.health_manager.register_check("medallion", lambda: {"status": "healthy", "layers": ["bronze", "silver", "gold"]})
+        self.health_manager.register_check("lifecycle", lambda: {"status": "healthy", "tiers": ["hot", "warm", "cold"]})
         
         logger.info("Data Ingestion Service initialized successfully")
     
     async def cleanup_service(self):
         """Cleanup service-specific components"""
         logger.info("Cleaning up Data Ingestion Service...")
+        
+        if self.lifecycle_manager:
+            await self.lifecycle_manager.cleanup()
+        
+        if self.medallion_manager and hasattr(self.medallion_manager, 'spark'):
+            self.medallion_manager.spark.stop()
         
         if self.connector_manager:
             await self.connector_manager.cleanup()
@@ -209,6 +245,7 @@ def create_app() -> FastAPI:
     app.include_router(ingestion.router, prefix="/api/v1", tags=["ingestion"])
     app.include_router(schemas.router, prefix="/api/v1/schemas", tags=["schemas"])
     app.include_router(connectors.router, tags=["connectors"])
+    app.include_router(lake.router, tags=["data-lake"])
     app.include_router(health.router, prefix="/api/v1", tags=["health"])
     app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
     
@@ -225,8 +262,16 @@ def create_app() -> FastAPI:
                 "batch": "/api/v1/batch",
                 "schemas": "/api/v1/schemas",
                 "connectors": "/api/v1/connectors",
+                "lake": "/api/v1/lake",
+                "lifecycle": "/api/v1/lake/lifecycle",
                 "health": "/api/v1/health",
                 "metrics": "/api/v1/metrics"
+            },
+            "features": {
+                "medallion_architecture": True,
+                "data_lifecycle": True,
+                "external_connectors": True,
+                "schema_evolution": True
             }
         }
     
