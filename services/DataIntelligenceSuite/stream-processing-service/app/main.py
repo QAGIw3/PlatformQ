@@ -2,35 +2,49 @@
 Stream Processing Service
 
 Unified service for all real-time stream processing needs,
-consolidating multiple Flink jobs into a single manageable service.
+consolidating multiple Flink jobs into a single, manageable service.
 """
 
 import os
 import logging
-from typing import Dict, Any, List, Optional
-from datetime import datetime
-import asyncio
 from contextlib import asynccontextmanager
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 import uvicorn
+import hvac
+import consul.aio
+
+from data_intelligence_common import (
+    DataIntelligenceBaseService,
+    ServiceMetadata,
+    StructuredLogger,
+    create_data_intelligence_app
+)
 
 from app.core.config import settings
 from app.core.job_manager import JobManager
 from app.core.pattern_library import PatternLibrary
 from app.core.state_manager import StateManager
-from app.api import jobs, patterns, health, metrics
-from app.middleware.error_handler import error_handler_middleware
-from app.middleware.logging import logging_middleware
+from app.api import jobs, patterns, monitoring, health
 
 # Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.log_level),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+logger = StructuredLogger.get_logger(__name__)
+
+# Service metadata
+SERVICE_METADATA = ServiceMetadata(
+    name="stream-processing-service",
+    version="1.0.0",
+    description="Unified real-time stream processing with Apache Flink",
+    dependencies=["flink", "pulsar", "cassandra", "elasticsearch", "ignite"],
+    health_checks=["flink", "job_manager", "state_manager"],
+    capabilities=["streaming", "cep", "analytics", "stateful-processing"],
+    data_sources=["pulsar", "kafka"],
+    data_outputs=["cassandra", "elasticsearch", "pulsar"],
+    min_memory_mb=4096,
+    min_cpu_cores=2
 )
-logger = logging.getLogger(__name__)
 
 # Global instances
 job_manager: Optional[JobManager] = None
@@ -38,197 +52,154 @@ pattern_library: Optional[PatternLibrary] = None
 state_manager: Optional[StateManager] = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manage application lifecycle"""
-    global job_manager, pattern_library, state_manager
+class StreamProcessingService(DataIntelligenceBaseService):
+    """Stream Processing Service implementation"""
     
-    # Startup
-    logger.info(f"Starting {settings.service_name} v{settings.service_version}")
+    def __init__(self, *args, **kwargs):
+        super().__init__(SERVICE_METADATA, *args, **kwargs)
+        self.job_manager = None
+        self.pattern_library = None
+        self.state_manager = None
     
-    # Initialize components
-    job_manager = JobManager(settings)
-    pattern_library = PatternLibrary(settings)
-    state_manager = StateManager(settings)
+    async def initialize_service(self):
+        """Initialize service-specific components"""
+        global job_manager, pattern_library, state_manager
+        
+        logger.info("Initializing Stream Processing Service components...")
+        
+        # Get Flink configuration from Vault
+        flink_config = await self.vault_consul.get_secret("streaming/flink")
+        if flink_config:
+            settings.flink_rest_url = flink_config.get("rest_url", settings.flink_rest_url)
+            settings.flink_jobmanager_rpc_address = flink_config.get("jobmanager_address", settings.flink_jobmanager_rpc_address)
+        
+        # Get Pulsar credentials from Vault
+        pulsar_creds = await self.vault_consul.get_secret("messaging/pulsar")
+        if pulsar_creds:
+            settings.pulsar_service_url = pulsar_creds.get("service_url", settings.pulsar_service_url)
+            settings.pulsar_admin_url = pulsar_creds.get("admin_url", settings.pulsar_admin_url)
+        
+        # Get Cassandra credentials from Vault
+        cassandra_creds = await self.vault_consul.get_database_credentials("cassandra")
+        if cassandra_creds:
+            os.environ["CASSANDRA_USERNAME"] = cassandra_creds.get("username", "")
+            os.environ["CASSANDRA_PASSWORD"] = cassandra_creds.get("password", "")
+        
+        # Initialize components
+        job_manager = JobManager(settings)
+        await job_manager.start()
+        self.job_manager = job_manager
+        
+        pattern_library = PatternLibrary(settings)
+        await pattern_library.load_patterns()
+        self.pattern_library = pattern_library
+        
+        state_manager = StateManager(settings)
+        await state_manager.initialize()
+        self.state_manager = state_manager
+        
+        # Inject dependencies into API routers
+        jobs.job_manager = job_manager
+        patterns.pattern_library = pattern_library
+        monitoring.job_manager = job_manager
+        monitoring.state_manager = state_manager
+        health.job_manager = job_manager
+        health.state_manager = state_manager
+        
+        # Register health checks
+        self.health_manager.register_check("flink", self._check_flink_health, critical=True)
+        self.health_manager.register_check("job_manager", job_manager.health_check)
+        self.health_manager.register_check("state_manager", state_manager.health_check)
+        
+        logger.info("Stream Processing Service initialized successfully")
     
-    # Start background tasks
-    await job_manager.start()
-    await pattern_library.load_patterns()
-    await state_manager.initialize()
+    async def cleanup_service(self):
+        """Cleanup service-specific components"""
+        logger.info("Cleaning up Stream Processing Service...")
+        
+        if self.job_manager:
+            await self.job_manager.stop()
+        
+        if self.state_manager:
+            await self.state_manager.cleanup()
+        
+        logger.info("Stream Processing Service cleaned up")
     
-    # Register with service discovery
-    if settings.consul_enabled:
-        from app.core.service_discovery import register_service
-        await register_service(settings)
-    
-    logger.info("Stream Processing Service started successfully")
-    
-    yield
-    
-    # Shutdown
-    logger.info("Shutting down Stream Processing Service")
-    
-    # Stop components
-    await job_manager.stop()
-    await state_manager.cleanup()
-    
-    # Deregister from service discovery
-    if settings.consul_enabled:
-        from app.core.service_discovery import deregister_service
-        await deregister_service(settings)
-    
-    logger.info("Stream Processing Service stopped")
+    async def _check_flink_health(self) -> bool:
+        """Check Flink cluster health"""
+        if not self.job_manager:
+            return False
+        return await self.job_manager.check_flink_health()
 
 
 # Create FastAPI app
-app = FastAPI(
-    title=settings.service_name,
-    description="Unified stream processing service for real-time data processing",
-    version=settings.service_version,
-    lifespan=lifespan
-)
-
-# Add middleware
-app.middleware("http")(error_handler_middleware)
-app.middleware("http")(logging_middleware)
-
-# Include routers
-app.include_router(jobs.router, prefix="/api/v1/jobs", tags=["jobs"])
-app.include_router(patterns.router, prefix="/api/v1/patterns", tags=["patterns"])
-app.include_router(health.router, prefix="/api/v1", tags=["health"])
-app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
-
-
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "service": settings.service_name,
-        "version": settings.service_version,
-        "status": "running",
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-
-@app.get("/api/v1/info")
-async def service_info():
-    """Get service information"""
-    return {
-        "service": {
-            "name": settings.service_name,
-            "version": settings.service_version,
-            "environment": settings.environment
-        },
-        "capabilities": {
-            "streaming": True,
-            "cep": True,
-            "stateful_processing": True,
-            "windowing": True,
-            "exactly_once": True
-        },
-        "job_types": [
-            "streaming_sql",
-            "cep_pattern",
-            "stateful_processing",
-            "window_aggregation",
-            "async_io"
-        ],
-        "integrations": {
-            "sources": ["pulsar", "kafka", "kinesis", "files"],
-            "sinks": ["cassandra", "elasticsearch", "minio", "pulsar", "ignite"]
-        }
-    }
-
-
-class JobSubmitRequest(BaseModel):
-    """Job submission request"""
-    name: str
-    type: str
-    config: Dict[str, Any]
-    parallelism: Optional[int] = None
-    checkpoint_interval: Optional[int] = 30000
-    restart_strategy: Optional[str] = "fixed-delay"
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application"""
     
-
-@app.post("/api/v1/submit")
-async def submit_job(request: JobSubmitRequest, background_tasks: BackgroundTasks):
-    """Submit a new streaming job"""
-    try:
-        # Validate job type
-        valid_types = ["streaming_sql", "cep_pattern", "stateful_processing", 
-                      "window_aggregation", "async_io"]
-        if request.type not in valid_types:
-            raise HTTPException(400, f"Invalid job type. Must be one of: {valid_types}")
-        
-        # Submit job
-        job_id = await job_manager.submit_job(
-            name=request.name,
-            job_type=request.type,
-            config=request.config,
-            parallelism=request.parallelism,
-            checkpoint_interval=request.checkpoint_interval,
-            restart_strategy=request.restart_strategy
-        )
-        
+    # Get configuration from environment
+    vault_addr = os.getenv("VAULT_ADDR", "http://localhost:8200")
+    vault_token = os.getenv("VAULT_TOKEN")
+    consul_host = os.getenv("CONSUL_HOST", "localhost")
+    consul_port = int(os.getenv("CONSUL_PORT", "8500"))
+    consul_token = os.getenv("CONSUL_TOKEN")
+    
+    # Create Vault client
+    vault_client = hvac.Client(url=vault_addr, token=vault_token)
+    
+    # Create Consul client
+    consul_client = consul.aio.Consul(
+        host=consul_host,
+        port=consul_port,
+        token=consul_token
+    )
+    
+    # Create service instance
+    service = StreamProcessingService(
+        vault_client=vault_client,
+        consul_client=consul_client
+    )
+    
+    # Create app with common setup
+    app = create_data_intelligence_app(
+        service_metadata=SERVICE_METADATA,
+        service_instance=service,
+        title="Stream Processing Service API",
+        include_common_middleware=True
+    )
+    
+    # Include API routers
+    app.include_router(jobs.router, prefix="/api/v1/jobs", tags=["jobs"])
+    app.include_router(patterns.router, prefix="/api/v1/patterns", tags=["patterns"])
+    app.include_router(monitoring.router, prefix="/api/v1/monitoring", tags=["monitoring"])
+    app.include_router(health.router, prefix="/api/v1/health", tags=["health"])
+    
+    # Add root endpoint
+    @app.get("/")
+    async def root():
         return {
-            "job_id": job_id,
-            "status": "submitted",
-            "message": f"Job {request.name} submitted successfully"
+            "service": SERVICE_METADATA.name,
+            "version": SERVICE_METADATA.version,
+            "status": "running",
+            "endpoints": {
+                "jobs": "/api/v1/jobs",
+                "patterns": "/api/v1/patterns",
+                "monitoring": "/api/v1/monitoring",
+                "health": "/api/v1/health"
+            }
         }
-        
-    except Exception as e:
-        logger.error(f"Failed to submit job: {e}")
-        raise HTTPException(500, f"Failed to submit job: {str(e)}")
+    
+    return app
 
 
-@app.get("/api/v1/jobs/{job_id}/status")
-async def get_job_status(job_id: str):
-    """Get job status"""
-    try:
-        status = await job_manager.get_job_status(job_id)
-        if not status:
-            raise HTTPException(404, f"Job {job_id} not found")
-        return status
-    except Exception as e:
-        logger.error(f"Failed to get job status: {e}")
-        raise HTTPException(500, f"Failed to get job status: {str(e)}")
-
-
-@app.delete("/api/v1/jobs/{job_id}")
-async def cancel_job(job_id: str):
-    """Cancel a running job"""
-    try:
-        result = await job_manager.cancel_job(job_id)
-        if not result:
-            raise HTTPException(404, f"Job {job_id} not found")
-        return {"message": f"Job {job_id} cancelled successfully"}
-    except Exception as e:
-        logger.error(f"Failed to cancel job: {e}")
-        raise HTTPException(500, f"Failed to cancel job: {str(e)}")
-
-
-@app.post("/api/v1/jobs/{job_id}/savepoint")
-async def create_savepoint(job_id: str):
-    """Create a savepoint for the job"""
-    try:
-        savepoint_path = await job_manager.create_savepoint(job_id)
-        if not savepoint_path:
-            raise HTTPException(404, f"Job {job_id} not found")
-        return {
-            "job_id": job_id,
-            "savepoint_path": savepoint_path,
-            "timestamp": datetime.utcnow().isoformat()
-        }
-    except Exception as e:
-        logger.error(f"Failed to create savepoint: {e}")
-        raise HTTPException(500, f"Failed to create savepoint: {str(e)}")
+# Create app instance
+app = create_app()
 
 
 if __name__ == "__main__":
+    port = int(os.getenv("SERVICE_PORT", settings.api_port))
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=settings.api_port,
-        reload=settings.debug,
-        log_level=settings.log_level.lower()
+        port=port,
+        reload=True
     ) 

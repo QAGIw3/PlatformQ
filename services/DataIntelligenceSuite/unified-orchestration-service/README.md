@@ -75,6 +75,13 @@ The Unified Orchestration Service combines:
 - **Compliance Tracking**: Audit trail with credentials
 - **Signature Verification**: Cryptographic proof of execution
 
+### 7. Kubernetes Job Management
+- **Direct K8s Integration**: Create and manage Kubernetes jobs
+- **Pod Orchestration**: Deploy and scale applications
+- **Resource Management**: Control CPU, memory, GPU allocation
+- **Job Monitoring**: Track job status and logs
+- **Deployment Management**: Create and scale deployments
+
 ## API Endpoints
 
 ### Workflow Management
@@ -103,6 +110,14 @@ The Unified Orchestration Service combines:
 - `GET /api/v1/event-mappings` - List event to workflow mappings
 - `POST /api/v1/event-mappings` - Register new mapping
 - `DELETE /api/v1/event-mappings/{mapping_id}` - Remove mapping
+
+### Kubernetes Management
+- `POST /k8s/jobs` - Create Kubernetes job
+- `GET /k8s/jobs/{job_name}` - Get job status
+- `DELETE /k8s/jobs/{job_name}` - Delete job
+- `GET /k8s/jobs/{job_name}/logs` - Get job logs
+- `POST /k8s/deployments` - Create deployment
+- `PUT /k8s/deployments/{name}/scale` - Scale deployment
 
 ### Monitoring
 - `GET /api/v1/monitoring/metrics` - Get orchestration metrics
@@ -271,6 +286,33 @@ steps:
     config:
       target: production
       canary_percentage: 10
+```
+
+### Kubernetes Job Management
+```python
+# Create a specialized processing job
+response = requests.post('http://orchestration:8019/k8s/jobs', json={
+    "name": "cad-processor-job",
+    "image": "platformq/cad-processor:latest",
+    "command": ["python", "process.py"],
+    "args": ["--input", "s3://models/part.step"],
+    "env_vars": {
+        "S3_BUCKET": "processed-models",
+        "GPU_ENABLED": "true"
+    },
+    "resources": {
+        "requests": {"cpu": "2", "memory": "4Gi"},
+        "limits": {"cpu": "4", "memory": "8Gi", "nvidia.com/gpu": "1"}
+    }
+})
+
+# Check job status
+status = requests.get(f'http://orchestration:8019/k8s/jobs/cad-processor-job')
+
+# Scale a deployment
+response = requests.put('http://orchestration:8019/k8s/deployments/ml-inference/scale', json={
+    "replicas": 5
+})
 ```
 
 ## Monitoring & Observability

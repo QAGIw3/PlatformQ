@@ -9,6 +9,7 @@ from .ml_training import MLTrainingJobHandler
 from .etl_pipeline import ETLPipelineJobHandler
 from .feature_engineering import FeatureEngineeringJobHandler
 from .graph_processing import GraphProcessingJobHandler
+from .file_processing import FileProcessingJobHandler
 
 
 logger = logging.getLogger(__name__)
@@ -20,7 +21,8 @@ _job_handlers: Dict[str, Type[JobHandler]] = {
     "ml_training": MLTrainingJobHandler,
     "etl_pipeline": ETLPipelineJobHandler,
     "feature_engineering": FeatureEngineeringJobHandler,
-    "graph_processing": GraphProcessingJobHandler
+    "graph_processing": GraphProcessingJobHandler,
+    "file_processing": FileProcessingJobHandler
 }
 
 

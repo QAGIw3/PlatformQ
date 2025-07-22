@@ -3,6 +3,7 @@ Data Ingestion Service
 
 Unified service for data ingestion from multiple sources,
 including CDC, streaming, batch, and schema management.
+Powered by Apache SeaTunnel for efficient data integration.
 """
 
 import os
@@ -16,305 +17,232 @@ from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 import uvicorn
+import hvac
+import consul.aio
+
+from data_intelligence_common import (
+    DataIntelligenceBaseService,
+    ServiceMetadata,
+    StructuredLogger,
+    create_data_intelligence_app
+)
 
 from app.core.config import settings
 from app.core.cdc_manager import CDCManager
 from app.core.stream_ingestion import StreamIngestionManager
 from app.core.batch_ingestion import BatchIngestionManager
 from app.core.schema_registry import SchemaRegistry
-from app.api import ingestion, schemas, health, metrics
+from app.core.connector_manager import ConnectorManager
+from app.api import ingestion, schemas, health, metrics, connectors
 from app.middleware.error_handler import error_handler_middleware
 from app.middleware.logging import logging_middleware
 
 # Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.log_level),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+logger = StructuredLogger.get_logger(__name__)
+
+# Service metadata
+SERVICE_METADATA = ServiceMetadata(
+    name="data-ingestion-service",
+    version="1.0.0",
+    description="Unified data ingestion service with CDC, streaming, and batch capabilities",
+    dependencies=["seatunnel", "pulsar", "minio", "cassandra", "ignite"],
+    health_checks=["cdc", "stream", "batch", "schema_registry"],
+    capabilities=["cdc", "streaming", "batch", "schema-registry"],
+    data_sources=["postgres", "mysql", "mongodb", "pulsar", "kafka", "files"],
+    data_outputs=["data-lake", "hot-storage", "stream-topics"]
 )
-logger = logging.getLogger(__name__)
 
 # Global instances
 cdc_manager: Optional[CDCManager] = None
 stream_manager: Optional[StreamIngestionManager] = None
 batch_manager: Optional[BatchIngestionManager] = None
 schema_registry: Optional[SchemaRegistry] = None
+connector_manager: Optional[ConnectorManager] = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manage application lifecycle"""
-    global cdc_manager, stream_manager, batch_manager, schema_registry
+class DataIngestionService(DataIntelligenceBaseService):
+    """Data Ingestion Service implementation"""
     
-    # Startup
-    logger.info(f"Starting {settings.service_name} v{settings.service_version}")
+    def __init__(self, *args, **kwargs):
+        super().__init__(SERVICE_METADATA, *args, **kwargs)
+        self.cdc_manager = None
+        self.stream_manager = None
+        self.batch_manager = None
+        self.schema_registry = None
+        self.connector_manager = None
     
-    # Initialize components
-    cdc_manager = CDCManager(settings)
-    stream_manager = StreamIngestionManager(settings)
-    batch_manager = BatchIngestionManager(settings)
-    schema_registry = SchemaRegistry(settings)
+    async def initialize_service(self):
+        """Initialize service-specific components"""
+        global cdc_manager, stream_manager, batch_manager, schema_registry, connector_manager
+        
+        logger.info("Initializing Data Ingestion Service components...")
+        
+        # Get database credentials from Vault
+        postgres_creds = await self.vault_consul.get_database_credentials("postgres")
+        if postgres_creds:
+            os.environ["POSTGRES_USER"] = postgres_creds.get("username", "")
+            os.environ["POSTGRES_PASSWORD"] = postgres_creds.get("password", "")
+        
+        mysql_creds = await self.vault_consul.get_database_credentials("mysql")
+        if mysql_creds:
+            os.environ["MYSQL_USER"] = mysql_creds.get("username", "")
+            os.environ["MYSQL_PASSWORD"] = mysql_creds.get("password", "")
+        
+        # Get MinIO credentials from Vault
+        minio_creds = await self.vault_consul.get_secret("storage/minio")
+        if minio_creds:
+            settings.minio_access_key = minio_creds.get("access_key", settings.minio_access_key)
+            settings.minio_secret_key = minio_creds.get("secret_key", settings.minio_secret_key)
+        
+        # Initialize components
+        cdc_manager = CDCManager(settings)
+        self.cdc_manager = cdc_manager
+        
+        stream_manager = StreamIngestionManager(settings)
+        self.stream_manager = stream_manager
+        
+        batch_manager = BatchIngestionManager(settings)
+        self.batch_manager = batch_manager
+        
+        schema_registry = SchemaRegistry(settings)
+        self.schema_registry = schema_registry
+        
+        # Initialize SeaTunnel manager first (needed by connector manager)
+        from app.core.seatunnel_manager import SeaTunnelManager
+        seatunnel_manager = SeaTunnelManager(settings)
+        await seatunnel_manager.initialize()
+        
+        connector_manager = ConnectorManager(settings, seatunnel_manager, schema_registry)
+        self.connector_manager = connector_manager
+        
+        # Cross-reference components
+        cdc_manager.set_schema_registry(schema_registry)
+        stream_manager.set_schema_registry(schema_registry)
+        batch_manager.set_schema_registry(schema_registry)
+        
+        # Initialize components
+        await cdc_manager.initialize()
+        await stream_manager.initialize()
+        await batch_manager.initialize()
+        await schema_registry.initialize()
+        await connector_manager.initialize()
+        
+        # Inject managers into API routers
+        ingestion.cdc_manager = cdc_manager
+        ingestion.stream_manager = stream_manager
+        ingestion.batch_manager = batch_manager
+        schemas.schema_registry = schema_registry
+        connectors.connector_manager = connector_manager
+        health.cdc_manager = cdc_manager
+        health.stream_manager = stream_manager
+        health.batch_manager = batch_manager
+        health.schema_registry = schema_registry
+        
+        # Register health checks
+        self.health_manager.register_check("cdc", cdc_manager.health_check)
+        self.health_manager.register_check("stream", stream_manager.health_check)
+        self.health_manager.register_check("batch", batch_manager.health_check)
+        self.health_manager.register_check("schema_registry", schema_registry.health_check)
+        self.health_manager.register_check("connectors", lambda: {"status": "healthy", "active_connectors": len(connector_manager.connectors)})
+        
+        logger.info("Data Ingestion Service initialized successfully")
     
-    # Start background tasks
-    await cdc_manager.start()
-    await stream_manager.start()
-    await schema_registry.initialize()
-    
-    # Register with service discovery
-    if settings.consul_enabled:
-        from app.core.service_discovery import register_service
-        await register_service(settings)
-    
-    logger.info("Data Ingestion Service started successfully")
-    
-    yield
-    
-    # Shutdown
-    logger.info("Shutting down Data Ingestion Service")
-    
-    # Stop components
-    await cdc_manager.stop()
-    await stream_manager.stop()
-    await batch_manager.cleanup()
-    
-    # Deregister from service discovery
-    if settings.consul_enabled:
-        from app.core.service_discovery import deregister_service
-        await deregister_service(settings)
-    
-    logger.info("Data Ingestion Service stopped")
+    async def cleanup_service(self):
+        """Cleanup service-specific components"""
+        logger.info("Cleaning up Data Ingestion Service...")
+        
+        if self.connector_manager:
+            await self.connector_manager.cleanup()
+        
+        if self.cdc_manager:
+            await self.cdc_manager.stop()
+        
+        if self.stream_manager:
+            await self.stream_manager.stop()
+        
+        if self.batch_manager:
+            await self.batch_manager.cleanup()
+        
+        logger.info("Data Ingestion Service cleaned up")
 
 
 # Create FastAPI app
-app = FastAPI(
-    title=settings.service_name,
-    description="Unified data ingestion service supporting CDC, streaming, and batch",
-    version=settings.service_version,
-    lifespan=lifespan
-)
-
-# Add middleware
-app.middleware("http")(error_handler_middleware)
-app.middleware("http")(logging_middleware)
-
-# Include routers
-app.include_router(ingestion.router, prefix="/api/v1/ingestion", tags=["ingestion"])
-app.include_router(schemas.router, prefix="/api/v1/schemas", tags=["schemas"])
-app.include_router(health.router, prefix="/api/v1", tags=["health"])
-app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
-
-
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "service": settings.service_name,
-        "version": settings.service_version,
-        "status": "running",
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-
-@app.get("/api/v1/info")
-async def service_info():
-    """Get service information"""
-    return {
-        "service": {
-            "name": settings.service_name,
-            "version": settings.service_version,
-            "environment": settings.environment
-        },
-        "capabilities": {
-            "cdc": True,
-            "streaming": True,
-            "batch": True,
-            "schema_registry": True,
-            "multi_source": True
-        },
-        "ingestion_types": [
-            "database_cdc",
-            "file_import",
-            "stream_consumer",
-            "api_webhook",
-            "s3_sync"
-        ],
-        "supported_sources": {
-            "databases": ["postgresql", "mysql", "mongodb", "cassandra"],
-            "streams": ["pulsar", "kafka", "kinesis"],
-            "files": ["csv", "json", "parquet", "avro"],
-            "storage": ["s3", "minio", "gcs", "azure"]
-        }
-    }
-
-
-class CDCSourceConfig(BaseModel):
-    """CDC source configuration"""
-    source_type: str  # postgresql, mysql, mongodb
-    connection_string: str
-    tables: Optional[List[str]] = None
-    start_position: Optional[str] = None
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application"""
     
-
-@app.post("/api/v1/cdc/sources")
-async def create_cdc_source(config: CDCSourceConfig):
-    """Create a new CDC source"""
-    try:
-        source_id = await cdc_manager.create_source(
-            source_type=config.source_type,
-            connection_string=config.connection_string,
-            tables=config.tables,
-            start_position=config.start_position
-        )
-        
-        return {
-            "source_id": source_id,
-            "status": "created",
-            "message": f"CDC source created successfully"
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to create CDC source: {e}")
-        raise HTTPException(500, f"Failed to create CDC source: {str(e)}")
-
-
-class StreamIngestionConfig(BaseModel):
-    """Stream ingestion configuration"""
-    source_type: str  # pulsar, kafka, kinesis
-    topics: List[str]
-    consumer_group: Optional[str] = None
-    schema_id: Optional[str] = None
+    # Get configuration from environment
+    vault_addr = os.getenv("VAULT_ADDR", "http://localhost:8200")
+    vault_token = os.getenv("VAULT_TOKEN")
+    consul_host = os.getenv("CONSUL_HOST", "localhost")
+    consul_port = int(os.getenv("CONSUL_PORT", "8500"))
+    consul_token = os.getenv("CONSUL_TOKEN")
     
-
-@app.post("/api/v1/streams")
-async def create_stream_ingestion(config: StreamIngestionConfig):
-    """Create a new stream ingestion"""
-    try:
-        stream_id = await stream_manager.create_stream(
-            source_type=config.source_type,
-            topics=config.topics,
-            consumer_group=config.consumer_group,
-            schema_id=config.schema_id
-        )
-        
-        return {
-            "stream_id": stream_id,
-            "status": "created",
-            "message": f"Stream ingestion created successfully"
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to create stream ingestion: {e}")
-        raise HTTPException(500, f"Failed to create stream ingestion: {str(e)}")
-
-
-class BatchIngestionRequest(BaseModel):
-    """Batch ingestion request"""
-    source_type: str  # s3, file_upload, api
-    source_path: str
-    destination_table: str
-    format: Optional[str] = "parquet"
-    options: Optional[Dict[str, Any]] = None
+    # Create Vault client
+    vault_client = hvac.Client(url=vault_addr, token=vault_token)
     
-
-@app.post("/api/v1/batch")
-async def create_batch_ingestion(request: BatchIngestionRequest, background_tasks: BackgroundTasks):
-    """Create a batch ingestion job"""
-    try:
-        job_id = await batch_manager.create_job(
-            source_type=request.source_type,
-            source_path=request.source_path,
-            destination_table=request.destination_table,
-            format=request.format,
-            options=request.options
-        )
-        
-        # Start processing in background
-        background_tasks.add_task(batch_manager.process_job, job_id)
-        
+    # Create Consul client
+    consul_client = consul.aio.Consul(
+        host=consul_host,
+        port=consul_port,
+        token=consul_token
+    )
+    
+    # Create service instance
+    service = DataIngestionService(
+        vault_client=vault_client,
+        consul_client=consul_client
+    )
+    
+    # Create app with common setup
+    app = create_data_intelligence_app(
+        service_metadata=SERVICE_METADATA,
+        service_instance=service,
+        title="Data Ingestion Service API",
+        include_common_middleware=True
+    )
+    
+    # Add custom middleware
+    app.middleware("http")(error_handler_middleware)
+    app.middleware("http")(logging_middleware)
+    
+    # Include API routers
+    app.include_router(ingestion.router, prefix="/api/v1", tags=["ingestion"])
+    app.include_router(schemas.router, prefix="/api/v1/schemas", tags=["schemas"])
+    app.include_router(connectors.router, tags=["connectors"])
+    app.include_router(health.router, prefix="/api/v1", tags=["health"])
+    app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
+    
+    # Add root endpoint
+    @app.get("/")
+    async def root():
         return {
-            "job_id": job_id,
-            "status": "submitted",
-            "message": f"Batch ingestion job submitted successfully"
+            "service": SERVICE_METADATA.name,
+            "version": SERVICE_METADATA.version,
+            "status": "running",
+            "endpoints": {
+                "cdc": "/api/v1/cdc/sources",
+                "streams": "/api/v1/streams",
+                "batch": "/api/v1/batch",
+                "schemas": "/api/v1/schemas",
+                "connectors": "/api/v1/connectors",
+                "health": "/api/v1/health",
+                "metrics": "/api/v1/metrics"
+            }
         }
-        
-    except Exception as e:
-        logger.error(f"Failed to create batch ingestion: {e}")
-        raise HTTPException(500, f"Failed to create batch ingestion: {str(e)}")
+    
+    return app
 
 
-@app.post("/api/v1/batch/upload")
-async def upload_file_for_ingestion(
-    file: UploadFile = File(...),
-    destination_table: str = None,
-    format: str = "auto"
-):
-    """Upload a file for batch ingestion"""
-    try:
-        # Save uploaded file
-        file_path = await batch_manager.save_upload(file)
-        
-        # Create ingestion job
-        job_id = await batch_manager.create_job(
-            source_type="file_upload",
-            source_path=file_path,
-            destination_table=destination_table or file.filename.split('.')[0],
-            format=format
-        )
-        
-        return {
-            "job_id": job_id,
-            "file_name": file.filename,
-            "file_size": file.size,
-            "status": "uploaded",
-            "message": "File uploaded and ingestion started"
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to upload file: {e}")
-        raise HTTPException(500, f"Failed to upload file: {str(e)}")
-
-
-@app.get("/api/v1/sources")
-async def list_ingestion_sources():
-    """List all active ingestion sources"""
-    try:
-        cdc_sources = await cdc_manager.list_sources()
-        stream_sources = await stream_manager.list_streams()
-        
-        return {
-            "cdc_sources": cdc_sources,
-            "stream_sources": stream_sources,
-            "total_sources": len(cdc_sources) + len(stream_sources)
-        }
-    except Exception as e:
-        logger.error(f"Failed to list sources: {e}")
-        raise HTTPException(500, f"Failed to list sources: {str(e)}")
-
-
-@app.delete("/api/v1/sources/{source_id}")
-async def delete_ingestion_source(source_id: str, source_type: str):
-    """Delete an ingestion source"""
-    try:
-        if source_type == "cdc":
-            result = await cdc_manager.delete_source(source_id)
-        elif source_type == "stream":
-            result = await stream_manager.delete_stream(source_id)
-        else:
-            raise HTTPException(400, f"Invalid source type: {source_type}")
-        
-        if not result:
-            raise HTTPException(404, f"Source {source_id} not found")
-            
-        return {"message": f"Source {source_id} deleted successfully"}
-    except Exception as e:
-        logger.error(f"Failed to delete source: {e}")
-        raise HTTPException(500, f"Failed to delete source: {str(e)}")
+# Create app instance
+app = create_app()
 
 
 if __name__ == "__main__":
+    port = int(os.getenv("SERVICE_PORT", settings.service_port))
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=settings.api_port,
-        reload=settings.debug,
+        port=port,
+        reload=True,
         log_level=settings.log_level.lower()
     ) 

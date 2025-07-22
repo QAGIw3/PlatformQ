@@ -395,3 +395,235 @@ class QualityFilter:
     issue_type: Optional[str] = None
     date_from: Optional[datetime] = None
     date_to: Optional[datetime] = None 
+
+
+# Data Catalog Types
+@strawberry.type
+class CatalogEntity:
+    id: str
+    name: str
+    type: str
+    description: Optional[str]
+    owner: Optional[str]
+    created_at: datetime
+    updated_at: datetime
+    tags: List[str]
+    classifications: List[str]
+    attributes: Dict[str, Any]
+    
+    @strawberry.field
+    async def lineage(self, info: Info, depth: int = 3) -> 'DataLineage':
+        """Get entity lineage"""
+        resolver = info.context["service_resolver"]
+        return await resolver.get_entity_lineage(self.id, depth)
+    
+    @strawberry.field
+    async def schema(self, info: Info) -> Optional['Schema']:
+        """Get entity schema"""
+        resolver = info.context["service_resolver"]
+        return await resolver.get_entity_schema(self.id)
+
+
+@strawberry.type
+class Schema:
+    id: str
+    subject: str
+    version: int
+    schema_type: str
+    schema_str: str
+    created_at: datetime
+    compatibility: str
+
+
+@strawberry.type
+class Classification:
+    id: str
+    name: str
+    description: str
+    category: str
+    parent_id: Optional[str]
+    attributes: Dict[str, Any]
+
+
+@strawberry.type
+class GlossaryTerm:
+    id: str
+    name: str
+    qualified_name: str
+    description: str
+    glossary_id: str
+    related_terms: List[str]
+    attributes: Dict[str, Any]
+
+
+# ML/AI Types
+@strawberry.type
+class MLModel:
+    id: str
+    name: str
+    description: str
+    type: str
+    framework: str
+    version: str
+    owner: str
+    created_at: datetime
+    updated_at: datetime
+    tags: List[str]
+    metrics: Dict[str, float]
+    
+    @strawberry.field
+    async def versions(self, info: Info) -> List['ModelVersion']:
+        """Get model versions"""
+        resolver = info.context["service_resolver"]
+        return await resolver.get_model_versions(self.id)
+    
+    @strawberry.field
+    async def deployments(self, info: Info) -> List['ModelDeployment']:
+        """Get model deployments"""
+        resolver = info.context["service_resolver"]
+        return await resolver.get_model_deployments(self.id)
+
+
+@strawberry.type
+class ModelVersion:
+    id: str
+    model_id: str
+    version: str
+    created_at: datetime
+    created_by: str
+    metrics: Dict[str, float]
+    artifacts: List[str]
+    status: str
+
+
+@strawberry.type
+class TrainingJob:
+    id: str
+    model_id: str
+    status: str
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    parameters: Dict[str, Any]
+    metrics: Dict[str, float]
+    error: Optional[str]
+
+
+@strawberry.type
+class ModelDeployment:
+    id: str
+    model_id: str
+    version_id: str
+    environment: str
+    status: str
+    endpoint: str
+    created_at: datetime
+    updated_at: datetime
+    config: Dict[str, Any]
+
+
+# Stream Processing Types
+@strawberry.type
+class StreamJob:
+    id: str
+    name: str
+    status: str
+    source: str
+    sink: str
+    transformations: List[str]
+    started_at: Optional[datetime]
+    metrics: Dict[str, float]
+    checkpoint: Optional[str]
+
+
+# Batch Processing Types
+@strawberry.type
+class BatchJob:
+    id: str
+    name: str
+    type: str
+    status: str
+    started_at: Optional[datetime]
+    completed_at: Optional[datetime]
+    input_datasets: List[str]
+    output_datasets: List[str]
+    metrics: Dict[str, float]
+    error: Optional[str]
+
+
+# Graph Processing Types
+@strawberry.type
+class GraphAnalysis:
+    graph_id: str
+    analysis_type: str
+    status: str
+    started_at: datetime
+    completed_at: Optional[datetime]
+    results: Dict[str, Any]
+    metrics: Dict[str, float]
+
+
+# Workflow Types
+@strawberry.type
+class Workflow:
+    id: str
+    name: str
+    description: str
+    type: str
+    status: str
+    schedule: Optional[Dict[str, Any]]
+    created_at: datetime
+    updated_at: datetime
+    tags: List[str]
+    
+    @strawberry.field
+    async def executions(self, info: Info, limit: int = 10) -> List['WorkflowExecution']:
+        """Get workflow executions"""
+        resolver = info.context["service_resolver"]
+        return await resolver.get_workflow_executions(self.id, limit)
+
+
+@strawberry.type
+class WorkflowExecution:
+    id: str
+    workflow_id: str
+    status: str
+    started_at: datetime
+    completed_at: Optional[datetime]
+    trigger: str
+    parameters: Dict[str, Any]
+    outputs: Dict[str, Any]
+    error: Optional[str]
+
+
+@strawberry.type
+class WorkflowSchedule:
+    workflow_id: str
+    schedule: str
+    timezone: str
+    enabled: bool
+    next_run: datetime
+    last_run: Optional[datetime]
+
+
+# Data Ingestion Types
+@strawberry.type
+class IngestionSource:
+    id: str
+    name: str
+    type: str
+    connection_string: str
+    status: str
+    created_at: datetime
+    config: Dict[str, Any]
+
+
+@strawberry.type
+class IngestionJob:
+    id: str
+    source_id: str
+    status: str
+    started_at: datetime
+    completed_at: Optional[datetime]
+    records_processed: int
+    bytes_processed: int
+    error: Optional[str] 

@@ -11,6 +11,7 @@ from datetime import datetime
 
 from data_intelligence_common import StructuredLogger
 from data_intelligence_common.vault_consul import VaultConsulIntegration
+from .connector_resolver import ConnectorResolver
 
 logger = StructuredLogger.get_logger(__name__)
 
@@ -25,6 +26,7 @@ class ServiceResolver:
         self.http_client = httpx.AsyncClient(timeout=30.0)
         self.service_urls = {}
         self.event_subscribers = {}
+        self.connector_resolver = None
     
     async def initialize(self):
         """Initialize service resolver"""
@@ -32,6 +34,9 @@ class ServiceResolver:
         
         # Discover services via Consul
         await self._discover_services()
+        
+        # Initialize connector resolver
+        self.connector_resolver = ConnectorResolver(self.service_urls)
         
         # Setup event subscriptions
         await self._setup_event_subscriptions()
@@ -41,6 +46,10 @@ class ServiceResolver:
     async def cleanup(self):
         """Cleanup resources"""
         await self.http_client.aclose()
+        
+        # Cleanup connector resolver
+        if self.connector_resolver:
+            await self.connector_resolver.cleanup()
         
         # Cleanup event subscriptions
         for subscriber in self.event_subscribers.values():
@@ -61,10 +70,14 @@ class ServiceResolver:
     async def _discover_services(self):
         """Discover services via Consul"""
         services = [
-            ("dih-service", 8002),
-            ("data-quality-service", 8003),
-            ("pipeline-orchestration-service", 8004),
-            ("data-platform-service", 8001)
+            ("data-catalog-service", 8001),
+            ("data-ingestion-service", 8002),
+            ("stream-processing-service", 8003),
+            ("batch-processing-service", 8004),
+            ("graph-processing-service", 8005),
+            ("quality-engine-service", 8006),
+            ("mlops-service", 8007),
+            ("workflow-engine-service", 8008),
         ]
         
         for service_name, default_port in services:
@@ -96,8 +109,8 @@ class ServiceResolver:
         pagination: Optional[Any] = None,
         sort: Optional[Any] = None
     ) -> List[Any]:
-        """Get pipelines from orchestration service"""
-        url = f"{self.service_urls['pipeline-orchestration-service']}/api/v1/pipelines"
+        """Get pipelines from workflow engine service"""
+        url = f"{self.service_urls['workflow-engine-service']}/api/v1/workflows"
         
         params = {}
         if filter:

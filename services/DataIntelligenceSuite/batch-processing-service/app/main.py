@@ -2,273 +2,244 @@
 Batch Processing Service
 
 Unified service for all batch processing needs,
-consolidating multiple Spark jobs into a single scalable service.
+consolidating multiple Spark jobs into a single, scalable service.
 """
 
 import os
 import logging
-from typing import Dict, Any, List, Optional
-from datetime import datetime
-import asyncio
 from contextlib import asynccontextmanager
+from typing import Optional
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, UploadFile, File
+from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
-from pydantic import BaseModel
 import uvicorn
-from pyspark.sql import SparkSession
+import hvac
+import consul.aio
+
+from data_intelligence_common import (
+    DataIntelligenceBaseService,
+    ServiceMetadata,
+    StructuredLogger,
+    create_data_intelligence_app
+)
 
 from app.core.config import settings
 from app.core.spark_manager import SparkManager
 from app.core.job_scheduler import JobScheduler
-from app.core.resource_manager import ResourceManager
-from app.api import jobs, pipelines, health, metrics
-from app.middleware.error_handler import error_handler_middleware
-from app.middleware.logging import logging_middleware
+from app.core.pipeline_manager import PipelineManager
+from app.core.ml_training_manager import MLTrainingManager
+from app.core.processor_manager import ProcessorManager
+from app.api import jobs, pipelines, ml_training, monitoring, health, processors
 
 # Configure logging
-logging.basicConfig(
-    level=getattr(logging, settings.log_level),
-    format='%(asctime)s - %(name)s - %(levelname)s - %(message)s'
+logger = StructuredLogger.get_logger(__name__)
+
+# Service metadata
+SERVICE_METADATA = ServiceMetadata(
+    name="batch-processing-service",
+    version="1.0.0",
+    description="Unified batch processing with Apache Spark for ETL and ML",
+    dependencies=["spark", "minio", "cassandra", "elasticsearch", "mlflow"],
+    health_checks=["spark", "scheduler", "storage"],
+    capabilities=["batch-processing", "ml-training", "etl", "analytics"],
+    data_sources=["s3", "cassandra", "postgres", "parquet"],
+    data_outputs=["s3", "cassandra", "elasticsearch", "mlflow"],
+    min_memory_mb=8192,
+    min_cpu_cores=4
 )
-logger = logging.getLogger(__name__)
 
 # Global instances
 spark_manager: Optional[SparkManager] = None
 job_scheduler: Optional[JobScheduler] = None
-resource_manager: Optional[ResourceManager] = None
+pipeline_manager: Optional[PipelineManager] = None
+ml_training_manager: Optional[MLTrainingManager] = None
+processor_manager: Optional[ProcessorManager] = None
 
 
-@asynccontextmanager
-async def lifespan(app: FastAPI):
-    """Manage application lifecycle"""
-    global spark_manager, job_scheduler, resource_manager
+class BatchProcessingService(DataIntelligenceBaseService):
+    """Batch Processing Service implementation"""
     
-    # Startup
-    logger.info(f"Starting {settings.service_name} v{settings.service_version}")
+    def __init__(self, *args, **kwargs):
+        super().__init__(SERVICE_METADATA, *args, **kwargs)
+        self.spark_manager = None
+        self.job_scheduler = None
+        self.pipeline_manager = None
+        self.ml_training_manager = None
+        self.processor_manager = None
     
-    # Initialize Spark
-    spark_manager = SparkManager(settings)
-    await spark_manager.initialize()
+    async def initialize_service(self):
+        """Initialize service-specific components"""
+        global spark_manager, job_scheduler, pipeline_manager, ml_training_manager, processor_manager
+        
+        logger.info("Initializing Batch Processing Service components...")
+        
+        # Get Spark configuration from Vault
+        spark_config = await self.vault_consul.get_secret("compute/spark")
+        if spark_config:
+            settings.spark_master = spark_config.get("master", settings.spark_master)
+            os.environ["SPARK_HOME"] = spark_config.get("spark_home", "/opt/spark")
+        
+        # Get MinIO credentials from Vault
+        minio_creds = await self.vault_consul.get_secret("storage/minio")
+        if minio_creds:
+            settings.minio_access_key = minio_creds.get("access_key", settings.minio_access_key)
+            settings.minio_secret_key = minio_creds.get("secret_key", settings.minio_secret_key)
+            # Set AWS credentials for Spark S3 access
+            os.environ["AWS_ACCESS_KEY_ID"] = minio_creds.get("access_key", "")
+            os.environ["AWS_SECRET_ACCESS_KEY"] = minio_creds.get("secret_key", "")
+        
+        # Get Cassandra credentials from Vault
+        cassandra_creds = await self.vault_consul.get_database_credentials("cassandra")
+        if cassandra_creds:
+            os.environ["CASSANDRA_USERNAME"] = cassandra_creds.get("username", "")
+            os.environ["CASSANDRA_PASSWORD"] = cassandra_creds.get("password", "")
+        
+        # Get MLflow configuration from Vault
+        mlflow_config = await self.vault_consul.get_secret("ml/mlflow")
+        if mlflow_config:
+            settings.mlflow_tracking_uri = mlflow_config.get("tracking_uri", settings.mlflow_tracking_uri)
+            os.environ["MLFLOW_TRACKING_URI"] = settings.mlflow_tracking_uri
+        
+        # Initialize components
+        spark_manager = SparkManager(settings)
+        await spark_manager.initialize()
+        self.spark_manager = spark_manager
+        
+        job_scheduler = JobScheduler(settings, spark_manager)
+        await job_scheduler.start()
+        self.job_scheduler = job_scheduler
+        
+        pipeline_manager = PipelineManager(settings, spark_manager, job_scheduler)
+        await pipeline_manager.initialize()
+        self.pipeline_manager = pipeline_manager
+        
+        ml_training_manager = MLTrainingManager(settings, spark_manager)
+        await ml_training_manager.initialize()
+        self.ml_training_manager = ml_training_manager
+        
+        processor_manager = ProcessorManager(settings, job_scheduler)
+        self.processor_manager = processor_manager
+        
+        # Inject dependencies into API routers
+        jobs.spark_manager = spark_manager
+        jobs.job_scheduler = job_scheduler
+        pipelines.pipeline_manager = pipeline_manager
+        ml_training.ml_training_manager = ml_training_manager
+        processors.processor_manager = processor_manager
+        monitoring.spark_manager = spark_manager
+        monitoring.job_scheduler = job_scheduler
+        health.spark_manager = spark_manager
+        health.job_scheduler = job_scheduler
+        
+        # Register health checks
+        self.health_manager.register_check("spark", spark_manager.health_check, critical=True)
+        self.health_manager.register_check("scheduler", job_scheduler.health_check)
+        self.health_manager.register_check("storage", self._check_storage_health)
+        
+        logger.info("Batch Processing Service initialized successfully")
     
-    # Initialize job scheduler
-    job_scheduler = JobScheduler(settings, spark_manager)
-    await job_scheduler.start()
+    async def cleanup_service(self):
+        """Cleanup service-specific components"""
+        logger.info("Cleaning up Batch Processing Service...")
+        
+        if self.job_scheduler:
+            await self.job_scheduler.stop()
+        
+        if self.spark_manager:
+            await self.spark_manager.cleanup()
+        
+        logger.info("Batch Processing Service cleaned up")
     
-    # Initialize resource manager
-    resource_manager = ResourceManager(settings)
-    await resource_manager.start()
-    
-    # Register with service discovery
-    if settings.consul_enabled:
-        from app.core.service_discovery import register_service
-        await register_service(settings)
-    
-    logger.info("Batch Processing Service started successfully")
-    
-    yield
-    
-    # Shutdown
-    logger.info("Shutting down Batch Processing Service")
-    
-    # Stop components
-    await job_scheduler.stop()
-    await resource_manager.stop()
-    await spark_manager.cleanup()
-    
-    # Deregister from service discovery
-    if settings.consul_enabled:
-        from app.core.service_discovery import deregister_service
-        await deregister_service(settings)
-    
-    logger.info("Batch Processing Service stopped")
+    async def _check_storage_health(self) -> bool:
+        """Check storage connectivity"""
+        # Check MinIO connectivity
+        try:
+            from minio import Minio
+            client = Minio(
+                settings.minio_endpoint,
+                access_key=settings.minio_access_key,
+                secret_key=settings.minio_secret_key,
+                secure=settings.minio_secure
+            )
+            # Try to list buckets
+            buckets = client.list_buckets()
+            return True
+        except Exception:
+            return False
 
 
 # Create FastAPI app
-app = FastAPI(
-    title=settings.service_name,
-    description="Unified batch processing service for large-scale data processing",
-    version=settings.service_version,
-    lifespan=lifespan
-)
-
-# Add middleware
-app.middleware("http")(error_handler_middleware)
-app.middleware("http")(logging_middleware)
-
-# Include routers
-app.include_router(jobs.router, prefix="/api/v1/jobs", tags=["jobs"])
-app.include_router(pipelines.router, prefix="/api/v1/pipelines", tags=["pipelines"])
-app.include_router(health.router, prefix="/api/v1", tags=["health"])
-app.include_router(metrics.router, prefix="/api/v1", tags=["metrics"])
-
-
-@app.get("/")
-async def root():
-    """Root endpoint"""
-    return {
-        "service": settings.service_name,
-        "version": settings.service_version,
-        "status": "running",
-        "timestamp": datetime.utcnow().isoformat()
-    }
-
-
-@app.get("/api/v1/info")
-async def service_info():
-    """Get service information"""
-    return {
-        "service": {
-            "name": settings.service_name,
-            "version": settings.service_version,
-            "environment": settings.environment
-        },
-        "capabilities": {
-            "spark_sql": True,
-            "ml_training": True,
-            "etl_pipelines": True,
-            "distributed_processing": True,
-            "graphx": True
-        },
-        "job_types": [
-            "spark_sql",
-            "ml_training",
-            "etl_pipeline",
-            "feature_engineering",
-            "graph_processing"
-        ],
-        "resource_profiles": ["small", "medium", "large", "xlarge"],
-        "integrations": {
-            "storage": ["s3", "minio", "hdfs"],
-            "databases": ["cassandra", "elasticsearch", "postgres"],
-            "ml": ["mlflow", "tensorflow", "pytorch"]
-        }
-    }
-
-
-class JobSubmitRequest(BaseModel):
-    """Job submission request"""
-    name: str
-    type: str
-    config: Dict[str, Any]
-    resource_profile: Optional[str] = "medium"
-    priority: Optional[int] = 5
-    schedule: Optional[str] = None  # Cron expression for scheduled jobs
+def create_app() -> FastAPI:
+    """Create and configure the FastAPI application"""
     
-
-@app.post("/api/v1/submit")
-async def submit_job(request: JobSubmitRequest, background_tasks: BackgroundTasks):
-    """Submit a new batch job"""
-    try:
-        # Validate job type
-        valid_types = ["spark_sql", "ml_training", "etl_pipeline", 
-                      "feature_engineering", "graph_processing"]
-        if request.type not in valid_types:
-            raise HTTPException(400, f"Invalid job type. Must be one of: {valid_types}")
-        
-        # Submit job
-        job_id = await job_scheduler.submit_job(
-            name=request.name,
-            job_type=request.type,
-            config=request.config,
-            resource_profile=request.resource_profile,
-            priority=request.priority,
-            schedule=request.schedule
-        )
-        
-        return {
-            "job_id": job_id,
-            "status": "submitted",
-            "message": f"Job {request.name} submitted successfully"
-        }
-        
-    except Exception as e:
-        logger.error(f"Failed to submit job: {e}")
-        raise HTTPException(500, f"Failed to submit job: {str(e)}")
-
-
-@app.get("/api/v1/jobs/{job_id}/status")
-async def get_job_status(job_id: str):
-    """Get job status"""
-    try:
-        status = await job_scheduler.get_job_status(job_id)
-        if not status:
-            raise HTTPException(404, f"Job {job_id} not found")
-        return status
-    except Exception as e:
-        logger.error(f"Failed to get job status: {e}")
-        raise HTTPException(500, f"Failed to get job status: {str(e)}")
-
-
-@app.delete("/api/v1/jobs/{job_id}")
-async def cancel_job(job_id: str):
-    """Cancel a running job"""
-    try:
-        result = await job_scheduler.cancel_job(job_id)
-        if not result:
-            raise HTTPException(404, f"Job {job_id} not found")
-        return {"message": f"Job {job_id} cancelled successfully"}
-    except Exception as e:
-        logger.error(f"Failed to cancel job: {e}")
-        raise HTTPException(500, f"Failed to cancel job: {str(e)}")
-
-
-@app.get("/api/v1/jobs/{job_id}/logs")
-async def get_job_logs(job_id: str, lines: int = 100):
-    """Get job logs"""
-    try:
-        logs = await job_scheduler.get_job_logs(job_id, lines)
-        if logs is None:
-            raise HTTPException(404, f"Job {job_id} not found")
-        return {"job_id": job_id, "logs": logs}
-    except Exception as e:
-        logger.error(f"Failed to get job logs: {e}")
-        raise HTTPException(500, f"Failed to get job logs: {str(e)}")
-
-
-class SparkSQLRequest(BaseModel):
-    """Spark SQL execution request"""
-    query: str
-    output_format: Optional[str] = "json"
-    limit: Optional[int] = 1000
+    # Get configuration from environment
+    vault_addr = os.getenv("VAULT_ADDR", "http://localhost:8200")
+    vault_token = os.getenv("VAULT_TOKEN")
+    consul_host = os.getenv("CONSUL_HOST", "localhost")
+    consul_port = int(os.getenv("CONSUL_PORT", "8500"))
+    consul_token = os.getenv("CONSUL_TOKEN")
     
-
-@app.post("/api/v1/sql")
-async def execute_sql(request: SparkSQLRequest):
-    """Execute Spark SQL query"""
-    try:
-        result = await spark_manager.execute_sql(
-            query=request.query,
-            output_format=request.output_format,
-            limit=request.limit
-        )
+    # Create Vault client
+    vault_client = hvac.Client(url=vault_addr, token=vault_token)
+    
+    # Create Consul client
+    consul_client = consul.aio.Consul(
+        host=consul_host,
+        port=consul_port,
+        token=consul_token
+    )
+    
+    # Create service instance
+    service = BatchProcessingService(
+        vault_client=vault_client,
+        consul_client=consul_client
+    )
+    
+    # Create app with common setup
+    app = create_data_intelligence_app(
+        service_metadata=SERVICE_METADATA,
+        service_instance=service,
+        title="Batch Processing Service API",
+        include_common_middleware=True
+    )
+    
+    # Include API routers
+    app.include_router(jobs.router, prefix="/api/v1/jobs", tags=["jobs"])
+    app.include_router(pipelines.router, prefix="/api/v1/pipelines", tags=["pipelines"])
+    app.include_router(ml_training.router, prefix="/api/v1/ml", tags=["ml-training"])
+    app.include_router(processors.router, tags=["processors"])
+    app.include_router(monitoring.router, prefix="/api/v1/monitoring", tags=["monitoring"])
+    app.include_router(health.router, prefix="/api/v1/health", tags=["health"])
+    
+    # Add root endpoint
+    @app.get("/")
+    async def root():
         return {
-            "status": "success",
-            "row_count": len(result["data"]),
-            "schema": result["schema"],
-            "data": result["data"]
+            "service": SERVICE_METADATA.name,
+            "version": SERVICE_METADATA.version,
+            "status": "running",
+            "endpoints": {
+                "jobs": "/api/v1/jobs",
+                "pipelines": "/api/v1/pipelines",
+                "ml_training": "/api/v1/ml",
+                "processors": "/api/v1/processors",
+                "monitoring": "/api/v1/monitoring",
+                "health": "/api/v1/health"
+            }
         }
-    except Exception as e:
-        logger.error(f"Failed to execute SQL: {e}")
-        raise HTTPException(500, f"Failed to execute SQL: {str(e)}")
+    
+    return app
 
 
-@app.get("/api/v1/resources")
-async def get_resource_status():
-    """Get cluster resource status"""
-    try:
-        status = await resource_manager.get_cluster_status()
-        return status
-    except Exception as e:
-        logger.error(f"Failed to get resource status: {e}")
-        raise HTTPException(500, f"Failed to get resource status: {str(e)}")
+# Create app instance
+app = create_app()
 
 
 if __name__ == "__main__":
+    port = int(os.getenv("SERVICE_PORT", settings.api_port))
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=settings.api_port,
-        reload=settings.debug,
-        log_level=settings.log_level.lower()
+        port=port,
+        reload=True
     ) 

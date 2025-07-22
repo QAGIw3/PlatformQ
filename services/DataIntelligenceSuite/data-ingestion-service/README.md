@@ -1,10 +1,10 @@
 # Data Ingestion Service
 
-Unified service for data ingestion from multiple sources including Change Data Capture (CDC), streaming, batch processing, and schema management.
+Unified service for data ingestion from multiple sources including Change Data Capture (CDC), streaming, batch processing, schema management, and external data connectors.
 
 ## Overview
 
-The Data Ingestion Service consolidates all data ingestion capabilities into a single, scalable service. It supports real-time CDC from databases, streaming data consumption, batch file imports, and maintains a central schema registry.
+The Data Ingestion Service consolidates all data ingestion capabilities into a single, scalable service. It supports real-time CDC from databases, streaming data consumption, batch file imports, maintains a central schema registry, and now includes connector functionality for external systems integration.
 
 ## Architecture
 
@@ -57,6 +57,13 @@ The Data Ingestion Service consolidates all data ingestion capabilities into a s
 - Backward compatibility checking
 - Schema evolution support
 
+### External Connectors
+- CRM Integration (SuiteCRM, Metasfresh)
+- API Connectors (OpenStreetMap)
+- Webhook Support
+- Scheduled synchronization
+- Data transformation
+
 ## API Endpoints
 
 ### CDC Management
@@ -80,6 +87,14 @@ The Data Ingestion Service consolidates all data ingestion capabilities into a s
 - `GET /api/v1/schemas/{id}` - Get schema
 - `GET /api/v1/schemas/{id}/versions` - List schema versions
 - `POST /api/v1/schemas/validate` - Validate data against schema
+
+### Connector Management
+- `GET /api/v1/connectors` - List all connectors
+- `POST /api/v1/connectors` - Create new connector
+- `DELETE /api/v1/connectors/{id}` - Delete connector
+- `POST /api/v1/connectors/{id}/trigger` - Manually trigger connector
+- `GET /api/v1/connectors/{id}/status` - Get connector status
+- `POST /api/v1/connectors/webhook/{type}` - Receive webhook data
 
 ## Configuration
 
@@ -137,6 +152,24 @@ response = requests.post('http://localhost:8010/api/v1/streams', json={
     "consumer_group": "ingestion-service",
     "schema_id": "user-event-v1"
 })
+```
+
+### Create External Connector
+```python
+# Create SuiteCRM connector
+response = requests.post('http://localhost:8010/api/v1/connectors', json={
+    "connector_id": "crm-sync",
+    "config": {
+        "type": "suitecrm",
+        "base_url": "https://crm.example.com",
+        "username": "api_user",
+        "password": "api_password",
+        "schedule": "0 */2 * * *"  # Every 2 hours
+    }
+})
+
+# Trigger connector manually
+response = requests.post('http://localhost:8010/api/v1/connectors/crm-sync/trigger')
 ```
 
 ## Deployment

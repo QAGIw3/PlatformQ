@@ -1,0 +1,56 @@
+# Core Framework
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+strawberry-graphql[fastapi]==0.215.1
+pydantic==2.5.0
+pydantic-settings==2.1.0
+
+# GraphQL Extensions
+graphql-core==3.2.3
+graphene==3.3
+dataloader==0.4.0
+
+# HTTP Client
+httpx==0.25.2
+aiohttp==3.9.1
+
+# Service Discovery & Configuration
+python-consul==1.1.0
+hvac==2.0.0
+
+# Caching
+redis==5.0.1
+aiocache==0.12.2
+
+# Authentication & Security
+python-jose[cryptography]==3.3.0
+passlib[bcrypt]==1.7.4
+python-multipart==0.0.6
+
+# Database
+asyncpg==0.29.0
+sqlalchemy==2.0.23
+
+# Event Streaming
+pulsar-client==3.3.0
+
+# Monitoring & Observability
+prometheus-client==0.19.0
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-instrumentation-fastapi==0.42b0
+opentelemetry-instrumentation-httpx==0.42b0
+opentelemetry-exporter-jaeger==1.21.0
+
+# Utilities
+python-json-logger==2.0.7
+tenacity==8.2.3
+cachetools==5.3.2
+
+# Development
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+black==23.12.0
+mypy==1.7.1
+ruff==0.1.8 

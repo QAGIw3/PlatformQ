@@ -13,6 +13,12 @@ from .types import (
     CacheRegion, Alert
 )
 
+from .connector_types import (
+    ConnectorConfigInput, ProcessFileInput, ProcessBatchInput,
+    WebhookPayloadInput, ConnectorStatus, ProcessingJob,
+    BatchProcessingResult
+)
+
 
 # Input Types for Mutations
 @strawberry.input
@@ -362,4 +368,184 @@ class Mutation:
                 success=False,
                 message=str(e),
                 errors=[str(e)]
-            ) 
+            )
+    
+    # Connector and Processor Mutations
+    @strawberry.mutation
+    async def create_connector(
+        self,
+        info: Info,
+        connector_id: str,
+        config: ConnectorConfigInput
+    ) -> MutationResult:
+        """Create a new data connector"""
+        resolver = info.context["service_resolver"]
+        if not resolver.connector_resolver:
+            return MutationResult(
+                success=False,
+                message="Connector resolver not initialized",
+                errors=["Service not available"]
+            )
+        
+        result = await resolver.connector_resolver.create_connector(
+            connector_id,
+            config.dict()
+        )
+        return MutationResult(
+            success=result["success"],
+            message=result["message"],
+            errors=[result["message"]] if not result["success"] else []
+        )
+    
+    @strawberry.mutation
+    async def delete_connector(
+        self,
+        info: Info,
+        connector_id: str
+    ) -> MutationResult:
+        """Delete a data connector"""
+        resolver = info.context["service_resolver"]
+        if not resolver.connector_resolver:
+            return MutationResult(
+                success=False,
+                message="Connector resolver not initialized",
+                errors=["Service not available"]
+            )
+        
+        result = await resolver.connector_resolver.delete_connector(connector_id)
+        return MutationResult(
+            success=result["success"],
+            message=result["message"],
+            errors=[result["message"]] if not result["success"] else []
+        )
+    
+    @strawberry.mutation
+    async def trigger_connector(
+        self,
+        info: Info,
+        connector_id: str
+    ) -> MutationResult:
+        """Manually trigger a connector sync"""
+        resolver = info.context["service_resolver"]
+        if not resolver.connector_resolver:
+            return MutationResult(
+                success=False,
+                message="Connector resolver not initialized",
+                errors=["Service not available"]
+            )
+        
+        result = await resolver.connector_resolver.trigger_connector(connector_id)
+        return MutationResult(
+            success=result["success"],
+            message=result["message"],
+            errors=[result["message"]] if not result["success"] else []
+        )
+    
+    @strawberry.mutation
+    async def process_file(
+        self,
+        info: Info,
+        input: ProcessFileInput
+    ) -> ProcessingJobResult:
+        """Process a single file"""
+        resolver = info.context["service_resolver"]
+        if not resolver.connector_resolver:
+            return ProcessingJobResult(
+                success=False,
+                message="Connector resolver not initialized",
+                errors=["Service not available"]
+            )
+        
+        try:
+            result = await resolver.connector_resolver.process_file(
+                file_path=input.file_path,
+                processor_type=input.processor_type,
+                options=input.options
+            )
+            
+            job = ProcessingJob(
+                job_id=result["job_id"],
+                processor_type=ProcessorType[result["processor_type"].upper()],
+                status=JobStatus.PENDING,
+                input_file=input.file_path,
+                output_path=result.get("output_path"),
+                started_at=result.get("created_at"),
+                metadata=input.options or {}
+            )
+            
+            return ProcessingJobResult(
+                success=True,
+                job=job
+            )
+        except Exception as e:
+            return ProcessingJobResult(
+                success=False,
+                message=str(e),
+                errors=[str(e)]
+            )
+    
+    @strawberry.mutation
+    async def process_batch(
+        self,
+        info: Info,
+        input: ProcessBatchInput
+    ) -> BatchProcessingResultType:
+        """Process multiple files in batch"""
+        resolver = info.context["service_resolver"]
+        if not resolver.connector_resolver:
+            return BatchProcessingResultType(
+                success=False,
+                message="Connector resolver not initialized",
+                errors=["Service not available"]
+            )
+        
+        try:
+            result = await resolver.connector_resolver.process_batch(
+                file_paths=input.file_paths,
+                options=input.options
+            )
+            
+            batch_result = BatchProcessingResult(
+                jobs=result["jobs"],
+                total_files=result["total_files"],
+                status=result["status"],
+                message=f"Submitted {result['total_files']} files for processing"
+            )
+            
+            return BatchProcessingResultType(
+                success=True,
+                results=batch_result
+            )
+        except Exception as e:
+            return BatchProcessingResultType(
+                success=False,
+                message=str(e),
+                errors=[str(e)]
+            )
+    
+    @strawberry.mutation
+    async def receive_webhook(
+        self,
+        info: Info,
+        input: WebhookPayloadInput
+    ) -> MutationResult:
+        """Receive webhook data"""
+        resolver = info.context["service_resolver"]
+        if not resolver.connector_resolver:
+            return MutationResult(
+                success=False,
+                message="Connector resolver not initialized",
+                errors=["Service not available"]
+            )
+        
+        result = await resolver.connector_resolver.receive_webhook(
+            webhook_type=input.webhook_type,
+            payload=input.payload,
+            headers=input.headers
+        )
+        
+        return MutationResult(
+            success=result["success"],
+            message=result["message"],
+            errors=[result["message"]] if not result["success"] else []
+        ) 

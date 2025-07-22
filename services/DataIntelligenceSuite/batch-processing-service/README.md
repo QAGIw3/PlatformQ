@@ -1,6 +1,6 @@
 # Batch Processing Service
 
-A unified service for all batch processing needs, consolidating multiple Spark jobs into a single, scalable service.
+A unified service for all batch processing needs, consolidating multiple Spark jobs into a single, scalable service with enhanced file processing capabilities.
 
 ## Overview
 
@@ -11,6 +11,7 @@ The Batch Processing Service provides:
 - Distributed computing
 - Feature engineering
 - Batch analytics
+- Specialized file processing (3D models, CAD, multimedia, simulations)
 
 ## Architecture
 
@@ -47,17 +48,31 @@ The Batch Processing Service provides:
 - **GraphX Analytics**: Large-scale graph processing
 - **Federated Learning**: Privacy-preserving ML
 
+### 4. File Processing
+- **CAD Processing**: FreeCAD, STEP, IGES, STL files
+- **3D Rendering**: Blender files with GPU acceleration
+- **Multimedia**: Images, audio, video processing
+- **Simulations**: OpenFOAM CFD, FlightGear data
+- **Metadata Extraction**: Automatic metadata and thumbnail generation
+
 ## API Endpoints
 
 ```yaml
-POST   /jobs                    # Submit batch job
-GET    /jobs                    # List jobs
-GET    /jobs/{id}              # Get job status
-DELETE /jobs/{id}              # Cancel job
-GET    /jobs/{id}/logs         # Get job logs
-POST   /pipelines              # Create pipeline
-GET    /pipelines              # List pipelines
-PUT    /pipelines/{id}         # Update pipeline
+POST   /api/v1/jobs                    # Submit batch job
+GET    /api/v1/jobs                    # List jobs
+GET    /api/v1/jobs/{id}               # Get job status
+DELETE /api/v1/jobs/{id}               # Cancel job
+GET    /api/v1/jobs/{id}/logs          # Get job logs
+POST   /api/v1/pipelines               # Create pipeline
+GET    /api/v1/pipelines               # List pipelines
+PUT    /api/v1/pipelines/{id}          # Update pipeline
+
+# File Processing Endpoints
+GET    /api/v1/processors/formats      # List supported formats
+GET    /api/v1/processors/{type}       # Get processor info
+POST   /api/v1/processors/process      # Process single file
+POST   /api/v1/processors/process/batch # Process multiple files
+POST   /api/v1/processors/upload/process # Upload and process
 ```
 
 ## Job Types
@@ -81,7 +96,38 @@ def daily_aggregation_job(spark: SparkSession, params: Dict):
         .parquet(f"s3a://aggregated/{params['date']}")
 ```
 
-### 2. ML Training Jobs
+### 2. File Processing Jobs
+```python
+from batch_processing import ProcessorClient
+
+client = ProcessorClient()
+
+# Process a single CAD file
+response = client.process_file(
+    file_path="s3://models/part123.step",
+    processor_type="freecad",
+    options={
+        "extract_metadata": True,
+        "generate_thumbnail": True,
+        "output_format": "stl"
+    }
+)
+
+# Batch process multiple files
+response = client.process_batch(
+    file_paths=[
+        "s3://renders/scene1.blend",
+        "s3://renders/scene2.blend"
+    ],
+    options={
+        "resolution": "1920x1080",
+        "samples": 256,
+        "use_gpu": True
+    }
+)
+```
+
+### 3. ML Training Jobs
 ```python
 @ml_training_job("asset_classifier")
 class AssetClassifierJob(MLJobBase):

@@ -147,6 +147,13 @@ class UnifiedQualityService(DataIntelligenceBaseService):
         self.app.state.ml_optimizer = self.ml_optimizer
         self.app.state.seatunnel_pipelines = self.seatunnel_pipelines
         
+        # Set API dependencies
+        from .api import set_quality_engine, set_profiler, set_orchestrator, set_seatunnel
+        set_quality_engine(self.quality_engine)
+        set_profiler(self.quality_profiler)
+        set_orchestrator(self.remediation_orchestrator)
+        set_seatunnel(self.seatunnel_pipelines)
+        
         logger.info("unified_quality_service_initialized")
     
     async def cleanup_service(self):

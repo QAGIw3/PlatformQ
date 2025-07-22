@@ -1,0 +1,42 @@
+# Base dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.4.2
+pydantic-settings==2.0.3
+python-multipart==0.0.6
+
+# Graph database
+gremlinpython==3.7.0
+aiogremlin==3.3.4
+
+# Analytics
+pyspark==3.5.0
+numpy==1.24.3
+pandas==2.0.3
+scikit-learn==1.3.2
+
+# Cache
+pyignite==0.6.1
+
+# Service discovery and security
+python-consul==1.1.0
+hvac==2.0.0
+
+# Platform libraries
+platformq-shared @ file:../../../libs/platformq-shared
+platformq-events @ file:../../../libs/platformq-events
+data-intelligence-common @ file:../data-intelligence-common
+
+# Async support
+asyncio==3.4.3
+aiohttp==3.9.0
+
+# Monitoring
+prometheus-client==0.19.0
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-instrumentation-fastapi==0.42b0
+
+# Utilities
+python-dateutil==2.8.2
+pytz==2023.3 

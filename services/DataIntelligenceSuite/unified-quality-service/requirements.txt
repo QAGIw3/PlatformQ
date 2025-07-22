@@ -1,0 +1,94 @@
+# Unified Quality Service Dependencies
+
+# Core Framework
+fastapi>=0.100.0
+uvicorn[standard]>=0.23.0
+pydantic>=2.0.0
+pydantic-settings>=2.1.0
+
+# Common Libraries (development mode)
+-e ../../../libs/data-intelligence-common
+-e ../../../libs/platformq-shared
+-e ../../../libs/platformq-events
+
+# Data Processing
+pandas>=2.0.3
+numpy>=1.24.3
+scipy>=1.11.4
+scikit-learn>=1.3.2
+pyarrow>=14.0.1
+dask>=2023.12.0
+
+# Data Quality Libraries
+great-expectations>=0.18.7
+pandas-profiling>=4.6.2
+# deequ>=1.1.0  # AWS data quality library - commented as it requires specific setup
+
+# Anomaly Detection
+pyod>=1.1.2  # Python Outlier Detection
+prophet>=1.1.5  # Time series anomaly detection
+statsmodels>=0.14.0
+
+# ML Libraries
+# tensorflow>=2.13.0  # For LSTM anomaly detection - commented to reduce size
+# torch>=2.0.0  # For advanced ML models - commented to reduce size
+lightgbm>=4.0.0  # For gradient boosting
+joblib>=1.3.2  # For model serialization
+
+# Rule Engine
+py-expression-eval>=0.3.14
+jsonschema>=4.20.0
+sqlparse>=0.4.4
+
+# SeaTunnel Integration (placeholder - actual package may vary)
+# seatunnel-python-api>=2.3.0
+# apache-seatunnel>=2.3.3
+
+# Storage Backends
+asyncpg>=0.28.0
+aiomysql>=0.2.0
+motor>=3.3.0
+pyignite>=0.6.1
+cassandra-driver>=3.28.0
+elasticsearch>=8.11.0
+psycopg2-binary>=2.9.9
+minio>=7.1.0
+
+# Event Streaming
+pulsar-client>=3.3.0
+# apache-pulsar>=3.3.0  # Using pulsar-client instead
+
+# Monitoring & Metrics
+prometheus-client>=0.17.0
+opentelemetry-api>=1.19.0
+opentelemetry-sdk>=1.19.0
+opentelemetry-instrumentation-fastapi>=0.40b0
+grafana-api>=1.0.3
+
+# Service Discovery & Configuration
+python-consul>=1.1.0
+hvac>=1.2.0  # HashiCorp Vault
+
+# Data Visualization
+plotly>=5.17.0
+matplotlib>=3.7.0
+seaborn>=0.12.0
+
+# Async Support
+aiofiles>=23.0.0
+httpx>=0.25.2
+tenacity>=8.2.0
+aiocache>=0.12.2  # Using memory/ignite backend
+
+# Utilities
+python-dateutil>=2.8.0
+pytz>=2023.3
+pyyaml>=6.0
+click>=8.1.0
+python-multipart>=0.0.6
+python-json-logger>=2.0.7
+structlog>=23.1.0
+
+# Additional dependencies for implementation
+croniter>=1.4.1  # For job scheduling in orchestration
+psutil>=5.9.5  # For resource monitoring 

@@ -1,1 +1,1 @@
-"""GraphQL Gateway Service application module""" 
+"""GraphQL Gateway application package""" 

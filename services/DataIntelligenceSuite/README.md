@@ -13,6 +13,7 @@ The DataIntelligenceSuite is a **unified data intelligence platform** that conso
    - Stream & batch ingestion
    - Schema registry
    - Multi-source synchronization
+   - External connectors (CRM, ERP, APIs, Webhooks)
 
 2. **Stream Processing Service** (Port 8011)
    - Real-time event processing (Flink-based)
@@ -25,6 +26,7 @@ The DataIntelligenceSuite is a **unified data intelligence platform** that conso
    - ML model training
    - ETL/ELT pipelines
    - Consolidates 14+ Spark jobs
+   - Specialized file processing (CAD, 3D, multimedia)
 
 4. **Graph Processing Service** (Port 8013)
    - JanusGraph operations
@@ -44,11 +46,12 @@ The DataIntelligenceSuite is a **unified data intelligence platform** that conso
    - Model monitoring & drift detection
    - A/B testing framework
 
-7. **Workflow Engine** (Port 8016)
+7. **Unified Orchestration Service** (Port 8019)
    - DAG management & scheduling
    - Pipeline optimization
    - Resource allocation
    - Dependency resolution
+   - Kubernetes job management
 
 8. **Data Catalog Service** (Port 8017)
    - Metadata management
@@ -56,11 +59,12 @@ The DataIntelligenceSuite is a **unified data intelligence platform** that conso
    - Data lineage tracking
    - Discovery & search
 
-9. **Unified API Gateway** (Port 8005)
-   - GraphQL interface
-   - REST endpoints
+9. **GraphQL Gateway** (Port 8000)
+   - Unified GraphQL interface
+   - REST endpoints  
    - WebSocket support
    - Rate limiting & authentication
+   - Connector & processor operations
 
 ## 🚀 Key Features
 
@@ -106,6 +110,7 @@ The DataIntelligenceSuite is a **unified data intelligence platform** that conso
 - Resolved port conflicts
 - Eliminated overlapping functionality
 - Reduced complexity by 75%
+- Migrated connector-service functionality to existing services
 
 ## 🔧 Quick Start
 
@@ -236,19 +241,32 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
 - Data encryption at rest and in transit
 - Comprehensive audit logging
 
+## 🚀 Implementation Status
+
+### Core Services
+- ✅ **Stream Processing Service** - Real-time data processing with Flink
+- ✅ **Batch Processing Service** - Large-scale batch processing with Spark + file processors
+- ✅ **Unified Graph Service** - Graph operations with JanusGraph/GraphX
+- ✅ **Unified Quality Service** - Comprehensive data quality management
+- ⚠️ **Unified ML Platform Service** - ML operations and model lifecycle
+- ✅ **Unified Orchestration Service** - Workflow management with Airflow/SeaTunnel/K8s
+- 🔄 **Data Catalog Service** - Metadata management and discovery
+- ✅ **Data Ingestion Service** - Multi-source data ingestion with SeaTunnel + connectors
+- ✅ **GraphQL Gateway** - Unified GraphQL API for all services
+
 ## 🚦 Status
 
 | Service | Status | Health Endpoint |
 |---------|--------|-----------------|
-| API Gateway | ✅ Active | http://localhost:8005/health |
-| Stream Processing | 🚧 Migration | http://localhost:8011/health |
-| Batch Processing | 🚧 Migration | http://localhost:8012/health |
-| Graph Processing | 🚧 Planned | http://localhost:8013/health |
-| Quality Engine | 🚧 Planned | http://localhost:8014/health |
-| MLOps Service | 🚧 Migration | http://localhost:8015/health |
-| Workflow Engine | 🚧 Planned | http://localhost:8016/health |
-| Data Catalog | 🚧 Planned | http://localhost:8017/health |
-| Data Ingestion | 🚧 Planned | http://localhost:8010/health |
+| GraphQL Gateway | ✅ Active | http://localhost:8000/health |
+| Data Ingestion | ✅ Active | http://localhost:8010/health |
+| Stream Processing | ✅ Active | http://localhost:8011/health |
+| Batch Processing | ✅ Active | http://localhost:8012/health |
+| Graph Processing | ✅ Active | http://localhost:8013/health |
+| Quality Engine | ✅ Active | http://localhost:8014/health |
+| MLOps Service | ✅ Active | http://localhost:8015/health |
+| Data Catalog | ✅ Active | http://localhost:8017/health |
+| Unified Orchestration | ✅ Active | http://localhost:8019/health |
 
 ## 📞 Support
 

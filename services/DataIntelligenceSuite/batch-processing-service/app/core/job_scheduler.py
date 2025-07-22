@@ -38,6 +38,7 @@ class JobType(Enum):
     ETL_PIPELINE = "etl_pipeline"
     FEATURE_ENGINEERING = "feature_engineering"
     GRAPH_PROCESSING = "graph_processing"
+    FILE_PROCESSING = "file_processing"
 
 
 class BatchJob:
