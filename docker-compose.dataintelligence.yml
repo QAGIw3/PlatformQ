@@ -1,0 +1,260 @@
+version: '3.8'
+
+services:
+  # Data Ingestion Service
+  data-ingestion-service:
+    build: ./services/DataIntelligenceSuite/data-ingestion-service
+    container_name: data-ingestion-service
+    ports:
+      - "8010:8000"
+    environment:
+      - SERVICE_NAME=data-ingestion-service
+      - SERVICE_PORT=8000
+      - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
+      - CONSUL_HOST=${CONSUL_HOST:-consul}
+      - PULSAR_URL=pulsar://pulsar:6650
+      - IGNITE_HOST=ignite
+      - CASSANDRA_HOST=cassandra
+    depends_on:
+      - pulsar
+      - ignite
+      - cassandra
+    networks:
+      - dataintelligence-network
+
+  # Stream Processing Service (Flink)
+  stream-processing-service:
+    build: ./services/DataIntelligenceSuite/stream-processing-service
+    container_name: stream-processing-service
+    ports:
+      - "8011:8000"
+      - "8081:8081"  # Flink UI
+    environment:
+      - SERVICE_NAME=stream-processing-service
+      - SERVICE_PORT=8000
+      - FLINK_PROPERTIES=jobmanager.rpc.address:localhost
+      - PULSAR_URL=pulsar://pulsar:6650
+      - CASSANDRA_HOST=cassandra
+      - MINIO_ENDPOINT=minio:9000
+      - IGNITE_HOST=ignite
+    depends_on:
+      - pulsar
+      - cassandra
+      - minio
+      - ignite
+    networks:
+      - dataintelligence-network
+
+  # Batch Processing Service (Spark)
+  batch-processing-service:
+    build: ./services/DataIntelligenceSuite/batch-processing-service
+    container_name: batch-processing-service
+    ports:
+      - "8012:8000"
+      - "4040:4040"  # Spark UI
+    environment:
+      - SERVICE_NAME=batch-processing-service
+      - SERVICE_PORT=8000
+      - SPARK_MODE=standalone
+      - MINIO_ENDPOINT=minio:9000
+      - MLFLOW_TRACKING_URI=http://mlflow-server:5000
+      - IGNITE_HOST=ignite
+    depends_on:
+      - minio
+      - mlflow-server
+      - ignite
+    networks:
+      - dataintelligence-network
+
+  # Graph Processing Service
+  graph-processing-service:
+    build: ./services/DataIntelligenceSuite/graph-processing-service
+    container_name: graph-processing-service
+    ports:
+      - "8013:8000"
+    environment:
+      - SERVICE_NAME=graph-processing-service
+      - SERVICE_PORT=8000
+      - JANUSGRAPH_URL=ws://janusgraph:8182/gremlin
+      - SPARK_MASTER=spark://spark-master:7077
+      - IGNITE_HOST=ignite
+    depends_on:
+      - janusgraph
+      - ignite
+    networks:
+      - dataintelligence-network
+
+  # Quality Engine Service
+  quality-engine-service:
+    build: ./services/DataIntelligenceSuite/quality-engine-service
+    container_name: quality-engine-service
+    ports:
+      - "8014:8000"
+    environment:
+      - SERVICE_NAME=quality-engine-service
+      - SERVICE_PORT=8000
+      - PULSAR_URL=pulsar://pulsar:6650
+      - ELASTICSEARCH_HOSTS=elasticsearch:9200
+      - IGNITE_HOST=ignite
+    depends_on:
+      - pulsar
+      - elasticsearch
+      - ignite
+    networks:
+      - dataintelligence-network
+
+  # MLOps Service
+  mlops-service:
+    build: ./services/DataIntelligenceSuite/mlops-service
+    container_name: mlops-service
+    ports:
+      - "8015:8000"
+    environment:
+      - SERVICE_NAME=mlops-service
+      - SERVICE_PORT=8000
+      - MLFLOW_TRACKING_URI=http://mlflow-server:5000
+      - PULSAR_URL=pulsar://pulsar:6650
+      - MINIO_ENDPOINT=minio:9000
+    depends_on:
+      - mlflow-server
+      - pulsar
+      - minio
+    networks:
+      - dataintelligence-network
+
+  # Workflow Engine
+  workflow-engine:
+    build: ./services/DataIntelligenceSuite/workflow-engine
+    container_name: workflow-engine
+    ports:
+      - "8016:8000"
+    environment:
+      - SERVICE_NAME=workflow-engine
+      - SERVICE_PORT=8000
+      - PULSAR_URL=pulsar://pulsar:6650
+      - IGNITE_HOST=ignite
+    depends_on:
+      - pulsar
+      - ignite
+    networks:
+      - dataintelligence-network
+
+  # Data Catalog Service
+  data-catalog-service:
+    build: ./services/DataIntelligenceSuite/data-catalog-service
+    container_name: data-catalog-service
+    ports:
+      - "8017:8000"
+    environment:
+      - SERVICE_NAME=data-catalog-service
+      - SERVICE_PORT=8000
+      - ELASTICSEARCH_HOSTS=elasticsearch:9200
+      - PULSAR_URL=pulsar://pulsar:6650
+    depends_on:
+      - elasticsearch
+      - pulsar
+    networks:
+      - dataintelligence-network
+
+  # Unified API Gateway (GraphQL)
+  unified-api-gateway:
+    build: ./services/DataIntelligenceSuite/graphql-gateway
+    container_name: unified-api-gateway
+    ports:
+      - "8005:8000"
+    environment:
+      - SERVICE_NAME=unified-api-gateway
+      - SERVICE_PORT=8000
+      - SERVICES_URLS=|
+        data-ingestion:http://data-ingestion-service:8000
+        stream-processing:http://stream-processing-service:8000
+        batch-processing:http://batch-processing-service:8000
+        graph-processing:http://graph-processing-service:8000
+        quality-engine:http://quality-engine-service:8000
+        mlops:http://mlops-service:8000
+        workflow-engine:http://workflow-engine:8000
+        data-catalog:http://data-catalog-service:8000
+    depends_on:
+      - data-ingestion-service
+      - stream-processing-service
+      - batch-processing-service
+      - graph-processing-service
+      - quality-engine-service
+      - mlops-service
+      - workflow-engine
+      - data-catalog-service
+    networks:
+      - dataintelligence-network
+
+  # MLflow Server (existing)
+  mlflow-server:
+    build: ./services/DataIntelligenceSuite/mlflow-server
+    container_name: mlflow-server
+    ports:
+      - "5000:5000"
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=postgresql://mlflow:mlflow@postgres/mlflow
+      - MLFLOW_ARTIFACT_ROOT=s3://mlflow
+      - AWS_ACCESS_KEY_ID=minioadmin
+      - AWS_SECRET_ACCESS_KEY=minioadmin
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+    depends_on:
+      - postgres
+      - minio
+    networks:
+      - dataintelligence-network
+
+  # Fix port conflicts for existing services
+  cognitive-orchestration-service:
+    build: ./services/DataIntelligenceSuite/cognitive-orchestration-service
+    container_name: cognitive-orchestration-service
+    ports:
+      - "8006:8000"  # Changed from 8000
+    environment:
+      - SERVICE_NAME=cognitive-orchestration-service
+      - SERVICE_PORT=8000
+      - ML_PLATFORM_URL=http://mlops-service:8000
+      - GRAPH_INTELLIGENCE_URL=http://graph-processing-service:8000
+    networks:
+      - dataintelligence-network
+
+  graph-intelligence-service:
+    build: ./services/DataIntelligenceSuite/graph-intelligence-service
+    container_name: graph-intelligence-service-legacy
+    ports:
+      - "8008:80"  # Changed from 8000
+    environment:
+      - SERVICE_NAME=graph-intelligence-service
+    networks:
+      - dataintelligence-network
+
+  workflow-service:
+    build: ./services/DataIntelligenceSuite/workflow-service
+    container_name: workflow-service-legacy
+    ports:
+      - "8007:8000"  # Changed from 8000
+    environment:
+      - SERVICE_NAME=workflow-service
+      - SERVICE_PORT=8000
+    networks:
+      - dataintelligence-network
+
+  quantum-optimization-service:
+    build: ./services/DataIntelligenceSuite/quantum-optimization-service
+    container_name: quantum-optimization-service
+    ports:
+      - "8009:8001"  # Keeping 8001 internally but mapping to 8009
+    environment:
+      - SERVICE_NAME=quantum-optimization-service
+      - SERVICE_PORT=8001
+    networks:
+      - dataintelligence-network
+
+networks:
+  dataintelligence-network:
+    driver: bridge
+
+volumes:
+  flink-checkpoints:
+  spark-data:
+  mlflow-artifacts: 

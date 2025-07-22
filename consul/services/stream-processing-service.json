@@ -1,0 +1,23 @@
+{
+  "service": {
+    "name": "stream-processing-service",
+    "tags": [
+      "data-intelligence",
+      "stream-processing",
+      "flink",
+      "real-time"
+    ],
+    "port": 8011,
+    "address": "stream-processing-service",
+    "check": {
+      "http": "http://stream-processing-service:8000/api/v1/health",
+      "interval": "30s",
+      "timeout": "10s"
+    },
+    "meta": {
+      "version": "1.0.0",
+      "service_type": "stream_processing",
+      "capabilities": "cep,streaming_sql,stateful_processing"
+    }
+  }
+} 
