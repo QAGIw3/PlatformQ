@@ -55,13 +55,15 @@ The DataIntelligenceSuite is a **unified data intelligence platform** that conso
    - Dependency resolution
    - Kubernetes job management
 
-8. **Data Catalog Service** (Port 8017) [AI-Enhanced 🤖]
+8. **Data Catalog Hub** (Port 8017) [Unified Catalog + Search 🤖]
+   - Combined metadata management & intelligent search
+   - Natural language queries with intent detection
+   - Vector & hybrid search capabilities
    - Automated medallion layer discovery
-   - AI-powered intelligent search
-   - Enhanced business glossary with term suggestions
+   - AI-powered business glossary mapping
    - Quality score integration & trust levels
    - Access pattern analytics & optimization
-   - Metadata management & lineage tracking
+   - Comprehensive lineage tracking & impact analysis
 
 9. **GraphQL Gateway** (Port 8000)
    - Unified GraphQL interface
@@ -195,7 +197,7 @@ graph TD
     API --> Batch[Batch Processing]
     API --> MLOps[MLOps Service]
     
-    Stream --> Catalog[Data Catalog]
+    Stream --> Catalog[Data Catalog Hub]
     Batch --> Catalog
     
     Stream --> Quality[Quality Engine]
@@ -266,7 +268,7 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
 - ✅ **Unified Quality Service** - Comprehensive data quality management
 - ⚠️ **Unified ML Platform Service** - ML operations and model lifecycle
 - ✅ **Unified Orchestration Service** - Workflow management with Airflow/SeaTunnel/K8s
-- 🔄 **Data Catalog Service** - Metadata management and discovery
+- 🔄 **Data Catalog Hub** - Unified metadata management and intelligent search
 - ✅ **Data Ingestion Service** - Multi-source data ingestion with SeaTunnel + connectors
 - ✅ **GraphQL Gateway** - Unified GraphQL API for all services
 
@@ -281,8 +283,8 @@ See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
 | Graph Processing | ✅ Active | http://localhost:8013/health | JanusGraph |
 | Quality Engine | ✅ Active | http://localhost:8014/health | Data Quality |
 | MLOps Service | ✅ Active | http://localhost:8015/health | Model Management |
-| Data Catalog | ✅ Enhanced | http://localhost:8017/health | AI Discovery + Search |
-| Search Service | ✅ Enhanced | http://localhost:8019/health | AI-Powered Search |
+| Data Catalog Hub | ✅ Unified | http://localhost:8017/api/v1/health | Catalog + AI Search |
+
 | Unified Orchestration | ✅ Enhanced | http://localhost:8019/health | Workflow + K8s |
 
 ## 📞 Support

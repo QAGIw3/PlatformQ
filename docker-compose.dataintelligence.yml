@@ -139,20 +139,32 @@ services:
     networks:
       - dataintelligence-network
 
-  # Data Catalog Service
-  data-catalog-service:
-    build: ./services/DataIntelligenceSuite/data-catalog-service
-    container_name: data-catalog-service
+  # Data Catalog Hub (Unified Catalog + Search)
+  data-catalog-hub:
+    build: ./services/DataIntelligenceSuite/data-catalog-hub
+    container_name: data-catalog-hub
     ports:
-      - "8017:8000"
+      - "8017:8017"
     environment:
-      - SERVICE_NAME=data-catalog-service
-      - SERVICE_PORT=8000
+      - SERVICE_NAME=data-catalog-hub
+      - SERVICE_PORT=8017
+      - ATLAS_URL=http://atlas:21000
       - ELASTICSEARCH_HOSTS=elasticsearch:9200
       - PULSAR_URL=pulsar://pulsar:6650
+      - IGNITE_HOST=ignite
+      - MILVUS_HOST=milvus
+      - MINIO_ENDPOINT=minio:9000
+      - QUALITY_SERVICE_URL=http://unified-quality-service:8015
+      - ANALYTICS_SERVICE_URL=http://analytics-service:8018
+      - VAULT_ADDR=${VAULT_ADDR:-http://vault:8200}
+      - CONSUL_HOST=${CONSUL_HOST:-consul}
     depends_on:
+      - atlas
       - elasticsearch
       - pulsar
+      - ignite
+      - milvus
+      - minio
     networks:
       - dataintelligence-network
 
@@ -173,7 +185,7 @@ services:
         quality-engine:http://quality-engine-service:8000
         mlops:http://mlops-service:8000
         workflow-engine:http://workflow-engine:8000
-        data-catalog:http://data-catalog-service:8000
+        data-catalog:http://data-catalog-hub:8017
     depends_on:
       - data-ingestion-service
       - stream-processing-service
@@ -182,7 +194,7 @@ services:
       - quality-engine-service
       - mlops-service
       - workflow-engine
-      - data-catalog-service
+      - data-catalog-hub
     networks:
       - dataintelligence-network
 

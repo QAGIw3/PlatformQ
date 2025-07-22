@@ -1,0 +1,61 @@
+{
+  "service": {
+    "name": "data-catalog-hub",
+    "tags": [
+      "data-intelligence",
+      "catalog",
+      "search",
+      "metadata",
+      "ai-powered"
+    ],
+    "port": 8017,
+    "meta": {
+      "version": "2.0.0",
+      "description": "Unified metadata management and intelligent search platform",
+      "capabilities": "catalog,search,lineage,discovery,quality,analytics"
+    },
+    "check": {
+      "id": "data-catalog-hub-health",
+      "name": "Data Catalog Hub Health Check",
+      "http": "http://localhost:8017/api/v1/health",
+      "interval": "30s",
+      "timeout": "10s"
+    },
+    "weights": {
+      "passing": 10,
+      "warning": 1
+    },
+    "connect": {
+      "sidecar_service": {
+        "proxy": {
+          "upstreams": [
+            {
+              "destination_name": "elasticsearch",
+              "local_bind_port": 9200
+            },
+            {
+              "destination_name": "atlas",
+              "local_bind_port": 21000
+            },
+            {
+              "destination_name": "milvus",
+              "local_bind_port": 19530
+            },
+            {
+              "destination_name": "ignite",
+              "local_bind_port": 10800
+            },
+            {
+              "destination_name": "unified-quality-service",
+              "local_bind_port": 8015
+            },
+            {
+              "destination_name": "analytics-service",
+              "local_bind_port": 8018
+            }
+          ]
+        }
+      }
+    }
+  }
+} 
