@@ -1,342 +1,404 @@
 # Unified Quality Service
 
-A comprehensive, ML-powered data quality management platform that consolidates all quality-related functionality into a single, powerful service.
-
-## Status: ✅ Implemented
-
-All core components have been implemented including:
-- ✅ Quality Engine with comprehensive validation
-- ✅ Quality Profiler for data analysis  
-- ✅ ML-powered Anomaly Detection
-- ✅ Intelligent Remediation Orchestrator
-- ✅ ML Quality Optimizer
-- ✅ SeaTunnel Integration
-- ✅ Event Processing
-- ✅ Complete REST API
+A comprehensive data quality management service that consolidates all quality operations across the DataIntelligenceSuite.
 
 ## Overview
 
-The Unified Quality Service combines the best features from data-quality-service and quality-engine-service, providing:
+This enhanced service consolidates quality operations from multiple services and provides a unified approach to data quality management using the new `QualityProcessor` from the common library.
 
-- **Autonomous Quality Management**: Self-healing data quality with ML-driven detection and remediation
-- **Comprehensive Profiling**: Statistical analysis, pattern detection, and data understanding
-- **Advanced Anomaly Detection**: Multiple detection methods including statistical, ML-based, and time-series
-- **Intelligent Rule Engine**: Flexible rule management with SQL, Python, and regex support
-- **Automated Remediation**: ML-powered issue correction with learning capabilities
-- **Real-time Monitoring**: Continuous quality tracking with alerting and trending
-- **SeaTunnel Integration**: Leverages Apache SeaTunnel for efficient data movement and quality checks
+## Features
+
+### Multi-Dimensional Quality Assessment
+- **Completeness**: Missing value detection and analysis
+- **Accuracy**: Data accuracy validation against business rules
+- **Consistency**: Cross-dataset consistency checks
+- **Timeliness**: Data freshness and latency monitoring
+- **Validity**: Format and constraint validation
+- **Uniqueness**: Duplicate detection and resolution
+
+### Quality Check Types
+- Null/missing value checks
+- Duplicate detection (row and column level)
+- Range and boundary checks
+- Format and pattern validation
+- Referential integrity checks
+- Business rule validation
+- Statistical anomaly detection
+- ML-based quality assessment
+
+### Advanced Capabilities
+- Real-time and batch quality processing
+- Data profiling and statistics
+- Anomaly detection with configurable sensitivity
+- Auto-remediation strategies
+- Quality trend analysis
+- SLA monitoring and alerting
+- Data lineage integration
 
 ## Architecture
 
 ```
-┌──────────────────────────────────────────────────────────────┐
-│                   Unified Quality Service                     │
-├──────────────────────────────────────────────────────────────┤
-│                                                              │
-│  ┌──────────────────┐  ┌─────────────────┐  ┌─────────────┐│
-│  │ Quality Engine    │  │ ML Components   │  │ Monitoring  ││
-│  │ - Validation      │  │ - Anomaly Det.  │  │ - Metrics   ││
-│  │ - Profiling       │  │ - Root Cause    │  │ - Alerts    ││
-│  │ - Rule Execution  │  │ - Auto-Fix      │  │ - Trends    ││
-│  └──────────────────┘  └─────────────────┘  └─────────────┘│
-│                                                              │
-│  ┌──────────────────────────────────────────────────────────┐│
-│  │               SeaTunnel Integration                       ││
-│  │ - Data Pipeline Quality Gates                             ││
-│  │ - Streaming Quality Checks                                ││
-│  │ - Cross-System Data Movement                              ││
-│  └──────────────────────────────────────────────────────────┘│
-│                                                              │
-│  Storage: Ignite | ElasticSearch | Cassandra | MinIO        │
-│  Events: Apache Pulsar | Monitoring: Prometheus/Grafana     │
-└──────────────────────────────────────────────────────────────┘
+┌─────────────────┐     ┌──────────────────┐     ┌─────────────────┐
+│  Data Sources   │────▶│ Quality Engine   │────▶│ Quality Store   │
+│  (Batch/Stream) │     │ (Rule-based/ML)  │     │ (Metrics/Logs)  │
+└─────────────────┘     └──────────────────┘     └─────────────────┘
+                               │                          │
+                               ▼                          ▼
+                        ┌──────────────────┐     ┌─────────────────┐
+                        │ Remediation      │     │ Monitoring      │
+                        │ Engine           │     │ Dashboard       │
+                        └──────────────────┘     └─────────────────┘
 ```
 
-## Key Features
+## Quick Start
 
-### 1. Autonomous Quality Management
-- **Self-Healing**: Automatically detects and fixes quality issues
-- **ML-Driven**: Learns from past fixes to improve over time
-- **Root Cause Analysis**: Identifies underlying causes of quality problems
-- **Predictive Quality**: Predicts potential quality issues before they occur
+### Prerequisites
+- Python 3.8+
+- Apache Ignite (for caching)
+- Cassandra (for quality metrics storage)
+- Elasticsearch (for quality logs)
 
-### 2. Advanced Profiling
-- **Statistical Analysis**: Comprehensive statistics for all data types
-- **Pattern Recognition**: Detects formats, ranges, and business patterns
-- **Data Drift Detection**: Monitors changes in data distribution
-- **Correlation Analysis**: Identifies relationships between fields
-- **Great Expectations Integration**: Enterprise-grade profiling
+### Installation
 
-### 3. Multi-Method Anomaly Detection
-- **Statistical Methods**: Z-score, IQR, Grubbs test
-- **ML-Based**: Isolation Forest, LOF, One-Class SVM
-- **Time Series**: Prophet, LSTM-based detection
-- **Ensemble Methods**: Combines multiple detectors for accuracy
-- **Real-time Detection**: Streaming anomaly detection via SeaTunnel
+```bash
+cd services/DataIntelligenceSuite/unified-quality-service
+pip install -r requirements.txt
+```
 
-### 4. Intelligent Rule Engine
-- **Multiple Rule Types**: SQL, Python expressions, regex patterns
-- **Rule Learning**: Suggests new rules based on data patterns
-- **Performance Optimization**: Rule execution optimization
-- **Version Control**: Full rule versioning and rollback
-- **A/B Testing**: Test rule effectiveness before deployment
-
-### 5. Smart Remediation
-- **Auto-Fix Strategies**: Missing value imputation, format standardization
-- **ML-Powered Decisions**: Learns best remediation strategies
-- **Simulation Mode**: Preview changes before applying
-- **Rollback Support**: Full audit trail and rollback capability
-- **Custom Strategies**: Plugin architecture for custom remediation
-
-### 6. SeaTunnel Integration
-- **Quality Gates**: Embedded quality checks in data pipelines
-- **Stream Processing**: Real-time quality validation
-- **Cross-System Movement**: Quality-assured data transfers
-- **Pipeline Templates**: Pre-built quality pipeline configurations
-
-## API Endpoints
-
-### Core Quality Operations
-- `POST /api/v1/quality/check` - Comprehensive quality check
-- `POST /api/v1/quality/validate` - Validate against specific rules
-- `POST /api/v1/quality/profile` - Deep data profiling
-- `POST /api/v1/quality/remediate` - Auto-remediate issues
-- `GET /api/v1/quality/score/{dataset}` - Quality scoring
-
-### Anomaly Detection
-- `POST /api/v1/anomalies/detect` - Run anomaly detection
-- `GET /api/v1/anomalies/monitor/{dataset}` - Real-time monitoring
-- `POST /api/v1/anomalies/train` - Train custom models
-
-### Rule Management
-- `POST /api/v1/rules` - Create rule
-- `GET /api/v1/rules` - List rules with advanced filtering
-- `PUT /api/v1/rules/{id}` - Update rule
-- `POST /api/v1/rules/suggest` - ML-suggested rules
-- `POST /api/v1/rules/test` - Test rule effectiveness
-
-## Complete API Reference
-
-### Quality Validation Endpoints
-- `POST /api/v1/quality/validate` - Run comprehensive quality validation
-- `POST /api/v1/quality/rules/validate` - Validate a quality rule
-- `GET /api/v1/quality/score/{dataset_id}` - Get current quality score
-- `GET /api/v1/quality/history/{dataset_id}` - Get quality score history
-- `GET /api/v1/quality/issues/{dataset_id}` - Get quality issues
-- `POST /api/v1/quality/rules` - Create quality rule
-- `GET /api/v1/quality/rules` - List quality rules
-- `PUT /api/v1/quality/rules/{rule_id}` - Update quality rule
-- `DELETE /api/v1/quality/rules/{rule_id}` - Delete quality rule
-- `GET /api/v1/quality/thresholds/{dataset_id}` - Get quality thresholds
-- `PUT /api/v1/quality/thresholds/{dataset_id}` - Update quality thresholds
-
-### Data Profiling Endpoints
-- `POST /api/v1/profile/analyze` - Profile a dataset
-- `GET /api/v1/profile/profile/{dataset_id}` - Get existing profile
-- `POST /api/v1/profile/column/analyze` - Analyze specific column
-- `GET /api/v1/profile/correlations/{dataset_id}` - Get column correlations
-- `GET /api/v1/profile/patterns/{dataset_id}` - Get data patterns
-- `GET /api/v1/profile/distributions/{dataset_id}` - Get data distributions
-- `GET /api/v1/profile/semantic-types/{dataset_id}` - Detect semantic types
-- `GET /api/v1/profile/recommendations/{dataset_id}` - Get quality recommendations
-- `POST /api/v1/profile/compare` - Compare multiple datasets
-
-### Remediation & ML Optimization Endpoints
-- `POST /api/v1/remediation/plan` - Create remediation plan
-- `POST /api/v1/remediation/execute` - Execute remediation plan
-- `GET /api/v1/remediation/status/{remediation_id}` - Get remediation status
-- `POST /api/v1/remediation/simulate` - Simulate remediation
-- `POST /api/v1/remediation/rollback/{remediation_id}` - Rollback remediation
-- `GET /api/v1/remediation/history` - Get remediation history
-- `GET /api/v1/remediation/plans/{plan_id}` - Get remediation plan details
-- `POST /api/v1/remediation/optimize` - Optimize configuration using ML
-- `POST /api/v1/remediation/optimize/apply/{optimization_id}` - Apply ML optimization
-- `GET /api/v1/remediation/optimize/history` - Get optimization history
-- `POST /api/v1/remediation/anomaly/detect` - Detect anomalies using ML
-
-### SeaTunnel Integration Endpoints
-- `POST /api/v1/seatunnel/pipelines` - Create quality-aware pipeline
-- `POST /api/v1/seatunnel/pipelines/execute` - Execute pipeline
-- `GET /api/v1/seatunnel/pipelines/{pipeline_id}` - Get pipeline details
-- `GET /api/v1/seatunnel/pipelines` - List pipelines
-- `DELETE /api/v1/seatunnel/pipelines/{pipeline_id}` - Delete pipeline
-- `GET /api/v1/seatunnel/executions/{execution_id}` - Get execution status
-- `GET /api/v1/seatunnel/executions` - List executions
-- `POST /api/v1/seatunnel/pipelines/{pipeline_id}/quality-gate` - Configure quality gate
-- `GET /api/v1/seatunnel/pipelines/{pipeline_id}/quality-metrics` - Get quality metrics
-- `POST /api/v1/seatunnel/templates/{template_name}/instantiate` - Use pipeline template
-- `GET /api/v1/seatunnel/templates` - List pipeline templates
-
-## Configuration
+### Configuration
 
 ```yaml
-# Service Configuration
-SERVICE_NAME: unified-quality-service
-SERVICE_PORT: 8003
-ENVIRONMENT: production
+# config.yaml
+service:
+  name: unified-quality-service
+  port: 8086
 
-# Quality Engine Configuration
-QUALITY_DIMENSIONS:
-  - completeness
-  - accuracy
-  - consistency
-  - timeliness
-  - validity
-  - uniqueness
-
-# ML Configuration
-ML_ANOMALY_DETECTION_METHODS:
-  - statistical
-  - isolation_forest
-  - local_outlier_factor
-  - one_class_svm
-  - prophet
-  - lstm
-  - ensemble
-
-ML_MODEL_DIR: /app/models
-ML_AUTO_RETRAIN: true
-ML_RETRAIN_INTERVAL: 86400  # 24 hours
-
-# SeaTunnel Configuration
-SEATUNNEL_API_URL: http://seatunnel-api:8080
-SEATUNNEL_QUALITY_TEMPLATES: /config/quality-templates
-
-# Storage Configuration
-IGNITE_HOST: ignite
-IGNITE_PORT: 10800
-ELASTICSEARCH_HOSTS: ["elasticsearch:9200"]
-CASSANDRA_HOSTS: ["cassandra:9042"]
-MINIO_ENDPOINT: minio:9000
-
-# Event Streaming
-PULSAR_SERVICE_URL: pulsar://pulsar:6650
-
-# Service Discovery
-CONSUL_HOST: consul
-CONSUL_PORT: 8500
-VAULT_ADDR: http://vault:8200
-
-# Performance
-CACHE_TTL: 3600
-MAX_WORKERS: 8
-BATCH_SIZE: 10000
+quality:
+  overall_threshold: 0.95
+  dimension_thresholds:
+    completeness: 0.95
+    accuracy: 0.98
+    consistency: 0.99
+    timeliness: 0.95
+    validity: 0.99
+    uniqueness: 0.999
+    
+  fail_on_breach: false
+  enable_profiling: true
+  enable_anomaly_detection: true
+  enable_auto_remediation: false
+  
+storage:
+  metrics:
+    type: cassandra
+    hosts: ["localhost"]
+  logs:
+    type: elasticsearch
+    hosts: ["localhost:9200"]
 ```
 
-## Usage Examples
+### Running the Service
 
-### Comprehensive Quality Validation
-```python
-import requests
-
-response = requests.post('http://localhost:8003/api/v1/quality/validate', json={
-    "dataset_id": "customer_data_2024",
-    "data_location": "s3://data-lake/customers/2024/",
-    "dimensions": ["completeness", "accuracy", "consistency"],
-    "mode": "comprehensive"
-})
-```
-
-### Data Profiling
-```python
-response = requests.post('http://localhost:8003/api/v1/profile/analyze', json={
-    "dataset_id": "sales_data",
-    "data_location": "s3://data-lake/sales/",
-    "profile_types": ["basic", "statistical", "pattern", "correlation"]
-})
-```
-
-### Automated Remediation
-```python
-# Create remediation plan
-plan_response = requests.post('http://localhost:8003/api/v1/remediation/plan', json={
-    "dataset_id": "customer_data",
-    "quality_issues": [
-        {
-            "dimension": "completeness",
-            "column": "email",
-            "null_count": 150,
-            "severity": "high"
-        }
-    ],
-    "mode": "supervised"
-})
-
-# Execute plan
-execute_response = requests.post('http://localhost:8003/api/v1/remediation/execute', json={
-    "plan_id": plan_response.json()["plan_id"]
-})
-```
-
-### SeaTunnel Pipeline with Quality Gates
-```python
-response = requests.post('http://localhost:8003/api/v1/seatunnel/pipelines', json={
-    "name": "customer_quality_pipeline",
-    "source_config": {
-        "type": "jdbc",
-        "url": "jdbc:postgresql://localhost:5432/customers"
-    },
-    "sink_config": {
-        "type": "elasticsearch",
-        "hosts": ["http://localhost:9200"]
-    },
-    "quality_config": {
-        "validation_mode": "fail_on_critical",
-        "dimensions": ["completeness", "validity"],
-        "rules": [
-            {"column": "email", "type": "regex", "pattern": "^[\\w.-]+@[\\w.-]+\\.\\w+$"}
-        ]
-    }
-})
-```
-
-## Performance Metrics
-
-- **Validation Speed**: Up to 1M records/second with parallel processing
-- **Profiling Performance**: 500K records profiled in < 10 seconds
-- **Anomaly Detection**: Real-time detection with < 100ms latency
-- **Remediation**: Automated fixes applied in seconds
-- **Cache Hit Rate**: > 90% for repeated validations
-
-## Monitoring
-
-### Prometheus Metrics
-```
-# Quality metrics
-quality_validation_duration_seconds{dataset="sales"} 2.5
-quality_score{dataset="sales", dimension="accuracy"} 0.95
-quality_issues_total{severity="critical"} 42
-quality_remediation_success_rate 0.87
-
-# Performance metrics
-quality_cache_hit_rate 0.92
-quality_processing_throughput_rps 50000
-```
-
-### Health Endpoints
-- `/health` - Basic liveness check
-- `/ready` - Readiness with dependency checks
-- `/metrics` - Prometheus metrics endpoint
-
-## Development
-
-### Running Locally
 ```bash
-# Install dependencies
-pip install -r requirements.txt
-
-# Run service
 python -m app.main
 ```
 
-### Running with Docker
-```bash
-# Build image
-docker build -t unified-quality-service .
+## API Endpoints
 
-# Run container
-docker run -p 8003:8003 unified-quality-service
+### Quality Assessment
+- `POST /api/v1/quality/assess` - Run quality assessment on data
+- `GET /api/v1/quality/results/{job_id}` - Get assessment results
+- `GET /api/v1/quality/profile/{dataset_id}` - Get data profile
+
+### Rule Management
+- `GET /api/v1/quality/rules` - List quality rules
+- `POST /api/v1/quality/rules` - Create quality rule
+- `PUT /api/v1/quality/rules/{rule_id}` - Update rule
+- `DELETE /api/v1/quality/rules/{rule_id}` - Delete rule
+
+### Monitoring
+- `GET /api/v1/quality/metrics` - Get quality metrics
+- `GET /api/v1/quality/trends` - Get quality trends
+- `GET /api/v1/quality/sla` - Get SLA compliance
+
+### Remediation
+- `GET /api/v1/quality/remediation/strategies` - List remediation strategies
+- `POST /api/v1/quality/remediation/apply` - Apply remediation
+
+## Usage Examples
+
+### Basic Quality Assessment
+
+```python
+from data_intelligence_common import QualityProcessor, QualityConfig, QualityRule
+from data_intelligence_common import QualityDimension, QualityCheckType
+
+# Configure quality processor
+config = QualityConfig(
+    name="customer_data_quality",
+    overall_quality_threshold=0.95,
+    enable_profiling=True,
+    enable_anomaly_detection=True
+)
+
+# Create processor
+processor = QualityProcessor(config)
+
+# Add quality rules
+processor.add_quality_rule(QualityRule(
+    rule_id="null_check_email",
+    name="Email Null Check",
+    check_type=QualityCheckType.NULL_CHECK,
+    dimension=QualityDimension.COMPLETENESS,
+    column="email",
+    threshold=0.99,
+    severity="critical"
+))
+
+processor.add_quality_rule(QualityRule(
+    rule_id="format_check_phone",
+    name="Phone Format Check",
+    check_type=QualityCheckType.FORMAT_CHECK,
+    dimension=QualityDimension.VALIDITY,
+    column="phone",
+    metadata={"pattern": r"^\+?1?\d{10,14}$"},
+    threshold=0.95,
+    severity="error"
+))
+
+# Run assessment
+result = await processor.process(customer_data)
+print(f"Overall Quality Score: {result.metadata['overall_quality_score']:.2%}")
 ```
+
+### Quality Pipeline
+
+```python
+from data_intelligence_common import PipelineBuilder
+
+# Build quality pipeline
+pipeline = PipelineBuilder("data_quality_pipeline")
+    .source(batch_processor, "s3://raw-data/customers/")
+    .quality(quality_processor, [
+        NullCheck(["email", "phone", "address"]),
+        DuplicateCheck(["customer_id"]),
+        RangeCheck("age", min=0, max=120),
+        FormatCheck("email", pattern=r"^[\w\.-]+@[\w\.-]+\.\w+$"),
+        BusinessRule("credit_limit <= income * 3")
+    ])
+    .transform(lambda df: df.filter("quality_score >= 0.95"))
+    .sink(batch_processor, "s3://clean-data/customers/")
+    .build()
+
+# Execute pipeline
+results = await pipeline.execute()
+```
+
+### Real-time Quality Monitoring
+
+```python
+# Create streaming quality processor
+stream_config = QualityConfig(
+    name="real_time_quality",
+    mode=ProcessingMode.STREAM,
+    checkpoint_interval=timedelta(seconds=30)
+)
+
+stream_processor = QualityProcessor(stream_config)
+
+# Process streaming data
+async def monitor_quality(event):
+    result = await stream_processor.process(event)
+    
+    if result.metadata['overall_quality_score'] < 0.9:
+        # Trigger alert
+        await alert_manager.send_alert(
+            severity="warning",
+            message=f"Quality degradation detected: {result.metadata['overall_quality_score']:.2%}"
+        )
+    
+    return result
+
+# Subscribe to event stream
+await event_bus.subscribe("data_events", monitor_quality)
+```
+
+### Custom Quality Rules
+
+```python
+# Define custom business rule
+def validate_customer_segment(df):
+    """Validate customer segmentation logic"""
+    invalid = df[
+        (df['segment'] == 'premium') & 
+        (df['annual_spend'] < 10000)
+    ]
+    
+    return len(invalid) == 0
+
+# Add as business rule
+processor.add_quality_rule(QualityRule(
+    rule_id="segment_validation",
+    name="Customer Segment Validation",
+    check_type=QualityCheckType.BUSINESS_RULE,
+    dimension=QualityDimension.ACCURACY,
+    condition=validate_customer_segment,
+    severity="error"
+))
+```
+
+## Quality Dimensions
+
+### Completeness
+Measures the extent to which data is not missing.
+- Null value ratio
+- Required field coverage
+- Optional field fill rate
+
+### Accuracy
+Measures how closely data reflects real-world values.
+- Business rule compliance
+- Reference data matching
+- Calculated field accuracy
+
+### Consistency
+Measures uniformity of data across datasets.
+- Cross-table consistency
+- Temporal consistency
+- Format consistency
+
+### Timeliness
+Measures how current the data is.
+- Data age analysis
+- Update frequency
+- Processing latency
+
+### Validity
+Measures conformance to syntax rules.
+- Format validation
+- Type checking
+- Constraint validation
+
+### Uniqueness
+Measures absence of duplicates.
+- Primary key uniqueness
+- Natural key uniqueness
+- Fuzzy duplicate detection
+
+## Monitoring and Alerting
+
+### Metrics
+The service exposes comprehensive metrics:
+- `quality_score_by_dimension` - Score breakdown by dimension
+- `quality_checks_total` - Total quality checks performed
+- `quality_failures_by_rule` - Failures grouped by rule
+- `quality_processing_duration` - Processing time histogram
+
+### Dashboards
+Pre-built Grafana dashboards for:
+- Real-time quality monitoring
+- Historical quality trends
+- Rule effectiveness analysis
+- SLA compliance tracking
+
+### Alerts
+Configurable alerts for:
+- Quality threshold breaches
+- Anomaly detection
+- SLA violations
+- System health issues
+
+## Remediation Strategies
+
+### Automatic Remediation
+- **Null Handling**: Fill with defaults, interpolation, or ML predictions
+- **Duplicate Resolution**: Keep first/last, merge, or custom logic
+- **Format Correction**: Auto-formatting for common patterns
+- **Outlier Treatment**: Capping, transformation, or removal
+
+### Manual Remediation
+- Generate remediation reports
+- Provide fix suggestions
+- Track remediation actions
+- Validate fixes
+
+## Integration
+
+### Data Catalog Integration
+- Automatic quality metadata updates
+- Quality-based data classification
+- Lineage quality propagation
+
+### ML Platform Integration
+- Quality gates for ML pipelines
+- Feature quality monitoring
+- Model input validation
+
+### Orchestration Integration
+- Quality checkpoints in workflows
+- Conditional branching based on quality
+- Quality-driven retries
+
+## Advanced Features
+
+### ML-Based Quality Assessment
+
+```python
+from sklearn.ensemble import IsolationForest
+
+# Train anomaly detection model
+model = IsolationForest(contamination=0.1)
+model.fit(historical_data)
+
+# Create ML-based quality rule
+def ml_anomaly_check(df):
+    predictions = model.predict(df[['feature1', 'feature2']])
+    anomaly_rate = (predictions == -1).sum() / len(predictions)
+    return anomaly_rate < 0.15
+
+processor.add_quality_rule(QualityRule(
+    rule_id="ml_anomaly",
+    name="ML Anomaly Detection",
+    check_type=QualityCheckType.ML_BASED,
+    dimension=QualityDimension.ACCURACY,
+    condition=ml_anomaly_check,
+    threshold=0.85
+))
+```
+
+### Quality Trend Analysis
+
+```python
+# Analyze quality trends
+trends = await quality_service.analyze_trends(
+    dataset="customers",
+    period="30d",
+    dimensions=["completeness", "accuracy"]
+)
+
+# Predict future quality
+forecast = await quality_service.forecast_quality(
+    dataset="customers",
+    horizon="7d"
+)
+```
+
+## Performance Optimization
+
+- Parallel quality check execution
+- Intelligent sampling for large datasets
+- Caching of quality results
+- Incremental quality assessment
+- Distributed processing with Spark
+
+## Migration Guide
+
+### From Individual Service Quality Checks
+
+1. Consolidate quality rules into unified format
+2. Migrate custom validators to new rule types
+3. Update quality thresholds and SLAs
+4. Integrate with new quality API
 
 ## License
 
