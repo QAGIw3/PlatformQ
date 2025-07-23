@@ -1,13 +1,129 @@
 """
-Configuration Management for DataIntelligenceSuite
+Standardized Configuration Management for DataIntelligenceSuite
 
-Provides dynamic configuration management using Consul KV.
+Provides centralized configuration classes and utilities for all services.
 """
 
-from .config_manager import ConfigManager, ConfigSchema, ConfigWatcher
+from .base import (
+    BaseConfig,
+    ServiceConfig,
+    DatabaseConfig,
+    CacheConfig,
+    MessagingConfig,
+    SecurityConfig,
+    ObservabilityConfig,
+    ConfigLoader,
+    ConfigValidator,
+    ConfigurationError
+)
+
+from .service_configs import (
+    AnalyticsConfig,
+    MLPlatformConfig,
+    DataPlatformConfig,
+    IntegrationHubConfig,
+    OrchestrationConfig,
+    GovernanceConfig
+)
+
+from .storage import (
+    IgniteConfig,
+    CassandraConfig,
+    ElasticsearchConfig,
+    JanusGraphConfig,
+    MinioConfig,
+    MilvusConfig
+)
+
+from .messaging import (
+    PulsarConfig,
+    EventBusConfig,
+    StreamingConfig
+)
+
+from .processing import (
+    SparkConfig,
+    FlinkConfig,
+    TrinoConfig,
+    SeaTunnelConfig
+)
+
+from .security import (
+    VaultConfig,
+    ConsulConfig,
+    AuthConfig,
+    EncryptionConfig
+)
+
+from .monitoring import (
+    MetricsConfig,
+    TracingConfig,
+    LoggingConfig,
+    AlertingConfig
+)
+
+from .environment import (
+    EnvironmentConfig,
+    DeploymentConfig,
+    ResourceLimits,
+    ScalingConfig
+)
 
 __all__ = [
-    "ConfigManager",
-    "ConfigSchema",
-    "ConfigWatcher"
+    # Base
+    "BaseConfig",
+    "ServiceConfig",
+    "DatabaseConfig",
+    "CacheConfig",
+    "MessagingConfig",
+    "SecurityConfig",
+    "ObservabilityConfig",
+    "ConfigLoader",
+    "ConfigValidator",
+    "ConfigurationError",
+    
+    # Service specific
+    "AnalyticsConfig",
+    "MLPlatformConfig",
+    "DataPlatformConfig",
+    "IntegrationHubConfig",
+    "OrchestrationConfig",
+    "GovernanceConfig",
+    
+    # Storage
+    "IgniteConfig",
+    "CassandraConfig",
+    "ElasticsearchConfig",
+    "JanusGraphConfig",
+    "MinioConfig",
+    "MilvusConfig",
+    
+    # Messaging
+    "PulsarConfig",
+    "EventBusConfig",
+    "StreamingConfig",
+    
+    # Processing
+    "SparkConfig",
+    "FlinkConfig",
+    "TrinoConfig",
+    "SeaTunnelConfig",
+    
+    # Security
+    "VaultConfig",
+    "ConsulConfig",
+    "AuthConfig",
+    "EncryptionConfig",
+    
+    # Monitoring
+    "MetricsConfig",
+    "TracingConfig",
+    "LoggingConfig",
+    "AlertingConfig",
+    
+    # Environment
+    "EnvironmentConfig",
+    "DeploymentConfig",
+    "ResourceLimits",
+    "ScalingConfig"
 ] 

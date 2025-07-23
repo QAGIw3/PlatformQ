@@ -9,7 +9,6 @@ from typing import Any, Dict, List, Optional, Callable, Set, AsyncIterator, Tupl
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from enum import Enum
 import asyncio
 import json
 import pickle
@@ -18,32 +17,9 @@ from platformq_shared.vault.vault_client import VaultClient
 from platformq_shared.consul.consul_client import ConsulClient
 from ..monitoring import MetricsCollector
 from ..integrations.ignite_client import IgniteClient, IgniteConfig, CacheConfig as IgniteCacheConfig
+from .strategies import CacheMode, CacheStrategy, EvictionPolicy
 
 logger = logging.getLogger(__name__)
-
-
-class CacheMode(Enum):
-    """Cache modes for different use cases"""
-    REPLICATED = "REPLICATED"  # Full replication across nodes
-    PARTITIONED = "PARTITIONED"  # Data partitioned across nodes
-    LOCAL = "LOCAL"  # Node-local cache
-
-
-class CacheStrategy(Enum):
-    """Caching strategies"""
-    CACHE_ASIDE = "cache_aside"  # Application manages cache
-    READ_THROUGH = "read_through"  # Cache loads on miss
-    WRITE_THROUGH = "write_through"  # Cache writes to store
-    WRITE_BEHIND = "write_behind"  # Async write to store
-    REFRESH_AHEAD = "refresh_ahead"  # Proactive refresh
-
-
-class EvictionPolicy(Enum):
-    """Cache eviction policies"""
-    LRU = "LRU"  # Least Recently Used
-    LFU = "LFU"  # Least Frequently Used
-    FIFO = "FIFO"  # First In First Out
-    RANDOM = "RANDOM"  # Random eviction
 
 
 @dataclass
@@ -153,43 +129,33 @@ class CacheManager:
         
     async def initialize(self):
         """Initialize cache manager"""
-        try:
-            # Create Ignite client config
-            ignite_config = IgniteConfig(
-                service_name="ignite",
-                hosts=self.ignite_nodes,
-                use_vault_credentials=self.vault_client is not None,
-                enable_encryption=self.enable_encryption
-            )
+        logger.info(f"Initializing cache manager for {self.service_name}")
+        
+        # Initialize Ignite client
+        ignite_config = IgniteConfig(
+            nodes=self.ignite_nodes,
+            enable_ssl=False,  # Configure based on environment
+            enable_authentication=False
+        )
+        
+        self.ignite_client = IgniteClient(ignite_config)
+        await self.ignite_client.connect()
+        
+        # Load cache configurations from Consul
+        await self._load_cache_configs()
+        
+        # Initialize standard caches
+        await self._init_standard_caches()
+        
+        # Start background tasks
+        if self.enable_statistics:
+            self._stats_task = asyncio.create_task(self._collect_stats_loop())
             
-            # Create Ignite client
-            self.ignite_client = IgniteClient(
-                ignite_config,
-                self.vault_client,
-                self.consul_client
-            )
+        if self.consul_client:
+            self._config_watcher = asyncio.create_task(self._watch_config_changes())
             
-            await self.ignite_client.connect()
-            
-            # Load cache configurations from Consul
-            await self._load_cache_configs()
-            
-            # Initialize standard caches
-            await self._init_standard_caches()
-            
-            # Start background tasks
-            if self.enable_statistics:
-                self._stats_task = asyncio.create_task(self._collect_stats_loop())
-                
-            if self.consul_client:
-                self._config_watcher = asyncio.create_task(self._watch_config_changes())
-                
-            logger.info(f"Cache manager initialized for {self.service_name}")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize cache manager: {e}")
-            raise
-            
+        logger.info("Cache manager initialized successfully")
+        
     async def _load_cache_configs(self):
         """Load cache configurations from Consul"""
         if not self.consul_client:
@@ -247,40 +213,37 @@ class CacheManager:
         await self.create_cache(query_cache)
         
     async def create_cache(self, config: CacheConfig) -> None:
-        """Create a new cache"""
-        try:
-            # Convert to Ignite cache config
-            ignite_config = IgniteCacheConfig(
-                name=config.name,
-                mode=config.mode,
-                atomicity_mode=config.atomicity_mode,
-                backups=config.backups,
-                on_heap_max_memory=config.on_heap_max_memory,
-                eviction_policy=config.eviction_policy.value if config.eviction_policy else None,
-                sql_schema=config.sql_schema,
-                query_entities=config.query_entities,
-                default_expiry_ms=int(config.ttl.total_seconds() * 1000) if config.ttl else None,
-                encrypt_data=config.encrypt_data,
-                encryption_key=config.encryption_key
-            )
+        """Create a new cache with specified configuration"""
+        logger.info(f"Creating cache: {config.name}")
+        
+        # Convert to Ignite cache config
+        ignite_cache_config = IgniteCacheConfig(
+            name=config.name,
+            cache_mode=config.mode.value,
+            atomicity_mode=config.atomicity_mode,
+            backups=config.backups,
+            write_synchronization_mode=config.write_synchronization_mode,
+            partition_loss_policy=config.partition_loss_policy,
+            eager_ttl=config.eager_ttl,
+            statistics_enabled=config.statistics_enabled,
+            on_heap_max_memory=config.on_heap_max_memory,
+            sql_schema=config.sql_schema,
+            query_entities=config.query_entities
+        )
+        
+        # Create cache in Ignite
+        await self.ignite_client.create_cache(ignite_cache_config)
+        
+        # Store configuration
+        self._caches[config.name] = config
+        self._cache_stats[config.name] = CacheStats()
+        
+        # Start refresh task if using REFRESH_AHEAD strategy
+        if config.strategy == CacheStrategy.REFRESH_AHEAD and config.loader:
+            self._start_refresh_ahead(config)
             
-            # Create cache in Ignite
-            await self.ignite_client.create_cache(ignite_config)
-            
-            # Register cache
-            self._caches[config.name] = config
-            self._cache_stats[config.name] = CacheStats()
-            
-            # Start refresh-ahead if configured
-            if config.strategy == CacheStrategy.REFRESH_AHEAD and config.loader:
-                self._start_refresh_ahead(config)
-                
-            logger.info(f"Created cache: {config.name}")
-            
-        except Exception as e:
-            logger.error(f"Failed to create cache {config.name}: {e}")
-            raise
-            
+        logger.info(f"Cache {config.name} created successfully")
+        
     async def get(
         self,
         cache_name: str,
@@ -372,16 +335,20 @@ class CacheManager:
         if not await self._check_access(cache_name, "read", user_context):
             raise PermissionError(f"Access denied to cache {cache_name}")
             
+        config = self._caches.get(cache_name)
+        if not config:
+            raise ValueError(f"Cache {cache_name} not found")
+            
         try:
             results = await self.ignite_client.get_all(cache_name, keys)
             
-            # Update statistics
-            hits = sum(1 for v in results.values() if v is not None)
-            misses = len(keys) - hits
-            
-            self._cache_stats[cache_name].hits += hits
-            self._cache_stats[cache_name].misses += misses
-            
+            # Update stats
+            for key in keys:
+                if key in results:
+                    self._record_hit(cache_name)
+                else:
+                    self._record_miss(cache_name)
+                    
             return results
             
         except Exception as e:
@@ -400,11 +367,22 @@ class CacheManager:
         if not await self._check_access(cache_name, "write", user_context):
             raise PermissionError(f"Access denied to cache {cache_name}")
             
+        config = self._caches.get(cache_name)
+        if not config:
+            raise ValueError(f"Cache {cache_name} not found")
+            
         try:
-            await self.ignite_client.put_all(cache_name, entries)
+            # Calculate TTL
+            ttl = ttl or config.ttl or self.default_ttl
+            expiry_ms = int(ttl.total_seconds() * 1000) if ttl else None
             
-            self._cache_stats[cache_name].puts += len(entries)
+            # Put all values
+            await self.ignite_client.put_all(cache_name, entries, expiry_ms)
             
+            # Update stats
+            for _ in entries:
+                self._record_put(cache_name)
+                
         except Exception as e:
             logger.error(f"Cache put_all failed: {e}")
             raise
@@ -413,16 +391,20 @@ class CacheManager:
                     user_context: Optional[Dict[str, Any]] = None) -> bool:
         """Remove value from cache"""
         # Check access control
-        if not await self._check_access(cache_name, "delete", user_context):
+        if not await self._check_access(cache_name, "write", user_context):
             raise PermissionError(f"Access denied to cache {cache_name}")
             
-        try:
-            removed = await self.ignite_client.remove(cache_name, key)
+        config = self._caches.get(cache_name)
+        if not config:
+            raise ValueError(f"Cache {cache_name} not found")
             
-            if removed:
+        try:
+            result = await self.ignite_client.remove(cache_name, key)
+            
+            if result:
                 self._record_removal(cache_name)
                 
-            return removed
+            return result
             
         except Exception as e:
             logger.error(f"Cache remove failed: {e}")
@@ -430,18 +412,22 @@ class CacheManager:
             
     async def clear(self, cache_name: str,
                    user_context: Optional[Dict[str, Any]] = None) -> None:
-        """Clear all values from cache"""
+        """Clear all entries from cache"""
         # Check access control
-        if not await self._check_access(cache_name, "admin", user_context):
+        if not await self._check_access(cache_name, "write", user_context):
             raise PermissionError(f"Access denied to cache {cache_name}")
             
+        config = self._caches.get(cache_name)
+        if not config:
+            raise ValueError(f"Cache {cache_name} not found")
+            
         try:
-            await self.ignite_client.remove_all(cache_name)
+            await self.ignite_client.clear(cache_name)
             
             # Reset stats
             self._cache_stats[cache_name] = CacheStats()
             
-            logger.info(f"Cleared cache: {cache_name}")
+            logger.info(f"Cache {cache_name} cleared")
             
         except Exception as e:
             logger.error(f"Cache clear failed: {e}")
@@ -456,23 +442,19 @@ class CacheManager:
     ) -> List[Dict[str, Any]]:
         """Execute SQL query on cache"""
         # Check access control
-        if not await self._check_access(cache_name, "query", user_context):
+        if not await self._check_access(cache_name, "read", user_context):
             raise PermissionError(f"Access denied to cache {cache_name}")
             
-        try:
-            # Add row-level security if needed
-            if user_context and self.vault_client:
-                # Could modify query to add security filters
-                pass
-                
-            results = await self.ignite_client.sql_query(
-                cache_name,
-                sql,
-                args
-            )
+        config = self._caches.get(cache_name)
+        if not config:
+            raise ValueError(f"Cache {cache_name} not found")
             
-            # Convert to list of dicts
-            return [dict(zip(results[0], row)) for row in results[1:]] if results else []
+        if not config.sql_schema:
+            raise ValueError(f"Cache {cache_name} does not support SQL queries")
+            
+        try:
+            results = await self.ignite_client.query(cache_name, sql, args)
+            return results
             
         except Exception as e:
             logger.error(f"Cache query failed: {e}")
@@ -480,11 +462,15 @@ class CacheManager:
             
     @asynccontextmanager
     async def transaction(self, cache_names: List[str]):
-        """Transaction context manager"""
-        # Ignite transactions would be implemented here
-        # For now, just yield
-        yield
-        
+        """Start a transaction across multiple caches"""
+        tx = await self.ignite_client.start_transaction()
+        try:
+            yield tx
+            await tx.commit()
+        except:
+            await tx.rollback()
+            raise
+            
     async def warm_cache(
         self,
         cache_name: str,
@@ -496,7 +482,7 @@ class CacheManager:
         if not config:
             raise ValueError(f"Cache {cache_name} not found")
             
-        loaded = 0
+        loaded_count = 0
         
         try:
             if keys:
@@ -505,65 +491,62 @@ class CacheManager:
                     value = await self._load_value(loader, key)
                     if value is not None:
                         await self.put(cache_name, key, value)
-                        loaded += 1
+                        loaded_count += 1
             else:
                 # Load all data (loader should return dict)
-                data = await loader()
+                data = await self._load_value(loader, None)
                 if isinstance(data, dict):
                     await self.put_all(cache_name, data)
-                    loaded = len(data)
+                    loaded_count = len(data)
                     
-            logger.info(f"Warmed cache {cache_name} with {loaded} entries")
+            logger.info(f"Warmed cache {cache_name} with {loaded_count} entries")
+            return loaded_count
             
         except Exception as e:
             logger.error(f"Cache warming failed: {e}")
+            raise
             
-        return loaded
-        
     def get_stats(self, cache_name: Optional[str] = None) -> Dict[str, CacheStats]:
         """Get cache statistics"""
         if cache_name:
             return {cache_name: self._cache_stats.get(cache_name, CacheStats())}
-        return dict(self._cache_stats)
-        
+        else:
+            return self._cache_stats.copy()
+            
     async def shutdown(self):
         """Shutdown cache manager"""
-        try:
-            # Cancel background tasks
-            for task in self._refresh_tasks.values():
-                task.cancel()
-                
-            if self._stats_task:
-                self._stats_task.cancel()
-                
-            if self._config_watcher:
-                self._config_watcher.cancel()
-                
-            # Wait for tasks to complete
-            tasks = list(self._refresh_tasks.values())
-            if self._stats_task:
-                tasks.append(self._stats_task)
-            if self._config_watcher:
-                tasks.append(self._config_watcher)
-                
+        logger.info("Shutting down cache manager")
+        
+        # Cancel background tasks
+        if self._stats_task:
+            self._stats_task.cancel()
+            
+        if self._config_watcher:
+            self._config_watcher.cancel()
+            
+        for task in self._refresh_tasks.values():
+            task.cancel()
+            
+        # Wait for tasks to complete
+        tasks = [self._stats_task, self._config_watcher] + list(self._refresh_tasks.values())
+        tasks = [t for t in tasks if t]
+        
+        if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
             
-            # Close Ignite client
-            if self.ignite_client:
-                await self.ignite_client.close()
-                
-            logger.info("Cache manager shutdown complete")
+        # Disconnect from Ignite
+        if self.ignite_client:
+            await self.ignite_client.disconnect()
             
-        except Exception as e:
-            logger.error(f"Error during cache manager shutdown: {e}")
-            
+        logger.info("Cache manager shutdown complete")
+        
     async def _check_access(
         self,
         cache_name: str,
         operation: str,
         user_context: Optional[Dict[str, Any]] = None
     ) -> bool:
-        """Check access control for cache operation"""
+        """Check if user has access to cache operation"""
         config = self._caches.get(cache_name)
         if not config or not config.access_control:
             return True
@@ -574,13 +557,10 @@ class CacheManager:
         if not user_context:
             return False
             
-        # Check user roles
-        user_roles = user_context.get('roles', [])
-        if not any(role in config.allowed_roles for role in user_roles):
-            return False
-            
-        # Could add more fine-grained checks here
-        return True
+        user_roles = user_context.get("roles", [])
+        
+        # Check if user has any of the allowed roles
+        return any(role in config.allowed_roles for role in user_roles)
         
     def set_user_context(self, context: Dict[str, Any]):
         """Set user context for access control"""
@@ -606,7 +586,7 @@ class CacheManager:
             return None
             
     async def _write_through(self, writer: Callable, key: str, value: Any):
-        """Write value through to backing store"""
+        """Write value to backing store"""
         try:
             if asyncio.iscoroutinefunction(writer):
                 await writer(key, value)
@@ -619,64 +599,61 @@ class CacheManager:
         """Record cache hit"""
         if cache_name in self._cache_stats:
             self._cache_stats[cache_name].hits += 1
-            self.metrics.record_cache_hit(cache_name)
             
     def _record_miss(self, cache_name: str):
         """Record cache miss"""
         if cache_name in self._cache_stats:
             self._cache_stats[cache_name].misses += 1
-            self.metrics.record_cache_miss(cache_name)
             
     def _record_put(self, cache_name: str):
         """Record cache put"""
         if cache_name in self._cache_stats:
             self._cache_stats[cache_name].puts += 1
-            self.metrics.record_cache_put(cache_name)
             
     def _record_removal(self, cache_name: str):
         """Record cache removal"""
         if cache_name in self._cache_stats:
             self._cache_stats[cache_name].removals += 1
-            self.metrics.record_cache_removal(cache_name)
             
     def _start_refresh_ahead(self, config: CacheConfig):
         """Start refresh-ahead task for cache"""
         async def refresh_loop():
             while True:
                 try:
-                    # Refresh cache entries before they expire
-                    ttl_seconds = config.ttl.total_seconds() if config.ttl else 3600
-                    refresh_interval = ttl_seconds * 0.8  # Refresh at 80% of TTL
+                    await asyncio.sleep(300)  # Every 5 minutes
                     
-                    await asyncio.sleep(refresh_interval)
+                    # Get all keys that are close to expiration
+                    # This is simplified - actual implementation would track TTLs
+                    keys = await self.ignite_client.get_keys(config.name)
                     
-                    # Get all keys and refresh
-                    # This would need actual implementation
-                    logger.debug(f"Refreshing cache {config.name}")
-                    
+                    for key in keys:
+                        value = await self._load_value(config.loader, key)
+                        if value is not None:
+                            await self.put(config.name, key, value)
+                            
                 except asyncio.CancelledError:
                     break
                 except Exception as e:
-                    logger.error(f"Refresh-ahead failed: {e}")
+                    logger.error(f"Refresh-ahead failed for {config.name}: {e}")
                     
-        self._refresh_tasks[config.name] = asyncio.create_task(refresh_loop())
+        task = asyncio.create_task(refresh_loop())
+        self._refresh_tasks[config.name] = task
         
     async def _collect_stats_loop(self):
-        """Periodically collect cache statistics"""
+        """Collect cache statistics periodically"""
         while True:
             try:
-                await asyncio.sleep(60)  # Collect every minute
+                await asyncio.sleep(60)  # Every minute
                 
-                # Get cache sizes from Ignite
                 for cache_name in self._caches:
                     try:
-                        size = await self.ignite_client.get_size(cache_name)
-                        self._cache_stats[cache_name].size = size
+                        stats = await self.ignite_client.get_cache_metrics(cache_name)
                         
-                        # Get metrics from Ignite
-                        metrics = await self.ignite_client.get_cache_metrics(cache_name)
-                        # Update stats with metrics
-                        
+                        if cache_name in self._cache_stats:
+                            self._cache_stats[cache_name].size = stats.get("size", 0)
+                            self._cache_stats[cache_name].memory_size = stats.get("memory_size", 0)
+                            self._cache_stats[cache_name].evictions = stats.get("evictions", 0)
+                            
                     except Exception as e:
                         logger.error(f"Failed to collect stats for {cache_name}: {e}")
                         
@@ -689,17 +666,15 @@ class CacheManager:
         """Watch for configuration changes in Consul"""
         while True:
             try:
-                await asyncio.sleep(30)  # Check every 30 seconds
-                
-                # Reload configurations
+                await asyncio.sleep(30)  # Every 30 seconds
                 await self._load_cache_configs()
                 
-                # Create any new caches
+                # Check for new caches to create
                 for cache_name, config in self._caches.items():
-                    if cache_name not in self._cache_stats:
+                    if not await self.ignite_client.cache_exists(cache_name):
                         await self.create_cache(config)
                         
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Config watch failed: {e}") 
+                logger.error(f"Config watcher failed: {e}") 

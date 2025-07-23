@@ -14,6 +14,7 @@ import statistics
 
 from ...monitoring import StructuredLogger, MetricsCollector
 from ..events import EventBus, Event
+from ..caching import CacheStrategy  # Import from unified caching module
 
 logger = StructuredLogger.get_logger(__name__)
 
@@ -29,11 +30,10 @@ class WarmingStrategy(str, Enum):
 
 class OptimizationGoal(str, Enum):
     """Cache optimization goals"""
-    HIT_RATE = "hit_rate"           # Maximize cache hits
-    MEMORY = "memory"               # Minimize memory usage
-    LATENCY = "latency"             # Minimize access latency
-    COST = "cost"                   # Minimize operational cost
-    BALANCED = "balanced"           # Balance all factors
+    HIT_RATE = "hit_rate"            # Maximize cache hits
+    RESPONSE_TIME = "response_time"  # Minimize response time
+    MEMORY_USAGE = "memory_usage"    # Minimize memory usage
+    COST = "cost"                    # Minimize cost (e.g., cloud storage)
 
 
 @dataclass
@@ -429,7 +429,7 @@ class CacheOptimizer:
         region_name: str,
         stats: CacheStatistics,
         config: Dict[str, Any],
-        goal: OptimizationGoal = OptimizationGoal.BALANCED
+        goal: OptimizationGoal = OptimizationGoal.HIT_RATE
     ) -> List[OptimizationRecommendation]:
         """
         Analyze cache and provide recommendations.
@@ -451,17 +451,23 @@ class CacheOptimizer:
         if goal == OptimizationGoal.HIT_RATE:
             recommendations.extend(await self._optimize_hit_rate(stats, config))
             
-        elif goal == OptimizationGoal.MEMORY:
+        elif goal == OptimizationGoal.MEMORY_USAGE:
             recommendations.extend(await self._optimize_memory(stats, config))
             
-        elif goal == OptimizationGoal.LATENCY:
+        elif goal == OptimizationGoal.RESPONSE_TIME:
             recommendations.extend(await self._optimize_latency(stats, config))
             
-        elif goal == OptimizationGoal.BALANCED:
-            # Run all optimizations
-            recommendations.extend(await self._optimize_hit_rate(stats, config))
-            recommendations.extend(await self._optimize_memory(stats, config))
-            recommendations.extend(await self._optimize_latency(stats, config))
+        elif goal == OptimizationGoal.COST:
+            # Cost optimization is complex and depends on specific cache backend
+            # For now, we can recommend strategies that might reduce cost
+            # e.g., using cheaper storage, optimizing eviction policies
+            recommendations.append(OptimizationRecommendation(
+                recommendation_type="optimize_storage_cost",
+                description="Consider using cheaper storage for cache data",
+                expected_improvement={"cost": -0.5}, # Assuming a 50% reduction in cost
+                priority=5,
+                parameters={"storage_type": "S3", "region": "us-east-1"} # Example parameter
+            ))
             
         # Sort by priority
         recommendations.sort(key=lambda x: x.priority, reverse=True)

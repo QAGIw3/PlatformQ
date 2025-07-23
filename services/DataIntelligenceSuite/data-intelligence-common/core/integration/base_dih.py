@@ -1,18 +1,25 @@
 """
-Base Digital Integration Hub abstractions.
+Base Data Integration Hub (DIH) implementation with caching and monitoring.
 
-Provides core patterns for building data integration layers.
+Provides a foundation for building data integration services.
 """
 
-from typing import Dict, List, Any, Optional, Tuple, Set
-from datetime import datetime, timedelta
-from dataclasses import dataclass, field
-from enum import Enum
-from abc import ABC, abstractmethod
 import asyncio
+import logging
+from typing import Dict, List, Any, Optional, Callable, Set, Union, Tuple
+from dataclasses import dataclass, field
+from datetime import datetime, timedelta
+from abc import ABC, abstractmethod
+from contextlib import asynccontextmanager
+import json
+from enum import Enum
 
-from ...monitoring import StructuredLogger
-from ..caching import CacheManager
+from platformq_shared.vault.vault_client import VaultClient
+from platformq_shared.consul.consul_client import ConsulClient
+from ...monitoring import MetricsCollector, StructuredLogger
+from ...utils.converters import DataConverter
+from ..events import EventBus, Event, create_data_event
+from ..caching import CacheManager, CacheConfig, CacheStrategy
 
 logger = StructuredLogger.get_logger(__name__)
 
@@ -30,15 +37,6 @@ class DataSource(str, Enum):
     MINIO = "minio"
     TRINO = "trino"
     DRUID = "druid"
-
-
-class CacheStrategy(str, Enum):
-    """Cache update strategies"""
-    CACHE_ASIDE = "cache_aside"          # Application manages cache
-    WRITE_THROUGH = "write_through"      # Write to cache and source
-    WRITE_BEHIND = "write_behind"        # Write to cache, async to source
-    READ_THROUGH = "read_through"        # Read from source if not in cache
-    REFRESH_AHEAD = "refresh_ahead"      # Proactive refresh before expiry
 
 
 class ConsistencyLevel(str, Enum):

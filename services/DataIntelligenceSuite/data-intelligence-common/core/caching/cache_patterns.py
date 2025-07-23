@@ -1,393 +1,461 @@
 """
 Cache patterns for DataIntelligenceSuite
 
-Implements common caching patterns and strategies.
+Implements advanced caching patterns and multi-level cache support.
 """
 
 import asyncio
 import logging
-from typing import Any, Dict, Optional, Callable, List, Set
+from typing import Any, Dict, Optional, Callable, List, Set, Tuple
 from datetime import datetime, timedelta
-from dataclasses import dataclass
-from enum import Enum
+from dataclasses import dataclass, field
 from abc import ABC, abstractmethod
+import hashlib
+import json
+
+from .strategies import CacheStrategy, CacheEntry, BaseCacheStrategy, create_cache_strategy
+from .cache_manager import CacheManager, CacheConfig
 
 logger = logging.getLogger(__name__)
 
 
-class CachePattern(Enum):
-    """Common cache patterns"""
-    CACHE_ASIDE = "cache_aside"
-    READ_THROUGH = "read_through"
-    WRITE_THROUGH = "write_through"
-    WRITE_BEHIND = "write_behind"
-    REFRESH_AHEAD = "refresh_ahead"
-    CACHE_WARMING = "cache_warming"
-
-
-@dataclass
-class CacheEntry:
-    """Cache entry with metadata"""
-    key: str
-    value: Any
-    created_at: datetime
-    accessed_at: datetime
-    ttl: Optional[timedelta] = None
-    access_count: int = 0
+class CachePattern(ABC):
+    """Base class for cache patterns"""
     
-    @property
-    def is_expired(self) -> bool:
-        """Check if entry is expired"""
-        if self.ttl is None:
-            return False
-        return datetime.utcnow() > self.created_at + self.ttl
-        
-    @property
-    def time_to_refresh(self) -> bool:
-        """Check if entry should be refreshed (80% of TTL)"""
-        if self.ttl is None:
-            return False
-        elapsed = datetime.utcnow() - self.created_at
-        return elapsed > self.ttl * 0.8
-
-
-class CacheStrategy(ABC):
-    """Base class for cache strategies"""
-    
-    def __init__(self, cache_manager, cache_name: str):
-        self.cache_manager = cache_manager
-        self.cache_name = cache_name
-        
     @abstractmethod
-    async def get(self, key: str, loader: Optional[Callable] = None) -> Optional[Any]:
-        """Get value with strategy"""
+    async def get(self, key: str) -> Optional[Any]:
+        """Get value using pattern"""
         pass
         
     @abstractmethod
     async def put(self, key: str, value: Any, ttl: Optional[timedelta] = None) -> None:
-        """Put value with strategy"""
+        """Put value using pattern"""
         pass
         
     @abstractmethod
     async def remove(self, key: str) -> bool:
-        """Remove value with strategy"""
+        """Remove value using pattern"""
         pass
 
 
-class CacheAsideStrategy(CacheStrategy):
+class MultiLevelCache(CachePattern):
     """
-    Cache-aside (lazy loading) pattern.
+    Multi-level cache implementation (L1, L2, L3, etc.)
     
-    Application manages cache population.
+    Provides a hierarchy of caches with different characteristics:
+    - L1: Fast, small (e.g., in-memory)
+    - L2: Medium speed, medium size (e.g., distributed cache)
+    - L3: Slow, large (e.g., database)
     """
     
-    async def get(self, key: str, loader: Optional[Callable] = None) -> Optional[Any]:
-        """Get with cache-aside pattern"""
-        # Try cache first
-        value = await self.cache_manager.get(self.cache_name, key)
+    def __init__(self, levels: List[Tuple[str, BaseCacheStrategy, timedelta]]):
+        """
+        Initialize multi-level cache
         
-        if value is not None:
-            return value
-            
-        # Load from source if loader provided
-        if loader:
-            value = await loader(key) if asyncio.iscoroutinefunction(loader) else loader(key)
-            if value is not None:
-                await self.put(key, value)
-            return value
-            
+        Args:
+            levels: List of (name, cache_strategy, ttl) tuples
+        """
+        self.levels = levels
+        self._metrics = {
+            "l1_hits": 0,
+            "l2_hits": 0,
+            "l3_hits": 0,
+            "misses": 0
+        }
+        
+    async def get(self, key: str) -> Optional[Any]:
+        """Get value from cache hierarchy"""
+        for i, (name, cache, ttl) in enumerate(self.levels):
+            try:
+                value = await cache.get(key)
+                
+                if value is not None:
+                    # Record hit
+                    self._metrics[f"l{i+1}_hits"] += 1
+                    
+                    # Populate higher levels
+                    for j in range(i):
+                        higher_name, higher_cache, higher_ttl = self.levels[j]
+                        await higher_cache.put(key, value, higher_ttl)
+                        
+                    return value
+                    
+            except Exception as e:
+                logger.error(f"Error getting from {name}: {e}")
+                
+        self._metrics["misses"] += 1
         return None
         
     async def put(self, key: str, value: Any, ttl: Optional[timedelta] = None) -> None:
-        """Put with cache-aside pattern"""
-        await self.cache_manager.put(self.cache_name, key, value, ttl)
+        """Put value in all cache levels"""
+        tasks = []
         
-    async def remove(self, key: str) -> bool:
-        """Remove with cache-aside pattern"""
-        return await self.cache_manager.remove(self.cache_name, key)
-
-
-class ReadThroughStrategy(CacheStrategy):
-    """
-    Read-through pattern.
-    
-    Cache loads missing data automatically.
-    """
-    
-    def __init__(self, cache_manager, cache_name: str, loader: Callable):
-        super().__init__(cache_manager, cache_name)
-        self.loader = loader
-        
-    async def get(self, key: str, loader: Optional[Callable] = None) -> Optional[Any]:
-        """Get with read-through pattern"""
-        # Try cache first
-        value = await self.cache_manager.get(self.cache_name, key)
-        
-        if value is not None:
-            return value
-            
-        # Use configured loader or provided one
-        loader = loader or self.loader
-        value = await loader(key) if asyncio.iscoroutinefunction(loader) else loader(key)
-        
-        if value is not None:
-            await self.put(key, value)
-            
-        return value
-        
-    async def put(self, key: str, value: Any, ttl: Optional[timedelta] = None) -> None:
-        """Put with read-through pattern"""
-        await self.cache_manager.put(self.cache_name, key, value, ttl)
-        
-    async def remove(self, key: str) -> bool:
-        """Remove with read-through pattern"""
-        return await self.cache_manager.remove(self.cache_name, key)
-
-
-class WriteThroughStrategy(CacheStrategy):
-    """
-    Write-through pattern.
-    
-    Writes go to cache and backing store synchronously.
-    """
-    
-    def __init__(self, cache_manager, cache_name: str, writer: Callable):
-        super().__init__(cache_manager, cache_name)
-        self.writer = writer
-        
-    async def get(self, key: str, loader: Optional[Callable] = None) -> Optional[Any]:
-        """Get with write-through pattern"""
-        return await self.cache_manager.get(self.cache_name, key)
-        
-    async def put(self, key: str, value: Any, ttl: Optional[timedelta] = None) -> None:
-        """Put with write-through pattern"""
-        # Write to backing store first
-        if asyncio.iscoroutinefunction(self.writer):
-            await self.writer(key, value)
-        else:
-            self.writer(key, value)
-            
-        # Then update cache
-        await self.cache_manager.put(self.cache_name, key, value, ttl)
-        
-    async def remove(self, key: str) -> bool:
-        """Remove with write-through pattern"""
-        # Remove from backing store first
-        if asyncio.iscoroutinefunction(self.writer):
-            await self.writer(key, None)  # None indicates deletion
-        else:
-            self.writer(key, None)
-            
-        # Then remove from cache
-        return await self.cache_manager.remove(self.cache_name, key)
-
-
-class WriteBehindStrategy(CacheStrategy):
-    """
-    Write-behind (write-back) pattern.
-    
-    Writes go to cache immediately, backing store updated asynchronously.
-    """
-    
-    def __init__(self, cache_manager, cache_name: str, writer: Callable, 
-                 write_delay: timedelta = timedelta(seconds=5)):
-        super().__init__(cache_manager, cache_name)
-        self.writer = writer
-        self.write_delay = write_delay
-        self.write_queue: Dict[str, Any] = {}
-        self.write_task: Optional[asyncio.Task] = None
-        
-    async def start(self):
-        """Start write-behind task"""
-        if not self.write_task:
-            self.write_task = asyncio.create_task(self._write_loop())
-            
-    async def stop(self):
-        """Stop write-behind task"""
-        if self.write_task:
-            self.write_task.cancel()
-            await self.write_task
-            
-        # Flush remaining writes
-        await self._flush_writes()
-        
-    async def get(self, key: str, loader: Optional[Callable] = None) -> Optional[Any]:
-        """Get with write-behind pattern"""
-        # Check write queue first
-        if key in self.write_queue:
-            return self.write_queue[key]
-            
-        return await self.cache_manager.get(self.cache_name, key)
-        
-    async def put(self, key: str, value: Any, ttl: Optional[timedelta] = None) -> None:
-        """Put with write-behind pattern"""
-        # Update cache immediately
-        await self.cache_manager.put(self.cache_name, key, value, ttl)
-        
-        # Queue for write to backing store
-        self.write_queue[key] = value
-        
-    async def remove(self, key: str) -> bool:
-        """Remove with write-behind pattern"""
-        # Remove from cache immediately
-        result = await self.cache_manager.remove(self.cache_name, key)
-        
-        # Queue for removal from backing store
-        self.write_queue[key] = None  # None indicates deletion
-        
-        return result
-        
-    async def _write_loop(self):
-        """Background task to write to backing store"""
-        while True:
+        for name, cache, level_ttl in self.levels:
             try:
-                await asyncio.sleep(self.write_delay.total_seconds())
-                await self._flush_writes()
-            except asyncio.CancelledError:
-                break
+                # Use level-specific TTL if not overridden
+                effective_ttl = ttl or level_ttl
+                tasks.append(cache.put(key, value, effective_ttl))
             except Exception as e:
-                logger.error(f"Write-behind error: {e}")
+                logger.error(f"Error putting to {name}: {e}")
                 
-    async def _flush_writes(self):
-        """Flush pending writes to backing store"""
-        if not self.write_queue:
-            return
+        # Execute all puts in parallel
+        if tasks:
+            await asyncio.gather(*tasks, return_exceptions=True)
             
-        # Copy and clear queue
-        writes = self.write_queue.copy()
-        self.write_queue.clear()
+    async def remove(self, key: str) -> bool:
+        """Remove value from all cache levels"""
+        results = []
         
-        # Write to backing store
-        for key, value in writes.items():
+        for name, cache, _ in self.levels:
             try:
-                if asyncio.iscoroutinefunction(self.writer):
-                    await self.writer(key, value)
-                else:
-                    self.writer(key, value)
+                result = await cache.remove(key)
+                results.append(result)
             except Exception as e:
-                logger.error(f"Failed to write {key} to backing store: {e}")
-                # Re-queue failed writes
-                self.write_queue[key] = value
-
-
-class RefreshAheadStrategy(CacheStrategy):
-    """
-    Refresh-ahead pattern.
-    
-    Proactively refreshes cache entries before expiration.
-    """
-    
-    def __init__(self, cache_manager, cache_name: str, loader: Callable,
-                 refresh_threshold: float = 0.8):
-        super().__init__(cache_manager, cache_name)
-        self.loader = loader
-        self.refresh_threshold = refresh_threshold
-        self.refresh_queue: Set[str] = set()
-        self.refresh_task: Optional[asyncio.Task] = None
-        self.entries: Dict[str, CacheEntry] = {}
-        
-    async def start(self):
-        """Start refresh-ahead task"""
-        if not self.refresh_task:
-            self.refresh_task = asyncio.create_task(self._refresh_loop())
-            
-    async def stop(self):
-        """Stop refresh-ahead task"""
-        if self.refresh_task:
-            self.refresh_task.cancel()
-            await self.refresh_task
-            
-    async def get(self, key: str, loader: Optional[Callable] = None) -> Optional[Any]:
-        """Get with refresh-ahead pattern"""
-        value = await self.cache_manager.get(self.cache_name, key)
-        
-        if value is not None:
-            # Update access time
-            if key in self.entries:
-                self.entries[key].accessed_at = datetime.utcnow()
-                self.entries[key].access_count += 1
+                logger.error(f"Error removing from {name}: {e}")
+                results.append(False)
                 
-                # Check if refresh needed
-                if self.entries[key].time_to_refresh:
-                    self.refresh_queue.add(key)
+        return any(results)
+        
+    def get_metrics(self) -> Dict[str, int]:
+        """Get cache metrics"""
+        return self._metrics.copy()
+
+
+class CacheWarmer:
+    """
+    Cache warming utility
+    
+    Pre-populates caches with frequently accessed data
+    """
+    
+    def __init__(self, cache_manager: CacheManager):
+        self.cache_manager = cache_manager
+        self._warming_tasks: Dict[str, asyncio.Task] = {}
+        
+    async def warm_cache(
+        self,
+        cache_name: str,
+        data_loader: Callable,
+        keys: Optional[List[str]] = None,
+        batch_size: int = 100,
+        parallel_loads: int = 10
+    ) -> int:
+        """
+        Warm cache with data
+        
+        Args:
+            cache_name: Name of cache to warm
+            data_loader: Function to load data
+            keys: Specific keys to load (None for all)
+            batch_size: Batch size for loading
+            parallel_loads: Number of parallel load operations
+            
+        Returns:
+            Number of entries loaded
+        """
+        logger.info(f"Starting cache warming for {cache_name}")
+        
+        loaded_count = 0
+        
+        try:
+            if keys:
+                # Load specific keys in batches
+                for i in range(0, len(keys), batch_size):
+                    batch = keys[i:i + batch_size]
                     
-            return value
-            
-        # Load if not found
-        loader = loader or self.loader
-        value = await loader(key) if asyncio.iscoroutinefunction(loader) else loader(key)
-        
-        if value is not None:
-            await self.put(key, value)
-            
-        return value
-        
-    async def put(self, key: str, value: Any, ttl: Optional[timedelta] = None) -> None:
-        """Put with refresh-ahead pattern"""
-        await self.cache_manager.put(self.cache_name, key, value, ttl)
-        
-        # Track entry
-        self.entries[key] = CacheEntry(
-            key=key,
-            value=value,
-            created_at=datetime.utcnow(),
-            accessed_at=datetime.utcnow(),
-            ttl=ttl
-        )
-        
-    async def remove(self, key: str) -> bool:
-        """Remove with refresh-ahead pattern"""
-        # Remove from tracking
-        self.entries.pop(key, None)
-        self.refresh_queue.discard(key)
-        
-        return await self.cache_manager.remove(self.cache_name, key)
-        
-    async def _refresh_loop(self):
-        """Background task to refresh entries"""
-        while True:
-            try:
-                await asyncio.sleep(10)  # Check every 10 seconds
-                
-                # Find entries needing refresh
-                now = datetime.utcnow()
-                for key, entry in self.entries.items():
-                    if entry.time_to_refresh and key not in self.refresh_queue:
-                        self.refresh_queue.add(key)
+                    # Load batch in parallel
+                    tasks = []
+                    for j in range(0, len(batch), parallel_loads):
+                        sub_batch = batch[j:j + parallel_loads]
+                        tasks.append(self._load_batch(cache_name, data_loader, sub_batch))
                         
-                # Refresh queued entries
-                if self.refresh_queue:
-                    await self._refresh_entries()
+                    results = await asyncio.gather(*tasks, return_exceptions=True)
                     
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Refresh-ahead error: {e}")
+                    for result in results:
+                        if isinstance(result, int):
+                            loaded_count += result
+                            
+            else:
+                # Load all data
+                data = await data_loader()
                 
-    async def _refresh_entries(self):
-        """Refresh entries in queue"""
-        # Copy and clear queue
-        keys = list(self.refresh_queue)
-        self.refresh_queue.clear()
+                if isinstance(data, dict):
+                    # Load in batches
+                    items = list(data.items())
+                    
+                    for i in range(0, len(items), batch_size):
+                        batch = dict(items[i:i + batch_size])
+                        await self.cache_manager.put_all(cache_name, batch)
+                        loaded_count += len(batch)
+                        
+            logger.info(f"Cache warming completed for {cache_name}: {loaded_count} entries")
+            return loaded_count
+            
+        except Exception as e:
+            logger.error(f"Cache warming failed: {e}")
+            raise
+            
+    async def _load_batch(
+        self,
+        cache_name: str,
+        loader: Callable,
+        keys: List[str]
+    ) -> int:
+        """Load a batch of keys"""
+        loaded = 0
         
         for key in keys:
             try:
-                # Reload from source
-                value = await self.loader(key) if asyncio.iscoroutinefunction(self.loader) else self.loader(key)
+                value = await loader(key) if asyncio.iscoroutinefunction(loader) else loader(key)
                 
                 if value is not None:
-                    # Get current TTL
-                    ttl = self.entries[key].ttl if key in self.entries else None
-                    
-                    # Update cache
-                    await self.cache_manager.put(self.cache_name, key, value, ttl)
-                    
-                    # Update tracking
-                    if key in self.entries:
-                        self.entries[key].value = value
-                        self.entries[key].created_at = datetime.utcnow()
-                        
-                    logger.debug(f"Refreshed cache entry: {key}")
+                    await self.cache_manager.put(cache_name, key, value)
+                    loaded += 1
                     
             except Exception as e:
-                logger.error(f"Failed to refresh {key}: {e}") 
+                logger.error(f"Failed to load key {key}: {e}")
+                
+        return loaded
+        
+    async def start_periodic_warming(
+        self,
+        cache_name: str,
+        data_loader: Callable,
+        interval: timedelta,
+        keys: Optional[List[str]] = None
+    ):
+        """Start periodic cache warming"""
+        async def warm_loop():
+            while True:
+                try:
+                    await self.warm_cache(cache_name, data_loader, keys)
+                    await asyncio.sleep(interval.total_seconds())
+                except asyncio.CancelledError:
+                    break
+                except Exception as e:
+                    logger.error(f"Periodic warming failed: {e}")
+                    await asyncio.sleep(60)  # Retry after 1 minute
+                    
+        task = asyncio.create_task(warm_loop())
+        self._warming_tasks[cache_name] = task
+        
+        logger.info(f"Started periodic warming for {cache_name} every {interval}")
+        
+    async def stop_periodic_warming(self, cache_name: str):
+        """Stop periodic cache warming"""
+        if cache_name in self._warming_tasks:
+            task = self._warming_tasks.pop(cache_name)
+            task.cancel()
+            
+            try:
+                await task
+            except asyncio.CancelledError:
+                pass
+                
+            logger.info(f"Stopped periodic warming for {cache_name}")
+            
+    async def stop_all(self):
+        """Stop all warming tasks"""
+        for cache_name in list(self._warming_tasks.keys()):
+            await self.stop_periodic_warming(cache_name)
+
+
+class CacheInvalidator:
+    """
+    Cache invalidation utility
+    
+    Handles cache invalidation patterns and strategies
+    """
+    
+    def __init__(self, cache_manager: CacheManager):
+        self.cache_manager = cache_manager
+        self._invalidation_rules: Dict[str, List[Callable]] = {}
+        
+    def add_invalidation_rule(
+        self,
+        cache_name: str,
+        rule: Callable[[str, Any], bool]
+    ):
+        """
+        Add invalidation rule for cache
+        
+        Args:
+            cache_name: Cache to apply rule to
+            rule: Function that returns True if key should be invalidated
+        """
+        if cache_name not in self._invalidation_rules:
+            self._invalidation_rules[cache_name] = []
+            
+        self._invalidation_rules[cache_name].append(rule)
+        
+    async def invalidate_by_pattern(
+        self,
+        cache_name: str,
+        pattern: str
+    ) -> int:
+        """
+        Invalidate cache entries matching pattern
+        
+        Args:
+            cache_name: Cache to invalidate
+            pattern: Pattern to match (supports wildcards)
+            
+        Returns:
+            Number of entries invalidated
+        """
+        invalidated = 0
+        
+        try:
+            # Get all keys (this would need to be implemented in cache manager)
+            # For now, we'll use a simplified approach
+            logger.info(f"Invalidating entries matching {pattern} in {cache_name}")
+            
+            # In a real implementation, this would query the cache
+            # and invalidate matching entries
+            
+            return invalidated
+            
+        except Exception as e:
+            logger.error(f"Pattern invalidation failed: {e}")
+            raise
+            
+    async def invalidate_by_tags(
+        self,
+        tags: List[str]
+    ) -> Dict[str, int]:
+        """
+        Invalidate cache entries by tags
+        
+        Args:
+            tags: Tags to match
+            
+        Returns:
+            Dict of cache_name -> count invalidated
+        """
+        results = {}
+        
+        # This would need tag support in the cache implementation
+        logger.info(f"Invalidating entries with tags: {tags}")
+        
+        return results
+        
+    async def cascade_invalidation(
+        self,
+        cache_name: str,
+        key: str,
+        related_caches: Dict[str, Callable[[str], List[str]]]
+    ) -> Dict[str, int]:
+        """
+        Cascade invalidation to related caches
+        
+        Args:
+            cache_name: Primary cache
+            key: Key to invalidate
+            related_caches: Dict of cache_name -> key_mapper function
+            
+        Returns:
+            Dict of cache_name -> count invalidated
+        """
+        results = {cache_name: 0}
+        
+        try:
+            # Invalidate primary key
+            if await self.cache_manager.remove(cache_name, key):
+                results[cache_name] = 1
+                
+            # Cascade to related caches
+            for related_cache, key_mapper in related_caches.items():
+                related_keys = key_mapper(key)
+                
+                if related_keys:
+                    count = 0
+                    for related_key in related_keys:
+                        if await self.cache_manager.remove(related_cache, related_key):
+                            count += 1
+                            
+                    results[related_cache] = count
+                    
+            logger.info(f"Cascade invalidation completed: {results}")
+            return results
+            
+        except Exception as e:
+            logger.error(f"Cascade invalidation failed: {e}")
+            raise
+            
+    async def smart_invalidation(
+        self,
+        event_type: str,
+        event_data: Dict[str, Any]
+    ) -> Dict[str, int]:
+        """
+        Smart invalidation based on events
+        
+        Args:
+            event_type: Type of event
+            event_data: Event data
+            
+        Returns:
+            Dict of cache_name -> count invalidated
+        """
+        results = {}
+        
+        # Apply invalidation rules based on event
+        for cache_name, rules in self._invalidation_rules.items():
+            count = 0
+            
+            for rule in rules:
+                try:
+                    if rule(event_type, event_data):
+                        # Rule triggered, invalidate cache
+                        # This is simplified - real implementation would
+                        # determine which keys to invalidate
+                        count += 1
+                        
+                except Exception as e:
+                    logger.error(f"Invalidation rule failed: {e}")
+                    
+            if count > 0:
+                results[cache_name] = count
+                
+        return results
+
+
+# Helper functions
+def generate_cache_key(*args, **kwargs) -> str:
+    """Generate cache key from arguments"""
+    key_parts = [str(arg) for arg in args]
+    key_parts.extend([f"{k}={v}" for k, v in sorted(kwargs.items())])
+    
+    key_string = ":".join(key_parts)
+    
+    # Hash if too long
+    if len(key_string) > 250:
+        key_hash = hashlib.sha256(key_string.encode()).hexdigest()
+        return f"hash:{key_hash}"
+        
+    return key_string
+
+
+def parse_ttl(ttl_str: str) -> timedelta:
+    """Parse TTL string to timedelta"""
+    units = {
+        "s": "seconds",
+        "m": "minutes",
+        "h": "hours",
+        "d": "days"
+    }
+    
+    # Extract number and unit
+    import re
+    match = re.match(r"(\d+)([smhd])", ttl_str.lower())
+    
+    if not match:
+        raise ValueError(f"Invalid TTL format: {ttl_str}")
+        
+    value = int(match.group(1))
+    unit = units.get(match.group(2))
+    
+    if not unit:
+        raise ValueError(f"Unknown TTL unit: {match.group(2)}")
+        
+    return timedelta(**{unit: value}) 

@@ -1,700 +1,395 @@
 """
-Analytics Service Client
+Analytics Engine Service Client
 
-Client for analytics operations.
+Enhanced client for analytics service with built-in patterns.
 """
 
-import logging
-from typing import Any, Dict, List, Optional, Union
-from dataclasses import dataclass, field
+from typing import Dict, List, Any, Optional, Union
 from datetime import datetime, timedelta
-from enum import Enum
+from dataclasses import dataclass
 
-from .base_client import BaseServiceClient, ClientConfig
+from .base import RESTClient, ClientConfig, cached, monitored, retry, RetryConfig
+from ..models.data_models import Dataset, DataSchema
+from ..models.processing_models import JobStatus
 
-logger = logging.getLogger(__name__)
-
-
-class QueryType(Enum):
-    """Analytics query types"""
-    SQL = "sql"
-    DATAFRAME = "dataframe"
-    AGGREGATION = "aggregation"
-    TIME_SERIES = "time_series"
-    STATISTICAL = "statistical"
-
-
-class AggregationType(Enum):
-    """Aggregation types"""
-    SUM = "sum"
-    AVG = "avg"
-    COUNT = "count"
-    MIN = "min"
-    MAX = "max"
-    STDDEV = "stddev"
-    VARIANCE = "variance"
-    PERCENTILE = "percentile"
+logger = __import__('logging').getLogger(__name__)
 
 
 @dataclass
-class QueryResult:
-    """Query result model"""
-    query_id: str
-    status: str
-    rows: List[Dict[str, Any]]
-    columns: List[str]
-    row_count: int
-    execution_time: float
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    error: Optional[str] = None
+class AnalyticsClientConfig(ClientConfig):
+    """Analytics client specific configuration"""
+    name: str = "analytics-engine"
+    base_url: str = "http://analytics-engine-service:8000"
+    
+    # Analytics specific
+    default_engine: str = "spark"
+    max_query_results: int = 10000
+    query_timeout: timedelta = timedelta(minutes=5)
+    
+    # Caching
+    cache_query_results: bool = True
+    cache_ttl: timedelta = timedelta(minutes=15)
 
 
-@dataclass
-class Dashboard:
-    """Dashboard model"""
-    id: str
-    name: str
-    description: Optional[str] = None
-    owner: str
-    widgets: List[Dict[str, Any]] = field(default_factory=list)
-    layout: Dict[str, Any] = field(default_factory=dict)
-    filters: List[Dict[str, Any]] = field(default_factory=list)
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-    tags: List[str] = field(default_factory=list)
-
-
-@dataclass
-class Report:
-    """Report model"""
-    id: str
-    name: str
-    description: Optional[str] = None
-    owner: str
-    template: str
-    parameters: Dict[str, Any] = field(default_factory=dict)
-    schedule: Optional[Dict[str, Any]] = None
-    format: str = "pdf"
-    recipients: List[str] = field(default_factory=list)
-    created_at: Optional[datetime] = None
-    updated_at: Optional[datetime] = None
-
-
-@dataclass
-class Metric:
-    """Metric definition"""
-    id: str
-    name: str
-    formula: str
-    description: Optional[str] = None
-    dimensions: List[str] = field(default_factory=list)
-    filters: Dict[str, Any] = field(default_factory=dict)
-    aggregation: AggregationType = AggregationType.SUM
-    metadata: Dict[str, Any] = field(default_factory=dict)
-
-
-class AnalyticsServiceClient(BaseServiceClient):
+class AnalyticsClient(RESTClient):
     """
-    Client for analytics service operations.
+    Enhanced client for Analytics Engine Service.
     
     Features:
-    - Query execution
-    - Dashboard management
-    - Report generation
-    - Metric computation
-    - Time series analysis
+    - Automatic retry with exponential backoff
+    - Query result caching
+    - Circuit breaker for external queries
+    - Metrics collection
+    - Authentication handling
     """
     
-    def __init__(self, config: Optional[ClientConfig] = None, **kwargs):
-        if not config:
-            config = ClientConfig(service_name="analytics-service")
-        super().__init__(config, **kwargs)
+    def __init__(self, config: Optional[AnalyticsClientConfig] = None, **kwargs):
+        super().__init__(config or AnalyticsClientConfig(), **kwargs)
         
     # Query Operations
     
+    @monitored("analytics.query")
+    @cached(ttl=timedelta(minutes=15))
+    @retry(RetryConfig(max_attempts=3))
     async def execute_query(
         self,
         query: str,
-        query_type: QueryType = QueryType.SQL,
+        engine: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
-        timeout: Optional[int] = None,
-        limit: Optional[int] = None
-    ) -> QueryResult:
+        timeout: Optional[timedelta] = None
+    ) -> Dict[str, Any]:
         """
-        Execute analytics query.
+        Execute analytics query with caching and retry.
         
         Args:
-            query: Query string
-            query_type: Type of query
+            query: SQL or analytics query
+            engine: Query engine (spark, trino, etc.)
             parameters: Query parameters
-            timeout: Query timeout in seconds
-            limit: Result limit
+            timeout: Query timeout
             
         Returns:
-            Query result
+            Query results
         """
         data = {
             "query": query,
-            "type": query_type.value,
+            "engine": engine or self.config.default_engine,
             "parameters": parameters or {},
-            "limit": limit
+            "timeout_seconds": int((timeout or self.config.query_timeout).total_seconds())
         }
         
-        if timeout:
-            data["timeout"] = timeout
-            
-        response = await self.post("/query", json_data=data)
+        return await self.post("/api/v1/query/execute", data=data)
         
-        return QueryResult(
-            query_id=response["query_id"],
-            status=response["status"],
-            rows=response.get("rows", []),
-            columns=response.get("columns", []),
-            row_count=response.get("row_count", 0),
-            execution_time=response.get("execution_time", 0.0),
-            metadata=response.get("metadata", {}),
-            error=response.get("error")
-        )
-        
-    async def get_query_status(self, query_id: str) -> Dict[str, Any]:
-        """
-        Get query execution status.
-        
-        Args:
-            query_id: Query ID
-            
-        Returns:
-            Query status information
-        """
-        return await self.get(f"/query/{query_id}/status")
-        
-    async def cancel_query(self, query_id: str) -> bool:
-        """
-        Cancel running query.
-        
-        Args:
-            query_id: Query ID
-            
-        Returns:
-            Success status
-        """
-        response = await self.post(f"/query/{query_id}/cancel")
-        return response.get("success", False)
-        
-    async def get_query_history(
+    @monitored("analytics.query_async")
+    async def submit_query(
         self,
-        user: Optional[str] = None,
-        limit: int = 100,
-        offset: int = 0
-    ) -> List[Dict[str, Any]]:
-        """
-        Get query execution history.
-        
-        Args:
-            user: Filter by user
-            limit: Maximum results
-            offset: Pagination offset
-            
-        Returns:
-            List of query history entries
-        """
-        params = {
-            "limit": limit,
-            "offset": offset
-        }
-        
-        if user:
-            params["user"] = user
-            
-        response = await self.get("/query/history", params=params)
-        return response.get("queries", [])
-        
-    # Dashboard Operations
-    
-    async def create_dashboard(
-        self,
-        name: str,
-        description: Optional[str] = None,
-        widgets: Optional[List[Dict[str, Any]]] = None,
-        layout: Optional[Dict[str, Any]] = None,
-        tags: Optional[List[str]] = None
-    ) -> Dashboard:
-        """
-        Create a new dashboard.
-        
-        Args:
-            name: Dashboard name
-            description: Dashboard description
-            widgets: Dashboard widgets
-            layout: Widget layout
-            tags: Dashboard tags
-            
-        Returns:
-            Created dashboard
-        """
-        data = {
-            "name": name,
-            "description": description,
-            "widgets": widgets or [],
-            "layout": layout or {},
-            "tags": tags or []
-        }
-        
-        response = await self.post("/dashboards", json_data=data)
-        
-        return Dashboard(
-            id=response["id"],
-            name=response["name"],
-            description=response.get("description"),
-            owner=response["owner"],
-            widgets=response.get("widgets", []),
-            layout=response.get("layout", {}),
-            filters=response.get("filters", []),
-            created_at=response.get("created_at"),
-            updated_at=response.get("updated_at"),
-            tags=response.get("tags", [])
-        )
-        
-    async def get_dashboard(self, dashboard_id: str) -> Optional[Dashboard]:
-        """
-        Get dashboard by ID.
-        
-        Args:
-            dashboard_id: Dashboard ID
-            
-        Returns:
-            Dashboard if found
-        """
-        try:
-            response = await self.get(f"/dashboards/{dashboard_id}")
-            
-            return Dashboard(
-                id=response["id"],
-                name=response["name"],
-                description=response.get("description"),
-                owner=response["owner"],
-                widgets=response.get("widgets", []),
-                layout=response.get("layout", {}),
-                filters=response.get("filters", []),
-                created_at=response.get("created_at"),
-                updated_at=response.get("updated_at"),
-                tags=response.get("tags", [])
-            )
-        except Exception as e:
-            logger.error(f"Failed to get dashboard {dashboard_id}: {e}")
-            return None
-            
-    async def update_dashboard(
-        self,
-        dashboard_id: str,
-        name: Optional[str] = None,
-        description: Optional[str] = None,
-        widgets: Optional[List[Dict[str, Any]]] = None,
-        layout: Optional[Dict[str, Any]] = None,
-        tags: Optional[List[str]] = None
-    ) -> Dashboard:
-        """
-        Update dashboard.
-        
-        Args:
-            dashboard_id: Dashboard ID
-            name: New name
-            description: New description
-            widgets: New widgets
-            layout: New layout
-            tags: New tags
-            
-        Returns:
-            Updated dashboard
-        """
-        data = {}
-        if name is not None:
-            data["name"] = name
-        if description is not None:
-            data["description"] = description
-        if widgets is not None:
-            data["widgets"] = widgets
-        if layout is not None:
-            data["layout"] = layout
-        if tags is not None:
-            data["tags"] = tags
-            
-        response = await self.patch(f"/dashboards/{dashboard_id}", json_data=data)
-        
-        return Dashboard(
-            id=response["id"],
-            name=response["name"],
-            description=response.get("description"),
-            owner=response["owner"],
-            widgets=response.get("widgets", []),
-            layout=response.get("layout", {}),
-            filters=response.get("filters", []),
-            created_at=response.get("created_at"),
-            updated_at=response.get("updated_at"),
-            tags=response.get("tags", [])
-        )
-        
-    async def delete_dashboard(self, dashboard_id: str) -> bool:
-        """
-        Delete dashboard.
-        
-        Args:
-            dashboard_id: Dashboard ID
-            
-        Returns:
-            Success status
-        """
-        response = await self.delete(f"/dashboards/{dashboard_id}")
-        return response.get("success", False)
-        
-    async def list_dashboards(
-        self,
-        owner: Optional[str] = None,
-        tags: Optional[List[str]] = None,
-        limit: int = 100,
-        offset: int = 0
-    ) -> List[Dashboard]:
-        """
-        List dashboards.
-        
-        Args:
-            owner: Filter by owner
-            tags: Filter by tags
-            limit: Maximum results
-            offset: Pagination offset
-            
-        Returns:
-            List of dashboards
-        """
-        params = {
-            "limit": limit,
-            "offset": offset
-        }
-        
-        if owner:
-            params["owner"] = owner
-        if tags:
-            params["tags"] = ",".join(tags)
-            
-        response = await self.get("/dashboards", params=params)
-        
-        return [
-            Dashboard(
-                id=d["id"],
-                name=d["name"],
-                description=d.get("description"),
-                owner=d["owner"],
-                widgets=d.get("widgets", []),
-                layout=d.get("layout", {}),
-                filters=d.get("filters", []),
-                created_at=d.get("created_at"),
-                updated_at=d.get("updated_at"),
-                tags=d.get("tags", [])
-            )
-            for d in response.get("dashboards", [])
-        ]
-        
-    # Report Operations
-    
-    async def create_report(
-        self,
-        name: str,
-        template: str,
-        description: Optional[str] = None,
+        query: str,
+        engine: Optional[str] = None,
         parameters: Optional[Dict[str, Any]] = None,
-        schedule: Optional[Dict[str, Any]] = None,
-        format: str = "pdf",
-        recipients: Optional[List[str]] = None
-    ) -> Report:
-        """
-        Create a new report.
-        
-        Args:
-            name: Report name
-            template: Report template
-            description: Report description
-            parameters: Report parameters
-            schedule: Report schedule (cron expression)
-            format: Output format (pdf, excel, csv)
-            recipients: Email recipients
-            
-        Returns:
-            Created report
-        """
+        callback_url: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Submit query for async execution"""
         data = {
-            "name": name,
-            "template": template,
-            "description": description,
+            "query": query,
+            "engine": engine or self.config.default_engine,
             "parameters": parameters or {},
-            "schedule": schedule,
-            "format": format,
-            "recipients": recipients or []
+            "callback_url": callback_url
         }
         
-        response = await self.post("/reports", json_data=data)
+        return await self.post("/api/v1/query/submit", data=data)
         
-        return Report(
-            id=response["id"],
-            name=response["name"],
-            description=response.get("description"),
-            owner=response["owner"],
-            template=response["template"],
-            parameters=response.get("parameters", {}),
-            schedule=response.get("schedule"),
-            format=response.get("format", "pdf"),
-            recipients=response.get("recipients", []),
-            created_at=response.get("created_at"),
-            updated_at=response.get("updated_at")
-        )
+    @monitored("analytics.query_status")
+    @cached(ttl=timedelta(seconds=30))
+    async def get_query_status(self, query_id: str) -> Dict[str, Any]:
+        """Get query execution status"""
+        return await self.get(f"/api/v1/query/{query_id}/status")
         
-    async def generate_report(
+    @monitored("analytics.query_results")
+    @cached(ttl=timedelta(minutes=10))
+    async def get_query_results(
         self,
-        report_id: str,
-        parameters: Optional[Dict[str, Any]] = None
-    ) -> str:
-        """
-        Generate report.
-        
-        Args:
-            report_id: Report ID
-            parameters: Runtime parameters
-            
-        Returns:
-            Job ID for report generation
-        """
-        data = {
-            "parameters": parameters or {}
+        query_id: str,
+        offset: int = 0,
+        limit: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Get query results with pagination"""
+        params = {
+            "offset": offset,
+            "limit": limit or self.config.max_query_results
         }
         
-        response = await self.post(f"/reports/{report_id}/generate", json_data=data)
-        return response["job_id"]
+        return await self.get(f"/api/v1/query/{query_id}/results", params=params)
         
-    async def get_report_status(
+    @monitored("analytics.query_cancel")
+    async def cancel_query(self, query_id: str) -> Dict[str, Any]:
+        """Cancel running query"""
+        return await self.post(f"/api/v1/query/{query_id}/cancel")
+        
+    # Dataset Operations
+    
+    @monitored("analytics.dataset_analyze")
+    @cached(ttl=timedelta(hours=1))
+    async def analyze_dataset(
         self,
-        report_id: str,
-        job_id: str
+        dataset_id: str,
+        columns: Optional[List[str]] = None,
+        sample_size: Optional[int] = None
     ) -> Dict[str, Any]:
         """
-        Get report generation status.
+        Analyze dataset statistics.
         
         Args:
-            report_id: Report ID
-            job_id: Generation job ID
+            dataset_id: Dataset identifier
+            columns: Columns to analyze (None for all)
+            sample_size: Sample size for analysis
             
         Returns:
-            Status information
-        """
-        return await self.get(f"/reports/{report_id}/jobs/{job_id}")
-        
-    async def download_report(
-        self,
-        report_id: str,
-        job_id: str
-    ) -> bytes:
-        """
-        Download generated report.
-        
-        Args:
-            report_id: Report ID
-            job_id: Generation job ID
-            
-        Returns:
-            Report content
-        """
-        response = await self.get(
-            f"/reports/{report_id}/jobs/{job_id}/download",
-            raw_response=True
-        )
-        return response
-        
-    # Metric Operations
-    
-    async def create_metric(
-        self,
-        name: str,
-        formula: str,
-        description: Optional[str] = None,
-        dimensions: Optional[List[str]] = None,
-        filters: Optional[Dict[str, Any]] = None,
-        aggregation: AggregationType = AggregationType.SUM
-    ) -> Metric:
-        """
-        Create a new metric.
-        
-        Args:
-            name: Metric name
-            formula: Metric formula
-            description: Metric description
-            dimensions: Metric dimensions
-            filters: Default filters
-            aggregation: Aggregation type
-            
-        Returns:
-            Created metric
+            Dataset statistics and profiling results
         """
         data = {
-            "name": name,
-            "formula": formula,
-            "description": description,
-            "dimensions": dimensions or [],
-            "filters": filters or {},
-            "aggregation": aggregation.value
+            "dataset_id": dataset_id,
+            "columns": columns,
+            "sample_size": sample_size
         }
         
-        response = await self.post("/metrics", json_data=data)
+        return await self.post("/api/v1/dataset/analyze", data=data)
         
-        return Metric(
-            id=response["id"],
-            name=response["name"],
-            formula=response["formula"],
-            description=response.get("description"),
-            dimensions=response.get("dimensions", []),
-            filters=response.get("filters", {}),
-            aggregation=AggregationType(response.get("aggregation", "sum")),
-            metadata=response.get("metadata", {})
-        )
-        
-    async def compute_metric(
+    @monitored("analytics.dataset_profile")
+    @cached(ttl=timedelta(hours=2))
+    async def profile_dataset(
         self,
-        metric_id: str,
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        dimensions: Optional[List[str]] = None,
+        dataset_id: str,
+        profiling_config: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Deep dataset profiling"""
+        data = {
+            "dataset_id": dataset_id,
+            "config": profiling_config or {}
+        }
+        
+        return await self.post("/api/v1/dataset/profile", data=data)
+        
+    @monitored("analytics.dataset_preview")
+    @cached(ttl=timedelta(minutes=30))
+    async def preview_dataset(
+        self,
+        dataset_id: str,
+        limit: int = 100,
+        columns: Optional[List[str]] = None
+    ) -> Dict[str, Any]:
+        """Preview dataset records"""
+        params = {
+            "limit": limit,
+            "columns": ",".join(columns) if columns else None
+        }
+        
+        return await self.get(f"/api/v1/dataset/{dataset_id}/preview", params=params)
+        
+    # Aggregation Operations
+    
+    @monitored("analytics.aggregate")
+    @cached(ttl=timedelta(minutes=30))
+    async def aggregate(
+        self,
+        dataset_id: str,
+        group_by: List[str],
+        aggregations: Dict[str, str],
         filters: Optional[Dict[str, Any]] = None
     ) -> Dict[str, Any]:
         """
-        Compute metric values.
+        Perform aggregations on dataset.
         
         Args:
-            metric_id: Metric ID
-            start_date: Start date
-            end_date: End date
-            dimensions: Dimensions to group by
-            filters: Additional filters
+            dataset_id: Dataset to aggregate
+            group_by: Grouping columns
+            aggregations: Column -> aggregation function mapping
+            filters: Optional filters
             
         Returns:
-            Computed metric values
+            Aggregation results
         """
-        params = {}
-        if start_date:
-            params["start_date"] = start_date.isoformat()
-        if end_date:
-            params["end_date"] = end_date.isoformat()
-        if dimensions:
-            params["dimensions"] = ",".join(dimensions)
-            
         data = {
+            "dataset_id": dataset_id,
+            "group_by": group_by,
+            "aggregations": aggregations,
             "filters": filters or {}
         }
         
-        return await self.post(f"/metrics/{metric_id}/compute", 
-                              json_data=data, params=params)
+        return await self.post("/api/v1/aggregate", data=data)
         
-    # Time Series Operations
-    
-    async def time_series_analysis(
+    @monitored("analytics.timeseries")
+    @cached(ttl=timedelta(minutes=15))
+    async def timeseries_analysis(
         self,
         dataset_id: str,
-        metric_column: str,
         time_column: str,
-        analysis_type: str = "trend",
+        value_columns: List[str],
         granularity: str = "day",
-        start_date: Optional[datetime] = None,
-        end_date: Optional[datetime] = None,
-        dimensions: Optional[List[str]] = None
+        start_time: Optional[datetime] = None,
+        end_time: Optional[datetime] = None
     ) -> Dict[str, Any]:
-        """
-        Perform time series analysis.
-        
-        Args:
-            dataset_id: Dataset ID
-            metric_column: Metric column name
-            time_column: Time column name
-            analysis_type: Type of analysis (trend, forecast, anomaly)
-            granularity: Time granularity (hour, day, week, month)
-            start_date: Start date
-            end_date: End date
-            dimensions: Grouping dimensions
-            
-        Returns:
-            Analysis results
-        """
+        """Time series analysis"""
         data = {
             "dataset_id": dataset_id,
-            "metric_column": metric_column,
             "time_column": time_column,
-            "analysis_type": analysis_type,
+            "value_columns": value_columns,
             "granularity": granularity,
-            "dimensions": dimensions or []
+            "start_time": start_time.isoformat() if start_time else None,
+            "end_time": end_time.isoformat() if end_time else None
         }
         
-        if start_date:
-            data["start_date"] = start_date.isoformat()
-        if end_date:
-            data["end_date"] = end_date.isoformat()
-            
-        return await self.post("/timeseries/analyze", json_data=data)
+        return await self.post("/api/v1/timeseries", data=data)
         
-    # Statistical Operations
+    # Join Operations
     
-    async def statistical_analysis(
+    @monitored("analytics.join")
+    async def join_datasets(
+        self,
+        left_dataset: str,
+        right_dataset: str,
+        join_keys: Union[str, List[str]],
+        join_type: str = "inner",
+        output_dataset: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Join two datasets"""
+        if isinstance(join_keys, str):
+            join_keys = [join_keys]
+            
+        data = {
+            "left_dataset": left_dataset,
+            "right_dataset": right_dataset,
+            "join_keys": join_keys,
+            "join_type": join_type,
+            "output_dataset": output_dataset
+        }
+        
+        return await self.post("/api/v1/join", data=data)
+        
+    # Transform Operations
+    
+    @monitored("analytics.transform")
+    async def transform_dataset(
         self,
         dataset_id: str,
-        columns: List[str],
-        analysis_type: str = "descriptive",
-        options: Optional[Dict[str, Any]] = None
+        transformations: List[Dict[str, Any]],
+        output_dataset: Optional[str] = None
     ) -> Dict[str, Any]:
         """
-        Perform statistical analysis.
+        Apply transformations to dataset.
         
         Args:
-            dataset_id: Dataset ID
-            columns: Columns to analyze
-            analysis_type: Type of analysis
-            options: Analysis options
+            dataset_id: Source dataset
+            transformations: List of transformation specs
+            output_dataset: Output dataset name
             
         Returns:
-            Analysis results
+            Transformation job details
         """
         data = {
             "dataset_id": dataset_id,
-            "columns": columns,
-            "analysis_type": analysis_type,
+            "transformations": transformations,
+            "output_dataset": output_dataset
+        }
+        
+        return await self.post("/api/v1/transform", data=data)
+        
+    @monitored("analytics.filter")
+    async def filter_dataset(
+        self,
+        dataset_id: str,
+        filters: Dict[str, Any],
+        output_dataset: Optional[str] = None
+    ) -> Dict[str, Any]:
+        """Filter dataset records"""
+        data = {
+            "dataset_id": dataset_id,
+            "filters": filters,
+            "output_dataset": output_dataset
+        }
+        
+        return await self.post("/api/v1/filter", data=data)
+        
+    # Export Operations
+    
+    @monitored("analytics.export")
+    async def export_results(
+        self,
+        query_id: str,
+        format: str = "parquet",
+        destination: Optional[str] = None,
+        options: Optional[Dict[str, Any]] = None
+    ) -> Dict[str, Any]:
+        """Export query results"""
+        data = {
+            "query_id": query_id,
+            "format": format,
+            "destination": destination,
             "options": options or {}
         }
         
-        return await self.post("/statistics/analyze", json_data=data)
+        return await self.post("/api/v1/export", data=data)
         
-    async def correlation_analysis(
+    # Visualization Support
+    
+    @monitored("analytics.chart_data")
+    @cached(ttl=timedelta(minutes=10))
+    async def get_chart_data(
         self,
         dataset_id: str,
-        columns: List[str],
-        method: str = "pearson"
+        chart_type: str,
+        config: Dict[str, Any]
     ) -> Dict[str, Any]:
-        """
-        Perform correlation analysis.
-        
-        Args:
-            dataset_id: Dataset ID
-            columns: Columns to analyze
-            method: Correlation method (pearson, spearman, kendall)
-            
-        Returns:
-            Correlation matrix
-        """
+        """Get data formatted for visualization"""
         data = {
             "dataset_id": dataset_id,
-            "columns": columns,
-            "method": method
+            "chart_type": chart_type,
+            "config": config
         }
         
-        return await self.post("/statistics/correlation", json_data=data)
+        return await self.post("/api/v1/visualization/chart-data", data=data)
         
-    async def get_client_specific_config(self) -> Dict[str, Any]:
-        """Get analytics-specific configuration from Consul"""
-        if self.consul_client:
-            config = await self.consul_client.get_key(
-                f"config/{self.config.service_name}/client"
-            )
-            return config or {}
-        return {} 
+    # Job Management
+    
+    @monitored("analytics.job_list")
+    async def list_jobs(
+        self,
+        status: Optional[JobStatus] = None,
+        limit: int = 100,
+        offset: int = 0
+    ) -> Dict[str, Any]:
+        """List analytics jobs"""
+        params = {
+            "status": status.value if status else None,
+            "limit": limit,
+            "offset": offset
+        }
+        
+        return await self.get("/api/v1/jobs", params=params)
+        
+    @monitored("analytics.job_details")
+    @cached(ttl=timedelta(minutes=1))
+    async def get_job_details(self, job_id: str) -> Dict[str, Any]:
+        """Get job details"""
+        return await self.get(f"/api/v1/jobs/{job_id}")
+        
+    @monitored("analytics.job_logs")
+    async def get_job_logs(
+        self,
+        job_id: str,
+        tail: Optional[int] = None
+    ) -> Dict[str, Any]:
+        """Get job execution logs"""
+        params = {"tail": tail} if tail else {}
+        return await self.get(f"/api/v1/jobs/{job_id}/logs", params=params)
+        
+    # Health and Metrics
+    
+    @monitored("analytics.health")
+    async def health_check(self) -> Dict[str, Any]:
+        """Check service health"""
+        return await self.get("/health")
+        
+    @monitored("analytics.metrics")
+    @cached(ttl=timedelta(seconds=30))
+    async def get_metrics(self) -> Dict[str, Any]:
+        """Get service metrics"""
+        return await self.get("/metrics") 

@@ -6,10 +6,11 @@ multiple sources, enabling low-latency API access with ACID transactions.
 """
 
 import logging
-from typing import Dict, List, Any, Optional, Union, Tuple, Set
+from typing import Dict, List, Any, Optional, Callable, Set, AsyncIterator, Union
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
 from enum import Enum
+from abc import ABC, abstractmethod
 import asyncio
 import json
 from collections import defaultdict
@@ -27,6 +28,11 @@ from pyignite.cache import Cache
 from pyignite.exceptions import CacheError
 from pyignite.transaction import TransactionConcurrency, TransactionIsolation
 
+from data_intelligence_common.core.caching import CacheManager, CacheConfig, CacheStrategy
+from data_intelligence_common.core.events import EventBus, Event, create_data_event
+from data_intelligence_common.monitoring import MetricsCollector, StructuredLogger
+from data_intelligence_common.utils.converters import DataConverter
+
 logger = logging.getLogger(__name__)
 
 
@@ -40,14 +46,6 @@ class DataSource(Enum):
     PULSAR_STREAM = "pulsar_stream"
     REDIS = "redis"
     JANUSGRAPH = "janusgraph"
-
-
-class CacheStrategy(Enum):
-    """Cache update strategies"""
-    WRITE_THROUGH = "write_through"      # Write to cache and source
-    WRITE_BEHIND = "write_behind"        # Write to cache, async to source
-    READ_THROUGH = "read_through"        # Read from source if not in cache
-    REFRESH_AHEAD = "refresh_ahead"      # Proactive refresh before expiry
 
 
 class ConsistencyLevel(Enum):

@@ -18,7 +18,7 @@ from pyignite.cache import Cache
 from pyignite.transaction import TransactionConcurrency, TransactionIsolation
 
 from data_intelligence_common.core.events import EventBus
-from data_intelligence_common.core.caching import CacheManager as BaseCacheManager
+from data_intelligence_common.core.caching import CacheManager, CacheConfig, CacheStrategy
 from data_intelligence_common.integrations import IgniteClient
 
 from platformq_shared.logging_config import get_logger
@@ -37,14 +37,6 @@ class DataSource(str, Enum):
     JANUSGRAPH = "janusgraph"
     MINIO = "minio"
     TRINO = "trino"
-
-
-class CacheStrategy(str, Enum):
-    """Cache update strategies."""
-    WRITE_THROUGH = "write_through"      # Write to cache and source
-    WRITE_BEHIND = "write_behind"        # Write to cache, async to source
-    READ_THROUGH = "read_through"        # Read from source if not in cache
-    REFRESH_AHEAD = "refresh_ahead"      # Proactive refresh before expiry
 
 
 class ConsistencyLevel(str, Enum):
@@ -134,7 +126,7 @@ class IntegrationHub:
     def __init__(
         self,
         event_bus: EventBus,
-        cache_manager: BaseCacheManager,
+        cache_manager: CacheManager,
         ignite_client: Optional[IgniteClient] = None,
         ignite_nodes: Optional[List[Tuple[str, int]]] = None,
         default_consistency: ConsistencyLevel = ConsistencyLevel.STRONG
