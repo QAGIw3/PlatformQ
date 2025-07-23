@@ -355,6 +355,13 @@ mutation CreateTerm($name: String!, $definition: String!) {
 - **Trend Analysis**: Identify quality patterns
 - **Alerts**: Notify on quality degradation
 
+### 6. GraphQL Federation
+- **Unified Schema**: Part of platform-wide federated GraphQL API
+- **Cross-Service Queries**: Query catalog data alongside other services
+- **Type Safety**: Strongly typed GraphQL schema
+- **Real-time Updates**: Subscription support for live data changes
+- **Schema Stitching**: Automatic schema composition with other services
+
 ## ⚙️ Configuration
 
 ### Core Settings
