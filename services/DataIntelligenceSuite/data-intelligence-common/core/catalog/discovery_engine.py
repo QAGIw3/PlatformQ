@@ -420,10 +420,14 @@ class DiscoveryEngine:
     def __init__(
         self,
         cache_manager: Optional[CacheManager] = None,
-        event_bus: Optional[EventBus] = None
+        event_bus: Optional[EventBus] = None,
+        vault_client: Optional[Any] = None,
+        consul_client: Optional[Any] = None
     ):
         self.cache = cache_manager
         self.event_bus = event_bus
+        self.vault_client = vault_client
+        self.consul_client = consul_client
         
         # Adapters
         self._adapters: Dict[str, BaseDiscoveryAdapter] = {
@@ -437,6 +441,7 @@ class DiscoveryEngine:
         self._sources: Dict[str, DataSource] = {}
         self._patterns: Dict[str, DiscoveryPattern] = {}
         self._jobs: Dict[str, Dict[str, Any]] = {}
+        self._active_leases: Dict[str, Dict[str, Any]] = {}
         
         # Thread pool for parallel discovery
         self._executor = ThreadPoolExecutor(max_workers=4)
@@ -594,8 +599,50 @@ class DiscoveryEngine:
         try:
             # Get credentials from Vault if needed
             if not source.credentials and source.connection_config.get('use_vault'):
-                # TODO: Integrate with Vault
-                pass
+                # Integrate with Vault for dynamic credentials
+                vault_path = source.connection_config.get('vault_path')
+                vault_role = source.connection_config.get('vault_role')
+                
+                if vault_path and self.vault_client:
+                    try:
+                        # Get credentials from Vault
+                        secret = await self.vault_client.read_secret(vault_path)
+                        
+                        if secret and 'data' in secret:
+                            # Update source credentials
+                            source.credentials = {
+                                'username': secret['data'].get('username'),
+                                'password': secret['data'].get('password'),
+                                'api_key': secret['data'].get('api_key'),
+                                'token': secret['data'].get('token')
+                            }
+                            
+                            # For database sources, get dynamic credentials
+                            if source.type in [SourceType.DATABASE, SourceType.DATA_WAREHOUSE] and vault_role:
+                                db_creds = await self.vault_client.get_database_credentials(
+                                    mount_path='database',
+                                    role=vault_role
+                                )
+                                
+                                if db_creds:
+                                    source.credentials.update({
+                                        'username': db_creds.get('username'),
+                                        'password': db_creds.get('password'),
+                                        'lease_id': db_creds.get('lease_id'),
+                                        'lease_duration': db_creds.get('lease_duration')
+                                    })
+                                    
+                                    # Store lease for renewal
+                                    self._active_leases[source.id] = {
+                                        'lease_id': db_creds.get('lease_id'),
+                                        'expires_at': datetime.now() + timedelta(seconds=db_creds.get('lease_duration', 3600))
+                                    }
+                            
+                            logger.info(f"Retrieved credentials from Vault for source: {source.name}")
+                            
+                    except Exception as e:
+                        logger.error(f"Failed to get credentials from Vault: {e}")
+                        raise DiscoveryError(f"Vault authentication failed for source {source.name}: {str(e)}")
                 
             # Run discovery
             results = await adapter.discover(source, config, patterns)

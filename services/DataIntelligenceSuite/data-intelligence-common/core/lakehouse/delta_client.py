@@ -214,7 +214,57 @@ class DeltaLakeClient(BaseServiceClient):
             # Set table properties
             if properties:
                 delta_table = DeltaTableNative(table_path, storage_options=self._storage_options)
-                # TODO: Set properties via ALTER TABLE
+                # Set properties via ALTER TABLE
+                # Note: Native Delta operations are limited, this would typically use Spark
+                # For now, we'll store properties in a separate metadata file
+                import json
+                metadata_path = f"{table_path}/_metadata.json"
+                
+                # Read existing metadata if present
+                existing_metadata = {}
+                try:
+                    if self._storage_options.get("type") == "s3":
+                        # For S3, use boto3 to read metadata
+                        import boto3
+                        s3 = boto3.client('s3')
+                        bucket = table_path.replace("s3://", "").split("/")[0]
+                        key = "/".join(table_path.replace("s3://", "").split("/")[1:]) + "/_metadata.json"
+                        
+                        try:
+                            response = s3.get_object(Bucket=bucket, Key=key)
+                            existing_metadata = json.loads(response['Body'].read())
+                        except s3.exceptions.NoSuchKey:
+                            pass
+                    else:
+                        # For local filesystem
+                        import os
+                        if os.path.exists(metadata_path):
+                            with open(metadata_path, 'r') as f:
+                                existing_metadata = json.load(f)
+                except Exception:
+                    pass
+                
+                # Update with new properties
+                existing_metadata.update({
+                    "properties": properties,
+                    "updated_at": datetime.now().isoformat()
+                })
+                
+                # Write back metadata
+                metadata_json = json.dumps(existing_metadata, indent=2)
+                
+                if self._storage_options.get("type") == "s3":
+                    # For S3, use boto3 to write metadata
+                    s3.put_object(
+                        Bucket=bucket,
+                        Key=key,
+                        Body=metadata_json.encode('utf-8'),
+                        ContentType='application/json'
+                    )
+                else:
+                    # For local filesystem
+                    with open(metadata_path, 'w') as f:
+                        f.write(metadata_json)
             
             # Get table metadata
             delta_table = DeltaTableNative(table_path, storage_options=self._storage_options)
@@ -332,15 +382,69 @@ class DeltaLakeClient(BaseServiceClient):
                     storage_options=self._storage_options
                 )
             elif timestamp is not None:
-                # TODO: Implement timestamp-based time travel
-                delta_table = DeltaTableNative(table_path, storage_options=self._storage_options)
+                # Implement timestamp-based time travel
+                # Get table history to find version at timestamp
+                temp_table = DeltaTableNative(table_path, storage_options=self._storage_options)
+                history = temp_table.history()
+                
+                # Find the version that was active at the given timestamp
+                target_version = None
+                for entry in history:
+                    entry_timestamp = datetime.fromisoformat(entry['timestamp'].replace('Z', '+00:00'))
+                    if entry_timestamp <= timestamp:
+                        target_version = entry['version']
+                        break
+                
+                if target_version is not None:
+                    delta_table = DeltaTableNative(
+                        table_path,
+                        version=target_version,
+                        storage_options=self._storage_options
+                    )
+                else:
+                    raise ValueError(f"No version found for timestamp {timestamp}")
             else:
                 delta_table = DeltaTableNative(table_path, storage_options=self._storage_options)
             
             # Read data
             if filter_expr:
-                # TODO: Parse and apply filter
+                # Parse and apply filter
+                # For simple filters, use pandas query after loading
+                # In production, use predicate pushdown with PyArrow
                 df = delta_table.to_pandas()
+                
+                # Apply filter using pandas query syntax
+                try:
+                    # Convert SQL-like syntax to pandas query syntax
+                    pandas_filter = filter_expr
+                    
+                    # Simple conversions
+                    pandas_filter = pandas_filter.replace(" = ", " == ")
+                    pandas_filter = pandas_filter.replace(" <> ", " != ")
+                    pandas_filter = pandas_filter.replace(" AND ", " & ")
+                    pandas_filter = pandas_filter.replace(" OR ", " | ")
+                    pandas_filter = pandas_filter.replace(" NOT ", " ~ ")
+                    
+                    # Handle IN clause
+                    import re
+                    in_pattern = r"(\w+)\s+IN\s+\((.*?)\)"
+                    in_matches = re.findall(in_pattern, pandas_filter, re.IGNORECASE)
+                    for col, values in in_matches:
+                        values_list = [v.strip().strip("'\"") for v in values.split(",")]
+                        pandas_in = f"{col}.isin({values_list})"
+                        pandas_filter = re.sub(
+                            f"{col}\\s+IN\\s+\\({re.escape(values)}\\)",
+                            pandas_in,
+                            pandas_filter,
+                            flags=re.IGNORECASE
+                        )
+                    
+                    # Apply the filter
+                    df = df.query(pandas_filter)
+                    
+                except Exception as e:
+                    logger.warning(f"Failed to apply filter '{filter_expr}': {e}")
+                    # Return unfiltered data if filter parsing fails
             else:
                 df = delta_table.to_pandas()
             

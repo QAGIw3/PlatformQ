@@ -616,13 +616,98 @@ class LakehouseManager:
     
     async def _load_table_registry(self):
         """Load table registry from storage"""
-        # TODO: Implement persistent registry storage
-        pass
+        # Implement persistent registry storage
+        try:
+            # Try to load from Consul if available
+            if hasattr(self, 'consul_client') and self.consul_client:
+                registry_data = await self.consul_client.get("lakehouse/table_registry")
+                if registry_data:
+                    import json
+                    registry = json.loads(registry_data)
+                    
+                    # Convert back to UnifiedTable objects
+                    for table_id, table_data in registry.items():
+                        self._table_registry[table_id] = UnifiedTable(
+                            name=table_data['name'],
+                            format=LakehouseFormat(table_data['format']),
+                            location=table_data['location'],
+                            schema=table_data.get('schema', {}),
+                            properties=table_data.get('properties', {}),
+                            created_at=datetime.fromisoformat(table_data['created_at']),
+                            updated_at=datetime.fromisoformat(table_data['updated_at'])
+                        )
+                    
+                    logger.info(f"Loaded {len(self._table_registry)} tables from registry")
+                    return
+            
+            # Try to load from local file as fallback
+            import os
+            registry_file = os.path.join(
+                os.path.expanduser("~/.lakehouse"),
+                "table_registry.json"
+            )
+            
+            if os.path.exists(registry_file):
+                with open(registry_file, 'r') as f:
+                    import json
+                    registry = json.load(f)
+                    
+                    # Convert back to UnifiedTable objects
+                    for table_id, table_data in registry.items():
+                        self._table_registry[table_id] = UnifiedTable(
+                            name=table_data['name'],
+                            format=LakehouseFormat(table_data['format']),
+                            location=table_data['location'],
+                            schema=table_data.get('schema', {}),
+                            properties=table_data.get('properties', {}),
+                            created_at=datetime.fromisoformat(table_data['created_at']),
+                            updated_at=datetime.fromisoformat(table_data['updated_at'])
+                        )
+                    
+                    logger.info(f"Loaded {len(self._table_registry)} tables from local registry")
+                    
+        except Exception as e:
+            logger.warning(f"Failed to load table registry: {e}")
+            # Continue with empty registry
     
     async def _save_table_registry(self):
         """Save table registry to storage"""
-        # TODO: Implement persistent registry storage
-        pass
+        # Implement persistent registry storage
+        try:
+            # Convert registry to JSON-serializable format
+            registry_data = {}
+            for table_id, table in self._table_registry.items():
+                registry_data[table_id] = {
+                    'name': table.name,
+                    'format': table.format.value,
+                    'location': table.location,
+                    'schema': table.schema,
+                    'properties': table.properties,
+                    'created_at': table.created_at.isoformat(),
+                    'updated_at': table.updated_at.isoformat()
+                }
+            
+            import json
+            registry_json = json.dumps(registry_data, indent=2)
+            
+            # Save to Consul if available
+            if hasattr(self, 'consul_client') and self.consul_client:
+                await self.consul_client.put("lakehouse/table_registry", registry_json)
+                logger.info(f"Saved {len(self._table_registry)} tables to Consul registry")
+            
+            # Also save to local file as backup
+            import os
+            registry_dir = os.path.expanduser("~/.lakehouse")
+            os.makedirs(registry_dir, exist_ok=True)
+            
+            registry_file = os.path.join(registry_dir, "table_registry.json")
+            with open(registry_file, 'w') as f:
+                f.write(registry_json)
+            
+            logger.info(f"Saved {len(self._table_registry)} tables to local registry")
+            
+        except Exception as e:
+            logger.error(f"Failed to save table registry: {e}")
     
     async def close(self):
         """Close all clients"""

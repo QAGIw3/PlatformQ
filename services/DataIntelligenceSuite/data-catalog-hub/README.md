@@ -12,6 +12,7 @@ The Data Catalog Hub is a comprehensive metadata management service that provide
 - **📚 Business Glossary**: Map business terms to technical assets with AI assistance
 - **✅ Quality Integration**: Monitor and improve data quality across the platform
 - **📊 Access Analytics**: Understand data usage patterns and optimize access
+- **🌐 GraphQL Federation**: Unified GraphQL API for cross-service metadata queries
 
 ## 🏗️ Architecture
 
@@ -123,6 +124,8 @@ pytest
 When the service is running, visit:
 - **Swagger UI**: http://localhost:8000/api/docs
 - **ReDoc**: http://localhost:8000/api/redoc
+- **GraphQL Playground**: http://localhost:8000/graphql
+- **Federation SDL**: http://localhost:8000/graphql/sdl
 
 ### Entity Management
 
@@ -232,6 +235,92 @@ curl -X POST http://localhost:8000/api/v1/glossary/suggest-terms \
 
 # Auto-map terms to dataset
 curl -X POST http://localhost:8000/api/v1/glossary/auto-map/{dataset_guid}
+```
+
+### GraphQL Queries
+
+```graphql
+# Get data asset with lineage and quality
+query GetDataAsset($guid: String!) {
+  dataAsset(guid: $guid) {
+    guid
+    name
+    qualifiedName
+    description
+    owner
+    classifications
+    
+    lineage {
+      upstreamEntities {
+        name
+        typeName
+      }
+      downstreamEntities {
+        name
+        typeName
+      }
+      impactRadius
+    }
+    
+    qualityScore
+    
+    glossaryTerms {
+      name
+      definition
+    }
+    
+    accessAnalytics {
+      totalAccesses
+      uniqueUsers
+      accessTrend
+    }
+  }
+}
+
+# Search for data assets
+query SearchAssets($query: String!, $searchType: String!) {
+  searchAssets(query: $query, searchType: $searchType, limit: 10) {
+    score
+    entity {
+      guid
+      name
+      description
+      typeName
+    }
+    highlights
+    explanation
+    source
+  }
+}
+
+# Get data lineage graph
+query GetLineage($entityGuid: String!) {
+  dataLineage(entityGuid: $entityGuid, depth: 3) {
+    upstreamEntities {
+      name
+      qualifiedName
+    }
+    downstreamEntities {
+      name
+      qualifiedName
+    }
+    processes {
+      name
+      processType
+    }
+    fullGraph(depth: 5)
+  }
+}
+
+# Create glossary term
+mutation CreateTerm($name: String!, $definition: String!) {
+  createGlossaryTerm(name: $name, definition: $definition) {
+    guid
+    name
+    definition
+    aiSuggestions
+  }
+}
 ```
 
 ## 🌟 Key Features

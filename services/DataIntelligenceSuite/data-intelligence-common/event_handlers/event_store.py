@@ -218,10 +218,31 @@ class EventStore:
             if len(events) >= limit:
                 break
                 
-        # TODO: Implement actual event retrieval from storage
-        # This would fetch the full events based on message IDs
+        # Fetch full events from storage based on metadata
+        full_events = []
+        for metadata in events:
+            try:
+                # Retrieve from Ignite cache using event ID
+                cache = self.ignite_client.get_or_create_cache(f"events_{stream_name}")
+                event_data = cache.get(metadata['id'])
+                
+                if event_data:
+                    event_dict = json.loads(event_data) if isinstance(event_data, str) else event_data
+                    event = Event(
+                        id=event_dict["id"],
+                        type=event_dict["type"],
+                        stream_name=event_dict["stream_name"],
+                        data=event_dict["data"],
+                        metadata=event_dict.get("metadata", {}),
+                        timestamp=datetime.fromisoformat(event_dict["timestamp"]),
+                        version=event_dict.get("version", 1)
+                    )
+                    full_events.append(event)
+            except Exception as e:
+                self.logger.error(f"Failed to retrieve event {metadata['id']}: {e}")
+                continue
         
-        return events
+        return full_events
         
     async def get_event_by_id(self, event_id: str,
                              user_context: Optional[Dict[str, Any]] = None) -> Optional[Dict[str, Any]]:
@@ -247,11 +268,40 @@ class EventStore:
                 logger.warning(f"User lacks permission to access sensitive event {event_id}")
                 return None
                 
-        # TODO: Implement actual retrieval from storage
-        # This would fetch from Pulsar based on message_id
-        
-        # For now, return metadata
-        return metadata
+        # Retrieve full event from storage
+        try:
+            # First try to get from Ignite cache
+            stream_name = metadata.get("stream_name", "default")
+            cache = self.ignite_client.get_or_create_cache(f"events_{stream_name}")
+            event_data = cache.get(event_id)
+            
+            if event_data:
+                return json.loads(event_data) if isinstance(event_data, str) else event_data
+            
+            # If not in cache, try to retrieve from Pulsar using message_id
+            if "message_id" in metadata:
+                reader = self.pulsar_client.create_reader(
+                    topic=f"persistent://events/{stream_name}",
+                    start_message_id=metadata["message_id"]
+                )
+                
+                if reader.has_message_available():
+                    msg = reader.read_next()
+                    event_data = json.loads(msg.data().decode('utf-8'))
+                    
+                    # Cache for future retrieval
+                    cache.put(event_id, json.dumps(event_data))
+                    
+                    return event_data
+                
+                reader.close()
+            
+            # If all else fails, return enriched metadata
+            return metadata
+            
+        except Exception as e:
+            self.logger.error(f"Failed to retrieve event {event_id}: {e}")
+            return metadata
         
     async def get_events_by_correlation_id(self, 
                                          correlation_id: str,
@@ -308,11 +358,45 @@ class EventStore:
         replayed = 0
         for event_metadata in events:
             try:
-                # TODO: Fetch full event from storage
-                # For now, just count
-                replayed += 1
+                # Fetch full event from storage
+                full_event = await self.get_event_by_id(
+                    event_metadata.get("id"),
+                    user_context
+                )
                 
-                # Would republish to target topic or original topic
+                if full_event:
+                    # Republish to target topic
+                    producer = self.pulsar_client.create_producer(
+                        target_topic or f"persistent://events/{stream_name}"
+                    )
+                    
+                    # Create new event with replay metadata
+                    replay_event = {
+                        **full_event,
+                        "metadata": {
+                            **full_event.get("metadata", {}),
+                            "replayed": True,
+                            "replay_timestamp": datetime.utcnow().isoformat(),
+                            "original_id": full_event.get("id"),
+                            "replay_reason": user_context.get("replay_reason", "manual")
+                        }
+                    }
+                    
+                    # Generate new ID for replayed event
+                    replay_event["id"] = str(uuid.uuid4())
+                    
+                    producer.send(
+                        json.dumps(replay_event).encode('utf-8'),
+                        properties={
+                            "original_event_id": full_event.get("id"),
+                            "replay_timestamp": datetime.utcnow().isoformat()
+                        }
+                    )
+                    
+                    producer.close()
+                    replayed += 1
+                    
+                    logger.info(f"Replayed event {full_event.get('id')} to {target_topic or stream_name}")
                 
             except Exception as e:
                 logger.error(f"Failed to replay event {event_metadata.get('event_id')}: {e}")
@@ -342,8 +426,100 @@ class EventStore:
         # 2. Apply them in order to build current state
         # 3. Return the final state
         
-        # TODO: Implement event compaction
-        return {}
+        # Implement event compaction
+        stream_name = f"{entity_type}_{entity_id}"
+        
+        # Query all events for the entity
+        events = await self.query_events(
+            stream_name=stream_name,
+            start_time=datetime.min,
+            end_time=up_to_time or datetime.utcnow(),
+            limit=10000  # Large limit to get all events
+        )
+        
+        if not events:
+            return {}
+        
+        # Build current state by applying events in order
+        current_state = {
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "version": 0,
+            "data": {}
+        }
+        
+        for event in events:
+            try:
+                # Apply event to state based on event type
+                event_type = event.type
+                event_data = event.data
+                
+                if event_type == "created":
+                    current_state["data"] = event_data
+                    current_state["created_at"] = event.timestamp.isoformat()
+                    
+                elif event_type == "updated":
+                    # Merge update into current state
+                    if isinstance(event_data, dict) and isinstance(current_state["data"], dict):
+                        current_state["data"].update(event_data)
+                    else:
+                        current_state["data"] = event_data
+                    current_state["updated_at"] = event.timestamp.isoformat()
+                    
+                elif event_type == "deleted":
+                    current_state["deleted"] = True
+                    current_state["deleted_at"] = event.timestamp.isoformat()
+                    
+                elif event_type.startswith("field_"):
+                    # Handle field-specific updates
+                    field_name = event_type.replace("field_", "")
+                    if isinstance(current_state["data"], dict):
+                        current_state["data"][field_name] = event_data
+                
+                # Increment version
+                current_state["version"] += 1
+                current_state["last_event_id"] = event.id
+                current_state["last_event_timestamp"] = event.timestamp.isoformat()
+                
+            except Exception as e:
+                logger.error(f"Failed to apply event {event.id}: {e}")
+                continue
+        
+        # Create snapshot event
+        snapshot_event = Event(
+            id=str(uuid.uuid4()),
+            type="snapshot",
+            stream_name=stream_name,
+            data=current_state,
+            metadata={
+                "compacted_at": datetime.utcnow().isoformat(),
+                "event_count": len(events),
+                "up_to_time": (up_to_time or datetime.utcnow()).isoformat()
+            }
+        )
+        
+        # Store snapshot
+        await self.append_event(snapshot_event)
+        
+        # Optionally, mark old events for archival
+        if self._config.get("archive_after_compaction", False):
+            for event in events:
+                await self._mark_for_archive(event.id)
+        
+        logger.info(f"Compacted {len(events)} events for {entity_type}:{entity_id}")
+        
+        return current_state
+    
+    async def _mark_for_archive(self, event_id: str):
+        """Mark an event for archival"""
+        try:
+            archive_cache = self.ignite_client.get_or_create_cache("events_archive_queue")
+            archive_cache.put(event_id, {
+                "marked_at": datetime.utcnow().isoformat(),
+                "status": "pending"
+            })
+        except Exception as e:
+            logger.error(f"Failed to mark event {event_id} for archive: {e}")
         
     async def archive_old_events(self) -> int:
         """
@@ -362,10 +538,56 @@ class EventStore:
             if metadata.get("timestamp"):
                 event_time = datetime.fromisoformat(metadata["timestamp"])
                 if event_time < cutoff_date:
-                    # TODO: Move to cold storage (e.g., MinIO)
-                    # For now, just remove from index
-                    del self._event_index[event_id]
-                    archived += 1
+                    # Move to cold storage (MinIO)
+                    try:
+                        # Retrieve full event
+                        full_event = await self.get_event_by_id(event_id)
+                        
+                        if full_event:
+                            # Upload to MinIO
+                            from ..integrations.minio_client import MinIOClient, MinIOConfig
+                            
+                            minio_config = MinIOConfig(
+                                endpoint=self._config.get("archive_endpoint", "localhost:9000"),
+                                access_key=self._config.get("archive_access_key", "minioadmin"),
+                                secret_key=self._config.get("archive_secret_key", "minioadmin"),
+                                bucket="event-archive"
+                            )
+                            
+                            minio_client = MinIOClient(minio_config)
+                            await minio_client.connect()
+                            
+                            # Create archive path: year/month/day/stream/event_id.json
+                            archive_path = f"{event_time.year}/{event_time.month:02d}/{event_time.day:02d}/"
+                            archive_path += f"{metadata.get('stream_name', 'unknown')}/{event_id}.json"
+                            
+                            # Upload event
+                            event_json = json.dumps(full_event, indent=2)
+                            await minio_client.upload_data(
+                                data=event_json.encode('utf-8'),
+                                object_name=archive_path,
+                                content_type="application/json",
+                                metadata={
+                                    "event_id": event_id,
+                                    "event_type": metadata.get("event_type", ""),
+                                    "archived_at": datetime.utcnow().isoformat()
+                                }
+                            )
+                            
+                            # Remove from hot storage
+                            stream_name = metadata.get("stream_name", "default")
+                            cache = self.ignite_client.get_or_create_cache(f"events_{stream_name}")
+                            cache.remove(event_id)
+                            
+                            # Remove from index
+                            del self._event_index[event_id]
+                            archived += 1
+                            
+                            logger.info(f"Archived event {event_id} to {archive_path}")
+                            
+                    except Exception as e:
+                        logger.error(f"Failed to archive event {event_id}: {e}")
+                        # Don't remove from index if archival failed
                     
         logger.info(f"Archived {archived} events older than {archive_after} days")
         return archived

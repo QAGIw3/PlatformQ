@@ -9,6 +9,10 @@ from .clickhouse_client import (
     ClickHouseClient, ClickHouseConfig, TableDefinition, TableColumn,
     Engine, DataType, QueryResult
 )
+from .doris_client import (
+    DorisClient, DorisConfig, Column, TableDefinition as DorisTableDefinition,
+    TableModel, StreamLoadResult
+)
 
 __all__ = [
     # Pinot
@@ -25,5 +29,13 @@ __all__ = [
     "TableColumn",
     "Engine",
     "DataType",
-    "QueryResult"
+    "QueryResult",
+    
+    # Doris
+    "DorisClient",
+    "DorisConfig",
+    "Column",
+    "DorisTableDefinition",
+    "TableModel",
+    "StreamLoadResult"
 ] 

@@ -340,8 +340,43 @@ class PulsarBackend(EventBackend):
             # For explicit creation, use admin API
             admin_url = self.config.metadata.get('admin_url')
             if admin_url:
-                # TODO: Implement admin API calls
-                pass
+                # Implement admin API calls for topic creation
+                import aiohttp
+                
+                async with aiohttp.ClientSession() as session:
+                    # Parse topic name to get tenant/namespace/topic
+                    parts = topic.split('/')
+                    if len(parts) >= 4:  # persistent://tenant/namespace/topic
+                        tenant = parts[2]
+                        namespace = parts[3]
+                        topic_name = '/'.join(parts[4:]) if len(parts) > 4 else parts[3]
+                        
+                        # Create topic via admin API
+                        create_url = f"{admin_url}/admin/v2/persistent/{tenant}/{namespace}/{topic_name}"
+                        
+                        # Prepare topic metadata
+                        topic_metadata = {
+                            "partitions": partitions,
+                            "properties": {}
+                        }
+                        
+                        # Add authentication if configured
+                        headers = {}
+                        if self.config.metadata.get('admin_token'):
+                            headers['Authorization'] = f"Bearer {self.config.metadata['admin_token']}"
+                        
+                        async with session.put(
+                            create_url,
+                            json=topic_metadata,
+                            headers=headers
+                        ) as response:
+                            if response.status in [200, 204, 409]:  # 409 = already exists
+                                logger.info(f"Topic created via admin API: {topic}")
+                                return True
+                            else:
+                                error_text = await response.text()
+                                logger.error(f"Failed to create topic via admin API: {response.status} - {error_text}")
+                                return False
             
             logger.info(f"Topic will be created on first use: {topic}")
             return True
@@ -356,11 +391,39 @@ class PulsarBackend(EventBackend):
             # Requires admin API
             admin_url = self.config.metadata.get('admin_url')
             if admin_url:
-                # TODO: Implement admin API calls
-                pass
-            
-            logger.warning(f"Topic deletion requires admin API: {topic}")
-            return False
+                # Implement admin API calls for topic deletion
+                import aiohttp
+                
+                async with aiohttp.ClientSession() as session:
+                    # Parse topic name to get tenant/namespace/topic
+                    parts = topic.split('/')
+                    if len(parts) >= 4:  # persistent://tenant/namespace/topic
+                        tenant = parts[2]
+                        namespace = parts[3]
+                        topic_name = '/'.join(parts[4:]) if len(parts) > 4 else parts[3]
+                        
+                        # Delete topic via admin API
+                        delete_url = f"{admin_url}/admin/v2/persistent/{tenant}/{namespace}/{topic_name}"
+                        
+                        # Add authentication if configured
+                        headers = {}
+                        if self.config.metadata.get('admin_token'):
+                            headers['Authorization'] = f"Bearer {self.config.metadata['admin_token']}"
+                        
+                        async with session.delete(
+                            delete_url,
+                            headers=headers
+                        ) as response:
+                            if response.status in [200, 204, 404]:  # 404 = already deleted
+                                logger.info(f"Topic deleted via admin API: {topic}")
+                                return True
+                            else:
+                                error_text = await response.text()
+                                logger.error(f"Failed to delete topic via admin API: {response.status} - {error_text}")
+                                return False
+            else:
+                logger.warning(f"Topic deletion requires admin API configuration")
+                return False
             
         except Exception as e:
             logger.error(f"Failed to delete topic: {e}")
@@ -372,11 +435,37 @@ class PulsarBackend(EventBackend):
             # Requires admin API
             admin_url = self.config.metadata.get('admin_url')
             if admin_url:
-                # TODO: Implement admin API calls
-                pass
-            
-            # Return empty list for now
-            return []
+                # Implement admin API calls for topic listing
+                import aiohttp
+                
+                async with aiohttp.ClientSession() as session:
+                    # Get default tenant/namespace from config or use public/default
+                    tenant = self.config.metadata.get('tenant', 'public')
+                    namespace = self.config.metadata.get('namespace', 'default')
+                    
+                    # List topics via admin API
+                    list_url = f"{admin_url}/admin/v2/persistent/{tenant}/{namespace}"
+                    
+                    # Add authentication if configured
+                    headers = {}
+                    if self.config.metadata.get('admin_token'):
+                        headers['Authorization'] = f"Bearer {self.config.metadata['admin_token']}"
+                    
+                    async with session.get(
+                        list_url,
+                        headers=headers
+                    ) as response:
+                        if response.status == 200:
+                            topics = await response.json()
+                            logger.info(f"Listed {len(topics)} topics from Pulsar")
+                            return topics
+                        else:
+                            error_text = await response.text()
+                            logger.error(f"Failed to list topics via admin API: {response.status} - {error_text}")
+                            return []
+            else:
+                logger.warning("Topic listing requires admin API configuration")
+                return []
             
         except Exception as e:
             logger.error(f"Failed to list topics: {e}")

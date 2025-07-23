@@ -564,8 +564,39 @@ class KafkaBackend(EventBackend):
                         
                         # Handle dead letter if enabled
                         if config.enable_dead_letter and config.dead_letter_topic:
-                            # TODO: Send to dead letter topic
-                            pass
+                            # Send to dead letter topic
+                            try:
+                                # Create dead letter event
+                                dead_letter_event = Event(
+                                    id=str(uuid.uuid4()),
+                                    type="dead_letter",
+                                    data={
+                                        "original_event": event.to_dict() if hasattr(event, 'to_dict') else str(event),
+                                        "error": str(e),
+                                        "error_type": type(e).__name__,
+                                        "topic": topic,
+                                        "partition": msg.partition,
+                                        "offset": msg.offset,
+                                        "timestamp": datetime.utcnow().isoformat()
+                                    },
+                                    metadata={
+                                        "original_topic": topic,
+                                        "consumer_group": config.consumer_group,
+                                        "retry_count": event.metadata.get("retry_count", 0) + 1 if hasattr(event, 'metadata') else 1
+                                    },
+                                    timestamp=datetime.utcnow()
+                                )
+                                
+                                # Send to dead letter topic
+                                await self.publish(
+                                    event=dead_letter_event,
+                                    topic=config.dead_letter_topic
+                                )
+                                
+                                logger.info(f"Sent failed event to dead letter topic: {config.dead_letter_topic}")
+                                
+                            except Exception as dle:
+                                logger.error(f"Failed to send to dead letter topic: {dle}")
                     
                     # Commit offset if auto-commit is disabled
                     if not config.auto_commit:

@@ -16,6 +16,9 @@ from dependency_injector import containers
 from app.core.config import settings
 from app.core.container import Container
 from app.api.v1 import create_api_router
+from app.graphql import schema
+from app.graphql.federation import initialize_federation, get_federation_schema
+from strawberry.fastapi import GraphQLRouter
 import logging
 
 logger = logging.getLogger(__name__)
@@ -83,6 +86,10 @@ def create_application(
         await container.search_analytics_tracker().initialize()
         await container.knowledge_graph_integrator().initialize()
         
+        # Initialize GraphQL federation
+        logger.info("Initializing GraphQL federation...")
+        await initialize_federation(container)
+        
         # Register event handlers
         setup_event_handlers(container)
         
@@ -99,6 +106,11 @@ def create_application(
         
         # Stop event processors
         await stop_event_processors(container)
+        
+        # Shutdown GraphQL federation
+        federation = await get_federation_schema()
+        if federation:
+            await federation.shutdown()
         
         # Cleanup services
         await container.unified_search_service().cleanup() if hasattr(container.unified_search_service(), 'cleanup') else None
@@ -164,6 +176,13 @@ def setup_routes(app: FastAPI):
     api_v1_router = create_api_router()
     app.include_router(api_v1_router, prefix="/api/v1")
     
+    # Add GraphQL endpoint
+    graphql_app = GraphQLRouter(
+        schema,
+        context_getter=lambda: {"container": app.container}
+    )
+    app.include_router(graphql_app, prefix="/graphql")
+    
     # Health check endpoint
     @app.get("/health")
     async def health_check():
@@ -183,9 +202,19 @@ def setup_routes(app: FastAPI):
             "version": "3.0.0",
             "description": "Unified metadata management and intelligent search",
             "api_docs": "/api/docs",
+            "graphql": "/graphql",
             "health": "/health",
             "metrics": "/metrics"
         }
+    
+    # GraphQL federation schema endpoint
+    @app.get("/graphql/sdl")
+    async def get_schema_sdl():
+        """Get the GraphQL schema SDL for federation"""
+        federation = await get_federation_schema()
+        if federation:
+            return {"sdl": await federation.get_schema_sdl()}
+        return {"error": "Federation not initialized"}
 
 
 def setup_event_handlers(container: Container):

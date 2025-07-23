@@ -557,10 +557,58 @@ class GreatExpectationsClient(BaseServiceClient):
             # Get validation results from store
             validations = []
             
-            # TODO: Implement validation history retrieval
-            # This would query the validations store
+            # Retrieve validation history from store
+            if self._context:
+                # Get all validation results for the suite
+                validation_store = self._context.stores.validations_store
+                
+                # Get all validation result identifiers
+                validation_ids = validation_store.list_keys()
+                
+                # Filter by suite name if provided
+                for validation_id in validation_ids:
+                    if suite_name and validation_id.expectation_suite_identifier.expectation_suite_name != suite_name:
+                        continue
+                    
+                    try:
+                        # Get validation result
+                        validation_result = validation_store.get(validation_id)
+                        
+                        # Convert to our format
+                        result = ValidationResult(
+                            success=validation_result.success,
+                            expectation_suite_name=validation_id.expectation_suite_identifier.expectation_suite_name,
+                            run_id=validation_id.run_id.run_name,
+                            batch_id=validation_id.batch_identifier,
+                            statistics={
+                                "evaluated_expectations": validation_result.statistics.get("evaluated_expectations", 0),
+                                "successful_expectations": validation_result.statistics.get("successful_expectations", 0),
+                                "unsuccessful_expectations": validation_result.statistics.get("unsuccessful_expectations", 0),
+                                "success_percent": validation_result.statistics.get("success_percent", 0)
+                            },
+                            validation_time=validation_result.meta.get("run_time", datetime.now()),
+                            batch_kwargs=validation_result.meta.get("batch_kwargs", {}),
+                            expectation_results=[
+                                {
+                                    "expectation_type": exp_result.expectation_config.expectation_type,
+                                    "success": exp_result.success,
+                                    "kwargs": exp_result.expectation_config.kwargs,
+                                    "result": exp_result.result
+                                }
+                                for exp_result in validation_result.results
+                            ]
+                        )
+                        
+                        validations.append(result)
+                        
+                    except Exception as e:
+                        logger.warning(f"Failed to retrieve validation {validation_id}: {e}")
+                        continue
+                
+                # Sort by validation time
+                validations.sort(key=lambda x: x.validation_time, reverse=True)
             
-            return validations[-limit:]
+            return validations[:limit]
             
         except Exception as e:
             logger.error(f"Failed to get validation history: {e}")
@@ -595,8 +643,131 @@ class GreatExpectationsClient(BaseServiceClient):
                 }
             }
             
-            # TODO: Implement report generation
-            # This would aggregate validation results across suites
+            # Generate comprehensive quality report
+            if self._context:
+                # Get all validation results within time range
+                validation_store = self._context.stores.validations_store
+                validation_ids = validation_store.list_keys()
+                
+                total_validations = 0
+                successful_validations = 0
+                failed_validations = 0
+                expectation_results = []
+                suite_results = {}
+                
+                for validation_id in validation_ids:
+                    try:
+                        # Get validation result
+                        validation_result = validation_store.get(validation_id)
+                        
+                        # Check if within time range
+                        run_time = validation_result.meta.get("run_time", datetime.now())
+                        if isinstance(run_time, str):
+                            run_time = datetime.fromisoformat(run_time)
+                        
+                        if start_date and run_time < start_date:
+                            continue
+                        if end_date and run_time > end_date:
+                            continue
+                        
+                        # Update counters
+                        total_validations += 1
+                        if validation_result.success:
+                            successful_validations += 1
+                        else:
+                            failed_validations += 1
+                        
+                        # Track suite-level results
+                        suite_name = validation_id.expectation_suite_identifier.expectation_suite_name
+                        if suite_name not in suite_results:
+                            suite_results[suite_name] = {
+                                "total": 0,
+                                "successful": 0,
+                                "failed": 0,
+                                "expectations": {}
+                            }
+                        
+                        suite_results[suite_name]["total"] += 1
+                        if validation_result.success:
+                            suite_results[suite_name]["successful"] += 1
+                        else:
+                            suite_results[suite_name]["failed"] += 1
+                        
+                        # Track expectation-level results
+                        for exp_result in validation_result.results:
+                            exp_type = exp_result.expectation_config.expectation_type
+                            
+                            if exp_type not in suite_results[suite_name]["expectations"]:
+                                suite_results[suite_name]["expectations"][exp_type] = {
+                                    "total": 0,
+                                    "successful": 0,
+                                    "failed": 0
+                                }
+                            
+                            suite_results[suite_name]["expectations"][exp_type]["total"] += 1
+                            if exp_result.success:
+                                suite_results[suite_name]["expectations"][exp_type]["successful"] += 1
+                            else:
+                                suite_results[suite_name]["expectations"][exp_type]["failed"] += 1
+                                
+                    except Exception as e:
+                        logger.warning(f"Failed to process validation {validation_id}: {e}")
+                        continue
+                
+                # Calculate metrics
+                success_rate = (successful_validations / total_validations * 100) if total_validations > 0 else 0
+                
+                # Find most common failures
+                failure_patterns = {}
+                for suite_name, suite_data in suite_results.items():
+                    for exp_type, exp_data in suite_data["expectations"].items():
+                        if exp_data["failed"] > 0:
+                            failure_key = f"{suite_name}::{exp_type}"
+                            failure_patterns[failure_key] = exp_data["failed"]
+                
+                # Sort failures by frequency
+                top_failures = sorted(failure_patterns.items(), key=lambda x: x[1], reverse=True)[:10]
+                
+                # Update report
+                report["summary"]["total_validations"] = total_validations
+                report["summary"]["successful_validations"] = successful_validations
+                report["summary"]["failed_validations"] = failed_validations
+                report["summary"]["success_rate"] = round(success_rate, 2)
+                
+                report["suite_results"] = suite_results
+                report["top_failures"] = [
+                    {
+                        "pattern": pattern,
+                        "count": count,
+                        "suite": pattern.split("::")[0],
+                        "expectation": pattern.split("::")[1]
+                    }
+                    for pattern, count in top_failures
+                ]
+                
+                # Add time-based analysis
+                report["time_analysis"] = {
+                    "period": f"{start_date or 'beginning'} to {end_date or 'now'}",
+                    "daily_average": total_validations / max(1, (end_date - start_date).days if start_date and end_date else 30)
+                }
+                
+                # Generate recommendations
+                report["recommendations"] = []
+                
+                if success_rate < 90:
+                    report["recommendations"].append({
+                        "severity": "high",
+                        "message": f"Overall success rate is {success_rate:.1f}%, below recommended 90%",
+                        "action": "Review and fix failing expectations"
+                    })
+                
+                for pattern, count in top_failures[:3]:
+                    suite, expectation = pattern.split("::")
+                    report["recommendations"].append({
+                        "severity": "medium",
+                        "message": f"{expectation} in {suite} failed {count} times",
+                        "action": f"Investigate root cause of {expectation} failures"
+                    })
             
             return report
             

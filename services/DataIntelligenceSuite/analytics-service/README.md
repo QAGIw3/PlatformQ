@@ -7,6 +7,7 @@ The Unified Analytics Service provides comprehensive analytics capabilities for 
 This service consolidates:
 - **Batch Analytics**: Complex queries via Apache Trino
 - **Real-time Analytics**: Time-series analysis via Apache Druid and Apache Ignite
+- **Ultra-Low Latency OLAP**: Sub-second queries via Apache Pinot, ClickHouse, and Apache Doris
 - **Machine Learning**: Anomaly detection, forecasting, and predictive maintenance
 - **Stream Processing**: Real-time event processing with Apache Flink integration
 - **Cross-Service Monitoring**: Platform-wide dashboards and insights
@@ -23,6 +24,12 @@ This service consolidates:
 │  │   Batch     │  Real-time   │    Cache    │     ML     │ │
 │  │  (Trino)    │   (Druid)    │  (Ignite)   │  (MLflow)  │ │
 │  └─────────────┴──────────────┴─────────────┴────────────┘ │
+├─────────────────────────────────────────────────────────────┤
+│                  Real-time OLAP Engines                      │
+│  ┌─────────────┬──────────────┬─────────────────────────┐ │
+│  │   Apache    │  ClickHouse  │     Apache Doris        │ │
+│  │   Pinot     │              │                         │ │
+│  └─────────────┴──────────────┴─────────────────────────┘ │
 ├─────────────────────────────────────────────────────────────┤
 │                    Stream Processing                         │
 │  ┌─────────────────────┬─────────────────────────────────┐ │
@@ -41,13 +48,17 @@ This service consolidates:
 
 ### 1. Unified Query Interface
 - **Intelligent Routing**: Automatically routes queries to the optimal engine
-- **Multi-Engine Support**: Seamlessly switches between Trino, Druid, and Ignite
+- **Multi-Engine Support**: Seamlessly switches between Trino, Druid, Ignite, Pinot, ClickHouse, and Doris
 - **Query Optimization**: Caches results and optimizes execution paths
 - **Federated Queries**: Split queries across engines for best performance
+- **Engine Selection**: Automatically selects the best engine based on query characteristics
 
 ### 2. Real-time Analytics
 - **Time-Series Analysis**: Powered by Apache Druid
 - **In-Memory Computing**: Sub-millisecond queries with Apache Ignite
+- **Ultra-Low Latency**: Sub-second analytics with Apache Pinot
+- **Complex Analytics**: Advanced SQL features with ClickHouse
+- **Multi-Dimensional OLAP**: MPP architecture with Apache Doris
 - **Stream Processing**: Real-time event processing and aggregation
 - **WebSocket Streaming**: Live data updates for dashboards
 
@@ -66,8 +77,17 @@ This service consolidates:
 ## API Endpoints
 
 ### Query Endpoints
-- `POST /api/v1/query` - Unified query interface
+- `POST /api/v1/query` - Unified query interface (auto-routes to best engine)
 - `POST /api/v1/query/timeseries` - Time-series specific queries
+
+### Real-time OLAP Endpoints
+- `POST /api/v1/olap/pinot/query` - Execute Pinot queries
+- `POST /api/v1/olap/clickhouse/query` - Execute ClickHouse queries
+- `POST /api/v1/olap/doris/query` - Execute Doris queries
+- `POST /api/v1/olap/pinot/tables` - Create Pinot tables
+- `POST /api/v1/olap/clickhouse/tables` - Create ClickHouse tables
+- `POST /api/v1/olap/doris/tables` - Create Doris tables
+- `GET /api/v1/olap/status` - Get status of all OLAP engines
 
 ### Monitoring Endpoints
 - `GET /api/v1/monitor/{scope}` - Unified monitoring (platform/service/simulation/resource)
@@ -121,6 +141,20 @@ TRINO_PORT=8080
 
 # MLflow
 MLFLOW_TRACKING_URI=http://mlflow:5000
+
+# Apache Pinot
+PINOT_CONTROLLER_URL=http://pinot-controller:9000
+PINOT_BROKER_URL=http://pinot-broker:8099
+
+# ClickHouse
+CLICKHOUSE_HOST=clickhouse
+CLICKHOUSE_PORT=9000
+CLICKHOUSE_DATABASE=analytics
+
+# Apache Doris
+DORIS_FE_HOST=doris-fe
+DORIS_FE_PORT=9030
+DORIS_DATABASE=analytics
 ```
 
 ## Query Examples
@@ -135,6 +169,14 @@ POST /api/v1/query
     "mode": "auto"
 }
 ```
+
+The query router will automatically select the best engine:
+- **Pinot**: For real-time aggregations (< 15 min time range)
+- **ClickHouse**: For complex analytical queries with window functions
+- **Doris**: For multi-dimensional OLAP queries
+- **Druid**: For time-series analysis
+- **Trino**: For complex joins and historical analysis
+- **Ignite**: For cached results
 
 ### 2. Time-Series Query
 ```json
@@ -176,6 +218,30 @@ POST /api/v1/dashboards
         "time_range": "24h"
     },
     "refresh_interval": 30
+}
+```
+
+### 5. Pinot Real-time Query
+```json
+POST /api/v1/olap/pinot/query
+{
+    "query": "SELECT service_name, AVG(latency) as avg_latency FROM service_metrics WHERE timestamp >= ago('5m') GROUP BY service_name LIMIT 100"
+}
+```
+
+### 6. ClickHouse Analytics Query
+```json
+POST /api/v1/olap/clickhouse/query
+{
+    "query": "SELECT service_name, quantile(0.95)(latency) as p95_latency, quantile(0.99)(latency) as p99_latency FROM analytics.service_metrics WHERE timestamp >= now() - INTERVAL 1 HOUR GROUP BY service_name"
+}
+```
+
+### 7. Doris OLAP Query
+```json
+POST /api/v1/olap/doris/query
+{
+    "query": "SELECT region, service_type, SUM(request_count) as total_requests, AVG(response_time) as avg_response FROM analytics.platform_metrics WHERE date >= date_sub(now(), INTERVAL 7 DAY) GROUP BY ROLLUP(region, service_type)"
 }
 ```
 

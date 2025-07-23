@@ -99,9 +99,30 @@ setup(
             "datahub>=0.12.0",
             "openlineage-python>=1.7.0",
         ],
-        "olap": [
+        "realtime": [
             "clickhouse-driver>=0.2.6",
+            "aiochclient>=2.2.0",
             "pypinot>=0.1.0",
+            "pymysql>=1.1.0",
+        ],
+        "unity": [
+            "databricks-sdk>=0.12.0",
+        ],
+        "flink-sql": [
+            "py4j>=0.10.9",
+            "apache-flink>=1.18.0",
+        ],
+        "graphql": [
+            "strawberry-graphql[federation]>=0.200.0",
+            "aiohttp>=3.9.0",
+        ],
+        "governance": [
+            "opa-python-client>=1.3.0",
+            "rego>=0.4.0",
+        ],
+        "federated-ml": [
+            "cryptography>=41.0.0",
+            "numpy>=1.24.0",
         ],
         "security": [
             "apache-ranger>=2.4.0",
@@ -113,6 +134,25 @@ setup(
         "streaming": [
             "apache-beam>=2.52.0",
             "benthos-py>=0.1.0",
+        ],
+        "all": [
+            "pyiceberg>=0.5.0",
+            "deltalake>=0.14.0",
+            "hudi>=0.14.0",
+            "great-expectations>=0.18.0",
+            "pydeequ>=1.1.0",
+            "soda-core>=3.0.0",
+            "datahub>=0.12.0",
+            "openlineage-python>=1.7.0",
+            "clickhouse-driver>=0.2.6",
+            "aiochclient>=2.2.0",
+            "pypinot>=0.1.0",
+            "pymysql>=1.1.0",
+            "databricks-sdk>=0.12.0",
+            "py4j>=0.10.9",
+            "strawberry-graphql[federation]>=0.200.0",
+            "opa-python-client>=1.3.0",
+            "rego>=0.4.0",
         ]
     },
     python_requires=">=3.10",

@@ -53,6 +53,13 @@ from .monitoring.timeseries_analysis import TimeSeriesAnalyzer, SimulationMetric
 # Import Vault/Consul integration
 from .vault_consul_integration import VaultConsulIntegration
 
+# Import new real-time OLAP clients
+from data_intelligence_common.integrations.realtime import (
+    PinotClient, PinotConfig, TableSchema as PinotTableSchema, TableConfig as PinotTableConfig, TableType as PinotTableType,
+    ClickHouseClient, ClickHouseConfig, TableDefinition as CHTableDefinition, TableColumn as CHColumn, Engine as CHEngine, DataType as CHDataType,
+    DorisClient, DorisConfig, Column as DorisColumn, DorisTableDefinition, TableModel as DorisTableModel, StreamLoadResult
+)
+
 logger = logging.getLogger(__name__)
 
 
@@ -216,13 +223,18 @@ trino_client: Optional[Any] = None
 elasticsearch_client: Optional[AsyncElasticsearch] = None
 ignite_client: Optional[IgniteClient] = None
 
+# Real-time OLAP clients
+pinot_client: Optional[PinotClient] = None
+clickhouse_client: Optional[ClickHouseClient] = None
+doris_client: Optional[DorisClient] = None
+
 
 # ============= Lifespan Management =============
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Manage application lifecycle"""
-    global vault_consul, trino_client, elasticsearch_client, ignite_client
+    global vault_consul, trino_client, elasticsearch_client, ignite_client, pinot_client, clickhouse_client, doris_client
     
     # Initialize Vault/Consul integration
     vault_consul = VaultConsulIntegration({
@@ -235,10 +247,10 @@ async def lifespan(app: FastAPI):
     
     # Register service with Consul
     await vault_consul.register_service(
-        tags=["analytics", "trino", "data-processing"],
+        tags=["analytics", "trino", "data-processing", "real-time-olap"],
         meta={
             "version": "1.0.0",
-            "capabilities": "batch,streaming,ml"
+            "capabilities": "batch,streaming,ml,pinot,clickhouse,doris"
         }
     )
     
@@ -262,6 +274,57 @@ async def lifespan(app: FastAPI):
     )
     ignite_client.connect('ignite', 10800)
     
+    # Initialize Pinot client
+    try:
+        pinot_creds = await vault_consul.get_credentials("pinot")
+        pinot_config = PinotConfig(
+            controller_url=pinot_creds.get("controller_url", "http://pinot-controller:9000"),
+            broker_url=pinot_creds.get("broker_url", "http://pinot-broker:8099"),
+            vault_client=vault_consul.vault_client,
+            consul_client=vault_consul.consul_client
+        )
+        pinot_client = PinotClient(pinot_config)
+        await pinot_client.connect()
+        logger.info("Initialized Apache Pinot client")
+    except Exception as e:
+        logger.warning(f"Failed to initialize Pinot client: {e}")
+    
+    # Initialize ClickHouse client
+    try:
+        ch_creds = await vault_consul.get_credentials("clickhouse")
+        clickhouse_config = ClickHouseConfig(
+            host=ch_creds.get("host", "clickhouse"),
+            port=ch_creds.get("port", 9000),
+            user=ch_creds.get("user", "default"),
+            password=ch_creds.get("password", ""),
+            database=ch_creds.get("database", "analytics"),
+            vault_client=vault_consul.vault_client,
+            consul_client=vault_consul.consul_client
+        )
+        clickhouse_client = ClickHouseClient(clickhouse_config)
+        await clickhouse_client.connect()
+        logger.info("Initialized ClickHouse client")
+    except Exception as e:
+        logger.warning(f"Failed to initialize ClickHouse client: {e}")
+    
+    # Initialize Doris client
+    try:
+        doris_creds = await vault_consul.get_credentials("doris")
+        doris_config = DorisConfig(
+            fe_host=doris_creds.get("fe_host", "doris-fe"),
+            fe_port=doris_creds.get("fe_port", 9030),
+            user=doris_creds.get("user", "root"),
+            password=doris_creds.get("password", ""),
+            database=doris_creds.get("database", "analytics"),
+            vault_client=vault_consul.vault_client,
+            consul_client=vault_consul.consul_client
+        )
+        doris_client = DorisClient(doris_config)
+        await doris_client.connect()
+        logger.info("Initialized Apache Doris client")
+    except Exception as e:
+        logger.warning(f"Failed to initialize Doris client: {e}")
+    
     # Initialize data lake connections
     minio_creds = await vault_consul.get_data_lake_credentials("minio")
     await initialize_data_lake(minio_creds)
@@ -280,6 +343,12 @@ async def lifespan(app: FastAPI):
         await elasticsearch_client.close()
     if ignite_client:
         ignite_client.close()
+    if pinot_client:
+        await pinot_client.close()
+    if clickhouse_client:
+        await clickhouse_client.close()
+    if doris_client:
+        await doris_client.close()
     await vault_consul.deregister_service()
     await vault_consul.shutdown()
 
@@ -389,7 +458,7 @@ class UnifiedQueryRouter:
         
     @staticmethod
     async def _execute_realtime(query: UnifiedQuery) -> Dict[str, Any]:
-        """Execute query using Druid/Ignite"""
+        """Execute query using real-time OLAP engines"""
         # Check Ignite cache first
         cache_key = f"query:{hash(str(query.dict()))}"
         cache = ignite_client.get_cache('query_cache')
@@ -397,8 +466,186 @@ class UnifiedQueryRouter:
         
         if cached:
             return {**cached, 'cached': True}
+        
+        # Determine best engine based on query characteristics
+        engine = UnifiedQueryRouter._select_realtime_engine(query)
+        result = None
+        
+        try:
+            if engine == "pinot" and pinot_client:
+                # Use Pinot for real-time aggregations
+                pql = UnifiedQueryRouter._build_pinot_query(query)
+                result = await pinot_client.query(pql)
+                result = {
+                    'data': result,
+                    'summary': {'row_count': len(result), 'engine': 'pinot'},
+                    'metadata': {'query': pql}
+                }
             
-        # Execute via appropriate engine
+            elif engine == "clickhouse" and clickhouse_client:
+                # Use ClickHouse for complex analytics
+                sql = UnifiedQueryRouter._build_clickhouse_query(query)
+                result = await clickhouse_client.query(sql)
+                result = {
+                    'data': result,
+                    'summary': {'row_count': len(result), 'engine': 'clickhouse'},
+                    'metadata': {'query': sql}
+                }
+            
+            elif engine == "doris" and doris_client:
+                # Use Doris for OLAP queries
+                sql = UnifiedQueryRouter._build_doris_query(query)
+                result = await doris_client.query(sql)
+                result = {
+                    'data': result,
+                    'summary': {'row_count': len(result), 'engine': 'doris'},
+                    'metadata': {'query': sql}
+                }
+            
+            elif druid_engine:
+                # Fallback to Druid
+                if query.query_type == 'timeseries':
+                    result = await druid_engine.query_timeseries(
+                        datasource='platform_metrics',
+                        intervals=query.intervals or [f"-{query.time_range}/now"],
+                        granularity=query.granularity or 'hour',
+                        aggregations=[
+                            {"type": "doubleSum", "name": m, "fieldName": m}
+                            for m in query.metrics
+                        ],
+                        filter=query.filters
+                    )
+                else:
+                    # Use metrics aggregator for mixed queries
+                    result = await metrics_aggregator.aggregate_metrics(
+                        source='mixed',
+                        metrics=query.metrics,
+                        time_range=query.time_range,
+                        group_by=query.group_by,
+                        filters=query.filters
+                    )
+            
+            else:
+                raise HTTPException(status_code=503, detail="No real-time engine available")
+            
+            # Cache result
+            if result:
+                cache.put(cache_key, result, query.cache_ttl)
+            
+            return result
+            
+        except Exception as e:
+            logger.error(f"Real-time query failed with {engine}: {e}")
+            # Try fallback engine
+            if engine != "druid" and druid_engine:
+                logger.info("Falling back to Druid")
+                return await UnifiedQueryRouter._execute_realtime_fallback(query)
+            raise
+    
+    @staticmethod
+    def _select_realtime_engine(query: UnifiedQuery) -> str:
+        """Select the best real-time engine for the query"""
+        # Use Pinot for real-time aggregations with low latency
+        if query.query_type == "realtime_aggregation" or (
+            query.metrics and len(query.metrics) <= 3 and query.time_range in ['1m', '5m', '15m']
+        ):
+            return "pinot"
+        
+        # Use ClickHouse for complex analytical queries
+        if query.query and any(keyword in query.query.upper() for keyword in ['WINDOW', 'ARRAY', 'MATCH']):
+            return "clickhouse"
+        
+        # Use Doris for OLAP-style queries with multiple dimensions
+        if query.group_by and len(query.group_by) > 2:
+            return "doris"
+        
+        # Default to Druid for time-series
+        return "druid"
+    
+    @staticmethod
+    def _build_pinot_query(query: UnifiedQuery) -> str:
+        """Build Pinot query from unified query"""
+        select_clause = ", ".join(query.metrics) if query.metrics else "*"
+        from_clause = "platform_metrics"
+        where_clause = ""
+        group_clause = ""
+        
+        # Build WHERE clause
+        conditions = []
+        if query.filters:
+            conditions.extend([f"{k} = '{v}'" for k, v in query.filters.items()])
+        if query.time_range:
+            # Convert time range to timestamp filter
+            conditions.append(f"timestamp >= ago('{query.time_range}')")
+        
+        if conditions:
+            where_clause = f"WHERE {' AND '.join(conditions)}"
+        
+        # Build GROUP BY clause
+        if query.group_by:
+            group_clause = f"GROUP BY {', '.join(query.group_by)}"
+        
+        return f"SELECT {select_clause} FROM {from_clause} {where_clause} {group_clause} LIMIT {query.limit}"
+    
+    @staticmethod
+    def _build_clickhouse_query(query: UnifiedQuery) -> str:
+        """Build ClickHouse query from unified query"""
+        if query.query:
+            return query.query
+        
+        select_clause = ", ".join(query.metrics) if query.metrics else "*"
+        from_clause = "analytics.platform_metrics"
+        where_clause = ""
+        group_clause = ""
+        
+        # Build WHERE clause
+        conditions = []
+        if query.filters:
+            conditions.extend([f"{k} = '{v}'" for k, v in query.filters.items()])
+        if query.time_range:
+            # Convert time range to ClickHouse interval
+            conditions.append(f"timestamp >= now() - INTERVAL {query.time_range}")
+        
+        if conditions:
+            where_clause = f"WHERE {' AND '.join(conditions)}"
+        
+        # Build GROUP BY clause
+        if query.group_by:
+            group_clause = f"GROUP BY {', '.join(query.group_by)}"
+        
+        return f"SELECT {select_clause} FROM {from_clause} {where_clause} {group_clause} LIMIT {query.limit}"
+    
+    @staticmethod
+    def _build_doris_query(query: UnifiedQuery) -> str:
+        """Build Doris query from unified query"""
+        if query.query:
+            return query.query
+        
+        select_clause = ", ".join(query.metrics) if query.metrics else "*"
+        from_clause = "analytics.platform_metrics"
+        where_clause = ""
+        group_clause = ""
+        
+        # Build WHERE clause
+        conditions = []
+        if query.filters:
+            conditions.extend([f"{k} = '{v}'" for k, v in query.filters.items()])
+        if query.time_range:
+            # Convert time range to Doris date function
+            conditions.append(f"timestamp >= date_sub(now(), INTERVAL {query.time_range})")
+        
+        if conditions:
+            where_clause = f"WHERE {' AND '.join(conditions)}"
+        
+        # Build GROUP BY clause
+        if query.group_by:
+            group_clause = f"GROUP BY {', '.join(query.group_by)}"
+        
+        return f"SELECT {select_clause} FROM {from_clause} {where_clause} {group_clause} LIMIT {query.limit}"
+    
+    @staticmethod
+    async def _execute_realtime_fallback(query: UnifiedQuery) -> Dict[str, Any]:
+        """Fallback to Druid for real-time queries"""
         if query.query_type == 'timeseries':
             result = await druid_engine.query_timeseries(
                 datasource='platform_metrics',
@@ -411,7 +658,6 @@ class UnifiedQueryRouter:
                 filter=query.filters
             )
         else:
-            # Use metrics aggregator for mixed queries
             result = await metrics_aggregator.aggregate_metrics(
                 source='mixed',
                 metrics=query.metrics,
@@ -419,10 +665,6 @@ class UnifiedQueryRouter:
                 group_by=query.group_by,
                 filters=query.filters
             )
-            
-        # Cache result
-        cache.put(cache_key, result, query.cache_ttl)
-            
         return result
         
     @staticmethod
@@ -871,7 +1113,7 @@ event_processor.register_handler(SimulationMetricEvent, handle_simulation_metric
 @app.get("/api/v1/analytics/capabilities")
 async def get_capabilities():
     """Get service capabilities"""
-    return {
+    capabilities = {
         "engines": {
             "batch": {
                 "name": "Trino",
@@ -906,6 +1148,30 @@ async def get_capabilities():
             "dashboards": ["overview", "comparison", "activity", "ml-performance"]
         }
     }
+    
+    # Add real-time OLAP engines if available
+    if pinot_client:
+        capabilities["engines"]["pinot"] = {
+            "name": "Apache Pinot",
+            "capabilities": ["real-time aggregations", "star-tree index", "segment-based", "lambda architecture"],
+            "best_for": "ultra-low latency analytics, real-time dashboards"
+        }
+    
+    if clickhouse_client:
+        capabilities["engines"]["clickhouse"] = {
+            "name": "ClickHouse",
+            "capabilities": ["columnar storage", "vectorized execution", "materialized views", "SQL arrays"],
+            "best_for": "complex analytical queries, log analytics"
+        }
+    
+    if doris_client:
+        capabilities["engines"]["doris"] = {
+            "name": "Apache Doris",
+            "capabilities": ["MPP architecture", "vectorized execution", "rollup tables", "bitmap indexes"],
+            "best_for": "multi-dimensional OLAP, ad-hoc queries"
+        }
+    
+    return capabilities
 
 
 @app.get("/api/v1/analytics/metadata/{datasource}")
@@ -928,6 +1194,211 @@ async def get_datasource_metadata(datasource: str):
     except Exception as e:
         logger.error(f"Failed to get datasource metadata: {e}")
         raise HTTPException(status_code=404, detail=f"Datasource {datasource} not found")
+
+
+# --- Real-time OLAP Endpoints ---
+
+@app.post("/api/v1/olap/pinot/query")
+async def query_pinot(query_request: Dict[str, Any]):
+    """Execute query on Apache Pinot"""
+    if not pinot_client:
+        raise HTTPException(status_code=503, detail="Pinot client not initialized")
+    
+    try:
+        pql = query_request.get("pql") or query_request.get("query")
+        options = query_request.get("options", {})
+        
+        result = await pinot_client.query(pql, **options)
+        
+        return {
+            "engine": "pinot",
+            "data": result,
+            "execution_time_ms": query_request.get("execution_time", 0),
+            "metadata": {
+                "query": pql,
+                "num_docs_scanned": result.get("numDocsScanned", 0),
+                "num_servers_queried": result.get("numServersQueried", 0)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Pinot query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/olap/clickhouse/query")
+async def query_clickhouse(query_request: Dict[str, Any]):
+    """Execute query on ClickHouse"""
+    if not clickhouse_client:
+        raise HTTPException(status_code=503, detail="ClickHouse client not initialized")
+    
+    try:
+        sql = query_request.get("sql") or query_request.get("query")
+        params = query_request.get("params", {})
+        settings = query_request.get("settings", {})
+        
+        result = await clickhouse_client.query(sql, params=params, settings=settings)
+        
+        return {
+            "engine": "clickhouse",
+            "data": result,
+            "execution_time_ms": query_request.get("execution_time", 0),
+            "metadata": {
+                "query": sql,
+                "rows_read": result.get("rows_read", 0),
+                "bytes_read": result.get("bytes_read", 0)
+            }
+        }
+    except Exception as e:
+        logger.error(f"ClickHouse query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/olap/doris/query")
+async def query_doris(query_request: Dict[str, Any]):
+    """Execute query on Apache Doris"""
+    if not doris_client:
+        raise HTTPException(status_code=503, detail="Doris client not initialized")
+    
+    try:
+        sql = query_request.get("sql") or query_request.get("query")
+        
+        result = await doris_client.query(sql)
+        
+        return {
+            "engine": "doris",
+            "data": result,
+            "execution_time_ms": query_request.get("execution_time", 0),
+            "metadata": {
+                "query": sql,
+                "row_count": len(result)
+            }
+        }
+    except Exception as e:
+        logger.error(f"Doris query failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/olap/pinot/tables")
+async def create_pinot_table(table_config: Dict[str, Any]):
+    """Create a table in Pinot"""
+    if not pinot_client:
+        raise HTTPException(status_code=503, detail="Pinot client not initialized")
+    
+    try:
+        table_name = table_config["tableName"]
+        schema = PinotTableSchema(**table_config.get("schema", {}))
+        config = PinotTableConfig(**table_config.get("tableConfig", {}))
+        
+        await pinot_client.create_table(
+            table_name=table_name,
+            schema=schema,
+            table_config=config,
+            table_type=PinotTableType(table_config.get("tableType", "REALTIME"))
+        )
+        
+        return {"status": "created", "table": table_name}
+    except Exception as e:
+        logger.error(f"Pinot table creation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/olap/clickhouse/tables")
+async def create_clickhouse_table(table_def: Dict[str, Any]):
+    """Create a table in ClickHouse"""
+    if not clickhouse_client:
+        raise HTTPException(status_code=503, detail="ClickHouse client not initialized")
+    
+    try:
+        columns = [CHColumn(**col) for col in table_def["columns"]]
+        engine = CHEngine[table_def.get("engine", "MergeTree")]
+        
+        table_definition = CHTableDefinition(
+            name=table_def["name"],
+            columns=columns,
+            engine=engine,
+            partition_by=table_def.get("partition_by"),
+            order_by=table_def.get("order_by", []),
+            settings=table_def.get("settings", {})
+        )
+        
+        await clickhouse_client.create_table(table_definition)
+        
+        return {"status": "created", "table": table_def["name"]}
+    except Exception as e:
+        logger.error(f"ClickHouse table creation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.post("/api/v1/olap/doris/tables")
+async def create_doris_table(table_def: Dict[str, Any]):
+    """Create a table in Doris"""
+    if not doris_client:
+        raise HTTPException(status_code=503, detail="Doris client not initialized")
+    
+    try:
+        columns = [DorisColumn(**col) for col in table_def["columns"]]
+        
+        table_definition = DorisTableDefinition(
+            table_name=table_def["table_name"],
+            columns=columns,
+            partition_info=table_def.get("partition_info"),
+            distribution_info=table_def.get("distribution_info"),
+            properties=table_def.get("properties", {})
+        )
+        
+        await doris_client.create_table(table_definition)
+        
+        return {"status": "created", "table": table_def["table_name"]}
+    except Exception as e:
+        logger.error(f"Doris table creation failed: {e}")
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@app.get("/api/v1/olap/status")
+async def get_olap_status():
+    """Get status of all OLAP engines"""
+    status = {}
+    
+    if pinot_client:
+        try:
+            pinot_health = await pinot_client.get_health()
+            status["pinot"] = {
+                "status": "healthy" if pinot_health else "unhealthy",
+                "controller": pinot_client.config.controller_url,
+                "broker": pinot_client.config.broker_url
+            }
+        except Exception as e:
+            status["pinot"] = {"status": "error", "error": str(e)}
+    else:
+        status["pinot"] = {"status": "not_configured"}
+    
+    if clickhouse_client:
+        try:
+            ch_health = await clickhouse_client.ping()
+            status["clickhouse"] = {
+                "status": "healthy" if ch_health else "unhealthy",
+                "host": clickhouse_client.config.host,
+                "database": clickhouse_client.config.database
+            }
+        except Exception as e:
+            status["clickhouse"] = {"status": "error", "error": str(e)}
+    else:
+        status["clickhouse"] = {"status": "not_configured"}
+    
+    if doris_client:
+        try:
+            doris_health = await doris_client.get_health()
+            status["doris"] = {
+                "status": "healthy" if doris_health else "unhealthy",
+                "fe_host": doris_client.config.fe_host,
+                "database": doris_client.config.database
+            }
+        except Exception as e:
+            status["doris"] = {"status": "error", "error": str(e)}
+    else:
+        status["doris"] = {"status": "not_configured"}
+    
+    return status
 
 
 # Run the event processor
