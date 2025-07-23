@@ -158,6 +158,24 @@ from .core.integration import (
     BaseDigitalIntegrationHub
 )
 
+# Algorithms - New module for algorithm base classes
+from .core.algorithms import (
+    BaseAlgorithm,
+    AlgorithmConfig,
+    AlgorithmResult,
+    AlgorithmStatus,
+    AlgorithmType
+)
+
+# Engines - New module for engine base classes
+from .core.engines import (
+    BaseEngine,
+    EngineConfig,
+    EngineStatus,
+    EngineResult,
+    EngineType
+)
+
 # Clients
 from .clients import (
     BaseServiceClient,
@@ -188,7 +206,20 @@ from .utils import (
     encrypt,
     decrypt,
     hash_password,
-    verify_password
+    verify_password,
+    # Graph utilities
+    GraphType,
+    GraphMetrics,
+    calculate_graph_metrics,
+    detect_communities,
+    calculate_centrality,
+    find_shortest_paths,
+    # Quantum utilities
+    BackendType,
+    ProblemType as QuantumProblemType,
+    QuantumCircuitMetrics,
+    qubo_to_ising,
+    ising_to_qubo
 )
 
 # Vault/Consul Integration
@@ -306,6 +337,20 @@ __all__ = [
     "DataSourceConfig",
     "BaseDigitalIntegrationHub",
     
+    # Algorithms
+    "BaseAlgorithm",
+    "AlgorithmConfig",
+    "AlgorithmResult",
+    "AlgorithmStatus",
+    "AlgorithmType",
+    
+    # Engines
+    "BaseEngine",
+    "EngineConfig",
+    "EngineStatus",
+    "EngineResult",
+    "EngineType",
+    
     # Clients
     "BaseServiceClient",
     "ClientConfig",
@@ -331,6 +376,17 @@ __all__ = [
     "decrypt",
     "hash_password",
     "verify_password",
+    "GraphType",
+    "GraphMetrics",
+    "calculate_graph_metrics",
+    "detect_communities",
+    "calculate_centrality",
+    "find_shortest_paths",
+    "BackendType",
+    "QuantumProblemType",
+    "QuantumCircuitMetrics",
+    "qubo_to_ising",
+    "ising_to_qubo",
     
     # Vault/Consul
     "VaultConsulIntegration",

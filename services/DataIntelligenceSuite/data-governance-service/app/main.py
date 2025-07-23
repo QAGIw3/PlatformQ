@@ -1,199 +1,282 @@
 """
-Unified Quality Service
+Data Governance Service
 
-Combines data quality validation, profiling, anomaly detection, ML-powered remediation,
-and SeaTunnel integration into a single comprehensive service.
+Provides comprehensive data quality validation, profiling, anomaly detection,
+and automated remediation capabilities.
 """
 
 import os
 import asyncio
-from typing import Optional, Dict, Any, List
-from datetime import datetime
+from typing import Optional
 from contextlib import asynccontextmanager
 
-from fastapi import FastAPI, HTTPException, Depends, BackgroundTasks, Request
-from fastapi.responses import JSONResponse
+from fastapi import FastAPI
 import uvicorn
 
 from data_intelligence_common import (
     create_data_intelligence_app,
     ServiceMetadata,
-    DataIntelligenceBaseService,
-    BaseEventProcessor,
-    VaultConsulIntegration,
-    MetricsCollector,
-    StructuredLogger
+    DataIntelligenceBaseService
 )
-from platformq_shared.event_publisher import EventPublisher
-from platformq_shared.event_subscriber import EventSubscriber
 
-from .core import (
-    QualityEngine,
+from app.engines.quality import (
+    QualityValidator,
     QualityProfiler,
-    RemediationOrchestrator,
     AnomalyDetector,
-    MLQualityOptimizer
+    RemediationEngine
 )
-from .seatunnel import SeaTunnelQualityPipelines
-from .api import quality_router, profile_router, remediation_router, seatunnel_router
-from .events import QualityEventProcessor
+
+from platformq_shared.logging_config import get_logger
+
+logger = get_logger(__name__)
 
 # Service metadata
 SERVICE_METADATA = ServiceMetadata(
-    name="unified-quality-service",
-    version="1.0.0",
-    description="Comprehensive ML-powered data quality management platform",
-    dependencies=["vault", "consul", "pulsar", "ignite", "seatunnel"],
-    health_checks=["quality_engine", "ml_optimizer", "seatunnel"]
+    name="data-governance-service",
+    version="2.0.0",
+    description="Comprehensive data quality and governance platform",
+    dependencies=["vault", "consul", "pulsar", "ignite", "cassandra"],
+    health_checks=["quality_validator", "quality_profiler", "anomaly_detector", "remediation_engine"]
 )
 
-logger = StructuredLogger.get_logger(__name__)
 
-
-class UnifiedQualityService(DataIntelligenceBaseService):
-    """Unified Quality Service implementation"""
+class DataGovernanceService(DataIntelligenceBaseService):
+    """Data Governance Service implementation"""
     
     def __init__(self, *args, **kwargs):
         super().__init__(SERVICE_METADATA, *args, **kwargs)
         
-        # Core components
-        self.quality_engine: Optional[QualityEngine] = None
+        # Quality engines
+        self.quality_validator: Optional[QualityValidator] = None
         self.quality_profiler: Optional[QualityProfiler] = None
-        self.remediation_orchestrator: Optional[RemediationOrchestrator] = None
         self.anomaly_detector: Optional[AnomalyDetector] = None
-        self.ml_optimizer: Optional[MLQualityOptimizer] = None
-        self.seatunnel_pipelines: Optional[SeaTunnelQualityPipelines] = None
-        self.event_processor: Optional[QualityEventProcessor] = None
+        self.remediation_engine: Optional[RemediationEngine] = None
+        
+        # Background tasks
+        self._monitoring_task: Optional[asyncio.Task] = None
+        self._auto_remediation_task: Optional[asyncio.Task] = None
     
     async def initialize_service(self):
         """Initialize service-specific components"""
-        logger.info("initializing_unified_quality_service")
+        logger.info("Initializing Data Governance Service")
         
-        # Initialize quality engine
-        self.quality_engine = QualityEngine(
-            vault_consul=self.vault_consul,
-            metrics_collector=self.metrics_collector
+        # Initialize quality validator
+        self.quality_validator = QualityValidator(
+            event_bus=self.event_bus,
+            cache_manager=self.cache_manager,
+            ignite_client=self.ignite_client
         )
-        await self.quality_engine.initialize()
+        await self.quality_validator.initialize()
         
         # Initialize quality profiler
         self.quality_profiler = QualityProfiler(
-            vault_consul=self.vault_consul,
-            quality_engine=self.quality_engine
+            event_bus=self.event_bus,
+            cache_manager=self.cache_manager
         )
         await self.quality_profiler.initialize()
         
-        # Initialize ML optimizer
-        self.ml_optimizer = MLQualityOptimizer(
-            quality_engine=self.quality_engine,
-            metrics_collector=self.metrics_collector
-        )
-        await self.ml_optimizer.initialize()
-        
         # Initialize anomaly detector
         self.anomaly_detector = AnomalyDetector(
-            ml_optimizer=self.ml_optimizer,
-            vault_consul=self.vault_consul
+            event_bus=self.event_bus,
+            cache_manager=self.cache_manager
         )
         await self.anomaly_detector.initialize()
         
-        # Initialize remediation orchestrator
-        self.remediation_orchestrator = RemediationOrchestrator(
-            quality_engine=self.quality_engine,
-            ml_optimizer=self.ml_optimizer,
-            vault_consul=self.vault_consul,
-            event_publisher=self.event_publisher
+        # Initialize remediation engine
+        self.remediation_engine = RemediationEngine(
+            event_bus=self.event_bus,
+            cache_manager=self.cache_manager
         )
-        await self.remediation_orchestrator.initialize()
+        await self.remediation_engine.initialize()
         
-        # Initialize SeaTunnel integration
-        self.seatunnel_pipelines = SeaTunnelQualityPipelines(
-            quality_engine=self.quality_engine,
-            vault_consul=self.vault_consul
+        # Set up API dependencies
+        from app.api.v1.endpoints.data_quality import set_engines
+        set_engines(
+            self.quality_validator,
+            self.quality_profiler,
+            self.anomaly_detector,
+            self.remediation_engine
         )
-        await self.seatunnel_pipelines.initialize()
-        
-        # Initialize event processor
-        if self.event_subscriber:
-            self.event_processor = QualityEventProcessor(
-                event_subscriber=self.event_subscriber,
-                quality_engine=self.quality_engine,
-                remediation_orchestrator=self.remediation_orchestrator
-            )
-            await self.event_processor.start()
         
         # Register health checks
         self.health_manager.register_check(
-            "quality_engine",
-            self._check_quality_engine_health,
+            "quality_validator",
+            self._check_quality_validator_health,
             critical=True
         )
         self.health_manager.register_check(
-            "ml_optimizer",
-            self._check_ml_optimizer_health,
+            "quality_profiler",
+            self._check_quality_profiler_health,
             critical=False
         )
         self.health_manager.register_check(
-            "seatunnel",
-            self._check_seatunnel_health,
+            "anomaly_detector",
+            self._check_anomaly_detector_health,
+            critical=False
+        )
+        self.health_manager.register_check(
+            "remediation_engine",
+            self._check_remediation_engine_health,
             critical=False
         )
         
-        # Store components in app state for API access
-        self.app.state.quality_engine = self.quality_engine
-        self.app.state.quality_profiler = self.quality_profiler
-        self.app.state.remediation_orchestrator = self.remediation_orchestrator
-        self.app.state.anomaly_detector = self.anomaly_detector
-        self.app.state.ml_optimizer = self.ml_optimizer
-        self.app.state.seatunnel_pipelines = self.seatunnel_pipelines
+        # Start background tasks
+        self._monitoring_task = asyncio.create_task(self._monitor_quality_metrics())
+        self._auto_remediation_task = asyncio.create_task(self._auto_remediation_monitor())
         
-        # Set API dependencies
-        from .api import set_quality_engine, set_profiler, set_orchestrator, set_seatunnel
-        set_quality_engine(self.quality_engine)
-        set_profiler(self.quality_profiler)
-        set_orchestrator(self.remediation_orchestrator)
-        set_seatunnel(self.seatunnel_pipelines)
+        # Subscribe to events
+        await self._setup_event_subscriptions()
         
-        logger.info("unified_quality_service_initialized")
+        logger.info("Data Governance Service initialized successfully")
     
     async def cleanup_service(self):
         """Cleanup service-specific components"""
-        logger.info("cleaning_up_unified_quality_service")
+        logger.info("Cleaning up Data Governance Service")
         
-        # Stop event processor
-        if self.event_processor:
-            await self.event_processor.stop()
+        # Cancel background tasks
+        if self._monitoring_task:
+            self._monitoring_task.cancel()
+        if self._auto_remediation_task:
+            self._auto_remediation_task.cancel()
         
-        # Cleanup components
-        if self.remediation_orchestrator:
-            await self.remediation_orchestrator.cleanup()
-        if self.ml_optimizer:
-            await self.ml_optimizer.cleanup()
-        if self.quality_engine:
-            await self.quality_engine.cleanup()
+        # No specific cleanup needed for engines
+        # They use shared resources that are cleaned up by base class
         
-        logger.info("unified_quality_service_cleaned_up")
+        logger.info("Data Governance Service cleaned up")
     
-    async def _check_quality_engine_health(self) -> bool:
-        """Check quality engine health"""
-        return self.quality_engine is not None and await self.quality_engine.is_healthy()
+    async def _check_quality_validator_health(self) -> bool:
+        """Check quality validator health"""
+        return self.quality_validator is not None
     
-    async def _check_ml_optimizer_health(self) -> bool:
-        """Check ML optimizer health"""
-        return self.ml_optimizer is not None and await self.ml_optimizer.is_healthy()
+    async def _check_quality_profiler_health(self) -> bool:
+        """Check quality profiler health"""
+        return self.quality_profiler is not None
     
-    async def _check_seatunnel_health(self) -> bool:
-        """Check SeaTunnel integration health"""
-        return self.seatunnel_pipelines is not None and await self.seatunnel_pipelines.is_healthy()
+    async def _check_anomaly_detector_health(self) -> bool:
+        """Check anomaly detector health"""
+        return self.anomaly_detector is not None
+    
+    async def _check_remediation_engine_health(self) -> bool:
+        """Check remediation engine health"""
+        return self.remediation_engine is not None
+    
+    async def _monitor_quality_metrics(self):
+        """Monitor quality metrics in background"""
+        while True:
+            try:
+                # Collect metrics from all engines
+                validator_stats = self.quality_validator.get_statistics()
+                
+                # Report metrics
+                await self.metrics_collector.record_gauge(
+                    "quality_rules_total",
+                    validator_stats["total_rules"],
+                    {"service": "data-governance"}
+                )
+                
+                await self.metrics_collector.record_gauge(
+                    "quality_validations_total",
+                    validator_stats["total_validations"],
+                    {"service": "data-governance"}
+                )
+                
+                # Sleep for 60 seconds
+                await asyncio.sleep(60)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error monitoring quality metrics: {e}")
+                await asyncio.sleep(60)
+    
+    async def _auto_remediation_monitor(self):
+        """Monitor for auto-remediation opportunities"""
+        while True:
+            try:
+                # Check if auto-remediation is enabled
+                if self.remediation_engine.auto_remediate:
+                    # This would check for pending quality issues
+                    # and trigger remediation as needed
+                    pass
+                
+                # Sleep for 5 minutes
+                await asyncio.sleep(300)
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Error in auto-remediation monitor: {e}")
+                await asyncio.sleep(300)
+    
+    async def _setup_event_subscriptions(self):
+        """Set up event subscriptions for cross-service communication"""
+        # Subscribe to data platform events
+        await self.event_bus.subscribe(
+            "data.dataset.created",
+            self._handle_dataset_created
+        )
+        await self.event_bus.subscribe(
+            "data.dataset.updated",
+            self._handle_dataset_updated
+        )
+        
+        # Subscribe to ML platform events for model quality
+        await self.event_bus.subscribe(
+            "ml.model.trained",
+            self._handle_model_trained
+        )
+    
+    async def _handle_dataset_created(self, event_data: dict):
+        """Handle new dataset creation"""
+        try:
+            dataset_id = event_data.get("dataset_id")
+            if dataset_id:
+                # Trigger automatic profiling
+                await self.event_bus.publish("quality.profile.request", {
+                    "dataset_id": dataset_id,
+                    "profile_type": "basic",
+                    "auto_triggered": True
+                })
+        except Exception as e:
+            logger.error(f"Error handling dataset created event: {e}")
+    
+    async def _handle_dataset_updated(self, event_data: dict):
+        """Handle dataset update"""
+        try:
+            dataset_id = event_data.get("dataset_id")
+            if dataset_id:
+                # Trigger quality validation
+                await self.event_bus.publish("quality.validate", {
+                    "dataset_id": dataset_id,
+                    "auto_triggered": True
+                })
+        except Exception as e:
+            logger.error(f"Error handling dataset updated event: {e}")
+    
+    async def _handle_model_trained(self, event_data: dict):
+        """Handle model training completion"""
+        try:
+            model_id = event_data.get("model_id")
+            training_data_id = event_data.get("training_data_id")
+            
+            if training_data_id:
+                # Validate training data quality
+                await self.event_bus.publish("quality.validate", {
+                    "dataset_id": training_data_id,
+                    "context": "model_training",
+                    "model_id": model_id
+                })
+        except Exception as e:
+            logger.error(f"Error handling model trained event: {e}")
 
 
 # Create FastAPI app
 def create_app() -> FastAPI:
     """Create and configure the FastAPI application"""
     
-    # Create app and service
+    # Create app with lifespan
     app, service = create_data_intelligence_app(
-        service_class=UnifiedQualityService,
+        service_class=DataGovernanceService,
         service_metadata=SERVICE_METADATA,
         cors_origins=["*"],  # Configure appropriately for production
         include_health_endpoint=True,
@@ -202,10 +285,8 @@ def create_app() -> FastAPI:
     )
     
     # Include routers
-    app.include_router(quality_router, prefix="/api/v1/quality", tags=["quality"])
-    app.include_router(profile_router, prefix="/api/v1/profile", tags=["profile"])
-    app.include_router(remediation_router, prefix="/api/v1/remediation", tags=["remediation"])
-    app.include_router(seatunnel_router, prefix="/api/v1/seatunnel", tags=["seatunnel"])
+    from app.api.v1.api import api_router
+    app.include_router(api_router, prefix="/api/v1")
     
     return app
 
@@ -221,14 +302,13 @@ async def root():
         "service": SERVICE_METADATA.name,
         "version": SERVICE_METADATA.version,
         "description": SERVICE_METADATA.description,
-        "features": [
-            "ml-powered-quality",
-            "self-healing",
-            "anomaly-detection",
-            "quality-profiling",
-            "seatunnel-integration",
-            "automated-remediation"
-        ]
+        "endpoints": {
+            "quality": "/api/v1/quality",
+            "health": "/health",
+            "metrics": "/metrics",
+            "ready": "/ready",
+            "docs": "/docs"
+        }
     }
 
 
@@ -236,6 +316,6 @@ if __name__ == "__main__":
     uvicorn.run(
         "app.main:app",
         host="0.0.0.0",
-        port=int(os.getenv("SERVICE_PORT", "8003")),
+        port=int(os.getenv("SERVICE_PORT", "8020")),
         reload=os.getenv("ENVIRONMENT", "development") == "development"
     ) 

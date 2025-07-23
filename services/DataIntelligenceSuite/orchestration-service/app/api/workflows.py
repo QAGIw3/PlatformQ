@@ -1,350 +1,285 @@
 """
-Workflow/DAG management API endpoints
+Workflows API endpoints
 """
 
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+from typing import Dict, Any, List
+from fastapi import APIRouter, HTTPException, Depends, Query
+from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, HTTPException, Query, Body
-from pydantic import BaseModel
+from data_intelligence_common import StructuredLogger
 
-from platformq_shared.logging import get_logger
-from ..core import AirflowBridge, DagState
+logger = StructuredLogger.get_logger(__name__)
 
-logger = get_logger(__name__)
-
-router = APIRouter(prefix="/api/v1/workflows", tags=["workflows"])
-
-# Dependency injection
-airflow_bridge: Optional[AirflowBridge] = None
-
-def set_dependencies(bridge: AirflowBridge):
-    """Set API dependencies"""
-    global airflow_bridge
-    airflow_bridge = bridge
+router = APIRouter()
 
 
-# Request/Response models
-class TriggerWorkflowRequest(BaseModel):
-    context: Optional[Dict[str, Any]] = {}
-    conf: Optional[Dict[str, Any]] = {}
-    run_id: Optional[str] = None
+class WorkflowCreateRequest(BaseModel):
+    """Workflow creation request"""
+    name: str = Field(..., description="Workflow name")
+    type: str = Field(..., description="Workflow type")
+    description: str = Field("", description="Workflow description")
+    steps: List[Dict[str, Any]] = Field(..., description="Workflow steps")
+    schedule: str = Field(None, description="Cron schedule")
+    retry_policy: Dict[str, Any] = Field(default={}, description="Retry policy")
 
 
-class UpdateWorkflowRequest(BaseModel):
-    is_paused: Optional[bool] = None
-    description: Optional[str] = None
-    schedule_interval: Optional[str] = None
+class WorkflowTriggerRequest(BaseModel):
+    """Workflow trigger request"""
+    context: Dict[str, Any] = Field(default={}, description="Execution context")
 
 
-class WorkflowResponse(BaseModel):
-    dag_id: str
-    description: Optional[str]
-    is_paused: bool
-    is_active: bool
-    schedule_interval: Optional[str]
-    tags: List[str]
-    next_dagrun: Optional[str]
-    last_run_state: Optional[str]
+class WorkflowUpdateRequest(BaseModel):
+    """Workflow update request"""
+    description: str = Field(None, description="Updated description")
+    steps: List[Dict[str, Any]] = Field(None, description="Updated steps")
+    schedule: str = Field(None, description="Updated schedule")
+    retry_policy: Dict[str, Any] = Field(None, description="Updated retry policy")
 
 
-class WorkflowRunResponse(BaseModel):
-    run_id: str
-    dag_id: str
-    state: str
-    execution_date: str
-    start_date: Optional[str]
-    end_date: Optional[str]
-    external_trigger: bool
-
-
-# API Endpoints
-@router.get("", response_model=List[WorkflowResponse])
-async def list_workflows(
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    tags: Optional[List[str]] = Query(None),
-    only_active: bool = Query(True),
-    search: Optional[str] = Query(None)
-):
-    """List all workflows (DAGs)"""
-    if not airflow_bridge:
-        raise HTTPException(status_code=503, detail="Airflow bridge not initialized")
-        
+@router.post("/workflows", response_model=Dict[str, str])
+async def create_workflow(request: WorkflowCreateRequest) -> Dict[str, str]:
+    """Create a new workflow"""
     try:
-        dags = await airflow_bridge.list_dags(
-            limit=limit,
-            offset=offset,
-            tags=tags,
-            only_active=only_active
-        )
+        from ..main import workflow_manager
         
-        # Apply search filter if provided
-        if search:
-            dags = [
-                dag for dag in dags
-                if search.lower() in dag['dag_id'].lower() or
-                   search.lower() in dag.get('description', '').lower()
-            ]
-            
-        return [
-            WorkflowResponse(
-                dag_id=dag['dag_id'],
-                description=dag.get('description'),
-                is_paused=dag['is_paused'],
-                is_active=dag['is_active'],
-                schedule_interval=dag.get('schedule_interval'),
-                tags=dag.get('tags', []),
-                next_dagrun=dag.get('next_dagrun'),
-                last_run_state=dag.get('last_dagrun_state')
-            )
-            for dag in dags
-        ]
+        if not workflow_manager:
+            raise HTTPException(status_code=503, detail="Workflow manager not available")
         
-    except Exception as e:
-        logger.error(f"Failed to list workflows: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/{workflow_id}", response_model=WorkflowResponse)
-async def get_workflow(workflow_id: str):
-    """Get workflow details"""
-    if not airflow_bridge:
-        raise HTTPException(status_code=503, detail="Airflow bridge not initialized")
+        workflow_id = await workflow_manager.create_workflow(request.dict())
         
-    try:
-        dag = await airflow_bridge.get_dag(workflow_id)
-        if not dag:
-            raise HTTPException(status_code=404, detail=f"Workflow {workflow_id} not found")
-            
-        return WorkflowResponse(
-            dag_id=dag['dag_id'],
-            description=dag.get('description'),
-            is_paused=dag['is_paused'],
-            is_active=dag['is_active'],
-            schedule_interval=dag.get('schedule_interval'),
-            tags=dag.get('tags', []),
-            next_dagrun=dag.get('next_dagrun'),
-            last_run_state=dag.get('last_dagrun_state')
-        )
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/{workflow_id}/trigger", response_model=WorkflowRunResponse)
-async def trigger_workflow(
-    workflow_id: str,
-    request: TriggerWorkflowRequest = Body(...)
-):
-    """Trigger workflow execution"""
-    if not airflow_bridge:
-        raise HTTPException(status_code=503, detail="Airflow bridge not initialized")
-        
-    try:
-        # Merge context and conf
-        execution_conf = {
-            **request.context,
-            **request.conf
+        return {
+            "workflow_id": workflow_id,
+            "status": "created",
+            "message": "Workflow created successfully"
         }
         
-        run = await airflow_bridge.trigger_dag(
-            dag_id=workflow_id,
-            conf=execution_conf,
-            run_id=request.run_id
-        )
-        
-        if not run:
-            raise HTTPException(status_code=400, detail="Failed to trigger workflow")
-            
-        return WorkflowRunResponse(
-            run_id=run['dag_run_id'],
-            dag_id=run['dag_id'],
-            state=run['state'],
-            execution_date=run['execution_date'],
-            start_date=run.get('start_date'),
-            end_date=run.get('end_date'),
-            external_trigger=run.get('external_trigger', True)
-        )
-        
-    except HTTPException:
-        raise
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to trigger workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error creating workflow: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/{workflow_id}/runs", response_model=List[WorkflowRunResponse])
+@router.get("/workflows", response_model=List[Dict[str, Any]])
+async def list_workflows(
+    status: str = Query(None, description="Filter by status"),
+    limit: int = Query(100, description="Maximum results")
+) -> List[Dict[str, Any]]:
+    """List all workflows"""
+    try:
+        from ..main import workflow_manager
+        
+        if not workflow_manager:
+            raise HTTPException(status_code=503, detail="Workflow manager not available")
+        
+        workflows = []
+        for workflow_id, workflow in workflow_manager.workflows.items():
+            if status and workflow["status"] != status:
+                continue
+            
+            workflows.append({
+                "id": workflow_id,
+                "name": workflow["config"]["name"],
+                "type": workflow["config"]["type"],
+                "status": workflow["status"],
+                "created_at": workflow["created_at"].isoformat(),
+                "version": workflow["version"]
+            })
+        
+        return workflows[:limit]
+        
+    except Exception as e:
+        logger.error(f"Error listing workflows: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/workflows/{workflow_id}")
+async def get_workflow(workflow_id: str) -> Dict[str, Any]:
+    """Get workflow details"""
+    try:
+        from ..main import workflow_manager
+        
+        if not workflow_manager:
+            raise HTTPException(status_code=503, detail="Workflow manager not available")
+        
+        status = await workflow_manager.get_workflow_status(workflow_id)
+        return status
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting workflow: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/workflows/{workflow_id}/trigger")
+async def trigger_workflow(workflow_id: str, request: WorkflowTriggerRequest) -> Dict[str, str]:
+    """Trigger workflow execution"""
+    try:
+        from ..main import workflow_manager
+        
+        if not workflow_manager:
+            raise HTTPException(status_code=503, detail="Workflow manager not available")
+        
+        run_id = await workflow_manager.trigger_workflow(workflow_id, request.context)
+        
+        return {
+            "workflow_id": workflow_id,
+            "run_id": run_id,
+            "status": "triggered",
+            "message": "Workflow triggered successfully"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except RuntimeError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error triggering workflow: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/workflows/{workflow_id}/runs")
 async def get_workflow_runs(
     workflow_id: str,
-    limit: int = Query(25, ge=1, le=100),
-    offset: int = Query(0, ge=0),
-    state: Optional[str] = Query(None),
-    start_date_gte: Optional[datetime] = Query(None),
-    start_date_lte: Optional[datetime] = Query(None)
-):
+    limit: int = Query(10, description="Maximum results")
+) -> List[Dict[str, Any]]:
     """Get workflow execution history"""
-    if not airflow_bridge:
-        raise HTTPException(status_code=503, detail="Airflow bridge not initialized")
-        
     try:
-        runs = await airflow_bridge.get_dag_runs(
-            dag_id=workflow_id,
-            limit=limit,
-            offset=offset,
-            state=state,
-            start_date_gte=start_date_gte,
-            start_date_lte=start_date_lte
-        )
+        from ..main import workflow_manager
         
-        return [
-            WorkflowRunResponse(
-                run_id=run['dag_run_id'],
-                dag_id=run['dag_id'],
-                state=run['state'],
-                execution_date=run['execution_date'],
-                start_date=run.get('start_date'),
-                end_date=run.get('end_date'),
-                external_trigger=run.get('external_trigger', False)
-            )
-            for run in runs
-        ]
+        if not workflow_manager:
+            raise HTTPException(status_code=503, detail="Workflow manager not available")
+        
+        workflow = workflow_manager.workflows.get(workflow_id)
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        
+        runs = []
+        for run_id in workflow["runs"][-limit:]:
+            run = workflow_manager.active_runs.get(run_id)
+            if run:
+                runs.append({
+                    "id": run_id,
+                    "status": run["status"].value,
+                    "started_at": run["started_at"].isoformat(),
+                    "completed_at": run["completed_at"].isoformat() if run["completed_at"] else None
+                })
+        
+        return runs
         
     except Exception as e:
-        logger.error(f"Failed to get workflow runs: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting workflow runs: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/{workflow_id}/runs/{run_id}", response_model=WorkflowRunResponse)
-async def get_workflow_run(workflow_id: str, run_id: str):
-    """Get specific workflow run details"""
-    if not airflow_bridge:
-        raise HTTPException(status_code=503, detail="Airflow bridge not initialized")
-        
+@router.get("/runs/{run_id}")
+async def get_run_status(run_id: str) -> Dict[str, Any]:
+    """Get workflow run status"""
     try:
-        run = await airflow_bridge.get_dag_run(workflow_id, run_id)
-        if not run:
-            raise HTTPException(status_code=404, detail=f"Run {run_id} not found")
-            
-        return WorkflowRunResponse(
-            run_id=run['dag_run_id'],
-            dag_id=run['dag_id'],
-            state=run['state'],
-            execution_date=run['execution_date'],
-            start_date=run.get('start_date'),
-            end_date=run.get('end_date'),
-            external_trigger=run.get('external_trigger', False)
-        )
+        from ..main import workflow_manager
         
-    except HTTPException:
-        raise
+        if not workflow_manager:
+            raise HTTPException(status_code=503, detail="Workflow manager not available")
+        
+        status = await workflow_manager.get_run_status(run_id)
+        return status
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to get workflow run: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting run status: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.patch("/{workflow_id}")
-async def update_workflow(
-    workflow_id: str,
-    request: UpdateWorkflowRequest = Body(...)
-):
-    """Update workflow state"""
-    if not airflow_bridge:
-        raise HTTPException(status_code=503, detail="Airflow bridge not initialized")
-        
+@router.delete("/runs/{run_id}")
+async def cancel_run(run_id: str) -> Dict[str, Any]:
+    """Cancel workflow run"""
     try:
-        # Update DAG state
-        if request.is_paused is not None:
-            await airflow_bridge.set_dag_state(
-                workflow_id,
-                DagState.PAUSED if request.is_paused else DagState.ENABLED
-            )
-            
-        # Update other properties if supported
-        # Note: Airflow API may have limitations on what can be updated
+        from ..main import workflow_manager
         
-        return {"message": f"Workflow {workflow_id} updated successfully"}
+        if not workflow_manager:
+            raise HTTPException(status_code=503, detail="Workflow manager not available")
         
+        success = await workflow_manager.cancel_workflow(run_id)
+        
+        return {
+            "run_id": run_id,
+            "cancelled": success,
+            "message": "Run cancelled successfully" if success else "Run could not be cancelled"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to update workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error cancelling run: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.delete("/{workflow_id}/runs/{run_id}")
-async def cancel_workflow_run(workflow_id: str, run_id: str):
-    """Cancel a running workflow"""
-    if not airflow_bridge:
-        raise HTTPException(status_code=503, detail="Airflow bridge not initialized")
-        
+@router.patch("/workflows/{workflow_id}")
+async def update_workflow(workflow_id: str, request: WorkflowUpdateRequest) -> Dict[str, Any]:
+    """Update workflow configuration"""
     try:
-        success = await airflow_bridge.cancel_dag_run(workflow_id, run_id)
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to cancel workflow run")
-            
-        return {"message": f"Workflow run {run_id} cancelled successfully"}
+        from ..main import workflow_manager
         
-    except HTTPException:
-        raise
+        if not workflow_manager:
+            raise HTTPException(status_code=503, detail="Workflow manager not available")
+        
+        updates = {k: v for k, v in request.dict().items() if v is not None}
+        result = await workflow_manager.update_workflow(workflow_id, updates)
+        
+        return result
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to cancel workflow run: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error updating workflow: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/{workflow_id}/tasks")
-async def get_workflow_tasks(workflow_id: str):
-    """Get workflow task details"""
-    if not airflow_bridge:
-        raise HTTPException(status_code=503, detail="Airflow bridge not initialized")
-        
+@router.post("/workflows/{workflow_id}/pause")
+async def pause_workflow(workflow_id: str) -> Dict[str, Any]:
+    """Pause workflow (disable scheduling)"""
     try:
-        tasks = await airflow_bridge.get_dag_tasks(workflow_id)
-        return tasks
+        from ..main import workflow_manager
         
+        if not workflow_manager:
+            raise HTTPException(status_code=503, detail="Workflow manager not available")
+        
+        success = await workflow_manager.pause_workflow(workflow_id)
+        
+        return {
+            "workflow_id": workflow_id,
+            "paused": success,
+            "message": "Workflow paused successfully"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to get workflow tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error pausing workflow: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/{workflow_id}/runs/{run_id}/tasks")
-async def get_workflow_run_tasks(workflow_id: str, run_id: str):
-    """Get task instances for a workflow run"""
-    if not airflow_bridge:
-        raise HTTPException(status_code=503, detail="Airflow bridge not initialized")
-        
+@router.post("/workflows/{workflow_id}/resume")
+async def resume_workflow(workflow_id: str) -> Dict[str, Any]:
+    """Resume workflow (enable scheduling)"""
     try:
-        task_instances = await airflow_bridge.get_task_instances(workflow_id, run_id)
-        return task_instances
+        from ..main import workflow_manager
         
+        if not workflow_manager:
+            raise HTTPException(status_code=503, detail="Workflow manager not available")
+        
+        success = await workflow_manager.resume_workflow(workflow_id)
+        
+        return {
+            "workflow_id": workflow_id,
+            "resumed": success,
+            "message": "Workflow resumed successfully"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to get task instances: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/{workflow_id}/clear")
-async def clear_workflow_tasks(
-    workflow_id: str,
-    start_date: datetime = Query(...),
-    end_date: datetime = Query(...),
-    only_failed: bool = Query(False)
-):
-    """Clear task instances for re-run"""
-    if not airflow_bridge:
-        raise HTTPException(status_code=503, detail="Airflow bridge not initialized")
-        
-    try:
-        # Clear task instances
-        await airflow_bridge.clear_task_instances(
-            workflow_id,
-            start_date=start_date,
-            end_date=end_date,
-            only_failed=only_failed
-        )
-        
-        return {"message": f"Tasks cleared for workflow {workflow_id}"}
-        
-    except Exception as e:
-        logger.error(f"Failed to clear tasks: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        logger.error(f"Error resuming workflow: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error") 

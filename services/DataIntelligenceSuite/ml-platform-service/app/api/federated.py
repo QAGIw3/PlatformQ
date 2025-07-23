@@ -1,494 +1,190 @@
 """
-Federated learning API endpoints
+Federated Learning API endpoints
 """
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Request
-from typing import List, Optional, Dict, Any
+from typing import Dict, Any, List
+from fastapi import APIRouter, HTTPException, Depends
 from pydantic import BaseModel, Field
-from datetime import datetime
-from enum import Enum
+
+from data_intelligence_common import StructuredLogger
+
+logger = StructuredLogger.get_logger(__name__)
 
 router = APIRouter()
 
 
-class FederatedSessionStatus(str, Enum):
-    WAITING_FOR_PARTICIPANTS = "waiting_for_participants"
-    TRAINING = "training"
-    AGGREGATING = "aggregating"
-    COMPLETED = "completed"
-    FAILED = "failed"
-    CANCELLED = "cancelled"
-
-
-class FederatedAlgorithm(str, Enum):
-    FED_AVG = "FedAvg"
-    FED_PROX = "FedProx"
-    FED_YOGI = "FedYogi"
-    SCAFFOLD = "SCAFFOLD"
-    CUSTOM = "custom"
-
-
-class PrivacyConfig(BaseModel):
-    """Privacy configuration for federated learning"""
-    differential_privacy: bool = Field(True, description="Enable differential privacy")
-    epsilon: float = Field(1.0, ge=0.1, le=10.0, description="Privacy budget")
-    delta: float = Field(1e-5, ge=0, le=1, description="Privacy parameter delta")
-    secure_aggregation: bool = Field(True, description="Enable secure aggregation")
-    homomorphic_encryption: bool = Field(False, description="Enable homomorphic encryption")
-
-
-class FederatedSessionCreate(BaseModel):
-    """Federated learning session creation"""
+class FederatedSessionRequest(BaseModel):
+    """Federated learning session request"""
     name: str = Field(..., description="Session name")
-    description: Optional[str] = Field(None)
-    model_type: str = Field(..., description="Model type to train")
-    algorithm: FederatedAlgorithm = Field(FederatedAlgorithm.FED_AVG)
-    num_rounds: int = Field(10, ge=1, le=1000)
-    min_participants: int = Field(2, ge=2, le=100)
-    max_participants: int = Field(10, ge=2, le=1000)
-    dataset_requirements: Dict[str, Any] = Field(..., description="Data requirements")
-    privacy_config: PrivacyConfig = Field(default_factory=PrivacyConfig)
-    training_config: Dict[str, Any] = Field(default_factory=dict)
+    model_config: Dict[str, Any] = Field(..., description="Base model configuration")
+    dataset_config: Dict[str, Any] = Field(..., description="Dataset requirements")
+    training_config: Dict[str, Any] = Field(..., description="Training hyperparameters")
+    privacy_config: Dict[str, Any] = Field(default={}, description="Privacy settings")
+    convergence_criteria: Dict[str, Any] = Field(default={}, description="Convergence conditions")
+    max_rounds: int = Field(default=100, description="Maximum training rounds")
 
 
-class FederatedSessionResponse(BaseModel):
-    """Federated session response"""
+class SessionResponse(BaseModel):
+    """Session response"""
     session_id: str
-    name: str
-    description: Optional[str]
-    status: FederatedSessionStatus
-    model_type: str
-    algorithm: FederatedAlgorithm
-    current_round: int
-    total_rounds: int
-    participants: List[str]
-    privacy_config: PrivacyConfig
-    created_at: datetime
-    started_at: Optional[datetime]
-    completed_at: Optional[datetime]
+    status: str
+    message: str
 
 
-class ParticipantJoinRequest(BaseModel):
-    """Request to join federated session"""
-    participant_id: str = Field(..., description="Unique participant ID")
-    credentials: Optional[Dict[str, Any]] = Field(None, description="Verifiable credentials")
-    data_summary: Dict[str, Any] = Field(..., description="Summary of participant's data")
-    compute_resources: Dict[str, Any] = Field(default_factory=dict)
-
-
-@router.post("/sessions", response_model=FederatedSessionResponse)
-async def create_federated_session(
-    session: FederatedSessionCreate,
-    request: Request,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
-):
+@router.post("/sessions", response_model=SessionResponse)
+async def create_federated_session(request: FederatedSessionRequest) -> SessionResponse:
     """Create a new federated learning session"""
-    # Get federated coordinator from app state
-    federated_coordinator = request.app.state.federated_coordinator
-    
-    fl_session = await federated_coordinator.create_session(
-        model_type=session.model_type,
-        dataset_requirements=session.dataset_requirements,
-        privacy_parameters={
-            "differential_privacy": session.privacy_config.differential_privacy,
-            "epsilon": session.privacy_config.epsilon,
-            "secure_aggregation": session.privacy_config.secure_aggregation
-        },
-        training_parameters={
-            "algorithm": session.algorithm.value,
-            "rounds": session.num_rounds,
-            "min_participants": session.min_participants
-        },
-        tenant_id=tenant_id,
-        user_id=user_id
-    )
-    
-    return FederatedSessionResponse(
-        session_id=fl_session.session_id,
-        name=session.name,
-        description=session.description,
-        status=FederatedSessionStatus(fl_session.status),
-        model_type=fl_session.model_type,
-        algorithm=FederatedAlgorithm(fl_session.algorithm),
-        current_round=fl_session.current_round,
-        total_rounds=fl_session.num_rounds,
-        participants=fl_session.participants,
-        privacy_config=session.privacy_config,
-        created_at=datetime.utcnow(),
-        started_at=None,
-        completed_at=None
-    )
+    try:
+        from ..main import federated_coordinator
+        
+        if not federated_coordinator:
+            raise HTTPException(status_code=503, detail="Federated coordinator not available")
+        
+        session_id = await federated_coordinator.create_session(request.dict())
+        
+        return SessionResponse(
+            session_id=session_id,
+            status="created",
+            message="Federated learning session created successfully"
+        )
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error creating federated session: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/sessions", response_model=List[FederatedSessionResponse])
-async def list_federated_sessions(
-    tenant_id: str = Query(..., description="Tenant ID"),
-    status: Optional[FederatedSessionStatus] = Query(None),
-    model_type: Optional[str] = Query(None),
-    limit: int = Query(100, ge=1, le=1000),
-    offset: int = Query(0, ge=0)
-):
+@router.get("/sessions/{session_id}")
+async def get_session_status(session_id: str) -> Dict[str, Any]:
+    """Get federated learning session status"""
+    try:
+        from ..main import federated_coordinator
+        
+        if not federated_coordinator:
+            raise HTTPException(status_code=503, detail="Federated coordinator not available")
+        
+        status = await federated_coordinator.get_session_status(session_id)
+        return status
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting session status: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/sessions/{session_id}/stop")
+async def stop_session(session_id: str) -> Dict[str, Any]:
+    """Stop a federated learning session"""
+    try:
+        from ..main import federated_coordinator
+        
+        if not federated_coordinator:
+            raise HTTPException(status_code=503, detail="Federated coordinator not available")
+        
+        success = await federated_coordinator.stop_session(session_id)
+        
+        return {
+            "session_id": session_id,
+            "stopped": success,
+            "message": "Session stopped successfully" if success else "Failed to stop session"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error stopping session: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/sessions")
+async def list_sessions(
+    status: str = None,
+    limit: int = 100
+) -> List[Dict[str, Any]]:
     """List federated learning sessions"""
-    return []
-
-
-@router.get("/sessions/{session_id}", response_model=FederatedSessionResponse)
-async def get_federated_session(
-    session_id: str,
-    request: Request,
-    tenant_id: str = Query(..., description="Tenant ID")
-):
-    """Get federated session details"""
-    federated_coordinator = request.app.state.federated_coordinator
-    status = await federated_coordinator.get_session_status(session_id)
-    
-    if "error" in status:
-        raise HTTPException(status_code=404, detail=status["error"])
-        
-    # Mock response for now
-    return FederatedSessionResponse(
-        session_id=session_id,
-        name="Federated Session",
-        description=None,
-        status=FederatedSessionStatus(status["status"]),
-        model_type="classification",
-        algorithm=FederatedAlgorithm.FED_AVG,
-        current_round=status["current_round"],
-        total_rounds=status["total_rounds"],
-        participants=[],
-        privacy_config=PrivacyConfig(),
-        created_at=datetime.utcnow(),
-        started_at=None,
-        completed_at=None
-    )
-
-
-@router.post("/sessions/{session_id}/join")
-async def join_session(
-    session_id: str,
-    join_request: ParticipantJoinRequest,
-    request: Request,
-    tenant_id: str = Query(..., description="Tenant ID")
-):
-    """Join a federated learning session"""
-    federated_coordinator = request.app.state.federated_coordinator
-    
-    success = await federated_coordinator.join_session(
-        session_id=session_id,
-        participant_id=join_request.participant_id,
-        credentials=join_request.credentials
-    )
-    
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to join session")
-        
-    return {
-        "session_id": session_id,
-        "participant_id": join_request.participant_id,
-        "status": "joined",
-        "message": "Successfully joined federated session"
-    }
-
-
-@router.post("/sessions/{session_id}/leave")
-async def leave_session(
-    session_id: str,
-    participant_id: str = Query(..., description="Participant ID"),
-    tenant_id: str = Query(..., description="Tenant ID")
-):
-    """Leave a federated learning session"""
-    return {
-        "session_id": session_id,
-        "participant_id": participant_id,
-        "status": "left",
-        "message": "Successfully left federated session"
-    }
-
-
-@router.post("/sessions/{session_id}/submit-update")
-async def submit_model_update(
-    session_id: str,
-    request: Request,
-    participant_id: str = Query(..., description="Participant ID"),
-    model_update: Dict[str, Any] = Query(..., description="Model update data"),
-    data_size: int = Query(..., ge=1, description="Number of data points used"),
-    tenant_id: str = Query(..., description="Tenant ID")
-):
-    """Submit model update from participant"""
-    federated_coordinator = request.app.state.federated_coordinator
-    
-    # In production, model_update would contain actual model weights
-    success = await federated_coordinator.submit_model_update(
-        session_id=session_id,
-        participant_id=participant_id,
-        model_update={},  # Placeholder
-        data_size=data_size
-    )
-    
-    if not success:
-        raise HTTPException(status_code=400, detail="Failed to submit update")
-        
-    return {
-        "session_id": session_id,
-        "participant_id": participant_id,
-        "status": "submitted",
-        "message": "Model update submitted successfully"
-    }
-
-
-@router.get("/sessions/{session_id}/rounds/{round_number}")
-async def get_round_details(
-    session_id: str,
-    round_number: int,
-    tenant_id: str = Query(..., description="Tenant ID")
-):
-    """Get details of a specific training round"""
-    return {
-        "session_id": session_id,
-        "round_number": round_number,
-        "status": "completed",
-        "participants": ["participant_1", "participant_2"],
-        "metrics": {
-            "average_loss": 0.25,
-            "average_accuracy": 0.85
-        },
-        "completed_at": datetime.utcnow()
-    }
-
-
-@router.get("/sessions/{session_id}/model")
-async def get_aggregated_model(
-    session_id: str,
-    round_number: Optional[int] = Query(None, description="Specific round (latest if not specified)"),
-    tenant_id: str = Query(..., description="Tenant ID")
-):
-    """Get aggregated model from federated session"""
-    return {
-        "session_id": session_id,
-        "round_number": round_number or -1,
-        "model_id": f"federated_model_{session_id}",
-        "download_url": f"https://storage.platformq.io/models/{session_id}/model.pkl",
-        "size_bytes": 10485760,
-        "checksum": "sha256:abcdef123456"
-    }
-
-
-@router.post("/sessions/{session_id}/cancel")
-async def cancel_session(
-    session_id: str,
-    tenant_id: str = Query(..., description="Tenant ID"),
-    user_id: str = Query(..., description="User ID")
-):
-    """Cancel a federated learning session"""
-    return {
-        "session_id": session_id,
-        "status": "cancelled",
-        "cancelled_by": user_id,
-        "cancelled_at": datetime.utcnow()
-    }
-
-
-@router.get("/privacy-preserving-techniques")
-async def list_privacy_techniques():
-    """List available privacy-preserving techniques"""
-    return {
-        "techniques": [
-            {
-                "name": "Differential Privacy",
-                "type": "noise_addition",
-                "description": "Add calibrated noise to protect individual privacy",
-                "parameters": ["epsilon", "delta", "sensitivity"]
-            },
-            {
-                "name": "Secure Aggregation",
-                "type": "cryptographic",
-                "description": "Aggregate updates without revealing individual contributions",
-                "parameters": ["protocol", "threshold"]
-            },
-            {
-                "name": "Homomorphic Encryption",
-                "type": "cryptographic",
-                "description": "Compute on encrypted data",
-                "parameters": ["scheme", "key_size"]
-            }
-        ]
-    }
-
-
-# ============= Enhanced Federated Learning Endpoints =============
-
-@router.post("/sessions/{session_id}/enhanced/start")
-async def start_enhanced_federated_training(
-    session_id: str,
-    request: Request
-):
-    """
-    Start federated training using the enhanced framework
-    
-    This endpoint uses the new federated learning framework with advanced features:
-    - Adaptive client selection based on reliability and resources
-    - Advanced aggregation strategies (FedAdam, FedYogi)
-    - Hybrid privacy mechanisms (DP + Secure Aggregation)
-    - Real-time training analytics
-    """
-    coordinator = request.app.state.federated_coordinator
-    
-    # Check if using enhanced coordinator
-    if not hasattr(coordinator, 'fl_framework'):
-        raise HTTPException(
-            status_code=400,
-            detail="Enhanced federated learning not available. Please ensure Vault and Consul are configured."
-        )
-    
     try:
-        # Get session details
-        session = await coordinator.get_session(session_id)
-        if not session:
-            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        from ..main import federated_coordinator
         
-        # Start enhanced training
-        training_job_id = await coordinator.start_federated_training(
-            model=session.model,
-            config=session.config,
-            dataset_id=session.dataset_id,
-            num_rounds=session.num_rounds,
-            min_clients=session.min_participants
-        )
+        if not federated_coordinator:
+            raise HTTPException(status_code=503, detail="Federated coordinator not available")
         
-        return {
-            "session_id": session_id,
-            "training_job_id": training_job_id,
-            "status": "training_started",
-            "framework": "enhanced",
-            "features": [
-                "adaptive_client_selection",
-                "advanced_aggregation",
-                "hybrid_privacy",
-                "real_time_analytics"
-            ]
-        }
+        # Get all sessions
+        sessions = []
+        for session_id, session in federated_coordinator.sessions.items():
+            session_info = {
+                "session_id": session_id,
+                "name": session["config"].get("name"),
+                "status": session["status"].value,
+                "current_round": session["current_round"],
+                "created_at": session["created_at"].isoformat()
+            }
+            sessions.append(session_info)
+        
+        # Filter by status if provided
+        if status:
+            sessions = [s for s in sessions if s["status"] == status]
+        
+        # Sort by creation time (newest first)
+        sessions.sort(key=lambda x: x["created_at"], reverse=True)
+        
+        return sessions[:limit]
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error listing sessions: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/sessions/{session_id}/enhanced/analytics")
-async def get_enhanced_training_analytics(
-    session_id: str,
-    request: Request
-):
-    """
-    Get real-time analytics for enhanced federated training
-    
-    Returns comprehensive analytics including:
-    - Client performance metrics
-    - Convergence analysis
-    - Privacy budget tracking
-    - Resource utilization
-    """
-    coordinator = request.app.state.federated_coordinator
-    
-    if not hasattr(coordinator, 'get_training_analytics'):
-        raise HTTPException(
-            status_code=400,
-            detail="Enhanced analytics not available"
-        )
-    
+@router.get("/metrics")
+async def get_federated_metrics() -> Dict[str, Any]:
+    """Get federated learning metrics"""
     try:
-        analytics = await coordinator.get_training_analytics()
+        from ..main import federated_coordinator
         
-        return {
-            "session_id": session_id,
-            "analytics": analytics,
-            "timestamp": datetime.utcnow()
-        }
+        if not federated_coordinator:
+            raise HTTPException(status_code=503, detail="Federated coordinator not available")
+        
+        metrics = await federated_coordinator.get_federated_metrics()
+        return metrics
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting federated metrics: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/sessions/{session_id}/enhanced/client-selection")
-async def configure_client_selection(
-    session_id: str,
-    request: Request,
-    strategy: str = Query("reliability_weighted", description="Client selection strategy"),
-    min_reliability: float = Query(0.8, description="Minimum client reliability score"),
-    resource_aware: bool = Query(True, description="Consider client resources")
-):
-    """
-    Configure advanced client selection for federated learning
-    
-    Strategies:
-    - reliability_weighted: Select based on historical reliability
-    - resource_aware: Consider compute, network, and battery
-    - contribution_based: Prefer clients with valuable data
-    - hybrid: Combine multiple factors
-    """
-    coordinator = request.app.state.federated_coordinator
-    
-    if not hasattr(coordinator, 'fl_framework'):
-        raise HTTPException(
-            status_code=400,
-            detail="Enhanced client selection not available"
-        )
-    
+@router.get("/clients")
+async def get_available_clients(
+    min_data_samples: int = 0,
+    reliability_threshold: float = 0.0
+) -> List[Dict[str, Any]]:
+    """Get available federated learning clients"""
     try:
-        # Configure client selection
-        config = {
-            "strategy": strategy,
-            "min_reliability": min_reliability,
-            "resource_aware": resource_aware,
-            "factors": {
-                "reliability_weight": 0.4,
-                "resource_weight": 0.3,
-                "data_quality_weight": 0.3
+        from ..main import federated_coordinator
+        
+        if not federated_coordinator:
+            raise HTTPException(status_code=503, detail="Federated coordinator not available")
+        
+        # Get available clients
+        client_ids = await federated_coordinator.client_manager.get_available_clients(
+            min_data_samples=min_data_samples,
+            reliability_threshold=reliability_threshold
+        )
+        
+        # Get client details
+        clients = []
+        for client_id in client_ids:
+            # This would get actual client information
+            client_info = {
+                "client_id": client_id,
+                "status": "available",
+                "data_samples": 1000,
+                "reliability_score": 0.95
             }
-        }
+            clients.append(client_info)
         
-        await coordinator.fl_framework.configure_client_selection(config)
-        
-        return {
-            "session_id": session_id,
-            "client_selection": config,
-            "status": "configured"
-        }
+        return clients
         
     except Exception as e:
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/enhanced/capabilities")
-async def get_enhanced_capabilities(request: Request):
-    """Get enhanced federated learning capabilities"""
-    coordinator = request.app.state.federated_coordinator
-    
-    has_enhanced = hasattr(coordinator, 'fl_framework')
-    
-    return {
-        "enhanced_available": has_enhanced,
-        "features": {
-            "aggregation_strategies": [
-                "FedAvg", "FedProx", "SCAFFOLD", "FedAdam", "FedYogi"
-            ] if has_enhanced else ["FedAvg"],
-            "privacy_mechanisms": [
-                "differential_privacy",
-                "secure_aggregation",
-                "homomorphic_encryption",
-                "hybrid"
-            ] if has_enhanced else ["differential_privacy"],
-            "client_selection": [
-                "random",
-                "reliability_weighted",
-                "resource_aware",
-                "contribution_based",
-                "hybrid"
-            ] if has_enhanced else ["random"],
-            "analytics": {
-                "real_time": has_enhanced,
-                "convergence_analysis": has_enhanced,
-                "privacy_accounting": has_enhanced,
-                "resource_tracking": has_enhanced
-            }
-        }
-    } 
+        logger.error(f"Error getting clients: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error") 

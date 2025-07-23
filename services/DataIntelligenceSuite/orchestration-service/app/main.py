@@ -1,218 +1,197 @@
 """
-Unified Orchestration Service
+Orchestration Service
 
-Combines workflow management, pipeline orchestration, and ML-driven optimization 
-with Apache Airflow and SeaTunnel integration.
+Comprehensive orchestration platform for workflows, pipelines, and data movement.
 """
-
-import os
-import asyncio
-from typing import Optional, Dict, Any
+import logging
 from contextlib import asynccontextmanager
-
-from fastapi import FastAPI, HTTPException, Depends, Request
-import uvicorn
+from typing import Optional
+from fastapi import FastAPI
+from fastapi.middleware.cors import CORSMiddleware
 
 from data_intelligence_common import (
     create_data_intelligence_app,
     ServiceMetadata,
     DataIntelligenceBaseService,
     VaultConsulIntegration,
-    MetricsCollector,
+    EventBus,
     StructuredLogger
 )
 
-# Import core components
-from app.core import (
-    settings, AirflowBridge, PipelineManager, MLPipelineOptimizer,
-    SeaTunnelOrchestrator, EventOrchestrator, CredentialAttestor, K8sManager
-)
+# Import engines
+from .engines.workflow import WorkflowManager, AirflowBridge, DAGGenerator
+from .engines.pipeline import PipelineManager, PipelineExecutor, DependencyResolver
+from .engines.optimization import MLOptimizer
+from .engines.seatunnel import SeaTunnelOrchestrator
+from .engines.event import EventOrchestrator
 
 # Import API routers
-from app.api import (
-    workflows_router, pipelines_router, optimization_router,
-    seatunnel_router, event_mappings_router, attestations_router,
-    k8s_router, monitoring_router, health_router,
-    set_workflows_deps, set_pipelines_deps, set_optimization_deps,
-    set_seatunnel_deps, set_event_deps, set_attestations_deps,
-    set_k8s_deps, set_monitoring_deps, set_health_deps
-)
+from .api import workflows, pipelines, optimization, seatunnel, event_mappings
 
 # Service metadata
 SERVICE_METADATA = ServiceMetadata(
-    name="unified-orchestration-service",
-    version="1.0.0",
-    description="Unified orchestration platform with Airflow and SeaTunnel",
-    dependencies=["vault", "consul", "pulsar", "airflow", "seatunnel"],
+    name="orchestration-service",
+    version="2.0.0",
+    description="Unified orchestration platform with Airflow, SeaTunnel, and ML optimization",
+    dependencies=["vault", "consul", "pulsar", "airflow", "seatunnel", "ignite"],
     health_checks=["airflow", "seatunnel", "scheduler"]
 )
 
 logger = StructuredLogger.get_logger(__name__)
 
-# Global components
-airflow_bridge: Optional[AirflowBridge] = None
+# Global instances
+vault_consul: Optional[VaultConsulIntegration] = None
+event_bus: Optional[EventBus] = None
+workflow_manager: Optional[WorkflowManager] = None
 pipeline_manager: Optional[PipelineManager] = None
-ml_optimizer: Optional[MLPipelineOptimizer] = None
+ml_optimizer: Optional[MLOptimizer] = None
 seatunnel_orchestrator: Optional[SeaTunnelOrchestrator] = None
 event_orchestrator: Optional[EventOrchestrator] = None
-credential_attestor: Optional[CredentialAttestor] = None
-k8s_manager: Optional[K8sManager] = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
-    """Manage application lifecycle"""
-    global airflow_bridge, pipeline_manager, ml_optimizer
-    global seatunnel_orchestrator, event_orchestrator, credential_attestor, k8s_manager
+    """Application lifespan manager"""
+    global vault_consul, event_bus, workflow_manager, pipeline_manager
+    global ml_optimizer, seatunnel_orchestrator, event_orchestrator
     
-    # Startup
-    logger.info("initializing_unified_orchestration_service")
+    logger.info("Starting Orchestration Service...")
     
     try:
-        # Initialize Airflow Bridge
-        airflow_bridge = AirflowBridge()
-        await airflow_bridge.initialize()
+        # Initialize Vault and Consul
+        vault_consul = VaultConsulIntegration()
+        await vault_consul.initialize()
         
-        # Initialize Pipeline Manager
-        pipeline_manager = PipelineManager()
+        # Initialize event bus
+        event_bus = EventBus()
+        await event_bus.initialize()
+        
+        # Initialize workflow engine
+        airflow_bridge = AirflowBridge()
+        dag_generator = DAGGenerator()
+        workflow_manager = WorkflowManager(
+            vault_consul, event_bus, airflow_bridge, dag_generator
+        )
+        await workflow_manager.initialize()
+        
+        # Initialize pipeline engine
+        pipeline_executor = PipelineExecutor()
+        dependency_resolver = DependencyResolver()
+        pipeline_manager = PipelineManager(
+            vault_consul, event_bus, pipeline_executor, dependency_resolver
+        )
         await pipeline_manager.initialize()
         
-        # Initialize ML Optimizer
-        ml_optimizer = MLPipelineOptimizer()
+        # Initialize ML optimizer
+        ml_optimizer = MLOptimizer(vault_consul, event_bus)
         await ml_optimizer.initialize()
         
-        # Initialize SeaTunnel Orchestrator
-        seatunnel_orchestrator = SeaTunnelOrchestrator()
+        # Initialize SeaTunnel orchestrator
+        seatunnel_orchestrator = SeaTunnelOrchestrator(vault_consul, event_bus)
         await seatunnel_orchestrator.initialize()
         
-        # Initialize Event Orchestrator
-        event_orchestrator = EventOrchestrator()
+        # Initialize event orchestrator
+        event_orchestrator = EventOrchestrator(vault_consul, event_bus, workflow_manager)
         await event_orchestrator.initialize()
         
-        # Initialize Credential Attestor
-        credential_attestor = CredentialAttestor()
-        await credential_attestor.initialize()
+        logger.info("Orchestration Service initialized successfully")
         
-        # Initialize K8s Manager
-        k8s_namespace = settings.k8s_namespace if hasattr(settings, 'k8s_namespace') else 'default'
-        k8s_in_cluster = settings.k8s_in_cluster if hasattr(settings, 'k8s_in_cluster') else True
-        k8s_manager = K8sManager(in_cluster=k8s_in_cluster, namespace=k8s_namespace)
+        yield
         
-        # Set dependencies for API routers
-        set_workflows_deps(airflow_bridge)
-        set_pipelines_deps(pipeline_manager)
-        set_optimization_deps(ml_optimizer)
-        set_seatunnel_deps(seatunnel_orchestrator)
-        set_event_deps(event_orchestrator)
-        set_attestations_deps(credential_attestor)
-        set_k8s_deps(k8s_manager)
-        set_monitoring_deps(
-            airflow_bridge, pipeline_manager, ml_optimizer,
-            seatunnel_orchestrator, event_orchestrator, credential_attestor
-        )
-        set_health_deps({
-            'airflow': airflow_bridge,
-            'pipeline': pipeline_manager,
-            'ml_optimizer': ml_optimizer,
-            'seatunnel': seatunnel_orchestrator,
-            'events': event_orchestrator,
-            'credentials': credential_attestor,
-            'k8s': k8s_manager
-        })
+    finally:
+        # Cleanup
+        logger.info("Shutting down Orchestration Service...")
         
-        logger.info("unified_orchestration_service_initialized")
-        
-    except Exception as e:
-        logger.error(f"Failed to initialize service: {e}")
-        raise
-        
-    yield
-    
-    # Shutdown
-    logger.info("cleaning_up_unified_orchestration_service")
-    
-    try:
-        if event_orchestrator:
-            await event_orchestrator.cleanup()
-        if credential_attestor:
-            await credential_attestor.cleanup()
-        if seatunnel_orchestrator:
-            await seatunnel_orchestrator.cleanup()
-        if ml_optimizer:
-            await ml_optimizer.cleanup()
+        if workflow_manager:
+            await workflow_manager.cleanup()
         if pipeline_manager:
             await pipeline_manager.cleanup()
-        if airflow_bridge:
-            await airflow_bridge.cleanup()
-            
-    except Exception as e:
-        logger.error(f"Error during cleanup: {e}")
-        
-    logger.info("unified_orchestration_service_cleaned_up")
+        if ml_optimizer:
+            await ml_optimizer.cleanup()
+        if seatunnel_orchestrator:
+            await seatunnel_orchestrator.cleanup()
+        if event_orchestrator:
+            await event_orchestrator.cleanup()
+        if event_bus:
+            await event_bus.cleanup()
+        if vault_consul:
+            await vault_consul.cleanup()
 
 
-# Create FastAPI app
-def create_app() -> FastAPI:
-    """Create and configure the FastAPI application"""
-    
-    app = FastAPI(
-        title=SERVICE_METADATA.name,
-        version=SERVICE_METADATA.version,
-        description=SERVICE_METADATA.description,
-        lifespan=lifespan
-    )
-    
-    # Include routers
-    app.include_router(workflows_router)
-    app.include_router(pipelines_router)
-    app.include_router(optimization_router)
-    app.include_router(seatunnel_router)
-    app.include_router(event_mappings_router)
-    app.include_router(attestations_router)
-    app.include_router(k8s_router)
-    app.include_router(monitoring_router)
-    app.include_router(health_router)
-    
-    @app.get("/")
-    async def root():
-        """Root endpoint"""
-        return {
-            "service": SERVICE_METADATA.name,
-            "version": SERVICE_METADATA.version,
-            "description": SERVICE_METADATA.description,
-            "features": [
-                "airflow-integration",
-                "seatunnel-orchestration",
-                "ml-optimization",
-                "event-driven-workflows",
-                "pipeline-management",
-                "verifiable-credentials",
-                "kubernetes-orchestration"
-            ],
-            "endpoints": {
-                "workflows": "/api/v1/workflows",
-                "pipelines": "/api/v1/pipelines",
-                "optimization": "/api/v1/optimize",
-                "seatunnel": "/api/v1/seatunnel",
-                "events": "/api/v1/event-mappings",
-                "attestations": "/api/v1/attestations",
-                "kubernetes": "/k8s",
-                "monitoring": "/api/v1/monitoring",
-                "health": "/health",
-                "docs": "/docs"
+# Create app
+app = create_data_intelligence_app(SERVICE_METADATA, lifespan=lifespan)
+
+# Add CORS middleware
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+
+# Include routers
+app.include_router(workflows.router, prefix="/api/v1", tags=["workflows"])
+app.include_router(pipelines.router, prefix="/api/v1", tags=["pipelines"])
+app.include_router(optimization.router, prefix="/api/v1", tags=["optimization"])
+app.include_router(seatunnel.router, prefix="/api/v1/seatunnel", tags=["seatunnel"])
+app.include_router(event_mappings.router, prefix="/api/v1", tags=["events"])
+
+# Root endpoint
+@app.get("/")
+async def root():
+    return {
+        "service": SERVICE_METADATA.name,
+        "version": SERVICE_METADATA.version,
+        "status": "operational",
+        "description": SERVICE_METADATA.description,
+        "capabilities": {
+            "workflow_management": {
+                "airflow_integration": True,
+                "visual_dag_design": True,
+                "advanced_scheduling": True,
+                "dynamic_dag_generation": True
+            },
+            "pipeline_orchestration": {
+                "types": ["etl", "transformation", "streaming", "ml_training", "data_quality"],
+                "dependency_resolution": True,
+                "resource_allocation": True,
+                "quality_gates": True
+            },
+            "ml_optimization": {
+                "predictive_optimization": True,
+                "resource_prediction": True,
+                "anomaly_detection": True,
+                "auto_scaling": True,
+                "performance_tuning": True
+            },
+            "seatunnel_integration": {
+                "data_movement": True,
+                "etl_pipelines": True,
+                "stream_processing": True,
+                "cross_system_sync": True,
+                "connectors": ["jdbc", "kafka", "pulsar", "elasticsearch", "s3", "clickhouse"]
+            },
+            "event_driven": {
+                "event_mappings": True,
+                "reactive_workflows": True,
+                "event_correlation": True,
+                "complex_patterns": True
             }
+        },
+        "endpoints": {
+            "workflows": "/api/v1/workflows",
+            "pipelines": "/api/v1/pipelines",
+            "optimization": "/api/v1/optimize",
+            "seatunnel": "/api/v1/seatunnel",
+            "events": "/api/v1/event-mappings",
+            "health": "/health",
+            "metrics": "/metrics",
+            "docs": "/docs"
         }
-    
-    return app
-
-
-app = create_app()
+    }
 
 
 if __name__ == "__main__":
-    uvicorn.run(
-        "app.main:app",
-        host="0.0.0.0",
-        port=int(os.getenv("SERVICE_PORT", "8019")),
-        reload=os.getenv("ENVIRONMENT", "development") == "development"
-    ) 
+    import uvicorn
+    uvicorn.run(app, host="0.0.0.0", port=8000) 

@@ -1,301 +1,187 @@
 """
-ML optimization API endpoints
+Optimization API endpoints
 """
 
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+from typing import Dict, Any, List
+from fastapi import APIRouter, HTTPException, Depends, Query
+from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, HTTPException, Query, Body
-from pydantic import BaseModel
+from data_intelligence_common import StructuredLogger
 
-from platformq_shared.logging import get_logger
-from ..core import MLPipelineOptimizer, OptimizationTarget
+logger = StructuredLogger.get_logger(__name__)
 
-logger = get_logger(__name__)
-
-router = APIRouter(prefix="/api/v1/optimize", tags=["optimization"])
-
-# Dependency injection
-ml_optimizer: Optional[MLPipelineOptimizer] = None
-
-def set_dependencies(optimizer: MLPipelineOptimizer):
-    """Set API dependencies"""
-    global ml_optimizer
-    ml_optimizer = optimizer
+router = APIRouter()
 
 
-# Request/Response models
-class OptimizeWorkflowRequest(BaseModel):
-    workflow: Dict[str, Any]
-    target: OptimizationTarget = OptimizationTarget.BALANCED
-    constraints: Optional[Dict[str, Any]] = None
-    historical_data: Optional[List[Dict[str, Any]]] = None
+class WorkflowOptimizationRequest(BaseModel):
+    """Workflow optimization request"""
+    workflow_config: Dict[str, Any] = Field(..., description="Workflow configuration")
+    target: str = Field("balanced", description="Optimization target")
 
 
-class PredictResourcesRequest(BaseModel):
-    workflow: Dict[str, Any]
-    context: Optional[Dict[str, Any]] = None
+class ResourcePredictionRequest(BaseModel):
+    """Resource prediction request"""
+    pipeline_config: Dict[str, Any] = Field(..., description="Pipeline configuration")
 
 
-class TrainModelsRequest(BaseModel):
-    training_data: List[Dict[str, Any]]
+class AnomalyDetectionRequest(BaseModel):
+    """Anomaly detection request"""
+    execution_metrics: Dict[str, Any] = Field(..., description="Execution metrics")
 
 
-class OptimizationResponse(BaseModel):
-    workflow_id: Optional[str]
-    workflow_name: Optional[str]
-    target: OptimizationTarget
-    timestamp: str
-    original_config: Dict[str, Any]
-    optimized_config: Dict[str, Any]
-    predicted_improvements: Dict[str, float]
-    confidence: float
-    resource_allocation: Optional[Dict[str, Any]] = None
-    performance_prediction: Optional[Dict[str, Any]] = None
+class LearningDataRequest(BaseModel):
+    """Learning data request"""
+    execution_data: Dict[str, Any] = Field(..., description="Execution data for learning")
 
 
-class ResourcePredictionResponse(BaseModel):
-    cpu: float
-    memory: float
-    storage: float
-    predicted: bool
-
-
-class PerformancePredictionResponse(BaseModel):
-    estimated_duration: float
-    success_probability: float
-    throughput: float
-    predicted: bool
-
-
-class AnomalyDetectionResponse(BaseModel):
-    workflow_id: str
-    workflow_name: str
-    anomaly_score: float
-    detected_at: str
-
-
-# API Endpoints
-@router.post("/workflow", response_model=OptimizationResponse)
-async def optimize_workflow(request: OptimizeWorkflowRequest = Body(...)):
+@router.post("/optimize/workflow")
+async def optimize_workflow(request: WorkflowOptimizationRequest) -> Dict[str, Any]:
     """Optimize workflow configuration using ML"""
-    if not ml_optimizer:
-        raise HTTPException(status_code=503, detail="ML optimizer not initialized")
-        
     try:
+        from ..main import ml_optimizer
+        
+        if not ml_optimizer:
+            raise HTTPException(status_code=503, detail="ML optimizer not available")
+        
+        from ..engines.optimization import OptimizationTarget
+        target_enum = OptimizationTarget(request.target)
+        
         recommendations = await ml_optimizer.optimize_workflow(
-            workflow=request.workflow,
-            target=request.target,
-            constraints=request.constraints,
-            historical_data=request.historical_data
+            request.workflow_config,
+            target_enum
         )
         
-        return OptimizationResponse(**recommendations)
+        return recommendations
+        
+    except ValueError as e:
+        raise HTTPException(status_code=400, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error optimizing workflow: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/optimize/predict-resources")
+async def predict_resources(request: ResourcePredictionRequest) -> Dict[str, Any]:
+    """Predict resource requirements for pipeline"""
+    try:
+        from ..main import ml_optimizer
+        
+        if not ml_optimizer:
+            raise HTTPException(status_code=503, detail="ML optimizer not available")
+        
+        predictions = await ml_optimizer.predict_resource_needs(request.pipeline_config)
+        
+        return predictions
         
     except Exception as e:
-        logger.error(f"Failed to optimize workflow: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error predicting resources: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/recommendations/{workflow_id}", response_model=List[OptimizationResponse])
-async def get_recommendations(
-    workflow_id: str,
-    limit: int = Query(10, ge=1, le=50)
-):
-    """Get optimization recommendations for a workflow"""
-    if not ml_optimizer:
-        raise HTTPException(status_code=503, detail="ML optimizer not initialized")
-        
+@router.post("/optimize/detect-anomalies")
+async def detect_anomalies(request: AnomalyDetectionRequest) -> Dict[str, Any]:
+    """Detect anomalies in execution metrics"""
     try:
-        recommendations = await ml_optimizer.get_recommendations(workflow_id)
+        from ..main import ml_optimizer
         
-        # Limit results
-        limited = recommendations[:limit]
+        if not ml_optimizer:
+            raise HTTPException(status_code=503, detail="ML optimizer not available")
         
-        return [OptimizationResponse(**rec) for rec in limited]
+        result = await ml_optimizer.detect_anomalies(request.execution_metrics)
+        
+        return result
         
     except Exception as e:
-        logger.error(f"Failed to get recommendations: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error detecting anomalies: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/predict-resources", response_model=ResourcePredictionResponse)
-async def predict_resources(request: PredictResourcesRequest = Body(...)):
-    """Predict resource requirements for a workflow"""
-    if not ml_optimizer:
-        raise HTTPException(status_code=503, detail="ML optimizer not initialized")
-        
+@router.post("/optimize/learn")
+async def learn_from_execution(request: LearningDataRequest) -> Dict[str, str]:
+    """Submit execution data for ML learning"""
     try:
-        prediction = await ml_optimizer.predict_resources(
-            workflow=request.workflow,
-            context=request.context
-        )
+        from ..main import ml_optimizer
         
-        return ResourcePredictionResponse(**prediction)
+        if not ml_optimizer:
+            raise HTTPException(status_code=503, detail="ML optimizer not available")
         
-    except Exception as e:
-        logger.error(f"Failed to predict resources: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/detect-anomalies", response_model=List[AnomalyDetectionResponse])
-async def detect_anomalies(
-    workflows: List[Dict[str, Any]] = Body(...)
-):
-    """Detect anomalous workflows"""
-    if not ml_optimizer:
-        raise HTTPException(status_code=503, detail="ML optimizer not initialized")
-        
-    try:
-        anomalies = await ml_optimizer.detect_anomalies(workflows)
-        
-        return [AnomalyDetectionResponse(**anomaly) for anomaly in anomalies]
-        
-    except Exception as e:
-        logger.error(f"Failed to detect anomalies: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/train-models")
-async def train_models(request: TrainModelsRequest = Body(...)):
-    """Train optimization models on historical data"""
-    if not ml_optimizer:
-        raise HTTPException(status_code=503, detail="ML optimizer not initialized")
-        
-    try:
-        await ml_optimizer.train_models(request.training_data)
+        await ml_optimizer.learn_from_execution(request.execution_data)
         
         return {
-            "message": "Model training completed successfully",
-            "samples_used": len(request.training_data),
-            "timestamp": datetime.utcnow().isoformat()
+            "status": "success",
+            "message": "Execution data submitted for learning"
         }
         
     except Exception as e:
-        logger.error(f"Failed to train models: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error submitting learning data: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/feature-importance")
-async def get_feature_importance():
-    """Get feature importance from trained models"""
-    if not ml_optimizer:
-        raise HTTPException(status_code=503, detail="ML optimizer not initialized")
-        
+@router.get("/optimize/recommendations/{workflow_id}")
+async def get_workflow_recommendations(workflow_id: str) -> Dict[str, Any]:
+    """Get optimization recommendations for specific workflow"""
     try:
-        # Get feature importance from models
-        importance = {}
+        from ..main import workflow_manager, ml_optimizer
         
-        if 'resource_predictor' in ml_optimizer.models:
-            model = ml_optimizer.models['resource_predictor']
-            if hasattr(model, 'feature_importances_'):
-                importance['resource_prediction'] = {
-                    'features': [
-                        'num_steps', 'num_dependencies', 'retry_count', 'timeout',
-                        'parallel_execution', 'transform_steps', 'ml_steps', 
-                        'quality_steps', 'max_cpu', 'max_memory', 'avg_duration',
-                        'duration_variance', 'failure_rate', 'avg_cpu_usage', 
-                        'avg_memory_usage'
-                    ],
-                    'importances': model.feature_importances_.tolist()
-                }
-                
-        if 'performance_predictor' in ml_optimizer.models:
-            model = ml_optimizer.models['performance_predictor']
-            if hasattr(model, 'feature_importances_'):
-                importance['performance_prediction'] = {
-                    'features': [
-                        'num_steps', 'num_dependencies', 'retry_count', 'timeout',
-                        'parallel_execution', 'transform_steps', 'ml_steps', 
-                        'quality_steps', 'max_cpu', 'max_memory', 'avg_duration',
-                        'duration_variance', 'failure_rate', 'avg_cpu_usage', 
-                        'avg_memory_usage'
-                    ],
-                    'importances': model.feature_importances_.tolist()
-                }
-                
-        return importance
+        if not workflow_manager or not ml_optimizer:
+            raise HTTPException(status_code=503, detail="Services not available")
+        
+        # Get workflow configuration
+        workflow = workflow_manager.workflows.get(workflow_id)
+        if not workflow:
+            raise HTTPException(status_code=404, detail="Workflow not found")
+        
+        # Get optimization recommendations
+        from ..engines.optimization import OptimizationTarget
+        recommendations = await ml_optimizer.optimize_workflow(
+            workflow["config"],
+            OptimizationTarget.BALANCED
+        )
+        
+        return recommendations
         
     except Exception as e:
-        logger.error(f"Failed to get feature importance: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting recommendations: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/optimization-history")
-async def get_optimization_history(
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0),
-    workflow_id: Optional[str] = Query(None),
-    target: Optional[OptimizationTarget] = Query(None)
-):
-    """Get optimization history"""
-    if not ml_optimizer:
-        raise HTTPException(status_code=503, detail="ML optimizer not initialized")
-        
+@router.get("/optimize/metrics")
+async def get_optimization_metrics() -> Dict[str, Any]:
+    """Get ML optimizer metrics"""
     try:
-        history = ml_optimizer.optimization_history
+        from ..main import ml_optimizer
         
-        # Apply filters
-        if workflow_id:
-            history = [h for h in history if h.get('workflow_id') == workflow_id]
-            
-        if target:
-            history = [h for h in history if h.get('target') == target]
-            
-        # Sort by timestamp (newest first)
-        history.sort(key=lambda x: x.get('timestamp', ''), reverse=True)
+        if not ml_optimizer:
+            raise HTTPException(status_code=503, detail="ML optimizer not available")
         
-        # Apply pagination
-        start = offset
-        end = offset + limit
-        paginated = history[start:end]
-        
-        return {
-            "total": len(history),
-            "offset": offset,
-            "limit": limit,
-            "items": paginated
-        }
+        metrics = await ml_optimizer.get_optimization_metrics()
+        return metrics
         
     except Exception as e:
-        logger.error(f"Failed to get optimization history: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting optimization metrics: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/model-status")
-async def get_model_status():
-    """Get status of ML models"""
-    if not ml_optimizer:
-        raise HTTPException(status_code=503, detail="ML optimizer not initialized")
-        
+@router.get("/optimize/models/status")
+async def get_model_status() -> Dict[str, Any]:
+    """Get ML model training status"""
     try:
+        from ..main import ml_optimizer
+        
+        if not ml_optimizer:
+            raise HTTPException(status_code=503, detail="ML optimizer not available")
+        
         status = {
-            "models": {},
-            "anomaly_detector": False,
-            "last_training": None,
-            "optimization_count": len(ml_optimizer.optimization_history)
+            "resource_model": ml_optimizer.resource_model is not None,
+            "performance_model": ml_optimizer.performance_model is not None,
+            "anomaly_detector": ml_optimizer.anomaly_detector is not None,
+            "cost_model": ml_optimizer.cost_model is not None,
+            "training_samples": len(ml_optimizer.execution_history),
+            "min_samples_required": ml_optimizer.config["min_samples_for_training"]
         }
         
-        # Check resource predictor
-        if 'resource_predictor' in ml_optimizer.models:
-            status['models']['resource_predictor'] = {
-                "available": True,
-                "type": type(ml_optimizer.models['resource_predictor']).__name__
-            }
-            
-        # Check performance predictor
-        if 'performance_predictor' in ml_optimizer.models:
-            status['models']['performance_predictor'] = {
-                "available": True,
-                "type": type(ml_optimizer.models['performance_predictor']).__name__
-            }
-            
-        # Check anomaly detector
-        if ml_optimizer.anomaly_detector:
-            status['anomaly_detector'] = True
-            
         return status
         
     except Exception as e:
-        logger.error(f"Failed to get model status: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        logger.error(f"Error getting model status: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error") 

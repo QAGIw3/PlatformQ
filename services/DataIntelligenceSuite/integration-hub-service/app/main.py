@@ -1,7 +1,8 @@
 """
-Digital Integration Hub (DIH) Service
+Integration Hub Service
 
-High-performance, in-memory data integration layer built on Apache Ignite.
+Unified integration platform with GraphQL federation, graph analytics, and 
+high-performance data integration using Apache Ignite.
 """
 
 import os
@@ -12,7 +13,8 @@ from fastapi import Depends, HTTPException
 from data_intelligence_common import (
     create_data_intelligence_app,
     ServiceMetadata,
-    DataIntelligenceBaseService
+    DataIntelligenceBaseService,
+    EventBus
 )
 from platformq_shared.vault.vault_client import VaultClient
 from platformq_shared.consul.consul_client import ConsulClient
@@ -20,26 +22,35 @@ from platformq_shared.event_publisher import EventPublisher
 
 from .core.dih import DigitalIntegrationHub, ConsistencyLevel
 from .core.cache_manager import CacheManager
-from .api import cache_api, region_api, sync_api, health_api
+from .api import cache_api, region_api, sync_api, health_api, graphql, graph
 from .integrations.data_sources import DataSourceManager
 from .sync.cdc_processor import CDCProcessor
 from .sync.sync_orchestrator import SyncOrchestrator
+from .engines.graphql import GraphQLGateway
+from .engines.graph import GraphManager
 
 # Service metadata
 SERVICE_METADATA = ServiceMetadata(
-    name="dih-service",
-    version="1.0.0",
-    description="Digital Integration Hub - High-performance in-memory data integration",
+    name="integration-hub-service",
+    version="2.0.0",
+    description="Unified integration platform with GraphQL, graph analytics, and data integration",
     capabilities=[
+        "graphql-federation",
+        "graph-analytics",
         "cache-management",
         "data-aggregation",
         "cdc-sync",
         "api-acceleration",
-        "transaction-support"
+        "transaction-support",
+        "temporal-analysis",
+        "trust-networks",
+        "lineage-tracking"
     ],
     dependencies=[
         "data-platform-service",
-        "ignite"
+        "ignite",
+        "janusgraph",
+        "spark"
     ],
     data_sources=[
         "postgres",
@@ -48,14 +59,14 @@ SERVICE_METADATA = ServiceMetadata(
         "mongodb",
         "janusgraph"
     ],
-    data_outputs=["ignite", "api"],
-    min_memory_mb=2048,
-    min_cpu_cores=2.0
+    data_outputs=["ignite", "api", "graphql"],
+    min_memory_mb=4096,
+    min_cpu_cores=4.0
 )
 
 
-class DIHService(DataIntelligenceBaseService):
-    """Digital Integration Hub Service implementation."""
+class IntegrationHubService(DataIntelligenceBaseService):
+    """Integration Hub Service implementation."""
     
     def __init__(self, *args, **kwargs):
         super().__init__(SERVICE_METADATA, *args, **kwargs)
@@ -64,9 +75,15 @@ class DIHService(DataIntelligenceBaseService):
         self.data_source_manager: Optional[DataSourceManager] = None
         self.cdc_processor: Optional[CDCProcessor] = None
         self.sync_orchestrator: Optional[SyncOrchestrator] = None
+        self.graphql_gateway: Optional[GraphQLGateway] = None
+        self.graph_manager: Optional[GraphManager] = None
+        self.event_bus: Optional[EventBus] = None
         
     async def initialize_service(self):
-        """Initialize DIH-specific components."""
+        """Initialize Integration Hub components."""
+        # Initialize event bus
+        self.event_bus = EventBus()
+        
         # Get Ignite configuration
         ignite_nodes = await self.get_config(
             "ignite.nodes",
@@ -107,14 +124,22 @@ class DIHService(DataIntelligenceBaseService):
         )
         await self.sync_orchestrator.start()
         
-        # Store components in app state for API access
-        self.app.state.dih = self.dih
-        self.app.state.cache_manager = self.cache_manager
-        self.app.state.data_source_manager = self.data_source_manager
-        self.app.state.sync_orchestrator = self.sync_orchestrator
+        # Initialize GraphQL gateway
+        self.graphql_gateway = GraphQLGateway(self.vault_consul, self.event_bus)
+        await self.graphql_gateway.initialize()
+        
+        # Initialize Graph manager
+        self.graph_manager = GraphManager(self.vault_consul, self.event_bus)
+        await self.graph_manager.initialize()
         
     async def cleanup_service(self):
-        """Cleanup DIH-specific components."""
+        """Cleanup Integration Hub components."""
+        if self.graph_manager:
+            await self.graph_manager.cleanup()
+            
+        if self.graphql_gateway:
+            await self.graphql_gateway.cleanup()
+            
         if self.sync_orchestrator:
             await self.sync_orchestrator.stop()
             
@@ -133,7 +158,7 @@ class DIHService(DataIntelligenceBaseService):
 
 # Create FastAPI app and service
 def create_app():
-    """Create the DIH service application."""
+    """Create the Integration Hub service application."""
     # Get environment configuration
     vault_addr = os.getenv("VAULT_ADDR", "http://vault:8200")
     vault_token = os.getenv("VAULT_TOKEN")
@@ -156,8 +181,8 @@ def create_app():
         vault_client=vault_client,
         consul_client=consul_client,
         event_publisher=event_publisher,
-        on_startup=lambda: initialize_dih_service(service),
-        on_shutdown=lambda: cleanup_dih_service(service)
+        on_startup=lambda: initialize_integration_hub_service(service),
+        on_shutdown=lambda: cleanup_integration_hub_service(service)
     )
     
     # Include API routers
@@ -165,18 +190,32 @@ def create_app():
     app.include_router(region_api.router, prefix="/api/v1/regions", tags=["regions"])
     app.include_router(sync_api.router, prefix="/api/v1/sync", tags=["sync"])
     app.include_router(health_api.router, prefix="/api/v1/health", tags=["health"])
+    app.include_router(graph.router, prefix="/api/v1/graph", tags=["graph"])
+    app.include_router(graphql.router, prefix="/api/v1/graphql", tags=["graphql"])
+    
+    # Add GraphQL endpoint
+    graphql_router = graphql.create_graphql_router()
+    app.include_router(graphql_router, prefix="/graphql")
+    
+    # Set dependencies for API routers
+    cache_api.set_cache_deps(service.cache_manager)
+    region_api.set_region_deps(service.dih)
+    sync_api.set_sync_deps(service.sync_orchestrator)
+    health_api.set_health_deps(service.dih, service.cache_manager)
+    graph.set_graph_deps(service.graph_manager)
+    graphql.set_graphql_deps(service.graphql_gateway)
     
     return app, service
 
 
-async def initialize_dih_service(service: DIHService):
-    """Additional DIH initialization."""
+async def initialize_integration_hub_service(service: IntegrationHubService):
+    """Additional Integration Hub initialization."""
     # Set up default cache regions
     await setup_default_regions(service.dih)
     
     
-async def cleanup_dih_service(service: DIHService):
-    """Additional DIH cleanup."""
+async def cleanup_integration_hub_service(service: IntegrationHubService):
+    """Additional Integration Hub cleanup."""
     pass
 
 

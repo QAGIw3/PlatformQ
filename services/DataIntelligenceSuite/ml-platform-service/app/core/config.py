@@ -1,124 +1,119 @@
 """
-Configuration settings for Unified ML Platform Service
+Configuration for ML Platform Service
 """
-
 from pydantic_settings import BaseSettings
-from typing import Optional
+from typing import Optional, List
 
 
 class Settings(BaseSettings):
-    """Service configuration settings"""
+    """Service configuration"""
     
-    # Service Info
-    service_name: str = "unified-ml-platform-service"
-    service_port: int = 8015
-    environment: str = "development"
+    # Service info
+    SERVICE_NAME: str = "ml-platform-service"
+    SERVICE_VERSION: str = "2.0.0"
+    ENVIRONMENT: str = "development"
+    
+    # Server config
+    HOST: str = "0.0.0.0"
+    PORT: int = 8015
+    
+    # Vault & Consul
+    VAULT_ADDR: str = "http://vault:8200"
+    VAULT_TOKEN: Optional[str] = None
+    CONSUL_ADDR: str = "http://consul:8500"
     
     # MLflow Configuration
-    mlflow_tracking_uri: str = "http://mlflow:5000"
-    mlflow_artifact_location: str = "s3://ml-artifacts"
-    mlflow_experiment_name: str = "default"
+    MLFLOW_TRACKING_URI: str = "http://mlflow:5000"
+    MLFLOW_ARTIFACT_LOCATION: str = "s3://ml-artifacts"
+    MLFLOW_EXPERIMENT_NAME: str = "default"
+    MLFLOW_BACKEND_STORE_URI: str = "postgresql://mlflow:mlflow@postgres:5432/mlflow"
+    
+    # MinIO Configuration
+    MINIO_ENDPOINT: str = "minio:9000"
+    MINIO_ACCESS_KEY: str = "minioadmin"
+    MINIO_SECRET_KEY: str = "minioadmin"
+    MINIO_SECURE: bool = False
+    MODEL_BUCKET: str = "ml-models"
+    ARTIFACT_BUCKET: str = "ml-artifacts"
+    
+    # Apache Ignite
+    IGNITE_HOST: str = "ignite"
+    IGNITE_PORT: int = 10800
+    
+    # Apache Pulsar
+    PULSAR_URL: str = "pulsar://pulsar:6650"
     
     # Training Configuration
-    max_training_jobs: int = 10
-    default_training_timeout: int = 3600
-    gpu_memory_fraction: float = 0.8
-    training_queue_size: int = 100
-    checkpoint_interval: int = 300  # seconds
+    MAX_TRAINING_JOBS: int = 10
+    DEFAULT_TRAINING_TIMEOUT: int = 3600
+    GPU_MEMORY_FRACTION: float = 0.8
+    TRAINING_QUEUE_SIZE: int = 100
+    CHECKPOINT_INTERVAL: int = 300
+    
+    # Spark Configuration
+    SPARK_MASTER: str = "spark://spark-master:7077"
+    SPARK_EXECUTOR_MEMORY: str = "4g"
+    SPARK_EXECUTOR_CORES: int = 4
     
     # Serving Configuration
-    model_cache_size: int = 100
-    inference_timeout: int = 60
-    batch_size: int = 32
-    max_concurrent_models: int = 20
-    model_loading_timeout: int = 300
+    MODEL_CACHE_SIZE: int = 100
+    INFERENCE_TIMEOUT: int = 60
+    BATCH_SIZE: int = 32
+    MAX_CONCURRENT_MODELS: int = 20
+    MODEL_LOADING_TIMEOUT: int = 300
     
-    # Feature Store
-    feature_store_online_url: str = "redis://redis:6379"
-    feature_store_offline_url: str = "s3://feature-store"
-    feature_ttl_seconds: int = 86400  # 24 hours
-    feature_computation_timeout: int = 600
+    # Triton Server
+    TRITON_SERVER_URL: str = "http://triton:8001"
+    TRITON_MODEL_REPOSITORY: str = "/models"
+    
+    # Feature Store (using Ignite)
+    FEATURE_CACHE_TTL: int = 86400
+    FEATURE_COMPUTATION_TIMEOUT: int = 600
     
     # Model Registry
-    model_registry_backend: str = "mlflow"
-    model_version_limit: int = 10
-    model_artifact_retention_days: int = 30
+    MODEL_REGISTRY_BACKEND: str = "mlflow"
+    MODEL_VERSION_LIMIT: int = 10
+    MODEL_ARTIFACT_RETENTION_DAYS: int = 30
     
     # Monitoring
-    drift_detection_enabled: bool = True
-    drift_check_interval: int = 3600  # 1 hour
-    performance_threshold: float = 0.8
-    alert_cooldown_minutes: int = 30
+    DRIFT_DETECTION_ENABLED: bool = True
+    DRIFT_CHECK_INTERVAL: int = 3600
+    PERFORMANCE_THRESHOLD: float = 0.8
+    ALERT_COOLDOWN_MINUTES: int = 30
     
     # Federated Learning
-    federated_rounds: int = 10
-    min_clients_per_round: int = 2
-    client_timeout_seconds: int = 300
-    aggregation_strategy: str = "fedavg"
-    differential_privacy_epsilon: float = 1.0
-    
-    # Neuromorphic Computing
-    spike_threshold: float = 1.0
-    refractory_period_ms: int = 2
-    synapse_delay_ms: int = 1
-    learning_rate_spike: float = 0.01
+    FEDERATED_ROUNDS: int = 10
+    MIN_CLIENTS_PER_ROUND: int = 2
+    CLIENT_TIMEOUT_SECONDS: int = 300
+    AGGREGATION_STRATEGY: str = "fedavg"
+    DIFFERENTIAL_PRIVACY_EPSILON: float = 1.0
     
     # AutoML
-    automl_time_limit_minutes: int = 60
-    automl_max_trials: int = 100
-    automl_metric: str = "accuracy"
-    automl_frameworks: list = ["sklearn", "xgboost", "lightgbm"]
-    
-    # Storage
-    minio_endpoint: str = "minio:9000"
-    minio_access_key: str = "minioadmin"
-    minio_secret_key: str = "minioadmin"
-    ml_bucket_name: str = "ml-artifacts"
-    
-    # Ignite Cache
-    ignite_host: str = "ignite"
-    ignite_port: int = 10800
-    cache_ttl_seconds: int = 300
-    
-    # Event Streaming
-    pulsar_url: str = "pulsar://pulsar:6650"
-    event_topic_prefix: str = "ml-events-"
-    event_batch_size: int = 100
-    event_batch_timeout_ms: int = 1000
-    
-    # Integration URLs
-    event_router_url: str = "http://event-router-service:8000"
-    graph_intelligence_url: str = "http://graph-intelligence-service:8013"
-    data_platform_url: str = "http://data-platform-service:8000"
-    auth_service_url: str = "http://auth-service:8001"
-    
-    # Vault/Consul
-    vault_addr: str = "http://vault:8200"
-    vault_token: Optional[str] = None
-    consul_addr: str = "http://consul:8500"
-    consul_token: Optional[str] = None
+    AUTOML_TIME_LIMIT_MINUTES: int = 60
+    AUTOML_MAX_TRIALS: int = 100
+    AUTOML_METRIC: str = "accuracy"
+    AUTOML_FRAMEWORKS: List[str] = ["sklearn", "xgboost", "lightgbm"]
     
     # Database
-    database_url: str = "postgresql://mlops:mlops@postgres:5432/mlops"
-    database_pool_size: int = 10
-    database_max_overflow: int = 20
+    DATABASE_URL: str = "postgresql://ml_platform:ml_platform@postgres:5432/ml_platform"
+    
+    # Monitoring & Metrics
+    PROMETHEUS_ENABLED: bool = True
+    GRAFANA_URL: str = "http://grafana:3000"
+    
+    # Event Integration
+    EVENT_ROUTER_URL: str = "http://event-router-service:8000"
+    GRAPH_INTELLIGENCE_URL: str = "http://graph-intelligence-service:8000"
+    DATA_PLATFORM_URL: str = "http://data-platform-service:8000"
     
     # Security
-    jwt_secret_key: str = "your-secret-key-here"
-    jwt_algorithm: str = "HS256"
-    jwt_expiration_minutes: int = 30
-    api_key_header: str = "X-API-Key"
-    
-    # Performance
-    worker_threads: int = 4
-    async_timeout: int = 30
-    connection_pool_size: int = 100
-    request_timeout: int = 60
+    JWT_SECRET_KEY: str = "your-secret-key-here"
+    JWT_ALGORITHM: str = "HS256"
+    ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
     
     class Config:
         env_file = ".env"
-        case_sensitive = False
+        case_sensitive = True
 
 
-# Create settings instance
 settings = Settings() 

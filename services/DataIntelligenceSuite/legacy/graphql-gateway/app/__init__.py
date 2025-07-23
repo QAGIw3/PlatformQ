@@ -1,1 +1,0 @@
-"""GraphQL Gateway application package""" 

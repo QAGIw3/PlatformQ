@@ -1,485 +1,393 @@
 """
-Apache Airflow integration bridge for workflow orchestration
+Enhanced Airflow Bridge extending common library
 """
-
 import asyncio
+from typing import Dict, List, Optional, Any
+from datetime import datetime
 import json
-import os
-from typing import Dict, Any, List, Optional, Tuple
-from datetime import datetime, timedelta
-from enum import Enum
-import aiofiles
-import httpx
-from jinja2 import Template
 
-from platformq_shared.logging import get_logger
-from ..core.config import settings
+# Import from common library
+from data_intelligence_common.integrations.airflow_client import AirflowClient
+from data_intelligence_common.core.orchestration.workflow_orchestrator import WorkflowOrchestrator
+from data_intelligence_common.core.events.event_bus import EventBus
+from data_intelligence_common.core.caching.cache_manager import CacheManager
+from data_intelligence_common.monitoring.metrics import MetricsCollector
 
-logger = get_logger(__name__)
-
-
-class DagState(str, Enum):
-    """DAG states"""
-    ENABLED = "enabled"
-    PAUSED = "paused"
-    DISABLED = "disabled"
+# Import domain models
+from ..domain.models.workflow import (
+    EnhancedWorkflowDefinition,
+    WorkflowRun,
+    DagState,
+    WorkflowType
+)
 
 
-class TaskState(str, Enum):
-    """Task states"""
-    SUCCESS = "success"
-    FAILED = "failed"
-    RUNNING = "running"
-    QUEUED = "queued"
-    SKIPPED = "skipped"
-    UP_FOR_RETRY = "up_for_retry"
-
-
-class AirflowBridge:
-    """Bridge for interacting with Apache Airflow"""
+class EnhancedAirflowBridge:
+    """Enhanced Airflow integration with advanced features"""
     
-    def __init__(self):
-        self.base_url = settings.airflow_api_url
-        self.username = settings.airflow_username
-        self.password = settings.airflow_password
-        self.dags_folder = settings.airflow_dags_folder
+    def __init__(
+        self,
+        config,
+        airflow_client: AirflowClient,
+        workflow_orchestrator: WorkflowOrchestrator,
+        cache_manager: CacheManager,
+        event_bus: EventBus,
+        metrics_collector: MetricsCollector
+    ):
+        self.config = config
+        self.airflow_client = airflow_client
+        self.workflow_orchestrator = workflow_orchestrator
+        self.cache_manager = cache_manager
+        self.event_bus = event_bus
+        self.metrics_collector = metrics_collector
         
-        # HTTP client with auth
-        self.client = httpx.AsyncClient(
-            auth=(self.username, self.password),
-            timeout=30.0,
-            headers={"Content-Type": "application/json"}
-        )
+        # DAG registry
+        self.dag_registry: Dict[str, EnhancedWorkflowDefinition] = {}
         
-        # DAG templates
-        self.dag_templates = self._load_dag_templates()
-        
-        # Cache for DAG metadata
-        self.dag_cache: Dict[str, Any] = {}
-        self._cache_lock = asyncio.Lock()
+        # Active runs
+        self.active_runs: Dict[str, WorkflowRun] = {}
     
     async def initialize(self):
         """Initialize Airflow bridge"""
-        logger.info("Initializing Airflow bridge")
-        
-        # Verify Airflow connection
-        await self._verify_connection()
+        # Verify Airflow connectivity
+        await self.airflow_client.health_check()
         
         # Load existing DAGs
-        await self.refresh_dag_cache()
+        await self._sync_dags()
         
-        logger.info("Airflow bridge initialized")
+        # Start monitoring
+        asyncio.create_task(self._monitor_dag_runs())
     
-    async def cleanup(self):
-        """Cleanup resources"""
-        if self.client:
-            await self.client.aclose()
-    
-    async def _verify_connection(self):
-        """Verify connection to Airflow"""
-        try:
-            response = await self.client.get(f"{self.base_url}/api/v1/health")
-            response.raise_for_status()
-            logger.info("Airflow connection verified")
-        except Exception as e:
-            logger.error(f"Failed to connect to Airflow: {str(e)}")
-            raise
-    
-    def _load_dag_templates(self) -> Dict[str, Template]:
-        """Load DAG templates"""
-        templates = {
-            "data_pipeline": Template("""
-from datetime import datetime, timedelta
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from airflow.providers.http.operators.http import SimpleHttpOperator
-from airflow.providers.http.sensors.http import HttpSensor
-
-default_args = {
-    'owner': '{{ owner }}',
-    'depends_on_past': {{ depends_on_past | default(false) }},
-    'start_date': datetime({{ start_date.year }}, {{ start_date.month }}, {{ start_date.day }}),
-    'email_on_failure': {{ email_on_failure | default(true) }},
-    'email_on_retry': {{ email_on_retry | default(false) }},
-    'retries': {{ retries | default(3) }},
-    'retry_delay': timedelta(minutes={{ retry_delay | default(5) }})
-}
-
-dag = DAG(
-    '{{ dag_id }}',
-    default_args=default_args,
-    description='{{ description }}',
-    schedule_interval='{{ schedule_interval }}',
-    catchup={{ catchup | default(false) }},
-    tags={{ tags | default([]) }}
-)
-
-{% for task in tasks %}
-{{ task.name }} = {{ task.operator }}(
-    task_id='{{ task.task_id }}',
-    {{ task.params | join(',\n    ') }},
-    dag=dag
-)
-{% endfor %}
-
-# Define dependencies
-{% for dep in dependencies %}
-{{ dep.upstream }} >> {{ dep.downstream }}
-{% endfor %}
-"""),
-            
-            "ml_pipeline": Template("""
-from datetime import datetime, timedelta
-from airflow import DAG
-from airflow.operators.python import PythonOperator
-from airflow.providers.kubernetes.operators.kubernetes_pod import KubernetesPodOperator
-
-default_args = {
-    'owner': '{{ owner }}',
-    'start_date': datetime({{ start_date.year }}, {{ start_date.month }}, {{ start_date.day }}),
-    'retries': {{ retries | default(2) }},
-    'retry_delay': timedelta(minutes={{ retry_delay | default(10) }})
-}
-
-dag = DAG(
-    '{{ dag_id }}',
-    default_args=default_args,
-    description='{{ description }}',
-    schedule_interval='{{ schedule_interval }}',
-    tags=['ml', '{{ model_type }}']
-)
-
-# ML Pipeline tasks
-data_prep = KubernetesPodOperator(
-    task_id='data_preparation',
-    name='data-prep-{{ dag_id }}',
-    namespace='{{ namespace | default("ml") }}',
-    image='{{ data_prep_image }}',
-    cmds=['python'],
-    arguments=['/app/prepare_data.py', '--dataset', '{{ dataset_id }}'],
-    dag=dag
-)
-
-model_training = KubernetesPodOperator(
-    task_id='model_training',
-    name='train-{{ dag_id }}',
-    namespace='{{ namespace | default("ml") }}',
-    image='{{ training_image }}',
-    cmds=['python'],
-    arguments=['/app/train.py', '--config', '{{ model_config }}'],
-    resources={
-        'request_memory': '{{ memory_request | default("4Gi") }}',
-        'request_cpu': '{{ cpu_request | default("2") }}',
-        'limit_gpu': '{{ gpu_limit | default("0") }}'
-    },
-    dag=dag
-)
-
-model_evaluation = KubernetesPodOperator(
-    task_id='model_evaluation',
-    name='eval-{{ dag_id }}',
-    namespace='{{ namespace | default("ml") }}',
-    image='{{ evaluation_image }}',
-    cmds=['python'],
-    arguments=['/app/evaluate.py', '--model', '{{ "{{ ti.xcom_pull(task_ids=\"model_training\") }}" }}'],
-    dag=dag
-)
-
-data_prep >> model_training >> model_evaluation
-""")
-        }
+    async def create_workflow(
+        self,
+        workflow: EnhancedWorkflowDefinition
+    ) -> str:
+        """Create workflow in Airflow"""
+        # Generate DAG ID if not provided
+        if not workflow.dag_id:
+            workflow.dag_id = f"{workflow.name}_{workflow.workflow_id}"
         
-        return templates
-    
-    # DAG Management
-    
-    async def list_dags(self, limit: int = 100, offset: int = 0,
-                       tags: Optional[List[str]] = None) -> Dict[str, Any]:
-        """List all DAGs"""
-        params = {
-            "limit": limit,
-            "offset": offset
-        }
+        # Create DAG definition
+        dag_definition = self._generate_dag_code(workflow)
         
-        if tags:
-            params["tags"] = ",".join(tags)
-        
-        response = await self.client.get(
-            f"{self.base_url}/api/v1/dags",
-            params=params
+        # Deploy to Airflow
+        await self.airflow_client.create_dag(
+            dag_id=workflow.dag_id,
+            dag_code=dag_definition
         )
-        response.raise_for_status()
         
-        return response.json()
-    
-    async def get_dag(self, dag_id: str) -> Dict[str, Any]:
-        """Get DAG details"""
-        # Check cache first
-        if dag_id in self.dag_cache:
-            return self.dag_cache[dag_id]
+        # Register in local registry
+        self.dag_registry[workflow.workflow_id] = workflow
         
-        response = await self.client.get(f"{self.base_url}/api/v1/dags/{dag_id}")
-        response.raise_for_status()
-        
-        dag_info = response.json()
-        
-        # Update cache
-        async with self._cache_lock:
-            self.dag_cache[dag_id] = dag_info
-        
-        return dag_info
-    
-    async def create_dag(self, dag_config: Dict[str, Any]) -> str:
-        """Create a new DAG"""
-        dag_id = dag_config["dag_id"]
-        template_name = dag_config.get("template", "data_pipeline")
-        
-        if template_name not in self.dag_templates:
-            raise ValueError(f"Unknown DAG template: {template_name}")
-        
-        # Render DAG from template
-        template = self.dag_templates[template_name]
-        
-        # Add default values
-        dag_config.setdefault("start_date", datetime.utcnow() - timedelta(days=1))
-        dag_config.setdefault("owner", "orchestration-service")
-        dag_config.setdefault("schedule_interval", "@daily")
-        
-        dag_content = template.render(**dag_config)
-        
-        # Write DAG file
-        dag_path = os.path.join(self.dags_folder, f"{dag_id}.py")
-        
-        async with aiofiles.open(dag_path, 'w') as f:
-            await f.write(dag_content)
-        
-        # Wait for Airflow to pick up the DAG
-        await asyncio.sleep(5)
-        
-        # Refresh cache
-        await self.refresh_dag_cache()
-        
-        logger.info(f"Created DAG: {dag_id}")
-        return dag_id
-    
-    async def update_dag_state(self, dag_id: str, is_paused: bool) -> Dict[str, Any]:
-        """Update DAG state (pause/unpause)"""
-        response = await self.client.patch(
-            f"{self.base_url}/api/v1/dags/{dag_id}",
-            json={"is_paused": is_paused}
+        # Cache workflow
+        await self.cache_manager.put(
+            "workflows",
+            workflow.workflow_id,
+            workflow.dict()
         )
-        response.raise_for_status()
         
-        # Update cache
-        result = response.json()
-        if dag_id in self.dag_cache:
-            self.dag_cache[dag_id]["is_paused"] = is_paused
-        
-        return result
-    
-    async def delete_dag(self, dag_id: str) -> bool:
-        """Delete a DAG"""
-        # First pause the DAG
-        await self.update_dag_state(dag_id, True)
-        
-        # Remove DAG file
-        dag_path = os.path.join(self.dags_folder, f"{dag_id}.py")
-        if os.path.exists(dag_path):
-            os.remove(dag_path)
-        
-        # Remove from cache
-        async with self._cache_lock:
-            self.dag_cache.pop(dag_id, None)
-        
-        logger.info(f"Deleted DAG: {dag_id}")
-        return True
-    
-    # DAG Execution
-    
-    async def trigger_dag(self, dag_id: str, conf: Optional[Dict[str, Any]] = None,
-                         execution_date: Optional[datetime] = None) -> Dict[str, Any]:
-        """Trigger a DAG run"""
-        payload = {
-            "conf": conf or {},
-            "execution_date": (execution_date or datetime.utcnow()).isoformat()
-        }
-        
-        response = await self.client.post(
-            f"{self.base_url}/api/v1/dags/{dag_id}/dagRuns",
-            json=payload
-        )
-        response.raise_for_status()
-        
-        return response.json()
-    
-    async def get_dag_runs(self, dag_id: str, limit: int = 100,
-                          state: Optional[str] = None) -> List[Dict[str, Any]]:
-        """Get DAG runs"""
-        params = {"limit": limit}
-        if state:
-            params["state"] = state
-        
-        response = await self.client.get(
-            f"{self.base_url}/api/v1/dags/{dag_id}/dagRuns",
-            params=params
-        )
-        response.raise_for_status()
-        
-        return response.json().get("dag_runs", [])
-    
-    async def get_dag_run(self, dag_id: str, dag_run_id: str) -> Dict[str, Any]:
-        """Get specific DAG run details"""
-        response = await self.client.get(
-            f"{self.base_url}/api/v1/dags/{dag_id}/dagRuns/{dag_run_id}"
-        )
-        response.raise_for_status()
-        
-        return response.json()
-    
-    async def get_task_instances(self, dag_id: str, dag_run_id: str) -> List[Dict[str, Any]]:
-        """Get task instances for a DAG run"""
-        response = await self.client.get(
-            f"{self.base_url}/api/v1/dags/{dag_id}/dagRuns/{dag_run_id}/taskInstances"
-        )
-        response.raise_for_status()
-        
-        return response.json().get("task_instances", [])
-    
-    # Monitoring
-    
-    async def get_dag_stats(self, dag_id: str) -> Dict[str, Any]:
-        """Get DAG statistics"""
-        # Get recent runs
-        runs = await self.get_dag_runs(dag_id, limit=100)
-        
-        # Calculate stats
-        stats = {
-            "total_runs": len(runs),
-            "success_rate": 0,
-            "average_duration": 0,
-            "last_run": None,
-            "state_distribution": {}
-        }
-        
-        if runs:
-            success_count = sum(1 for r in runs if r["state"] == "success")
-            stats["success_rate"] = success_count / len(runs)
-            
-            durations = []
-            for run in runs:
-                if run["end_date"] and run["start_date"]:
-                    start = datetime.fromisoformat(run["start_date"].replace("Z", "+00:00"))
-                    end = datetime.fromisoformat(run["end_date"].replace("Z", "+00:00"))
-                    durations.append((end - start).total_seconds())
-            
-            if durations:
-                stats["average_duration"] = sum(durations) / len(durations)
-            
-            stats["last_run"] = runs[0]
-            
-            # State distribution
-            for run in runs:
-                state = run["state"]
-                stats["state_distribution"][state] = stats["state_distribution"].get(state, 0) + 1
-        
-        return stats
-    
-    async def get_active_dag_runs(self) -> List[Dict[str, Any]]:
-        """Get all active DAG runs"""
-        response = await self.client.get(
-            f"{self.base_url}/api/v1/dags/~/dagRuns",
-            params={"state": "running"}
-        )
-        response.raise_for_status()
-        
-        return response.json().get("dag_runs", [])
-    
-    # Cache Management
-    
-    async def refresh_dag_cache(self):
-        """Refresh DAG cache"""
-        logger.info("Refreshing DAG cache")
-        
-        dags = await self.list_dags(limit=1000)
-        
-        async with self._cache_lock:
-            self.dag_cache.clear()
-            for dag in dags.get("dags", []):
-                self.dag_cache[dag["dag_id"]] = dag
-        
-        logger.info(f"Cached {len(self.dag_cache)} DAGs")
-    
-    # Dynamic DAG Generation
-    
-    async def generate_dag_from_pipeline(self, pipeline_config: Dict[str, Any]) -> str:
-        """Generate DAG from pipeline configuration"""
-        dag_id = f"pipeline_{pipeline_config['id']}"
-        
-        # Convert pipeline steps to DAG tasks
-        tasks = []
-        dependencies = []
-        
-        for i, step in enumerate(pipeline_config["steps"]):
-            task = {
-                "name": f"task_{i}",
-                "task_id": step["name"],
-                "operator": self._get_operator_for_step(step),
-                "params": self._get_operator_params(step)
+        # Emit event
+        await self.event_bus.publish(
+            "workflow.created",
+            {
+                "workflow_id": workflow.workflow_id,
+                "dag_id": workflow.dag_id,
+                "type": workflow.workflow_type.value
             }
-            tasks.append(task)
-            
-            # Add dependency if not first task
-            if i > 0:
-                dependencies.append({
-                    "upstream": f"task_{i-1}",
-                    "downstream": f"task_{i}"
-                })
+        )
         
-        dag_config = {
-            "dag_id": dag_id,
-            "description": pipeline_config.get("description", ""),
-            "schedule_interval": pipeline_config.get("schedule", "@once"),
-            "tasks": tasks,
-            "dependencies": dependencies,
-            "tags": ["pipeline", "generated"]
-        }
-        
-        return await self.create_dag(dag_config)
+        return workflow.dag_id
     
-    def _get_operator_for_step(self, step: Dict[str, Any]) -> str:
-        """Get Airflow operator for pipeline step"""
+    async def trigger_workflow(
+        self,
+        workflow_id: str,
+        context: Optional[Dict[str, Any]] = None
+    ) -> WorkflowRun:
+        """Trigger workflow execution"""
+        workflow = self.dag_registry.get(workflow_id)
+        if not workflow:
+            raise ValueError(f"Workflow {workflow_id} not found")
+        
+        # Create run instance
+        run = WorkflowRun(
+            workflow_id=workflow_id,
+            instance_id=f"run_{datetime.utcnow().timestamp()}",
+            status="running",
+            started_at=datetime.utcnow(),
+            context=context or {},
+            trigger_info={
+                "trigger_type": "manual",
+                "triggered_by": context.get("user") if context else "system"
+            }
+        )
+        
+        # Trigger in Airflow
+        dag_run = await self.airflow_client.trigger_dag(
+            dag_id=workflow.dag_id,
+            conf=context
+        )
+        
+        run.dag_run_id = dag_run["dag_run_id"]
+        
+        # Track active run
+        self.active_runs[run.instance_id] = run
+        
+        # Emit event
+        await self.event_bus.publish(
+            "workflow.triggered",
+            {
+                "workflow_id": workflow_id,
+                "run_id": run.instance_id,
+                "dag_run_id": run.dag_run_id
+            }
+        )
+        
+        return run
+    
+    async def get_workflow_status(
+        self,
+        run_id: str
+    ) -> Dict[str, Any]:
+        """Get workflow execution status"""
+        run = self.active_runs.get(run_id)
+        if not run:
+            # Try loading from cache
+            cached = await self.cache_manager.get("workflow_runs", run_id)
+            if cached:
+                run = WorkflowRun(**cached)
+            else:
+                raise ValueError(f"Workflow run {run_id} not found")
+        
+        # Get status from Airflow
+        if run.dag_run_id:
+            dag_run = await self.airflow_client.get_dag_run(
+                dag_id=run.dag_id,
+                dag_run_id=run.dag_run_id
+            )
+            
+            # Update status
+            run.status = self._map_airflow_state(dag_run["state"])
+            
+            # Get task instances
+            task_instances = await self.airflow_client.get_task_instances(
+                dag_id=run.dag_id,
+                dag_run_id=run.dag_run_id
+            )
+            run.task_instances = task_instances
+        
+        return run.dict()
+    
+    async def pause_workflow(self, workflow_id: str):
+        """Pause workflow"""
+        workflow = self.dag_registry.get(workflow_id)
+        if not workflow:
+            raise ValueError(f"Workflow {workflow_id} not found")
+        
+        await self.airflow_client.pause_dag(workflow.dag_id)
+        
+        await self.event_bus.publish(
+            "workflow.paused",
+            {"workflow_id": workflow_id}
+        )
+    
+    async def resume_workflow(self, workflow_id: str):
+        """Resume workflow"""
+        workflow = self.dag_registry.get(workflow_id)
+        if not workflow:
+            raise ValueError(f"Workflow {workflow_id} not found")
+        
+        await self.airflow_client.unpause_dag(workflow.dag_id)
+        
+        await self.event_bus.publish(
+            "workflow.resumed",
+            {"workflow_id": workflow_id}
+        )
+    
+    async def list_workflows(
+        self,
+        workflow_type: Optional[WorkflowType] = None,
+        is_active: Optional[bool] = None
+    ) -> List[Dict[str, Any]]:
+        """List workflows"""
+        workflows = []
+        
+        for workflow in self.dag_registry.values():
+            if workflow_type and workflow.workflow_type != workflow_type:
+                continue
+            
+            if is_active is not None:
+                # Check if DAG is paused in Airflow
+                dag_info = await self.airflow_client.get_dag(workflow.dag_id)
+                if dag_info["is_paused"] == is_active:
+                    continue
+            
+            workflows.append(workflow.dict())
+        
+        return workflows
+    
+    def _generate_dag_code(
+        self,
+        workflow: EnhancedWorkflowDefinition
+    ) -> str:
+        """Generate Airflow DAG code"""
+        # Template for DAG generation
+        dag_template = f"""
+from airflow import DAG
+from airflow.operators.python import PythonOperator
+from airflow.operators.bash import BashOperator
+from datetime import datetime, timedelta
+import json
+
+default_args = {{
+    'owner': '{workflow.owner or "orchestration-service"}',
+    'depends_on_past': False,
+    'start_date': datetime(2024, 1, 1),
+    'email_on_failure': False,
+    'email_on_retry': False,
+    'retries': {workflow.retry_attempts},
+    'retry_delay': timedelta(minutes={workflow.retry_delay})
+}}
+
+dag = DAG(
+    '{workflow.dag_id}',
+    default_args=default_args,
+    description='{workflow.description or workflow.name}',
+    schedule_interval={'"{}"'.format(workflow.schedule_cron) if workflow.schedule_cron else 'None'},
+    catchup=False,
+    tags={json.dumps(workflow.tags)}
+)
+
+# Workflow context
+workflow_config = {json.dumps(workflow.config)}
+
+"""
+        
+        # Generate tasks for each step
+        for i, step in enumerate(workflow.steps):
+            task_code = self._generate_task_code(step, i)
+            dag_template += task_code + "\n"
+        
+        # Set dependencies
+        if len(workflow.steps) > 1:
+            dag_template += "\n# Set task dependencies\n"
+            for i in range(len(workflow.steps) - 1):
+                dag_template += f"task_{i} >> task_{i+1}\n"
+        
+        return dag_template
+    
+    def _generate_task_code(
+        self,
+        step: Dict[str, Any],
+        index: int
+    ) -> str:
+        """Generate task code for a workflow step"""
         step_type = step.get("type", "python")
         
-        operator_mapping = {
-            "python": "PythonOperator",
-            "bash": "BashOperator",
-            "http": "SimpleHttpOperator",
-            "spark": "SparkSubmitOperator",
-            "kubernetes": "KubernetesPodOperator"
+        if step_type == "bash":
+            return f"""
+task_{index} = BashOperator(
+    task_id='{step.get("name", f"step_{index}")}',
+    bash_command='{step.get("command", "echo 'No command'")}',
+    dag=dag
+)
+"""
+        else:
+            # Python operator
+            return f"""
+def execute_step_{index}(**context):
+    import requests
+    # Execute step via orchestration service
+    response = requests.post(
+        'http://orchestration-service:8000/api/v1/steps/execute',
+        json={{
+            'step': {json.dumps(step)},
+            'context': context
+        }}
+    )
+    return response.json()
+
+task_{index} = PythonOperator(
+    task_id='{step.get("name", f"step_{index}")}',
+    python_callable=execute_step_{index},
+    dag=dag
+)
+"""
+    
+    def _map_airflow_state(self, airflow_state: str) -> str:
+        """Map Airflow state to workflow status"""
+        state_mapping = {
+            "running": "running",
+            "success": "completed",
+            "failed": "failed",
+            "queued": "pending",
+            "skipped": "skipped"
         }
-        
-        return operator_mapping.get(step_type, "PythonOperator")
+        return state_mapping.get(airflow_state.lower(), "unknown")
     
-    def _get_operator_params(self, step: Dict[str, Any]) -> List[str]:
-        """Get operator parameters for step"""
-        params = []
-        
-        if step["type"] == "python":
-            params.append(f"python_callable={step.get('callable', 'lambda: None')}")
-        elif step["type"] == "bash":
-            params.append(f"bash_command='{step.get('command', 'echo')}'")
-        elif step["type"] == "http":
-            params.append(f"endpoint='{step.get('endpoint', '')}'")
-            params.append(f"method='{step.get('method', 'GET')}'")
-        
-        return params
-    
-    # Health Check
-    
-    async def is_healthy(self) -> bool:
-        """Check if Airflow is healthy"""
+    async def _sync_dags(self):
+        """Sync DAGs from Airflow"""
         try:
-            response = await self.client.get(f"{self.base_url}/api/v1/health")
-            return response.status_code == 200
-        except:
-            return False 
+            dags = await self.airflow_client.list_dags()
+            
+            for dag in dags:
+                # Check if DAG is managed by orchestration service
+                if dag.get("tags") and "orchestration-service" in dag["tags"]:
+                    # Load workflow definition from cache
+                    workflow_id = dag["dag_id"].rsplit("_", 1)[0]
+                    cached = await self.cache_manager.get("workflows", workflow_id)
+                    if cached:
+                        workflow = EnhancedWorkflowDefinition(**cached)
+                        self.dag_registry[workflow_id] = workflow
+        
+        except Exception as e:
+            self.logger.error(f"Failed to sync DAGs: {e}")
+    
+    async def _monitor_dag_runs(self):
+        """Monitor active DAG runs"""
+        while True:
+            try:
+                for run_id, run in list(self.active_runs.items()):
+                    if run.status in ["completed", "failed", "cancelled"]:
+                        continue
+                    
+                    # Update status
+                    try:
+                        status = await self.get_workflow_status(run_id)
+                        
+                        # Check if completed
+                        if status["status"] in ["completed", "failed"]:
+                            # Calculate duration
+                            run.completed_at = datetime.utcnow()
+                            run.total_duration_ms = int(
+                                (run.completed_at - run.started_at).total_seconds() * 1000
+                            )
+                            
+                            # Emit completion event
+                            await self.event_bus.publish(
+                                f"workflow.{status['status']}",
+                                {
+                                    "workflow_id": run.workflow_id,
+                                    "run_id": run_id,
+                                    "duration_ms": run.total_duration_ms
+                                }
+                            )
+                            
+                            # Move to completed cache
+                            await self.cache_manager.put(
+                                "workflow_runs",
+                                run_id,
+                                run.dict(),
+                                ttl=86400  # 24 hours
+                            )
+                            
+                            # Remove from active
+                            del self.active_runs[run_id]
+                    
+                    except Exception as e:
+                        self.logger.error(f"Error monitoring run {run_id}: {e}")
+                
+                await asyncio.sleep(30)  # Check every 30 seconds
+                
+            except Exception as e:
+                self.logger.error(f"Error in monitoring loop: {e}")
+                await asyncio.sleep(60) 

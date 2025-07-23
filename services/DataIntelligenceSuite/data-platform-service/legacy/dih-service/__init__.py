@@ -1,1 +1,0 @@
-"""DIH Service application.""" 

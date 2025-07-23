@@ -1,30 +1,61 @@
 # Data Platform Service v2.0
 
-Consolidated data platform service that unifies data ingestion, storage, catalog, and lakehouse operations for PlatformQ.
+Consolidated data platform service that unifies data ingestion, storage, catalog, and lakehouse operations for DataIntelligenceSuite.
 
 ## Overview
 
 This service consolidates functionality from multiple legacy services:
 - **data-ingestion-service**: All ingestion capabilities (CDC, streaming, batch)
-- **storage-service**: Unified storage abstraction
-- **data-catalog-hub**: Metadata management and discovery
+- **storage-service**: Unified storage abstraction with document conversion
+- **data-catalog-hub**: Metadata management, lineage, and discovery
+- **dih-service**: Digital Integration Hub capabilities
+- **feature-store-service**: Feature management for ML pipelines
 - **Lakehouse components**: Delta Lake, Iceberg, Hudi support
 
 ## Features
 
-### Core Capabilities
-- **Multi-Engine Batch Processing**: Spark, Ray, Dask, Pandas
-- **Multi-Engine Stream Processing**: Flink, Beam, Bytewax, Native
-- **Unified Lakehouse**: Delta Lake, Iceberg, Hudi with automatic optimization
-- **Data Quality**: Integrated quality checks with ML-based anomaly detection
-- **Metadata Catalog**: Comprehensive data discovery and lineage tracking
+### Data Ingestion
+- **Change Data Capture (CDC)**
+  - Multi-source support: PostgreSQL, MySQL, MongoDB, Cassandra, Oracle, SQL Server, DB2
+  - Real-time schema evolution
+  - Automatic backpressure handling
+  - ML-based optimization
+  - Cost tracking and monitoring
+- **Stream Ingestion**: Kafka, Pulsar, Kinesis integration
+- **Batch Ingestion**: File-based, API, and scheduled ingestion
+- **External Connectors**: CRM, ERP, webhooks, and custom APIs
+
+### Storage Management
+- **Multi-Backend Support**: MinIO, S3, Azure Blob, GCS
+- **Document Conversion**: Automatic format conversion (PDF, DOCX, XLSX, etc.)
+- **Preview Generation**: Thumbnails and text extraction
+- **Intelligent Tiering**: Hot, warm, and cold storage tiers
+- **Encryption & Compression**: At-rest encryption and smart compression
+- **Quota Management**: Per-tenant storage limits and monitoring
+
+### Data Catalog
+- **Metadata Management**: Centralized metadata repository
+- **Schema Registry**: Version control and compatibility checking
+- **Data Lineage**: Track data flow and transformations
+- **Business Glossary**: Map business terms to technical assets
+- **Automated Classification**: PII, sensitive data detection
+- **Impact Analysis**: Understand downstream effects of changes
+- **Discovery & Search**: AI-powered search across all assets
+
+### Lakehouse Operations
+- **Multi-Format Support**: Iceberg, Delta Lake, Hudi
+- **ACID Transactions**: Full transaction support
+- **Time Travel**: Query historical versions
+- **Schema Evolution**: Automatic schema migration
+- **Partition Management**: Smart partitioning strategies
+- **Compaction & Optimization**: Automatic file optimization
 
 ### Advanced Features
-- **Automatic Partitioning**: ML-based partition optimization
-- **Resource Management**: Dynamic resource allocation and cost optimization
-- **Backpressure Handling**: Adaptive rate limiting and flow control
-- **Schema Evolution**: Automatic schema migration and versioning
-- **Time Travel**: Query historical data across all lakehouse formats
+- **Multi-Engine Processing**: Spark, Ray, Dask, Flink, Beam
+- **ML-Based Optimization**: Auto-scaling, adaptive batch sizing
+- **Cost Management**: Resource tracking and optimization
+- **Quality Integration**: Built-in data quality checks
+- **Event-Driven Architecture**: React to data changes in real-time
 
 ## Architecture
 

@@ -1,322 +1,211 @@
 """
-Event mapping API endpoints
+Event Mappings API endpoints
 """
 
-import json
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+from typing import Dict, Any, List
+from fastapi import APIRouter, HTTPException, Depends, Query
+from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, HTTPException, Query, Body, Path
-from pydantic import BaseModel
+from data_intelligence_common import StructuredLogger
 
-from platformq_shared.logging import get_logger
-from ..core import EventOrchestrator, EventMappingType, EventCorrelationStrategy
+logger = StructuredLogger.get_logger(__name__)
 
-logger = get_logger(__name__)
-
-router = APIRouter(prefix="/api/v1/event-mappings", tags=["event-mappings"])
-
-# Dependency injection
-event_orchestrator: Optional[EventOrchestrator] = None
-
-def set_dependencies(orchestrator: EventOrchestrator):
-    """Set API dependencies"""
-    global event_orchestrator
-    event_orchestrator = orchestrator
+router = APIRouter()
 
 
-# Request/Response models
-class CreateEventMappingRequest(BaseModel):
-    name: str
-    event_type: str
-    workflow_id: str
-    mapping_type: EventMappingType = EventMappingType.DIRECT
-    conditions: Optional[Dict[str, Any]] = None
-    correlation: Optional[Dict[str, Any]] = None
+class EventMappingRequest(BaseModel):
+    """Event mapping request"""
+    event_type: str = Field(..., description="Event type to map")
+    workflow_id: str = Field(..., description="Workflow to trigger")
+    mapping_type: str = Field("direct", description="Mapping type")
+    conditions: Dict[str, Any] = Field(default={}, description="Trigger conditions")
+    correlation_config: Dict[str, Any] = Field(default={}, description="Correlation configuration")
 
 
-class EventMappingResponse(BaseModel):
-    id: str
-    name: str
-    event_type: str
-    workflow_id: str
-    type: EventMappingType
-    conditions: Dict[str, Any]
-    correlation: Dict[str, Any]
-    created_at: str
-    enabled: bool
-    execution_count: int
-    last_triggered: Optional[str]
-
-
-class EventStatisticsResponse(BaseModel):
-    total_mappings: int
-    enabled_mappings: int
-    active_correlations: int
-    buffered_events: int
-    mapping_types: Dict[str, int]
-    most_triggered: Optional[Dict[str, Any]]
-
-
-# API Endpoints
-@router.post("", response_model=EventMappingResponse)
-async def create_event_mapping(request: CreateEventMappingRequest = Body(...)):
-    """Create an event to workflow mapping"""
-    if not event_orchestrator:
-        raise HTTPException(status_code=503, detail="Event orchestrator not initialized")
-        
+@router.post("/event-mappings", response_model=Dict[str, str])
+async def create_event_mapping(request: EventMappingRequest) -> Dict[str, str]:
+    """Create event to workflow mapping"""
     try:
-        # Validate correlation for pattern mappings
-        if request.mapping_type == EventMappingType.PATTERN and not request.correlation:
-            raise HTTPException(
-                status_code=400,
-                detail="Pattern mapping requires correlation configuration"
-            )
-            
-        mapping = await event_orchestrator.create_event_mapping(
-            name=request.name,
-            event_type=request.event_type,
-            workflow_id=request.workflow_id,
-            mapping_type=request.mapping_type,
-            conditions=request.conditions,
-            correlation=request.correlation
+        from ..main import event_orchestrator
+        from ..engines.event import EventMappingType
+        
+        if not event_orchestrator:
+            raise HTTPException(status_code=503, detail="Event orchestrator not available")
+        
+        mapping_type = EventMappingType(request.mapping_type)
+        
+        mapping_id = await event_orchestrator.register_event_mapping(
+            request.event_type,
+            request.workflow_id,
+            mapping_type,
+            request.conditions,
+            request.correlation_config
         )
         
-        return EventMappingResponse(**mapping)
+        return {
+            "mapping_id": mapping_id,
+            "status": "created",
+            "message": "Event mapping created successfully"
+        }
         
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to create event mapping: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error creating event mapping: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("", response_model=List[EventMappingResponse])
+@router.get("/event-mappings", response_model=List[Dict[str, Any]])
 async def list_event_mappings(
-    event_type: Optional[str] = Query(None),
-    workflow_id: Optional[str] = Query(None),
-    enabled_only: bool = Query(True),
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0)
-):
-    """List event mappings with filtering"""
-    if not event_orchestrator:
-        raise HTTPException(status_code=503, detail="Event orchestrator not initialized")
-        
+    event_type: str = Query(None, description="Filter by event type")
+) -> List[Dict[str, Any]]:
+    """List event mappings"""
     try:
-        mappings = await event_orchestrator.list_event_mappings(
-            event_type=event_type,
-            workflow_id=workflow_id,
-            enabled_only=enabled_only
-        )
+        from ..main import event_orchestrator
         
-        # Sort by creation time (newest first)
-        mappings.sort(key=lambda x: x.get('created_at', ''), reverse=True)
+        if not event_orchestrator:
+            raise HTTPException(status_code=503, detail="Event orchestrator not available")
         
-        # Apply pagination
-        start = offset
-        end = offset + limit
-        paginated = mappings[start:end]
-        
-        return [EventMappingResponse(**m) for m in paginated]
+        mappings = await event_orchestrator.get_event_mappings(event_type)
+        return mappings
         
     except Exception as e:
-        logger.error(f"Failed to list event mappings: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error listing event mappings: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/statistics", response_model=EventStatisticsResponse)
-async def get_event_statistics():
-    """Get event processing statistics"""
-    if not event_orchestrator:
-        raise HTTPException(status_code=503, detail="Event orchestrator not initialized")
-        
+@router.delete("/event-mappings/{mapping_id}")
+async def remove_event_mapping(mapping_id: str) -> Dict[str, Any]:
+    """Remove event mapping"""
     try:
-        stats = await event_orchestrator.get_event_statistics()
-        return EventStatisticsResponse(**stats)
+        from ..main import event_orchestrator
         
+        if not event_orchestrator:
+            raise HTTPException(status_code=503, detail="Event orchestrator not available")
+        
+        success = await event_orchestrator.remove_event_mapping(mapping_id)
+        
+        return {
+            "mapping_id": mapping_id,
+            "removed": success,
+            "message": "Event mapping removed successfully"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to get event statistics: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error removing event mapping: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/{mapping_id}", response_model=EventMappingResponse)
-async def get_event_mapping(mapping_id: str = Path(...)):
-    """Get specific event mapping details"""
-    if not event_orchestrator:
-        raise HTTPException(status_code=503, detail="Event orchestrator not initialized")
-        
+@router.get("/event-mappings/{mapping_id}")
+async def get_event_mapping(mapping_id: str) -> Dict[str, Any]:
+    """Get event mapping details"""
     try:
+        from ..main import event_orchestrator
+        
+        if not event_orchestrator:
+            raise HTTPException(status_code=503, detail="Event orchestrator not available")
+        
         mapping = event_orchestrator.event_mappings.get(mapping_id)
         if not mapping:
-            raise HTTPException(status_code=404, detail=f"Event mapping {mapping_id} not found")
-            
-        return EventMappingResponse(**mapping)
+            raise HTTPException(status_code=404, detail="Mapping not found")
         
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get event mapping: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.delete("/{mapping_id}")
-async def delete_event_mapping(mapping_id: str = Path(...)):
-    """Delete an event mapping"""
-    if not event_orchestrator:
-        raise HTTPException(status_code=503, detail="Event orchestrator not initialized")
-        
-    try:
-        success = await event_orchestrator.delete_event_mapping(mapping_id)
-        if not success:
-            raise HTTPException(status_code=404, detail=f"Event mapping {mapping_id} not found")
-            
-        return {"message": f"Event mapping {mapping_id} deleted successfully"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to delete event mapping: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.patch("/{mapping_id}")
-async def update_event_mapping(
-    mapping_id: str = Path(...),
-    enabled: Optional[bool] = Body(None),
-    conditions: Optional[Dict[str, Any]] = Body(None),
-    correlation: Optional[Dict[str, Any]] = Body(None)
-):
-    """Update an event mapping"""
-    if not event_orchestrator:
-        raise HTTPException(status_code=503, detail="Event orchestrator not initialized")
-        
-    try:
-        mapping = event_orchestrator.event_mappings.get(mapping_id)
-        if not mapping:
-            raise HTTPException(status_code=404, detail=f"Event mapping {mapping_id} not found")
-            
-        # Update fields
-        if enabled is not None:
-            mapping['enabled'] = enabled
-            
-        if conditions is not None:
-            mapping['conditions'] = conditions
-            
-        if correlation is not None:
-            mapping['correlation'] = correlation
-            
-        mapping['updated_at'] = datetime.utcnow().isoformat()
-        
-        # Persist update
-        if event_orchestrator.ignite_client:
-            cache = await event_orchestrator.ignite_client.get_or_create_cache("event_mappings")
-            await cache.put(mapping_id, json.dumps(mapping))
-            
-        return {"message": f"Event mapping {mapping_id} updated successfully"}
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to update event mapping: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/correlations/active")
-async def get_active_correlations():
-    """Get active event correlations"""
-    if not event_orchestrator:
-        raise HTTPException(status_code=503, detail="Event orchestrator not initialized")
-        
-    try:
-        correlations = []
-        
-        for key, correlation in event_orchestrator.active_correlations.items():
-            correlations.append({
-                "correlation_key": key,
-                "mapping_id": correlation['mapping_id'],
-                "event_count": len(correlation['events']),
-                "started_at": correlation['started_at'].isoformat(),
-                "strategy": correlation['strategy'],
-                "config": correlation['config']
-            })
-            
-        return correlations
+        return {
+            "id": mapping["id"],
+            "event_type": mapping["event_type"],
+            "workflow_id": mapping["workflow_id"],
+            "type": mapping["type"].value,
+            "conditions": mapping["conditions"],
+            "correlation_config": mapping["correlation_config"],
+            "executions": mapping["executions"],
+            "created_at": mapping["created_at"].isoformat(),
+            "enabled": mapping["enabled"]
+        }
         
     except Exception as e:
-        logger.error(f"Failed to get active correlations: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting event mapping: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/event-types")
-async def get_subscribed_event_types():
-    """Get list of event types with active subscriptions"""
-    if not event_orchestrator:
-        raise HTTPException(status_code=503, detail="Event orchestrator not initialized")
-        
+async def list_subscribed_event_types() -> List[str]:
+    """List event types with mappings"""
     try:
-        # Get unique event types from mappings
+        from ..main import event_orchestrator
+        
+        if not event_orchestrator:
+            raise HTTPException(status_code=503, detail="Event orchestrator not available")
+        
         event_types = set()
-        
         for mapping in event_orchestrator.event_mappings.values():
-            if mapping.get('enabled', True):
-                if mapping['type'] == EventMappingType.DIRECT:
-                    event_types.add(mapping['event_type'])
-                elif mapping['type'] == EventMappingType.PATTERN:
-                    for event in mapping.get('correlation', {}).get('pattern', {}).get('events', []):
-                        event_types.add(event)
-                        
-        return {
-            "event_types": sorted(list(event_types)),
-            "total": len(event_types)
-        }
+            event_types.add(mapping["event_type"])
+        
+        return sorted(list(event_types))
         
     except Exception as e:
-        logger.error(f"Failed to get event types: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error listing event types: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/test/{mapping_id}")
-async def test_event_mapping(
-    mapping_id: str = Path(...),
-    test_event: Dict[str, Any] = Body(...)
-):
-    """Test an event mapping with a sample event"""
-    if not event_orchestrator:
-        raise HTTPException(status_code=503, detail="Event orchestrator not initialized")
-        
+@router.get("/event-metrics")
+async def get_event_metrics() -> Dict[str, Any]:
+    """Get event orchestrator metrics"""
     try:
-        mapping = event_orchestrator.event_mappings.get(mapping_id)
-        if not mapping:
-            raise HTTPException(status_code=404, detail=f"Event mapping {mapping_id} not found")
-            
-        # Create test event
-        from platformq_events import Event
-        event = Event(
-            type=test_event.get('type', mapping['event_type']),
-            data=test_event.get('data', {}),
-            source=test_event.get('source', 'test')
-        )
+        from ..main import event_orchestrator
         
-        # Check conditions
-        conditions_met = await event_orchestrator._check_conditions(event, mapping['conditions'])
+        if not event_orchestrator:
+            raise HTTPException(status_code=503, detail="Event orchestrator not available")
         
-        result = {
-            "mapping_id": mapping_id,
-            "mapping_name": mapping['name'],
-            "event_type": event.type,
-            "conditions_met": conditions_met,
-            "would_trigger": conditions_met and mapping.get('enabled', True),
-            "workflow_id": mapping['workflow_id']
-        }
+        metrics = await event_orchestrator.get_event_metrics()
+        return metrics
         
-        if not conditions_met:
-            result['failed_conditions'] = "Conditions not met"
-            
-        return result
-        
-    except HTTPException:
-        raise
     except Exception as e:
-        logger.error(f"Failed to test event mapping: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        logger.error(f"Error getting event metrics: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.get("/mapping-types")
+async def get_mapping_types() -> List[Dict[str, str]]:
+    """Get available mapping types"""
+    return [
+        {
+            "type": "direct",
+            "description": "One event directly triggers one workflow"
+        },
+        {
+            "type": "pattern",
+            "description": "Complex event pattern triggers workflow"
+        },
+        {
+            "type": "aggregated",
+            "description": "Multiple events aggregated trigger workflow"
+        },
+        {
+            "type": "conditional",
+            "description": "Event with complex conditions triggers workflow"
+        }
+    ]
+
+
+@router.get("/correlation-strategies")
+async def get_correlation_strategies() -> List[Dict[str, str]]:
+    """Get available correlation strategies"""
+    return [
+        {
+            "strategy": "time_window",
+            "description": "Correlate events within a time window"
+        },
+        {
+            "strategy": "count_based",
+            "description": "Correlate based on event count"
+        },
+        {
+            "strategy": "sequence",
+            "description": "Correlate events in specific sequence"
+        },
+        {
+            "strategy": "custom",
+            "description": "Custom correlation logic"
+        }
+    ] 

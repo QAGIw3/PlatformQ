@@ -111,4 +111,4 @@ class Settings(BaseSettings):
 
 
 # Create global settings instance
-settings = Settings() 
+settings = Settings()

@@ -24,6 +24,8 @@ from .api.v1 import (
     catalog_router,
     lakehouse_router
 )
+from .api import feature_store as feature_store_router
+from .api import storage as storage_service_router
 
 # Setup logging
 logger = StructuredLogger.get_logger(__name__)
@@ -37,7 +39,8 @@ SERVICE_METADATA = ServiceMetadata(
     health_checks=["cdc", "stream", "batch", "catalog", "storage", "lakehouse"],
     capabilities=[
         "cdc", "streaming", "batch-processing", "data-catalog",
-        "object-storage", "lakehouse", "schema-evolution"
+        "object-storage", "lakehouse", "schema-evolution", "feature-store",
+        "document-conversion", "preview-generation", "content-search", "quota-management"
     ],
     data_sources=["postgres", "mysql", "mongodb", "cassandra", "files", "apis"],
     data_outputs=["lakehouse", "stream", "object-storage"]
@@ -80,6 +83,8 @@ app.include_router(ingestion_router, prefix="/api/v1", tags=["Ingestion"])
 app.include_router(storage_router, prefix="/api/v1", tags=["Storage"])
 app.include_router(catalog_router, prefix="/api/v1", tags=["Catalog"])
 app.include_router(lakehouse_router, prefix="/api/v1", tags=["Lakehouse"])
+app.include_router(feature_store_router.router, prefix="/api/v1/feature-store", tags=["Feature Store"])
+app.include_router(storage_service_router.router, prefix="/api/v1/storage-service", tags=["Storage Service"])
 
 
 @app.get("/")

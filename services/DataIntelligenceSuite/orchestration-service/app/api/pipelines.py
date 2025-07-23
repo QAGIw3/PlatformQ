@@ -1,344 +1,241 @@
 """
-Pipeline orchestration API endpoints
+Pipelines API endpoints
 """
 
-from typing import Dict, Any, List, Optional
-from datetime import datetime
+from typing import Dict, Any, List
+from fastapi import APIRouter, HTTPException, Depends, Query
+from pydantic import BaseModel, Field
 
-from fastapi import APIRouter, HTTPException, Query, Body
-from pydantic import BaseModel
+from data_intelligence_common import StructuredLogger
 
-from platformq_shared.logging import get_logger
-from ..core import PipelineManager, PipelineType, PipelineStatus
+logger = StructuredLogger.get_logger(__name__)
 
-logger = get_logger(__name__)
-
-router = APIRouter(prefix="/api/v1/pipelines", tags=["pipelines"])
-
-# Dependency injection
-pipeline_manager: Optional[PipelineManager] = None
-
-def set_dependencies(manager: PipelineManager):
-    """Set API dependencies"""
-    global pipeline_manager
-    pipeline_manager = manager
+router = APIRouter()
 
 
-# Request/Response models
-class PipelineStep(BaseModel):
-    type: str
-    name: Optional[str] = None
-    config: Optional[Dict[str, Any]] = {}
-    dependencies: Optional[List[str]] = []
-    retry: Optional[Dict[str, Any]] = {"count": 3, "delay": 60}
-    timeout: Optional[int] = 3600
-    resources: Optional[Dict[str, Any]] = {"cpu": 1, "memory": "1Gi"}
+class PipelineCreateRequest(BaseModel):
+    """Pipeline creation request"""
+    name: str = Field(..., description="Pipeline name")
+    type: str = Field(..., description="Pipeline type")
+    description: str = Field("", description="Pipeline description")
+    steps: List[Dict[str, Any]] = Field(..., description="Pipeline steps")
+    dependencies: Dict[str, List[str]] = Field(default={}, description="Step dependencies")
+    config: Dict[str, Any] = Field(default={}, description="Additional configuration")
 
 
-class CreatePipelineRequest(BaseModel):
-    name: str
-    type: PipelineType
-    steps: List[PipelineStep]
-    config: Optional[Dict[str, Any]] = {}
-    template: Optional[str] = None
-    optimization: Optional[Dict[str, Any]] = {}
+class PipelineExecuteRequest(BaseModel):
+    """Pipeline execution request"""
+    input_data: Dict[str, Any] = Field(default={}, description="Input data for pipeline")
 
 
-class ExecutePipelineRequest(BaseModel):
-    context: Optional[Dict[str, Any]] = {}
-    async_execution: bool = True
-
-
-class PipelineResponse(BaseModel):
-    id: str
-    name: str
-    type: PipelineType
-    status: PipelineStatus
-    created_at: str
-    updated_at: str
-    version: int
-    steps: List[Dict[str, Any]]
-    config: Dict[str, Any]
-    optimization: Dict[str, Any]
-
-
-class ExecutionResponse(BaseModel):
-    id: str
-    pipeline_id: str
-    pipeline_name: str
-    status: PipelineStatus
-    started_at: str
-    completed_at: Optional[str] = None
-    steps_completed: List[str]
-    steps_failed: List[str]
-    current_step: Optional[str] = None
-    error: Optional[str] = None
-
-
-# API Endpoints
-@router.post("", response_model=PipelineResponse)
-async def create_pipeline(request: CreatePipelineRequest = Body(...)):
+@router.post("/pipelines", response_model=Dict[str, str])
+async def create_pipeline(request: PipelineCreateRequest) -> Dict[str, str]:
     """Create a new pipeline"""
-    if not pipeline_manager:
-        raise HTTPException(status_code=503, detail="Pipeline manager not initialized")
-        
     try:
-        pipeline = await pipeline_manager.create_pipeline(
-            name=request.name,
-            type=request.type,
-            steps=[step.dict() for step in request.steps],
-            config=request.config,
-            template=request.template,
-            optimization=request.optimization
-        )
+        from ..main import pipeline_manager
         
-        return PipelineResponse(**pipeline)
+        if not pipeline_manager:
+            raise HTTPException(status_code=503, detail="Pipeline manager not available")
+        
+        pipeline_id = await pipeline_manager.create_pipeline(request.dict())
+        
+        return {
+            "pipeline_id": pipeline_id,
+            "status": "created",
+            "message": "Pipeline created successfully"
+        }
         
     except ValueError as e:
         raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to create pipeline: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error creating pipeline: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("", response_model=List[PipelineResponse])
+@router.get("/pipelines", response_model=List[Dict[str, Any]])
 async def list_pipelines(
-    type: Optional[PipelineType] = Query(None),
-    status: Optional[PipelineStatus] = Query(None),
-    limit: int = Query(100, ge=1, le=500),
-    offset: int = Query(0, ge=0)
-):
-    """List pipelines with optional filtering"""
-    if not pipeline_manager:
-        raise HTTPException(status_code=503, detail="Pipeline manager not initialized")
-        
+    type: str = Query(None, description="Filter by type"),
+    status: str = Query(None, description="Filter by status"),
+    limit: int = Query(100, description="Maximum results")
+) -> List[Dict[str, Any]]:
+    """List all pipelines"""
     try:
-        pipelines = await pipeline_manager.list_pipelines(type=type, status=status)
+        from ..main import pipeline_manager
         
-        # Apply pagination
-        start = offset
-        end = offset + limit
-        paginated = pipelines[start:end]
+        if not pipeline_manager:
+            raise HTTPException(status_code=503, detail="Pipeline manager not available")
         
-        return [PipelineResponse(**p) for p in paginated]
-        
-    except Exception as e:
-        logger.error(f"Failed to list pipelines: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/{pipeline_id}", response_model=PipelineResponse)
-async def get_pipeline(pipeline_id: str):
-    """Get pipeline details"""
-    if not pipeline_manager:
-        raise HTTPException(status_code=503, detail="Pipeline manager not initialized")
-        
-    try:
-        pipeline = await pipeline_manager.get_pipeline(pipeline_id)
-        if not pipeline:
-            raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
+        pipelines = []
+        for pipeline_id, pipeline in pipeline_manager.pipelines.items():
+            if type and pipeline["config"]["type"] != type:
+                continue
+            if status and pipeline["status"] != status:
+                continue
             
-        return PipelineResponse(**pipeline)
+            pipelines.append({
+                "id": pipeline_id,
+                "name": pipeline["config"]["name"],
+                "type": pipeline["config"]["type"],
+                "status": pipeline["status"],
+                "created_at": pipeline["created_at"].isoformat(),
+                "version": pipeline["version"]
+            })
         
-    except HTTPException:
-        raise
+        return pipelines[:limit]
+        
     except Exception as e:
-        logger.error(f"Failed to get pipeline: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error listing pipelines: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/{pipeline_id}/execute", response_model=ExecutionResponse)
-async def execute_pipeline(
-    pipeline_id: str,
-    request: ExecutePipelineRequest = Body(...)
-):
-    """Execute a pipeline"""
-    if not pipeline_manager:
-        raise HTTPException(status_code=503, detail="Pipeline manager not initialized")
-        
+@router.get("/pipelines/{pipeline_id}")
+async def get_pipeline(pipeline_id: str) -> Dict[str, Any]:
+    """Get pipeline details"""
     try:
-        execution = await pipeline_manager.execute_pipeline(
-            pipeline_id=pipeline_id,
-            context=request.context,
-            async_execution=request.async_execution
-        )
+        from ..main import pipeline_manager
         
-        return ExecutionResponse(**execution)
+        if not pipeline_manager:
+            raise HTTPException(status_code=503, detail="Pipeline manager not available")
+        
+        status = await pipeline_manager.get_pipeline_status(pipeline_id)
+        return status
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error getting pipeline: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/pipelines/{pipeline_id}/execute")
+async def execute_pipeline(pipeline_id: str, request: PipelineExecuteRequest) -> Dict[str, str]:
+    """Execute a pipeline"""
+    try:
+        from ..main import pipeline_manager
+        
+        if not pipeline_manager:
+            raise HTTPException(status_code=503, detail="Pipeline manager not available")
+        
+        execution_id = await pipeline_manager.execute_pipeline(pipeline_id, request.input_data)
+        
+        return {
+            "pipeline_id": pipeline_id,
+            "execution_id": execution_id,
+            "status": "queued",
+            "message": "Pipeline execution queued"
+        }
         
     except ValueError as e:
         raise HTTPException(status_code=404, detail=str(e))
     except RuntimeError as e:
-        raise HTTPException(status_code=503, detail=str(e))
+        raise HTTPException(status_code=400, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to execute pipeline: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error executing pipeline: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/executions/{execution_id}", response_model=ExecutionResponse)
-async def get_execution(execution_id: str):
-    """Get execution details"""
-    if not pipeline_manager:
-        raise HTTPException(status_code=503, detail="Pipeline manager not initialized")
-        
+@router.get("/executions/{execution_id}")
+async def get_execution_status(execution_id: str) -> Dict[str, Any]:
+    """Get pipeline execution status"""
     try:
-        execution = await pipeline_manager.get_execution(execution_id)
-        if not execution:
-            raise HTTPException(status_code=404, detail=f"Execution {execution_id} not found")
-            
-        return ExecutionResponse(**execution)
+        from ..main import pipeline_manager
         
-    except HTTPException:
-        raise
+        if not pipeline_manager:
+            raise HTTPException(status_code=503, detail="Pipeline manager not available")
+        
+        status = await pipeline_manager.get_execution_status(execution_id)
+        return status
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to get execution: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error getting execution status: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.post("/executions/{execution_id}/cancel")
-async def cancel_execution(execution_id: str):
-    """Cancel a running execution"""
-    if not pipeline_manager:
-        raise HTTPException(status_code=503, detail="Pipeline manager not initialized")
-        
+@router.delete("/executions/{execution_id}")
+async def cancel_execution(execution_id: str) -> Dict[str, Any]:
+    """Cancel pipeline execution"""
     try:
-        success = await pipeline_manager.cancel_execution(execution_id)
-        if not success:
-            raise HTTPException(status_code=400, detail="Failed to cancel execution")
-            
-        return {"message": f"Execution {execution_id} cancelled successfully"}
+        from ..main import pipeline_manager
         
-    except HTTPException:
-        raise
+        if not pipeline_manager:
+            raise HTTPException(status_code=503, detail="Pipeline manager not available")
+        
+        success = await pipeline_manager.cancel_pipeline(execution_id)
+        
+        return {
+            "execution_id": execution_id,
+            "cancelled": success,
+            "message": "Execution cancelled successfully" if success else "Execution could not be cancelled"
+        }
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
     except Exception as e:
-        logger.error(f"Failed to cancel execution: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error cancelling execution: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
+
+
+@router.post("/pipelines/{pipeline_id}/optimize")
+async def optimize_pipeline(
+    pipeline_id: str,
+    target: str = Query("balanced", description="Optimization target")
+) -> Dict[str, Any]:
+    """Get optimization recommendations for pipeline"""
+    try:
+        from ..main import pipeline_manager
+        
+        if not pipeline_manager:
+            raise HTTPException(status_code=503, detail="Pipeline manager not available")
+        
+        recommendations = await pipeline_manager.optimize_pipeline(pipeline_id, target)
+        return recommendations
+        
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except Exception as e:
+        logger.error(f"Error optimizing pipeline: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
 @router.get("/templates")
-async def get_pipeline_templates():
-    """Get available pipeline templates"""
-    if not pipeline_manager:
-        raise HTTPException(status_code=503, detail="Pipeline manager not initialized")
-        
+async def list_pipeline_templates() -> List[Dict[str, Any]]:
+    """List available pipeline templates"""
     try:
+        from ..main import pipeline_manager
+        
+        if not pipeline_manager:
+            raise HTTPException(status_code=503, detail="Pipeline manager not available")
+        
         templates = []
         for name, template in pipeline_manager.templates.items():
             templates.append({
                 "name": name,
-                "description": template.get('description', ''),
-                "type": template.get('type', 'transformation'),
-                "steps": len(template.get('steps', [])),
-                "config": template.get('config', {})
+                "type": template.get("type"),
+                "description": template.get("description", ""),
+                "steps": len(template.get("steps", []))
             })
-            
+        
         return templates
         
     except Exception as e:
-        logger.error(f"Failed to get templates: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
+        logger.error(f"Error listing templates: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error")
 
 
-@router.get("/{pipeline_id}/executions", response_model=List[ExecutionResponse])
-async def get_pipeline_executions(
-    pipeline_id: str,
-    status: Optional[PipelineStatus] = Query(None),
-    limit: int = Query(25, ge=1, le=100),
-    offset: int = Query(0, ge=0)
-):
-    """Get execution history for a pipeline"""
-    if not pipeline_manager:
-        raise HTTPException(status_code=503, detail="Pipeline manager not initialized")
-        
+@router.get("/metrics")
+async def get_pipeline_metrics() -> Dict[str, Any]:
+    """Get pipeline manager metrics"""
     try:
-        # Get all executions for this pipeline
-        executions = [
-            exec for exec in pipeline_manager.executions.values()
-            if exec['pipeline_id'] == pipeline_id
-        ]
+        from ..main import pipeline_manager
         
-        # Apply status filter
-        if status:
-            executions = [e for e in executions if e['status'] == status]
-            
-        # Sort by start time (newest first)
-        executions.sort(key=lambda x: x['started_at'], reverse=True)
+        if not pipeline_manager:
+            raise HTTPException(status_code=503, detail="Pipeline manager not available")
         
-        # Apply pagination
-        start = offset
-        end = offset + limit
-        paginated = executions[start:end]
-        
-        return [ExecutionResponse(**e) for e in paginated]
+        metrics = await pipeline_manager.get_pipeline_metrics()
+        return metrics
         
     except Exception as e:
-        logger.error(f"Failed to get pipeline executions: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.get("/{pipeline_id}/executions/{execution_id}/logs")
-async def get_execution_logs(
-    pipeline_id: str,
-    execution_id: str,
-    step_id: Optional[str] = Query(None),
-    level: Optional[str] = Query(None)
-):
-    """Get execution logs"""
-    if not pipeline_manager:
-        raise HTTPException(status_code=503, detail="Pipeline manager not initialized")
-        
-    try:
-        execution = await pipeline_manager.get_execution(execution_id)
-        if not execution or execution['pipeline_id'] != pipeline_id:
-            raise HTTPException(status_code=404, detail="Execution not found")
-            
-        logs = execution.get('logs', [])
-        
-        # Filter by step if provided
-        if step_id:
-            logs = [log for log in logs if log.get('step') == step_id]
-            
-        # Filter by level if provided
-        if level:
-            logs = [log for log in logs if log.get('level') == level.upper()]
-            
-        return logs
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to get execution logs: {e}")
-        raise HTTPException(status_code=500, detail=str(e))
-
-
-@router.post("/{pipeline_id}/validate")
-async def validate_pipeline(pipeline_id: str):
-    """Validate pipeline configuration"""
-    if not pipeline_manager:
-        raise HTTPException(status_code=503, detail="Pipeline manager not initialized")
-        
-    try:
-        pipeline = await pipeline_manager.get_pipeline(pipeline_id)
-        if not pipeline:
-            raise HTTPException(status_code=404, detail=f"Pipeline {pipeline_id} not found")
-            
-        # Validate steps
-        validated_steps = await pipeline_manager._validate_steps(pipeline['steps'])
-        
-        # Check for circular dependencies
-        if pipeline_manager._has_cycle(pipeline['dependency_graph']):
-            return {
-                "valid": False,
-                "errors": ["Pipeline contains circular dependencies"]
-            }
-            
-        return {
-            "valid": True,
-            "validated_steps": validated_steps,
-            "dependency_graph": pipeline['dependency_graph']
-        }
-        
-    except HTTPException:
-        raise
-    except Exception as e:
-        logger.error(f"Failed to validate pipeline: {e}")
-        raise HTTPException(status_code=500, detail=str(e)) 
+        logger.error(f"Error getting pipeline metrics: {e}")
+        raise HTTPException(status_code=500, detail="Internal server error") 
