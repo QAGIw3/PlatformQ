@@ -22,9 +22,9 @@ try:
     FLINK_AVAILABLE = True
 except ImportError:
     FLINK_AVAILABLE = False
-
+    
 try:
-import pulsar
+    import pulsar
     PULSAR_AVAILABLE = True
 except ImportError:
     PULSAR_AVAILABLE = False
@@ -36,10 +36,10 @@ except ImportError:
     BYTEWAX_AVAILABLE = False
 
 try:
-from apache_beam import Pipeline, PTransform, DoFn, WindowInto
-from apache_beam.transforms.window import FixedWindows, SlidingWindows, Sessions
-from apache_beam.transforms.trigger import AfterWatermark, AfterProcessingTime, Repeatedly
-from apache_beam.options.pipeline_options import PipelineOptions
+    from apache_beam import Pipeline, PTransform, DoFn, WindowInto
+    from apache_beam.transforms.window import FixedWindows, SlidingWindows, Sessions
+    from apache_beam.transforms.trigger import AfterWatermark, AfterProcessingTime, Repeatedly
+    from apache_beam.options.pipeline_options import PipelineOptions
     BEAM_AVAILABLE = True
 except ImportError:
     BEAM_AVAILABLE = False
@@ -299,7 +299,7 @@ class StreamProcessor(BaseProcessor[Union[AsyncIterator[Any], List[Any]]]):
         await self._initialize_engine()
         
         # Initialize state backend
-            await self._initialize_state_backend()
+        await self._initialize_state_backend()
         
         # Initialize sources and sinks
         await self._initialize_sources()

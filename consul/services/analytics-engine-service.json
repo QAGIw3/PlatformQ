@@ -1,0 +1,55 @@
+{
+  "service": {
+    "name": "analytics-engine-service",
+    "tags": [
+      "dataintelligence",
+      "v2",
+      "analytics",
+      "olap",
+      "realtime"
+    ],
+    "port": 8011,
+    "meta": {
+      "version": "2.0.0",
+      "replaces": "analytics-service",
+      "description": "Multi-engine analytics service"
+    },
+    "check": {
+      "http": "http://localhost:8011/api/v1/health",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "connect": {
+      "sidecar_service": {
+        "proxy": {
+          "upstreams": [
+            {
+              "destination_name": "trino",
+              "local_bind_port": 8080
+            },
+            {
+              "destination_name": "druid",
+              "local_bind_port": 8082
+            },
+            {
+              "destination_name": "clickhouse",
+              "local_bind_port": 8123
+            },
+            {
+              "destination_name": "pinot",
+              "local_bind_port": 9000
+            },
+            {
+              "destination_name": "ignite",
+              "local_bind_port": 10800
+            },
+            {
+              "destination_name": "pulsar",
+              "local_bind_port": 6650
+            }
+          ]
+        }
+      }
+    }
+  }
+}

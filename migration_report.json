@@ -1,0 +1,32 @@
+{
+  "timestamp": "2025-07-23T00:00:08.648645",
+  "migrated_services": [
+    "batch-processing-service",
+    "unified-ml-platform-service",
+    "data-catalog-hub",
+    "unified-graph-service",
+    "quantum-optimization-service",
+    "unified-orchestration-service",
+    "stream-processing-service",
+    "analytics-service",
+    "data-ingestion-service",
+    "feature-store-service",
+    "neuromorphic-computing-service",
+    "graphql-gateway",
+    "storage-service",
+    "unified-quality-service",
+    "dih-service"
+  ],
+  "new_services": [
+    "data-platform-service",
+    "analytics-engine-service",
+    "ml-platform-service",
+    "data-governance-service",
+    "stream-processing-service-v2",
+    "orchestration-service",
+    "integration-hub-service"
+  ],
+  "errors": [],
+  "import_updates": 2,
+  "backup_location": "/Users/m/Downloads/platformQ/backup/20250723_000008"
+}

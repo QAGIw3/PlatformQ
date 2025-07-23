@@ -1,0 +1,419 @@
+version: '3.8'
+
+services:
+  # Data Platform Service
+  data-platform-service:
+    build:
+      context: ./data-platform-service
+      dockerfile: Dockerfile
+    container_name: data-platform-service
+    ports:
+      - "8010:8010"
+    environment:
+      - SERVICE_NAME=data-platform-service
+      - SERVICE_VERSION=2.0.0
+      - ENVIRONMENT=development
+      - CONSUL_HTTP_ADDR=consul:8500
+      - VAULT_ADDR=http://vault:8200
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+      - CASSANDRA_HOSTS=cassandra:9042
+      - MINIO_ENDPOINT=minio:9000
+      - JANUSGRAPH_HOST=janusgraph
+      - ELASTICSEARCH_HOSTS=elasticsearch:9200
+      - SPARK_MASTER=spark://spark-master:7077
+      - FLINK_JOBMANAGER=http://flink-jobmanager:8081
+    depends_on:
+      - consul
+      - vault
+      - pulsar
+      - cassandra
+      - minio
+      - elasticsearch
+    networks:
+      - dataintelligence
+    volumes:
+      - ./data-platform-service:/app
+      - data-platform-cache:/app/cache
+
+  # Analytics Engine Service
+  analytics-engine-service:
+    build:
+      context: ./analytics-engine-service
+      dockerfile: Dockerfile
+    container_name: analytics-engine-service
+    ports:
+      - "8011:8011"
+    environment:
+      - SERVICE_NAME=analytics-engine-service
+      - SERVICE_VERSION=2.0.0
+      - ENVIRONMENT=development
+      - CONSUL_HTTP_ADDR=consul:8500
+      - VAULT_ADDR=http://vault:8200
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+      - TRINO_HOST=trino
+      - DRUID_HOST=druid
+      - CLICKHOUSE_HOST=clickhouse
+      - PINOT_HOST=pinot
+      - IGNITE_HOST=ignite
+    depends_on:
+      - consul
+      - vault
+      - pulsar
+      - trino
+      - ignite
+    networks:
+      - dataintelligence
+    volumes:
+      - ./analytics-engine-service:/app
+      - analytics-cache:/app/cache
+
+  # ML Platform Service
+  ml-platform-service:
+    build:
+      context: ./ml-platform-service
+      dockerfile: Dockerfile
+    container_name: ml-platform-service
+    ports:
+      - "8012:8012"
+    environment:
+      - SERVICE_NAME=ml-platform-service
+      - SERVICE_VERSION=2.0.0
+      - ENVIRONMENT=development
+      - CONSUL_HTTP_ADDR=consul:8500
+      - VAULT_ADDR=http://vault:8200
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - RAY_HEAD_ADDRESS=ray://ray-head:10001
+      - FEAST_REPO_PATH=/opt/feast
+      - TRITON_SERVER_URL=triton:8001
+      - MINIO_ENDPOINT=minio:9000
+    depends_on:
+      - consul
+      - vault
+      - pulsar
+      - mlflow
+      - minio
+    networks:
+      - dataintelligence
+    volumes:
+      - ./ml-platform-service:/app
+      - ml-models:/app/models
+      - ml-cache:/app/cache
+
+  # Data Governance Service
+  data-governance-service:
+    build:
+      context: ./data-governance-service
+      dockerfile: Dockerfile
+    container_name: data-governance-service
+    ports:
+      - "8013:8013"
+    environment:
+      - SERVICE_NAME=data-governance-service
+      - SERVICE_VERSION=2.0.0
+      - ENVIRONMENT=development
+      - CONSUL_HTTP_ADDR=consul:8500
+      - VAULT_ADDR=http://vault:8200
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+      - CASSANDRA_HOSTS=cassandra:9042
+      - ELASTICSEARCH_HOSTS=elasticsearch:9200
+      - GREAT_EXPECTATIONS_HOME=/opt/great_expectations
+      - DEEQU_JAR_PATH=/opt/spark/jars/deequ.jar
+      - SODA_CONFIG_PATH=/opt/soda/configuration.yml
+    depends_on:
+      - consul
+      - vault
+      - pulsar
+      - cassandra
+      - elasticsearch
+    networks:
+      - dataintelligence
+    volumes:
+      - ./data-governance-service:/app
+      - governance-cache:/app/cache
+
+  # Stream Processing Service v2
+  stream-processing-service-v2:
+    build:
+      context: ./stream-processing-service-v2
+      dockerfile: Dockerfile
+    container_name: stream-processing-service-v2
+    ports:
+      - "8014:8014"
+    environment:
+      - SERVICE_NAME=stream-processing-service-v2
+      - SERVICE_VERSION=2.0.0
+      - ENVIRONMENT=development
+      - CONSUL_HTTP_ADDR=consul:8500
+      - VAULT_ADDR=http://vault:8200
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+      - FLINK_JOBMANAGER=http://flink-jobmanager:8081
+      - BEAM_RUNNER=FlinkRunner
+      - BYTEWAX_WORKERS=4
+      - KAFKA_BOOTSTRAP_SERVERS=kafka:9092
+    depends_on:
+      - consul
+      - vault
+      - pulsar
+      - flink-jobmanager
+    networks:
+      - dataintelligence
+    volumes:
+      - ./stream-processing-service-v2:/app
+      - stream-checkpoints:/app/checkpoints
+
+  # Orchestration Service
+  orchestration-service:
+    build:
+      context: ./orchestration-service
+      dockerfile: Dockerfile
+    container_name: orchestration-service
+    ports:
+      - "8015:8015"
+    environment:
+      - SERVICE_NAME=orchestration-service
+      - SERVICE_VERSION=2.0.0
+      - ENVIRONMENT=development
+      - CONSUL_HTTP_ADDR=consul:8500
+      - VAULT_ADDR=http://vault:8200
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+      - AIRFLOW_CONN_URI=postgresql://airflow:airflow@postgres:5432/airflow
+      - IGNITE_HOST=ignite
+      - TEMPORAL_HOST=temporal
+    depends_on:
+      - consul
+      - vault
+      - pulsar
+      - postgres
+      - ignite
+    networks:
+      - dataintelligence
+    volumes:
+      - ./orchestration-service:/app
+      - orchestration-dags:/app/dags
+
+  # Integration Hub Service
+  integration-hub-service:
+    build:
+      context: ./integration-hub-service
+      dockerfile: Dockerfile
+    container_name: integration-hub-service
+    ports:
+      - "8016:8016"
+      - "4000:4000"  # GraphQL playground
+    environment:
+      - SERVICE_NAME=integration-hub-service
+      - SERVICE_VERSION=2.0.0
+      - ENVIRONMENT=development
+      - CONSUL_HTTP_ADDR=consul:8500
+      - VAULT_ADDR=http://vault:8200
+      - PULSAR_SERVICE_URL=pulsar://pulsar:6650
+      - DATA_PLATFORM_URL=http://data-platform-service:8010
+      - ANALYTICS_ENGINE_URL=http://analytics-engine-service:8011
+      - ML_PLATFORM_URL=http://ml-platform-service:8012
+      - DATA_GOVERNANCE_URL=http://data-governance-service:8013
+      - STREAM_PROCESSING_URL=http://stream-processing-service-v2:8014
+      - ORCHESTRATION_URL=http://orchestration-service:8015
+    depends_on:
+      - consul
+      - vault
+      - pulsar
+      - data-platform-service
+      - analytics-engine-service
+      - ml-platform-service
+    networks:
+      - dataintelligence
+    volumes:
+      - ./integration-hub-service:/app
+
+  # Infrastructure Services
+  consul:
+    image: consul:1.17
+    container_name: consul
+    ports:
+      - "8500:8500"
+      - "8600:8600/udp"
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0
+    networks:
+      - dataintelligence
+    volumes:
+      - consul-data:/consul/data
+
+  vault:
+    image: vault:1.15
+    container_name: vault
+    ports:
+      - "8200:8200"
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=root
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    cap_add:
+      - IPC_LOCK
+    networks:
+      - dataintelligence
+    volumes:
+      - vault-data:/vault/data
+
+  pulsar:
+    image: apachepulsar/pulsar:3.1.0
+    container_name: pulsar
+    ports:
+      - "6650:6650"
+      - "8080:8080"
+    command: bin/pulsar standalone
+    networks:
+      - dataintelligence
+    volumes:
+      - pulsar-data:/pulsar/data
+
+  cassandra:
+    image: cassandra:4.1
+    container_name: cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=dataintelligence
+      - CASSANDRA_DC=dc1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+    networks:
+      - dataintelligence
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+
+  elasticsearch:
+    image: elasticsearch:8.11.0
+    container_name: elasticsearch
+    ports:
+      - "9200:9200"
+      - "9300:9300"
+    environment:
+      - discovery.type=single-node
+      - xpack.security.enabled=false
+      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
+    networks:
+      - dataintelligence
+    volumes:
+      - elasticsearch-data:/usr/share/elasticsearch/data
+
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=minioadmin
+    command: server /data --console-address ":9001"
+    networks:
+      - dataintelligence
+    volumes:
+      - minio-data:/data
+
+  ignite:
+    image: apacheignite/ignite:2.15.0
+    container_name: ignite
+    ports:
+      - "10800:10800"
+      - "11211:11211"
+      - "47100:47100"
+      - "47500:47500"
+    environment:
+      - IGNITE_QUIET=false
+    networks:
+      - dataintelligence
+    volumes:
+      - ignite-data:/ignite/work
+
+  postgres:
+    image: postgres:16
+    container_name: postgres
+    ports:
+      - "5432:5432"
+    environment:
+      - POSTGRES_USER=postgres
+      - POSTGRES_PASSWORD=postgres
+      - POSTGRES_DB=dataintelligence
+    networks:
+      - dataintelligence
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  # Analytics Engines
+  trino:
+    image: trinodb/trino:433
+    container_name: trino
+    ports:
+      - "8090:8080"
+    networks:
+      - dataintelligence
+    volumes:
+      - ./infra/trino:/etc/trino
+
+  # ML Infrastructure
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.8.0
+    container_name: mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=postgresql://postgres:postgres@postgres:5432/mlflow
+      - MLFLOW_ARTIFACT_ROOT=s3://mlflow
+    depends_on:
+      - postgres
+      - minio
+    networks:
+      - dataintelligence
+
+  # Processing Infrastructure
+  spark-master:
+    image: bitnami/spark:3.5
+    container_name: spark-master
+    ports:
+      - "7077:7077"
+      - "8088:8080"
+    environment:
+      - SPARK_MODE=master
+    networks:
+      - dataintelligence
+    volumes:
+      - spark-data:/bitnami
+
+  flink-jobmanager:
+    image: flink:1.18
+    container_name: flink-jobmanager
+    ports:
+      - "8081:8081"
+    command: jobmanager
+    environment:
+      - JOB_MANAGER_RPC_ADDRESS=flink-jobmanager
+    networks:
+      - dataintelligence
+    volumes:
+      - flink-data:/opt/flink
+
+networks:
+  dataintelligence:
+    driver: bridge
+
+volumes:
+  # Service volumes
+  data-platform-cache:
+  analytics-cache:
+  ml-models:
+  ml-cache:
+  governance-cache:
+  stream-checkpoints:
+  orchestration-dags:
+  
+  # Infrastructure volumes
+  consul-data:
+  vault-data:
+  pulsar-data:
+  cassandra-data:
+  elasticsearch-data:
+  minio-data:
+  ignite-data:
+  postgres-data:
+  spark-data:
+  flink-data: 

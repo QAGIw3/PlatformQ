@@ -1,0 +1,78 @@
+# Core Dependencies
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+pydantic==2.5.0
+httpx==0.25.2
+
+# Common Library
+-e ../../data-intelligence-common
+
+# Shared Libraries
+-e ../../../libs/platformq-shared
+-e ../../../libs/platformq-events
+-e ../../../libs/platformq-consul
+
+# Database Drivers
+cassandra-driver==3.28.0
+elasticsearch==8.11.0
+pymongo==4.6.0
+redis==5.0.1
+aiocassandra==2.0.1
+
+# Lakehouse Formats
+delta-spark==3.0.0
+pyiceberg==0.5.1
+hudi==0.14.0
+
+# Processing Engines
+pyspark==3.5.0
+ray[default]==2.8.0
+dask[complete]==2023.12.0
+apache-beam==2.52.0
+bytewax==0.17.0
+
+# Stream Processing
+flink==1.18.0
+pulsar-client==3.3.0
+confluent-kafka==2.3.0
+
+# Data Quality
+great-expectations==0.18.0
+soda-core==3.0.0
+pydeequ==1.1.0
+
+# Storage
+boto3==1.29.0
+minio==7.2.0
+pyarrow==14.0.0
+fastavro==1.9.0
+
+# ML Integration
+mlflow-skinny==2.8.0
+feast==0.35.0
+
+# Monitoring
+prometheus-client==0.19.0
+opentelemetry-api==1.21.0
+opentelemetry-sdk==1.21.0
+opentelemetry-instrumentation-fastapi==0.42b0
+opentelemetry-exporter-jaeger==1.21.0
+
+# Utilities
+structlog==23.2.0
+python-multipart==0.0.6
+python-json-logger==2.0.7
+aiocache==0.12.2
+tenacity==8.2.3
+
+# Graph Processing
+gremlinpython==3.7.0
+networkx==3.2.0
+
+# Development
+pytest==7.4.3
+pytest-asyncio==0.21.1
+pytest-cov==4.1.0
+black==23.11.0
+mypy==1.7.0
+ruff==0.1.6

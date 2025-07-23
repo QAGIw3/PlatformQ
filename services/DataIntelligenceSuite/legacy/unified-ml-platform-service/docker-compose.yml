@@ -1,0 +1,145 @@
+version: '3.8'
+
+services:
+  unified-ml-platform:
+    build: .
+    ports:
+      - "8000:8000"  # Main API port
+      - "5000:5000"  # MLflow UI port
+    environment:
+      - SERVICE_NAME=unified-ml-platform-service
+      - ENVIRONMENT=production
+      
+      # Vault & Consul
+      - VAULT_ADDR=http://vault:8200
+      - VAULT_TOKEN=${VAULT_TOKEN}
+      - CONSUL_ADDR=http://consul:8500
+      
+      # MLflow Configuration (embedded)
+      - MLFLOW_TRACKING_URI=http://localhost:5000
+      - MLFLOW_BACKEND_STORE_URI=postgresql://mlflow:${MLFLOW_DB_PASSWORD}@postgres:5432/mlflow
+      - MLFLOW_ARTIFACT_ROOT=s3://mlflow-artifacts
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+      
+      # Apache Ignite (for feature store and caching)
+      - IGNITE_HOST=ignite
+      - IGNITE_PORT=10800
+      
+      # Apache Pulsar
+      - PULSAR_URL=pulsar://pulsar:6650
+      
+      # Training Infrastructure
+      - SPARK_MASTER=spark://spark-master:7077
+      - K8S_NAMESPACE=ml-training
+      
+      # Model Serving
+      - TRITON_SERVER_URL=http://triton:8001
+      - SERVING_REPLICAS=3
+      
+      # Feature Store
+      - FEATURE_STORE_ONLINE=ignite
+      - FEATURE_STORE_OFFLINE=iceberg
+      
+      # Monitoring
+      - PROMETHEUS_ENABLED=true
+      - GRAFANA_URL=http://grafana:3000
+      
+    volumes:
+      - ml-models:/app/models
+      - ml-artifacts:/app/artifacts
+      - ./config:/app/config
+    
+    depends_on:
+      - postgres
+      - ignite
+      - minio
+      - pulsar
+    
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+    
+    deploy:
+      resources:
+        limits:
+          cpus: '4'
+          memory: 8G
+        reservations:
+          cpus: '2'
+          memory: 4G
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+    
+    networks:
+      - platformq-network
+    
+    command: >
+      sh -c "
+        # Start MLflow server in background
+        mlflow server \
+          --host 0.0.0.0 \
+          --port 5000 \
+          --backend-store-uri $${MLFLOW_BACKEND_STORE_URI} \
+          --default-artifact-root $${MLFLOW_ARTIFACT_ROOT} \
+          --serve-artifacts &
+        
+        # Start the main ML platform service
+        uvicorn app.main:app --host 0.0.0.0 --port 8000
+      "
+
+  # PostgreSQL for MLflow backend
+  postgres:
+    image: postgres:15-alpine
+    environment:
+      - POSTGRES_USER=mlflow
+      - POSTGRES_PASSWORD=${MLFLOW_DB_PASSWORD}
+      - POSTGRES_DB=mlflow
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    networks:
+      - platformq-network
+
+  # MinIO for artifact storage
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    environment:
+      - MINIO_ROOT_USER=minioadmin
+      - MINIO_ROOT_PASSWORD=${MINIO_ROOT_PASSWORD}
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    volumes:
+      - minio-data:/data
+    networks:
+      - platformq-network
+
+  # Apache Ignite for feature store
+  ignite:
+    image: apacheignite/ignite:2.15.0
+    environment:
+      - IGNITE_QUIET=false
+      - OPTION_LIBS=ignite-ml,ignite-spring
+    ports:
+      - "10800:10800"
+      - "11211:11211"
+    volumes:
+      - ignite-data:/ignite/work
+    networks:
+      - platformq-network
+
+volumes:
+  ml-models:
+  ml-artifacts:
+  postgres-data:
+  minio-data:
+  ignite-data:
+
+networks:
+  platformq-network:
+    driver: bridge 

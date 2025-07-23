@@ -1,291 +1,219 @@
 # DataIntelligenceSuite v2.0
 
-Enterprise-scale data intelligence platform with consolidated services for maximum performance and efficiency.
+Enterprise-scale data intelligence platform with consolidated domain-driven services.
 
-## 🚀 Overview
+## Overview
 
-DataIntelligenceSuite v2.0 represents a major architectural evolution, consolidating 17+ microservices into 7 domain-focused services. This consolidation delivers:
+DataIntelligenceSuite v2.0 represents a major architectural evolution, consolidating 25+ legacy services into 7 powerful domain-driven services. Built on the enhanced `data-intelligence-common` v2.0 framework, it delivers enterprise-grade performance, scalability, and maintainability.
 
-- **10x Performance**: Reduced inter-service communication overhead
-- **50% Cost Reduction**: Fewer services to deploy and manage
-- **Simplified Operations**: Unified monitoring and deployment
-- **Enhanced Features**: ML-powered optimization and auto-scaling
-
-## 🏗️ Architecture
+## Architecture
 
 ### Consolidated Services
 
-```mermaid
-graph TD
-    A[Data Platform Service] --> G[Common Library v2.0]
-    B[Analytics Engine Service] --> G
-    C[ML Platform Service] --> G
-    D[Data Governance Service] --> G
-    E[Stream Processing Service] --> G
-    F[Orchestration Service] --> G
-    H[Integration Hub] --> G
-    
-    G --> I[Infrastructure Layer]
-    I --> J[Pulsar]
-    I --> K[Ignite]
-    I --> L[MinIO]
-    I --> M[Consul/Vault]
-```
+1. **Data Platform Service** [[memory:3406972]]
+   - Unified data ingestion (CDC, streaming, batch)
+   - Multi-format lakehouse (Delta, Iceberg, Hudi)
+   - Metadata catalog and discovery
+   - Storage abstraction layer
 
-### Service Consolidation Map
+2. **Analytics Engine Service**
+   - Multi-engine analytics (Trino, Druid, ClickHouse, Pinot)
+   - Real-time and batch analytics
+   - OLAP and time-series processing
+   - Advanced visualization
 
-| New Service | Consolidated From | Key Features |
-|------------|-------------------|--------------|
-| **Data Platform Service** | data-ingestion, batch-processing, feature-store, storage, dih | Unified data operations with lakehouse |
-| **Analytics Engine Service** | analytics, neuromorphic, quantum-optimization | Multi-engine analytics with ML |
-| **ML Platform Service** | unified-ml-platform | Enhanced with federated learning |
-| **Data Governance Service** | data-catalog-hub, quality-service | Unified governance and compliance |
-| **Stream Processing Service** | stream-processing (enhanced) | Multi-engine streaming |
-| **Orchestration Service** | unified-orchestration | Workflow automation |
-| **Integration Hub** | graphql-gateway, graph-service | Unified API layer |
+3. **ML Platform Service**
+   - Unified ML/AI operations
+   - Federated learning framework
+   - AutoML and neuromorphic computing
+   - Quantum optimization integration
 
-## 🚀 Quick Start
+4. **Data Governance Service**
+   - Comprehensive quality management
+   - Compliance and privacy controls
+   - Lineage tracking
+   - Policy enforcement
+
+5. **Stream Processing Service v2**
+   - Multi-engine streaming (Flink, Beam, Bytewax)
+   - Complex event processing
+   - Real-time analytics
+   - Stateful computations
+
+6. **Orchestration Service**
+   - Workflow management
+   - Event-driven automation
+   - Resource scheduling
+   - Pipeline coordination
+
+7. **Integration Hub Service**
+   - GraphQL gateway
+   - API aggregation
+   - Protocol translation
+   - External system connectors
+
+### Core Framework: data-intelligence-common v2.0
+
+The enhanced common library provides:
+
+- **Unified Processing Interface**: Single API for batch, stream, and quality processing
+- **Multi-Engine Support**: Seamlessly switch between Spark, Ray, Dask, Flink, Beam, etc.
+- **Advanced Features**: Auto-partitioning, backpressure, ML optimization, cost management
+- **Enterprise Patterns**: Circuit breakers, retries, caching, monitoring
+
+## Key Features
+
+### 🚀 Performance
+- **10x throughput** improvement with multi-engine optimization
+- **Sub-second latency** for streaming operations
+- **Automatic scaling** based on workload patterns
+- **ML-driven resource allocation**
+
+### 🏗️ Architecture
+- **Domain-driven design** for clear boundaries
+- **Microservices** with shared capabilities
+- **Event-driven** communication via Pulsar
+- **Zero-trust security** model
+
+### 🛠️ Operations
+- **Unified monitoring** with Prometheus/Grafana
+- **Distributed tracing** via OpenTelemetry
+- **Centralized logging** with structured logs
+- **Health checks** and circuit breakers
+
+### 🔧 Developer Experience
+- **Consistent APIs** across all services
+- **Comprehensive SDKs** for multiple languages
+- **Interactive documentation** with examples
+- **Local development** environment
+
+## Technology Stack
+
+### Processing Engines
+- **Batch**: Apache Spark, Ray, Dask, Pandas
+- **Stream**: Apache Flink, Beam, Bytewax, Native async
+- **Quality**: Great Expectations, Deequ, Soda, Native
+
+### Storage Systems
+- **Object Storage**: MinIO (S3 compatible)
+- **Wide Column**: Apache Cassandra
+- **Graph**: JanusGraph
+- **Search**: Elasticsearch
+- **Cache**: Apache Ignite
+
+### Infrastructure
+- **Container**: Docker, Kubernetes
+- **Service Mesh**: Consul Connect
+- **API Gateway**: Kong
+- **Secrets**: HashiCorp Vault
+- **Messaging**: Apache Pulsar
+
+## Quick Start
 
 ### Prerequisites
-
+- Docker 24.0+
+- Kubernetes 1.28+ (for production)
 - Python 3.11+
-- Docker & Docker Compose
-- Kubernetes (for production)
-- Access to Consul and Vault
+- 16GB RAM minimum
 
-### Development Setup
+### Local Development
 
 ```bash
-# Clone the repository
-git clone <repository-url>
-cd platformQ
-
-# Install common library
-pip install -e services/DataIntelligenceSuite/data-intelligence-common[all]
+# Clone repository
+git clone https://github.com/platformq/platformq.git
+cd platformq/services/DataIntelligenceSuite
 
 # Start infrastructure
-docker-compose -f infra/docker-compose/docker-compose.yml up -d
+docker-compose -f ../../infra/docker-compose/docker-compose.yml up -d
 
-# Initialize platform
-python scripts/bootstrap_platform.py
+# Install common library
+cd data-intelligence-common
+pip install -e .
+cd ..
 
-# Start a service
-cd services/DataIntelligenceSuite/data-platform-service
+# Start a service (e.g., data-platform-service)
+cd data-platform-service
+pip install -r requirements.txt
 uvicorn app.main:app --reload
 ```
 
-### Using Docker Compose
+### Production Deployment
 
 ```bash
-# Start all services
-docker-compose -f infra/docker-compose/docker-compose.analytics.yml up
+# Deploy infrastructure
+kubectl apply -f ../../iac/kubernetes/
 
-# Scale specific service
-docker-compose up --scale data-platform-service=3
+# Deploy services
+kubectl apply -f k8s/
+
+# Verify deployment
+kubectl get pods -n dataintelligence
 ```
 
-## 💡 Key Features
+## Migration from Legacy Services
 
-### Data Platform Service
+### Service Mapping
 
-- **Multi-Source Ingestion**: 50+ connectors
-- **Lakehouse Architecture**: Iceberg, Delta, Hudi support
-- **Auto-Optimization**: Intelligent partitioning and indexing
-- **Batch & Stream**: Unified processing interface
+| Legacy Services | New Consolidated Service |
+|----------------|-------------------------|
+| data-ingestion-service<br>storage-service<br>data-catalog-hub | **data-platform-service** |
+| analytics-service<br>Real-time components | **analytics-engine-service** |
+| unified-ml-platform-service<br>neuromorphic-computing-service<br>feature-store-service | **ml-platform-service** |
+| unified-quality-service<br>Governance components | **data-governance-service** |
+| stream-processing-service<br>Real-time analytics | **stream-processing-service-v2** |
+| unified-orchestration-service<br>Workflow components | **orchestration-service** |
+| dih-service<br>graphql-gateway | **integration-hub-service** |
 
-### Analytics Engine Service
-
-- **Multi-Engine Support**: Trino, Spark, Flink, ClickHouse
-- **Real-time Analytics**: Sub-second query response
-- **ML-Powered Insights**: Automated anomaly detection
-- **Custom Dashboards**: Drag-and-drop interface
-
-### ML Platform Service
-
-- **AutoML**: Automated model selection and tuning
-- **Federated Learning**: Privacy-preserving ML
-- **Model Registry**: Version control and lineage
-- **A/B Testing**: Built-in experimentation
-
-### Data Governance Service
-
-- **Data Catalog**: Searchable metadata
-- **Quality Monitoring**: Real-time quality scores
-- **Lineage Tracking**: End-to-end visibility
-- **Compliance**: GDPR, CCPA support
-
-## 🔧 Configuration
-
-### Environment Variables
+### Migration Tools
 
 ```bash
-# Core settings
-ENVIRONMENT=production
-SERVICE_NAME=data-platform-service
+# Analyze legacy services
+python migration/analyze_services.py
 
-# Infrastructure
-CONSUL_URL=http://consul:8500
-VAULT_URL=http://vault:8200
-PULSAR_URL=pulsar://pulsar:6650
+# Generate migration plan
+python migration/migrate_to_v2.py --dry-run
 
-# Performance
-MAX_WORKERS=16
-ENABLE_CACHING=true
-CACHE_TTL=3600
-
-# Features
-ENABLE_ML_OPTIMIZATION=true
-ENABLE_AUTO_SCALING=true
+# Execute migration
+python migration/migrate_to_v2.py --execute
 ```
 
-### Consul Configuration
+## API Documentation
 
-Services are configured via Consul KV store:
+Each service provides comprehensive API documentation:
 
-```json
-{
-  "data-intelligence/services/data-platform/config": {
-    "processing": {
-      "batch_size": 10000,
-      "parallelism": 16,
-      "engine": "spark"
-    },
-    "lakehouse": {
-      "format": "iceberg",
-      "optimize_interval": "1h"
-    }
-  }
-}
-```
+- Data Platform: http://localhost:8010/docs
+- Analytics Engine: http://localhost:8011/docs
+- ML Platform: http://localhost:8012/docs
+- Data Governance: http://localhost:8013/docs
+- Stream Processing: http://localhost:8014/docs
+- Orchestration: http://localhost:8015/docs
+- Integration Hub: http://localhost:8016/docs
 
-## 📊 Performance
-
-### Benchmarks
-
-| Operation | v1.0 | v2.0 | Improvement |
-|-----------|------|------|-------------|
-| Batch Processing | 1M records/min | 10M records/min | 10x |
-| Stream Latency | 100ms | 10ms | 10x |
-| API Response | 200ms | 20ms | 10x |
-| Resource Usage | 32 GB RAM | 16 GB RAM | 50% reduction |
-
-### Optimization Tips
-
-1. **Enable Auto-Optimization**: Let the platform optimize itself
-2. **Use Appropriate Engines**: Auto-selection based on workload
-3. **Leverage Caching**: Built-in multi-level caching
-4. **Monitor Metrics**: Use Grafana dashboards
-
-## 🔒 Security
-
-### Zero-Trust Architecture
-
-- **mTLS**: Service-to-service encryption
-- **Dynamic Secrets**: Vault integration
-- **RBAC**: Fine-grained access control
-- **Audit Logging**: Complete audit trail
-
-### Compliance
-
-- GDPR compliant
-- CCPA compliant
-- SOC2 Type 2
-- HIPAA ready
-
-## 📈 Monitoring
-
-### Metrics
-
-All services expose Prometheus metrics:
-
-```
-# Service health
-up{service="data-platform-service"} 1
-
-# Processing metrics
-processing_records_total{service="data-platform-service"} 1000000
-processing_duration_seconds{service="data-platform-service"} 60
-
-# Resource metrics
-memory_usage_bytes{service="data-platform-service"} 1073741824
-cpu_usage_percent{service="data-platform-service"} 45.5
-```
+## Monitoring
 
 ### Dashboards
-
-Pre-built Grafana dashboards available in `observability/grafana-dashboards/`
+- Overall Health: http://localhost:3000/d/dis-overview
+- Service Metrics: http://localhost:3000/d/dis-services
+- Processing Stats: http://localhost:3000/d/dis-processing
 
 ### Alerts
+Configured alerts for:
+- Service availability
+- Processing delays
+- Resource utilization
+- Error rates
+- Data quality issues
 
-AlertManager rules in `observability/alertmanager/`
+## Contributing
 
-## 🚀 Deployment
+See [CONTRIBUTING.md](../../CONTRIBUTING.md) for guidelines.
 
-### Kubernetes
+## License
 
-```bash
-# Deploy with Helm
-helm install data-intelligence ./iac/kubernetes/charts/data-intelligence
+Proprietary - PlatformQ
 
-# Or with kubectl
-kubectl apply -f iac/kubernetes/config/
-```
+## Support
 
-### Production Checklist
-
-- [ ] Configure resource limits
-- [ ] Enable auto-scaling
-- [ ] Set up monitoring
-- [ ] Configure backups
-- [ ] Enable security features
-- [ ] Set up CI/CD
-
-## 🔄 Migration
-
-### From v1.x to v2.0
-
-```bash
-# Run migration tool
-python services/DataIntelligenceSuite/migration/migrate_to_v2.py
-
-# Verify migration
-python services/DataIntelligenceSuite/migration/verify_migration.py
-```
-
-See [Migration Guide](docs/MIGRATION_GUIDE.md) for details.
-
-## 🧪 Testing
-
-```bash
-# Run unit tests
-pytest services/DataIntelligenceSuite/tests/unit
-
-# Run integration tests
-pytest services/DataIntelligenceSuite/tests/integration
-
-# Run performance tests
-pytest services/DataIntelligenceSuite/tests/performance --benchmark
-```
-
-## 📚 Documentation
-
-- [Architecture Guide](docs/architecture/)
-- [API Documentation](docs/api/)
-- [Integration Guides](docs/integration-guides/)
-- [Security Guide](docs/security/)
-- [Operations Guide](docs/operations/)
-
-## 🤝 Contributing
-
-See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
-
-## 📄 License
-
-See [LICENSE](LICENSE) for details.
-
-## 🆘 Support
-
-- **Documentation**: [docs.platform.com](https://docs.platform.com)
-- **Issues**: GitHub Issues
-- **Chat**: Slack #data-intelligence
-- **Email**: data-intelligence@platform.com 
+- Documentation: https://docs.platformq.io
+- Issues: https://github.com/platformq/platformq/issues
+- Slack: #dataintelligence channel 

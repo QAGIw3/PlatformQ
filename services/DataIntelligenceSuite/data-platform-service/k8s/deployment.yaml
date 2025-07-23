@@ -1,0 +1,188 @@
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: data-platform-service
+  namespace: dataintelligence
+  labels:
+    app: data-platform-service
+    version: v2.0.0
+    suite: dataintelligence
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: data-platform-service
+  template:
+    metadata:
+      labels:
+        app: data-platform-service
+        version: v2.0.0
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "8010"
+        prometheus.io/path: "/metrics"
+    spec:
+      serviceAccountName: data-platform-service
+      containers:
+      - name: data-platform-service
+        image: platformq/data-platform-service:2.0.0
+        imagePullPolicy: Always
+        ports:
+        - containerPort: 8010
+          name: http
+          protocol: TCP
+        env:
+        - name: SERVICE_NAME
+          value: "data-platform-service"
+        - name: SERVICE_VERSION
+          value: "2.0.0"
+        - name: ENVIRONMENT
+          value: "production"
+        - name: CONSUL_HTTP_ADDR
+          value: "http://consul:8500"
+        - name: VAULT_ADDR
+          value: "http://vault:8200"
+        - name: PULSAR_SERVICE_URL
+          value: "pulsar://pulsar-broker:6650"
+        - name: CASSANDRA_HOSTS
+          value: "cassandra-0.cassandra,cassandra-1.cassandra,cassandra-2.cassandra"
+        - name: MINIO_ENDPOINT
+          value: "minio:9000"
+        - name: JANUSGRAPH_HOST
+          value: "janusgraph"
+        - name: ELASTICSEARCH_HOSTS
+          value: "elasticsearch:9200"
+        - name: SPARK_MASTER
+          value: "spark://spark-master:7077"
+        - name: FLINK_JOBMANAGER
+          value: "http://flink-jobmanager:8081"
+        envFrom:
+        - secretRef:
+            name: data-platform-secrets
+        - configMapRef:
+            name: data-platform-config
+        resources:
+          requests:
+            memory: "2Gi"
+            cpu: "1000m"
+          limits:
+            memory: "4Gi"
+            cpu: "2000m"
+        livenessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8010
+          initialDelaySeconds: 30
+          periodSeconds: 10
+          timeoutSeconds: 5
+          failureThreshold: 3
+        readinessProbe:
+          httpGet:
+            path: /api/v1/health
+            port: 8010
+          initialDelaySeconds: 10
+          periodSeconds: 5
+          timeoutSeconds: 3
+          failureThreshold: 3
+        volumeMounts:
+        - name: config
+          mountPath: /app/config
+        - name: cache
+          mountPath: /app/cache
+      volumes:
+      - name: config
+        configMap:
+          name: data-platform-config
+      - name: cache
+        emptyDir:
+          sizeLimit: 1Gi
+---
+apiVersion: v1
+kind: Service
+metadata:
+  name: data-platform-service
+  namespace: dataintelligence
+  labels:
+    app: data-platform-service
+spec:
+  type: ClusterIP
+  ports:
+  - port: 8010
+    targetPort: 8010
+    protocol: TCP
+    name: http
+  selector:
+    app: data-platform-service
+---
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: data-platform-service
+  namespace: dataintelligence
+---
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: data-platform-config
+  namespace: dataintelligence
+data:
+  processing.yaml: |
+    batch:
+      engines:
+        - spark
+        - ray
+        - dask
+      default_engine: spark
+      max_partitions: 1000
+    stream:
+      engines:
+        - flink
+        - beam
+        - bytewax
+      default_engine: flink
+      checkpoint_interval: 60000
+    quality:
+      engines:
+        - great_expectations
+        - deequ
+        - soda
+      ml_anomaly_detection: true
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: data-platform-service
+  namespace: dataintelligence
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: data-platform-service
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+  - type: Resource
+    resource:
+      name: cpu
+      target:
+        type: Utilization
+        averageUtilization: 70
+  - type: Resource
+    resource:
+      name: memory
+      target:
+        type: Utilization
+        averageUtilization: 80
+  behavior:
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+      - type: Percent
+        value: 10
+        periodSeconds: 60
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+      - type: Percent
+        value: 50
+        periodSeconds: 60 

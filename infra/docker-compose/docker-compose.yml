@@ -1,378 +1,436 @@
-version: '3.8'
-
-# This Docker Compose file sets up the core infrastructure for local development.
-# It includes messaging, storage, and observability services.
-
-networks:
-  platformq_net:
-    driver: bridge
-
-volumes:
-  cassandra_data:
-  minio_data:
-  kong_db_data:
-  platformq-janusgraph-data:
-  platformq-janusgraph-config:
-  platformq-assets-pgdata:
-  hive_metastore_db:
-  elasticsearch_data:
-  postgres_data:
-  vault_data:
-  vault_config:
-  vault_logs:
-
-services:
-  #################################
-  # Messaging Bus
-  #################################
-  pulsar:
-    image: apachepulsar/pulsar:3.2.0
-    container_name: pulsar
-    networks:
-      - platformq_net
-    ports:
-      - "6650:6650" # Pulsar protocol
-      - "8080:8080" # HTTP admin API
-    command: bin/pulsar standalone
-    healthcheck:
-      test: ["CMD", "curl", "-f", "http://localhost:8080/admin/v2/clusters/standalone"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  #################################
-  # Storage Layer
-  #################################
-  cassandra:
-    image: cassandra:4.1
-    container_name: cassandra
-    networks:
-      - platformq_net
-    ports:
-      - "9042:9042" # CQL native protocol
-    volumes:
-      - cassandra_data:/var/lib/cassandra
-    environment:
-      - CASSANDRA_CLUSTER_NAME=PlatformQCluster
-      - CASSANDRA_DC=dc1
-      - CASSANDRA_RACK=rack1
-      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
-    healthcheck:
-      test: ["CMD", "cqlsh", "-e", "describe keyspaces"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  janusgraph:
-    image: janusgraph/janusgraph:1.0.0
-    container_name: janusgraph
-    networks:
-      - platformq_net
-    ports:
-      - "8182:8182" # Gremlin Server port
-    volumes:
-      - ./janusgraph-server.yaml:/etc/opt/janusgraph/janusgraph-server.yaml
-    depends_on:
-      cassandra:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "bin/gremlin.sh", "-e", "scripts/remote-connect.groovy"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  ignite:
-    image: apacheignite/ignite:2.16.0
-    container_name: ignite
-    networks:
-      - platformq_net
-    ports:
-      - "10800:10800" # Thin client port
-      - "47500-47509:47500-47509" # Discovery ports
-    
-  minio:
-    image: minio/minio:RELEASE.2023-11-20T22-40-07Z
-    container_name: minio
-    networks:
-      - platformq_net
-    ports:
-      - "9000:9000" # S3-compatible API
-      - "9001:9001" # Minio Console UI
-    volumes:
-      - minio_data:/data
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    command: server /data --console-address ":9001"
-    healthcheck:
-      test: ["CMD", "curl", "-I", "http://localhost:9000/minio/health/live"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  #################################
-  # Query Engine
-  #################################
-  trino:
-    image: trinodb/trino:435
-    container_name: trino
-    networks:
-      - platformq_net
-    ports:
-      - "8082:8080" # Trino UI
-    environment:
-      - TRINO_MEMORY=2GB
-      - TRINO_DISCOVERY_URI=http://trino:8080
-    volumes:
-      - ./trino:/etc/trino
-    depends_on:
-      hive-metastore:
-        condition: service_healthy
-
-  #################################
-  # Hive Metastore
-  #################################
-  hive-metastore-db:
-    image: postgres:15-alpine
-    container_name: hive-metastore-db
-    networks:
-      - platformq_net
-    environment:
-      POSTGRES_USER: hive
-      POSTGRES_PASSWORD: hive
-      POSTGRES_DB: metastore
-    volumes:
-      - hive_metastore_db:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U hive"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  hive-metastore:
-    image: apache/hive:3.1.3
-    container_name: hive-metastore
-    networks:
-      - platformq_net
-    ports:
-      - "9083:9083"
-    environment:
-      SERVICE_NAME: metastore
-      DB_DRIVER: postgres
-      HIVE_METASTORE_DB_TYPE: postgres
-      HIVE_METASTORE_DB_HOSTNAME: hive-metastore-db
-      HIVE_METASTORE_DB_PORT: 5432
-      HIVE_METASTORE_DB_NAME: metastore
-      HIVE_METASTORE_DB_USERNAME: hive
-      HIVE_METASTORE_DB_PASSWORD: hive
-      S3_ENDPOINT: http://minio:9000
-      S3_ACCESS_KEY: minioadmin
-      S3_SECRET_KEY: minioadmin
-      S3_PATH_STYLE_ACCESS: "true"
-      HIVE_METASTORE_WAREHOUSE_DIR: s3a://platformq-datalake/warehouse/
-    depends_on:
-      hive-metastore-db:
-        condition: service_healthy
-      minio:
-        condition: service_healthy
-    healthcheck:
-      test: ["CMD", "nc", "-z", "localhost", "9083"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-    command: >
-      /bin/bash -c "
-        /opt/hive/bin/schematool -dbType postgres -initSchema || true &&
-        /opt/hive/bin/hive --service metastore
-      "
-
-  #################################
-  # Elasticsearch
-  #################################
-  elasticsearch:
-    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
-    container_name: elasticsearch
-    networks:
-      - platformq_net
-    ports:
-      - "9200:9200"
-      - "9300:9300"
-    environment:
-      - discovery.type=single-node
-      - xpack.security.enabled=false
-      - "ES_JAVA_OPTS=-Xms512m -Xmx512m"
-      - cluster.name=platformq-cluster
-    volumes:
-      - elasticsearch_data:/usr/share/elasticsearch/data
-    healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:9200/_cluster/health || exit 1"]
-      interval: 30s
-      timeout: 10s
-      retries: 5
-
-  #################################
-  # Observability
-  #################################
-  jaeger:
-    image: jaegertracing/all-in-one:1.50
-    container_name: jaeger
-    networks:
-      - platformq_net
-    ports:
-      - "6831:6831/udp" # Agent - Zipkin compat
-      - "16686:16686"   # Jaeger UI
-      - "14268:14268"   # Collector
-
-  prometheus:
-    image: prom/prometheus:v2.48.1
-    container_name: prometheus
-    networks:
-      - platformq_net
-    ports:
-      - "9090:9090"
-    volumes:
-      - ./../../observability/prometheus.yml:/etc/prometheus/prometheus.yml
-    command:
-      - '--config.file=/etc/prometheus/prometheus.yml'
-
-  otel-collector:
-    image: otel/opentelemetry-collector-contrib:0.90.1
-    container_name: otel-collector
-    networks:
-      - platformq_net
-    command: ["--config=/etc/otel-collector-config.yaml"]
-    volumes:
-      - ./../../observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml
-    ports:
-      - "4317:4317" # OTLP gRPC
-      - "4318:4318" # OTLP HTTP
-      - "8889:8889" # Prometheus exporter
-    depends_on:
-      - jaeger
-      - prometheus
-
-#################################
-# API Gateway & Service Discovery
-#################################
-vault:
-  image: hashicorp/vault:1.15
-  container_name: vault
-  networks:
-    - platformq_net
-  ports:
-    - "8200:8200"
-  volumes:
-    - ./vault/config:/vault/config
-    - ./vault/data:/vault/data
-    - ./vault/logs:/vault/logs
-  cap_add:
-    - IPC_LOCK
-  environment:
-    VAULT_ADDR: 'http://0.0.0.0:8200'
-    VAULT_API_ADDR: 'http://0.0.0.0:8200'
-    VAULT_DEV_ROOT_TOKEN_ID: 'dev-root-token'
-    VAULT_DEV_LISTEN_ADDRESS: '0.0.0.0:8200'
-  command: "server"
-
-consul:
-  image: consul:1.18
-  container_name: consul
-  networks:
-    - platformq_net
-  ports:
-    - "8500:8500" # Consul UI and API
-  command: "agent -server -ui -node=server-1 -bootstrap-expect=1 -client=0.0.0.0"
-
-kong-database:
-  image: postgres:13
-  container_name: kong-database
-  networks:
-    - platformq_net
-  environment:
-    POSTGRES_USER: kong
-    POSTGRES_DB: kong
-    POSTGRES_PASSWORD: kong
-  volumes:
-    - kong_db_data:/var/lib/postgresql/data
-
-kong-migrations:
-  image: kong:3.5
-  container_name: kong-migrations
-  networks:
-    - platformq_net
-  depends_on:
-    - kong-database
-  environment:
-    KONG_DATABASE: postgres
-    KONG_PG_HOST: kong-database
-    KONG_PG_USER: kong
-    KONG_PG_PASSWORD: kong
-  command: "kong migrations bootstrap"
-
-kong:
-  image: kong:3.5
-  container_name: kong
-  networks:
-    - platformq_net
-  depends_on:
-    - kong-migrations
-    - consul
-  environment:
-    KONG_DATABASE: postgres
-    KONG_PG_HOST: kong-database
-    KONG_PG_USER: kong
-    KONG_PG_PASSWORD: kong
-    KONG_DNS_RESOLVER: consul:8600 # Tell Kong to use Consul for DNS
-    KONG_PLUGINS: "bundled"
-  ports:
-    - "8001:8001" # Kong Admin API
-    - "8444:8444" # Kong Admin SSL
-    - "8000:8000" # Kong Proxy
-    - "8443:8443" # Kong Proxy SSL
-
-openkm:
-  image: openkm/openkm-ce:6.3.12
-  container_name: openkm
-  networks:
-    - platformq_net
-  ports:
-    - "8081:8080" # Using 8081 as 8080 is taken by Pulsar
-
-#################################
-# Application Services
-#################################
 auth-service:
   build:
     context: ./../../services/auth-service
     dockerfile: Dockerfile
   container_name: auth-service
-  networks:
-    - platformq_net
-  ports:
-    - "8000:80"
   depends_on:
     cassandra:
       condition: service_healthy
     pulsar:
       condition: service_healthy
-  restart: on-failure 
-  platformq-pulsar:
-    image: apachepulsar/pulsar:2.11.0
-    ports:
-      - "6650:6650"
-      - "8080:8080"
-    command: >
-      /bin/bash -c
-      "bin/apply-config-from-env.py conf/standalone.conf &&
-      bin/pulsar standalone"
-
+  networks:
+  - platformq_net
   platformq-assets-db:
+    environment:
+    - POSTGRES_USER=user
+    - POSTGRES_PASSWORD=password
+    - POSTGRES_DB=platformq_assets
     image: postgres:15-alpine
     ports:
-      - "5432:5432"
-    environment:
-      - POSTGRES_USER=user
-      - POSTGRES_PASSWORD=password
-      - POSTGRES_DB=platformq_assets
+    - 5432:5432
     volumes:
-      - platformq-assets-pgdata:/var/lib/postgresql/data 
+    - platformq-assets-pgdata:/var/lib/postgresql/data
+  platformq-pulsar:
+    command: '/bin/bash -c "bin/apply-config-from-env.py conf/standalone.conf && bin/pulsar
+      standalone"
+
+      '
+    image: apachepulsar/pulsar:2.11.0
+    ports:
+    - 6650:6650
+    - 8080:8080
+  ports:
+  - 8000:80
+  restart: on-failure
+consul:
+  command: agent -server -ui -node=server-1 -bootstrap-expect=1 -client=0.0.0.0
+  container_name: consul
+  image: consul:1.18
+  networks:
+  - platformq_net
+  ports:
+  - 8500:8500
+kong:
+  container_name: kong
+  depends_on:
+  - kong-migrations
+  - consul
+  environment:
+    KONG_DATABASE: postgres
+    KONG_DNS_RESOLVER: consul:8600
+    KONG_PG_HOST: kong-database
+    KONG_PG_PASSWORD: kong
+    KONG_PG_USER: kong
+    KONG_PLUGINS: bundled
+  image: kong:3.5
+  networks:
+  - platformq_net
+  ports:
+  - 8001:8001
+  - 8444:8444
+  - 8000:8000
+  - 8443:8443
+kong-database:
+  container_name: kong-database
+  environment:
+    POSTGRES_DB: kong
+    POSTGRES_PASSWORD: kong
+    POSTGRES_USER: kong
+  image: postgres:13
+  networks:
+  - platformq_net
+  volumes:
+  - kong_db_data:/var/lib/postgresql/data
+kong-migrations:
+  command: kong migrations bootstrap
+  container_name: kong-migrations
+  depends_on:
+  - kong-database
+  environment:
+    KONG_DATABASE: postgres
+    KONG_PG_HOST: kong-database
+    KONG_PG_PASSWORD: kong
+    KONG_PG_USER: kong
+  image: kong:3.5
+  networks:
+  - platformq_net
+networks:
+  platformq_net:
+    driver: bridge
+openkm:
+  container_name: openkm
+  image: openkm/openkm-ce:6.3.12
+  networks:
+  - platformq_net
+  ports:
+  - 8081:8080
+services:
+  analytics-engine-service:
+    build: ../../services/DataIntelligenceSuite/analytics-engine-service
+    depends_on:
+    - consul
+    - vault
+    - pulsar
+    environment:
+      CONSUL_URL: http://consul:8500
+      SERVICE_NAME: analytics-engine-service
+      VAULT_URL: http://vault:8200
+    networks:
+    - platform-network
+  cassandra:
+    container_name: cassandra
+    environment:
+    - CASSANDRA_CLUSTER_NAME=PlatformQCluster
+    - CASSANDRA_DC=dc1
+    - CASSANDRA_RACK=rack1
+    - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+    healthcheck:
+      interval: 30s
+      retries: 5
+      test:
+      - CMD
+      - cqlsh
+      - -e
+      - describe keyspaces
+      timeout: 10s
+    image: cassandra:4.1
+    networks:
+    - platformq_net
+    ports:
+    - 9042:9042
+    volumes:
+    - cassandra_data:/var/lib/cassandra
+  data-governance-service:
+    build: ../../services/DataIntelligenceSuite/data-governance-service
+    depends_on:
+    - consul
+    - vault
+    - pulsar
+    environment:
+      CONSUL_URL: http://consul:8500
+      SERVICE_NAME: data-governance-service
+      VAULT_URL: http://vault:8200
+    networks:
+    - platform-network
+  data-platform-service:
+    build: ../../services/DataIntelligenceSuite/data-platform-service
+    depends_on:
+    - consul
+    - vault
+    - pulsar
+    environment:
+      CONSUL_URL: http://consul:8500
+      SERVICE_NAME: data-platform-service
+      VAULT_URL: http://vault:8200
+    networks:
+    - platform-network
+  elasticsearch:
+    container_name: elasticsearch
+    environment:
+    - discovery.type=single-node
+    - xpack.security.enabled=false
+    - ES_JAVA_OPTS=-Xms512m -Xmx512m
+    - cluster.name=platformq-cluster
+    healthcheck:
+      interval: 30s
+      retries: 5
+      test:
+      - CMD-SHELL
+      - curl -f http://localhost:9200/_cluster/health || exit 1
+      timeout: 10s
+    image: docker.elastic.co/elasticsearch/elasticsearch:8.11.1
+    networks:
+    - platformq_net
+    ports:
+    - 9200:9200
+    - 9300:9300
+    volumes:
+    - elasticsearch_data:/usr/share/elasticsearch/data
+  hive-metastore:
+    command: "/bin/bash -c \"\n  /opt/hive/bin/schematool -dbType postgres -initSchema\
+      \ || true &&\n  /opt/hive/bin/hive --service metastore\n\"\n"
+    container_name: hive-metastore
+    depends_on:
+      hive-metastore-db:
+        condition: service_healthy
+      minio:
+        condition: service_healthy
+    environment:
+      DB_DRIVER: postgres
+      HIVE_METASTORE_DB_HOSTNAME: hive-metastore-db
+      HIVE_METASTORE_DB_NAME: metastore
+      HIVE_METASTORE_DB_PASSWORD: hive
+      HIVE_METASTORE_DB_PORT: 5432
+      HIVE_METASTORE_DB_TYPE: postgres
+      HIVE_METASTORE_DB_USERNAME: hive
+      HIVE_METASTORE_WAREHOUSE_DIR: s3a://platformq-datalake/warehouse/
+      S3_ACCESS_KEY: minioadmin
+      S3_ENDPOINT: http://minio:9000
+      S3_PATH_STYLE_ACCESS: 'true'
+      S3_SECRET_KEY: minioadmin
+      SERVICE_NAME: metastore
+    healthcheck:
+      interval: 30s
+      retries: 5
+      test:
+      - CMD
+      - nc
+      - -z
+      - localhost
+      - '9083'
+      timeout: 10s
+    image: apache/hive:3.1.3
+    networks:
+    - platformq_net
+    ports:
+    - 9083:9083
+  hive-metastore-db:
+    container_name: hive-metastore-db
+    environment:
+      POSTGRES_DB: metastore
+      POSTGRES_PASSWORD: hive
+      POSTGRES_USER: hive
+    healthcheck:
+      interval: 10s
+      retries: 5
+      test:
+      - CMD-SHELL
+      - pg_isready -U hive
+      timeout: 5s
+    image: postgres:15-alpine
+    networks:
+    - platformq_net
+    volumes:
+    - hive_metastore_db:/var/lib/postgresql/data
+  ignite:
+    container_name: ignite
+    image: apacheignite/ignite:2.16.0
+    networks:
+    - platformq_net
+    ports:
+    - 10800:10800
+    - 47500-47509:47500-47509
+  integration-hub-service:
+    build: ../../services/DataIntelligenceSuite/integration-hub-service
+    depends_on:
+    - consul
+    - vault
+    - pulsar
+    environment:
+      CONSUL_URL: http://consul:8500
+      SERVICE_NAME: integration-hub-service
+      VAULT_URL: http://vault:8200
+    networks:
+    - platform-network
+  jaeger:
+    container_name: jaeger
+    image: jaegertracing/all-in-one:1.50
+    networks:
+    - platformq_net
+    ports:
+    - 6831:6831/udp
+    - 16686:16686
+    - 14268:14268
+  janusgraph:
+    container_name: janusgraph
+    depends_on:
+      cassandra:
+        condition: service_healthy
+    healthcheck:
+      interval: 30s
+      retries: 5
+      test:
+      - CMD
+      - bin/gremlin.sh
+      - -e
+      - scripts/remote-connect.groovy
+      timeout: 10s
+    image: janusgraph/janusgraph:1.0.0
+    networks:
+    - platformq_net
+    ports:
+    - 8182:8182
+    volumes:
+    - ./janusgraph-server.yaml:/etc/opt/janusgraph/janusgraph-server.yaml
+  minio:
+    command: server /data --console-address ":9001"
+    container_name: minio
+    environment:
+      MINIO_ROOT_PASSWORD: minioadmin
+      MINIO_ROOT_USER: minioadmin
+    healthcheck:
+      interval: 30s
+      retries: 5
+      test:
+      - CMD
+      - curl
+      - -I
+      - http://localhost:9000/minio/health/live
+      timeout: 10s
+    image: minio/minio:RELEASE.2023-11-20T22-40-07Z
+    networks:
+    - platformq_net
+    ports:
+    - 9000:9000
+    - 9001:9001
+    volumes:
+    - minio_data:/data
+  ml-platform-service:
+    build: ../../services/DataIntelligenceSuite/ml-platform-service
+    depends_on:
+    - consul
+    - vault
+    - pulsar
+    environment:
+      CONSUL_URL: http://consul:8500
+      SERVICE_NAME: ml-platform-service
+      VAULT_URL: http://vault:8200
+    networks:
+    - platform-network
+  orchestration-service:
+    build: ../../services/DataIntelligenceSuite/orchestration-service
+    depends_on:
+    - consul
+    - vault
+    - pulsar
+    environment:
+      CONSUL_URL: http://consul:8500
+      SERVICE_NAME: orchestration-service
+      VAULT_URL: http://vault:8200
+    networks:
+    - platform-network
+  otel-collector:
+    command:
+    - --config=/etc/otel-collector-config.yaml
+    container_name: otel-collector
+    depends_on:
+    - jaeger
+    - prometheus
+    image: otel/opentelemetry-collector-contrib:0.90.1
+    networks:
+    - platformq_net
+    ports:
+    - 4317:4317
+    - 4318:4318
+    - 8889:8889
+    volumes:
+    - ./../../observability/otel-collector-config.yaml:/etc/otel-collector-config.yaml
+  prometheus:
+    command:
+    - --config.file=/etc/prometheus/prometheus.yml
+    container_name: prometheus
+    image: prom/prometheus:v2.48.1
+    networks:
+    - platformq_net
+    ports:
+    - 9090:9090
+    volumes:
+    - ./../../observability/prometheus.yml:/etc/prometheus/prometheus.yml
+  pulsar:
+    command: bin/pulsar standalone
+    container_name: pulsar
+    healthcheck:
+      interval: 30s
+      retries: 5
+      test:
+      - CMD
+      - curl
+      - -f
+      - http://localhost:8080/admin/v2/clusters/standalone
+      timeout: 10s
+    image: apachepulsar/pulsar:3.2.0
+    networks:
+    - platformq_net
+    ports:
+    - 6650:6650
+    - 8080:8080
+  stream-processing-service-v2:
+    build: ../../services/DataIntelligenceSuite/stream-processing-service-v2
+    depends_on:
+    - consul
+    - vault
+    - pulsar
+    environment:
+      CONSUL_URL: http://consul:8500
+      SERVICE_NAME: stream-processing-service-v2
+      VAULT_URL: http://vault:8200
+    networks:
+    - platform-network
+  trino:
+    container_name: trino
+    depends_on:
+      hive-metastore:
+        condition: service_healthy
+    environment:
+    - TRINO_MEMORY=2GB
+    - TRINO_DISCOVERY_URI=http://trino:8080
+    image: trinodb/trino:435
+    networks:
+    - platformq_net
+    ports:
+    - 8082:8080
+    volumes:
+    - ./trino:/etc/trino
+vault:
+  cap_add:
+  - IPC_LOCK
+  command: server
+  container_name: vault
+  environment:
+    VAULT_ADDR: http://0.0.0.0:8200
+    VAULT_API_ADDR: http://0.0.0.0:8200
+    VAULT_DEV_LISTEN_ADDRESS: 0.0.0.0:8200
+    VAULT_DEV_ROOT_TOKEN_ID: dev-root-token
+  image: hashicorp/vault:1.15
+  networks:
+  - platformq_net
+  ports:
+  - 8200:8200
+  volumes:
+  - ./vault/config:/vault/config
+  - ./vault/data:/vault/data
+  - ./vault/logs:/vault/logs
+version: '3.8'
+volumes:
+  cassandra_data: null
+  elasticsearch_data: null
+  hive_metastore_db: null
+  kong_db_data: null
+  minio_data: null
+  platformq-assets-pgdata: null
+  platformq-janusgraph-config: null
+  platformq-janusgraph-data: null
+  postgres_data: null
+  vault_config: null
+  vault_data: null
+  vault_logs: null

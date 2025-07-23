@@ -1,0 +1,49 @@
+{
+  "name": "data-catalog-hub",
+  "$schema": "../../../node_modules/nx/schemas/project-schema.json",
+  "sourceRoot": "services/DataIntelligenceSuite/data-catalog-hub",
+  "projectType": "application",
+  "targets": {
+    "build": {
+      "executor": "@nrwl/workspace:run-commands",
+      "options": {
+        "commands": [
+          "docker build -t data-catalog-hub:latest -f services/DataIntelligenceSuite/data-catalog-hub/Dockerfile services/DataIntelligenceSuite/data-catalog-hub"
+        ]
+      }
+    },
+    "serve": {
+      "executor": "@nrwl/workspace:run-commands",
+      "options": {
+        "commands": [
+          "cd services/DataIntelligenceSuite/data-catalog-hub && python -m uvicorn app.main:app --reload --port 8017"
+        ]
+      }
+    },
+    "test": {
+      "executor": "@nrwl/workspace:run-commands",
+      "options": {
+        "commands": [
+          "cd services/DataIntelligenceSuite/data-catalog-hub && pytest tests/"
+        ]
+      }
+    },
+    "lint": {
+      "executor": "@nrwl/workspace:run-commands",
+      "options": {
+        "commands": [
+          "cd services/DataIntelligenceSuite/data-catalog-hub && flake8 app/ tests/"
+        ]
+      }
+    },
+    "docker": {
+      "executor": "@nrwl/workspace:run-commands",
+      "options": {
+        "commands": [
+          "docker-compose -f docker-compose.dataintelligence.yml up data-catalog-hub"
+        ]
+      }
+    }
+  },
+  "tags": ["type:service", "scope:data-intelligence", "platform:python"]
+} 

@@ -1,0 +1,22 @@
+version: '3.8'
+
+services:
+  ml-platform-service:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - DEBUG=true
+      - VAULT_ADDR=http://vault:8200
+      - CONSUL_ADDR=http://consul:8500
+      - PULSAR_URL=pulsar://pulsar:6650
+    depends_on:
+      - vault
+      - consul
+      - pulsar
+    networks:
+      - platformq
+
+networks:
+  platformq:
+    external: true

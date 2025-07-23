@@ -1,0 +1,55 @@
+{
+  "service": {
+    "name": "ml-platform-service",
+    "tags": [
+      "dataintelligence",
+      "v2",
+      "ml",
+      "ai",
+      "federated-learning"
+    ],
+    "port": 8012,
+    "meta": {
+      "version": "2.0.0",
+      "replaces": "unified-ml-platform-service,neuromorphic-computing-service,feature-store-service",
+      "description": "Unified ML/AI platform service"
+    },
+    "check": {
+      "http": "http://localhost:8012/api/v1/health",
+      "interval": "10s",
+      "timeout": "5s"
+    },
+    "connect": {
+      "sidecar_service": {
+        "proxy": {
+          "upstreams": [
+            {
+              "destination_name": "mlflow",
+              "local_bind_port": 5000
+            },
+            {
+              "destination_name": "feast",
+              "local_bind_port": 6565
+            },
+            {
+              "destination_name": "triton",
+              "local_bind_port": 8001
+            },
+            {
+              "destination_name": "ray",
+              "local_bind_port": 10001
+            },
+            {
+              "destination_name": "pulsar",
+              "local_bind_port": 6650
+            },
+            {
+              "destination_name": "minio",
+              "local_bind_port": 9000
+            }
+          ]
+        }
+      }
+    }
+  }
+}

@@ -1,101 +1,35 @@
 # Integration Hub Service
 
-Unified integration service for SeaTunnel, Airbyte, and custom connectors
+Part of DataIntelligenceSuite v2.0
 
 ## Overview
 
-This service is part of the DataIntelligenceSuite v2.0 architecture, providing consolidated functionality with enterprise-grade features.
+This is a consolidated service that combines functionality from multiple legacy services.
 
 ## Features
 
-- FastAPI-based REST API with automatic documentation
-- GraphQL support (optional)
-- Async/await throughout for high performance
-- Pulsar integration for event-driven architecture
-- Vault/Consul integration for security and configuration
-- Prometheus metrics and OpenTelemetry tracing
-- Structured logging with correlation IDs
-- Health checks and readiness probes
-
-## Quick Start
-
-### Development
-
-1. Install dependencies:
-```bash
-pip install -r requirements.txt
-```
-
-2. Set environment variables:
-```bash
-export VAULT_ADDR=http://localhost:8200
-export CONSUL_ADDR=http://localhost:8500
-export PULSAR_URL=pulsar://localhost:6650
-```
-
-3. Run the service:
-```bash
-python -m uvicorn app.main:app --reload
-```
-
-### Docker
-
-```bash
-docker-compose up --build
-```
+- High-performance processing
+- Scalable architecture
+- Unified API
+- Comprehensive monitoring
 
 ## API Documentation
 
-Once running, visit:
-- Swagger UI: http://localhost:8000/docs
-- ReDoc: http://localhost:8000/redoc
-- GraphQL Playground: http://localhost:8000/graphql (if enabled)
+API documentation is available at `/docs` when the service is running.
 
 ## Configuration
 
-Configuration is managed through environment variables and Consul. See `app/core/config.py` for all available settings.
+Configuration is managed through environment variables and Consul.
 
-## Testing
+## Development
 
 ```bash
-# Run all tests
-pytest
+# Install dependencies
+pip install -r requirements.txt
 
-# Run with coverage
-pytest --cov=app --cov-report=html
+# Run locally
+uvicorn app.main:app --reload
 
-# Run specific test file
-pytest tests/unit/test_example.py
+# Run tests
+pytest tests/
 ```
-
-## Monitoring
-
-- Metrics: http://localhost:8000/metrics
-- Health: http://localhost:8000/health
-- Readiness: http://localhost:8000/api/v1/health/ready
-- Liveness: http://localhost:8000/api/v1/health/live
-
-## Architecture
-
-This service follows the consolidated architecture pattern:
-
-```
-integration-hub-service/
-├── app/
-│   ├── api/          # API endpoints
-│   ├── core/         # Core functionality
-│   ├── models/       # Data models
-│   ├── services/     # Business logic
-│   └── utils/        # Utilities
-├── tests/            # Test suite
-├── scripts/          # Utility scripts
-└── configs/          # Configuration files
-```
-
-## Contributing
-
-Please follow the contribution guidelines in the main repository.
-
-## License
-
-See LICENSE in the root directory.

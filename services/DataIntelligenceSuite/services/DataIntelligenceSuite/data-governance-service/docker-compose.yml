@@ -1,0 +1,21 @@
+version: '3.8'
+
+services:
+  data-governance-service:
+    build: .
+    ports:
+      - "8000:8000"
+    environment:
+      - SERVICE_NAME=data-governance-service
+      - ENVIRONMENT=development
+      - CONSUL_URL=http://consul:8500
+      - VAULT_URL=http://vault:8200
+    depends_on:
+      - consul
+      - vault
+    networks:
+      - platform-network
+
+networks:
+  platform-network:
+    external: true
