@@ -1,8 +1,63 @@
 # Data Intelligence Common Library
 
-A comprehensive shared library for all Data Intelligence Suite services, providing unified patterns for data processing, caching, event handling, and infrastructure integration with HashiCorp Vault and Consul.
+A comprehensive shared library for all Data Intelligence Suite services, providing unified patterns for data processing, caching, event handling, and infrastructure integration with modern data architectures.
 
-## Features
+## 🚀 Major Enhancements (v2.0.0)
+
+### 🏔️ Lakehouse Architecture
+- **Apache Iceberg**: ACID transactions, time travel, schema evolution
+- **Delta Lake**: Unified batch and streaming with ACID guarantees  
+- **Apache Hudi**: Incremental processing and CDC support
+- **Unified Manager**: Seamless switching between lakehouse formats
+
+### 📊 Data Quality & Governance
+- **Great Expectations**: Comprehensive data validation and profiling
+- **Apache Deequ**: Unit tests for data quality with Spark
+- **Soda Core**: Data quality monitoring and alerting
+- **Data Contracts**: Enforce quality SLAs and schema contracts
+
+### 🔍 Metadata & Lineage
+- **DataHub**: Centralized metadata management platform
+- **OpenLineage**: Cross-platform data lineage standard
+- **Column-level Lineage**: Track data transformations at field level
+- **ML Model Registry**: Track models, features, and experiments
+
+### ⚡ Real-time Analytics
+- **Apache Pinot**: Real-time distributed OLAP datastore
+- **ClickHouse**: Column-oriented database for analytics
+- **Star-tree Indexes**: Fast aggregation queries
+- **Materialized Views**: Pre-computed analytics
+
+### 🔌 Event Processing
+- **Pluggable Backends**: Pulsar, Kafka, Redis Streams, NATS
+- **Exactly-once Semantics**: Reliable event processing
+- **Event Sourcing**: Complete audit trail
+- **Saga Pattern**: Distributed transaction coordination
+
+### 🏗️ Architecture Improvements
+- **Plugin System**: Reduce code duplication across clients
+- **Async-first**: Built for high concurrency
+- **Circuit Breakers**: Fault tolerance patterns
+- **Connection Pooling**: Optimized resource usage
+
+## 📦 Installation
+
+```bash
+# Core installation
+pip install -e services/DataIntelligenceSuite/data-intelligence-common
+
+# With all features
+pip install -e "services/DataIntelligenceSuite/data-intelligence-common[all]"
+
+# Specific feature sets
+pip install -e "services/DataIntelligenceSuite/data-intelligence-common[lakehouse]"      # Lakehouse support
+pip install -e "services/DataIntelligenceSuite/data-intelligence-common[quality]"        # Data quality tools
+pip install -e "services/DataIntelligenceSuite/data-intelligence-common[realtime]"       # Real-time analytics
+pip install -e "services/DataIntelligenceSuite/data-intelligence-common[ml]"             # ML features
+pip install -e "services/DataIntelligenceSuite/data-intelligence-common[streaming]"      # Stream processing
+```
+
+## 🛠️ Core Features
 
 ### 🔐 Security & Configuration
 - **HashiCorp Vault Integration**
@@ -19,80 +74,442 @@ A comprehensive shared library for all Data Intelligence Suite services, providi
   - Service mesh capabilities
   - Leader election and distributed locks
 
-### 🏗️ Core Components
+### 🏗️ Enhanced Components
 
-#### Base Service
+#### Base Service Framework
 - Standardized service initialization with Vault/Consul
 - Health checking and monitoring
 - Graceful shutdown handling
 - Automatic credential renewal
 - Service registration and discovery
 
-#### Configuration Management
-- **Dynamic Configuration**: Real-time updates via Consul KV
-- **Schema Validation**: Type-safe configuration with validation
-- **Change Notifications**: Watch for configuration changes
-- **Versioning**: Track configuration history
-- **Rollback Support**: Revert to previous configurations
-- **Encryption**: Secure sensitive configuration values
-- **Import/Export**: Backup and restore configurations
-
-#### Client Integrations
-All client integrations now support:
-- **Dynamic Credentials**: Automatic credential rotation from Vault
-- **Service Discovery**: Automatic endpoint discovery via Consul
-- **mTLS Support**: Certificate-based authentication
-- **Circuit Breakers**: Fault tolerance patterns
-- **Load Balancing**: Round-robin, random, and least-connection strategies
-
-Supported integrations:
-- **Cassandra**: Dynamic credentials, prepared statements, batch operations
-- **Elasticsearch**: Secure search, bulk operations, index management
-- **JanusGraph**: Graph operations with security
-- **MinIO**: Object storage with encryption
-- **Pulsar**: Message encryption, secure pub/sub
-- **Ignite**: In-memory cache with transparent encryption
-- **Spark**: Secure distributed processing
-- **Flink**: Stream processing with credentials
-- **Airflow**: Workflow orchestration
-- **SeaTunnel**: Data integration
-- **Trino**: Distributed SQL queries
-- **Atlas**: Metadata management
-- **Druid**: Real-time analytics
-
-#### Cache Manager
-- **Transparent Encryption**: Automatic encryption/decryption via Vault Transit
-- **Access Control**: Role-based cache access
-- **Dynamic Configuration**: Cache settings from Consul
-- **Multiple Strategies**: Cache-aside, read-through, write-through, write-behind
-- **Distributed Caching**: Apache Ignite backend
-- **Statistics**: Hit rates, size tracking, performance metrics
-
-#### Event Handling
-- Unified event processing framework
-- Pulsar-based event bus with encryption
-- Event sourcing capabilities
-- Saga pattern support
-- Dead letter queue handling
-
-#### Processing Framework
-- Batch processing with Spark
-- Stream processing with Flink
-- Quality checks and validation
-- Pipeline builder with DAG support
-- Distributed processing coordination
-
-## Installation
-
-```bash
-pip install -e services/DataIntelligenceSuite/data-intelligence-common
+#### Plugin-based Client Architecture
+```
+BaseServiceClient
+    ├── ClientPlugin (Interface)
+    │   ├── PulsarPlugin
+    │   ├── KafkaPlugin
+    │   ├── IgnitePlugin
+    │   └── CustomPlugin
+    └── PluginRegistry
+        └── Dynamic plugin discovery
 ```
 
-## Configuration
+#### Event Processing Pipeline
+```
+Event Source → Backend Adapter → Event Bus → Handlers
+                    ↓                ↓           ↓
+                 Pulsar          Saga Manager  Processors
+                 Kafka           Event Store   Analytics
+                 Redis           Audit Log     ML Pipeline
+                 NATS
+```
+
+## 💡 Usage Examples
+
+### Lakehouse Operations
+
+```python
+from data_intelligence_common.core.lakehouse import LakehouseManager, LakehouseFormat
+
+# Initialize manager
+manager = LakehouseManager()
+await manager.initialize()
+
+# Create Iceberg table with time travel
+table = await manager.create_table(
+    name="events",
+    schema={"user_id": "string", "event": "string", "timestamp": "timestamp"},
+    format=LakehouseFormat.ICEBERG,
+    partition_by=["date(timestamp)"]
+)
+
+# Write data with ACID guarantees
+await manager.write_data("events", data)
+
+# Query with time travel
+yesterday_data = await manager.read_table(
+    "events",
+    timestamp=datetime.now() - timedelta(days=1)
+)
+
+# Migrate between formats
+await manager.migrate_table(
+    source_table="events",
+    target_table="events_delta",
+    target_format=LakehouseFormat.DELTA
+)
+```
+
+### Data Quality Validation
+
+```python
+from data_intelligence_common.integrations import DeequClient, CheckBuilder, CheckLevel
+
+# Initialize Deequ
+deequ = DeequClient()
+await deequ.connect()
+
+# Build quality checks
+checks = [
+    CheckBuilder("completeness", CheckLevel.ERROR)
+        .is_complete("user_id")
+        .is_complete("email")
+        .build(),
+    
+    CheckBuilder("uniqueness", CheckLevel.ERROR)
+        .is_unique("transaction_id")
+        .build(),
+    
+    CheckBuilder("validity", CheckLevel.WARNING)
+        .is_non_negative("amount")
+        .is_contained_in("status", ["pending", "completed", "failed"])
+        .satisfies("email", "email RLIKE '^[^@]+@[^@]+\\.[^@]+$'")
+        .build()
+]
+
+# Verify data quality
+result = await deequ.verify_data(spark_df, checks)
+print(f"Quality check {'passed' if result.status == 'SUCCESS' else 'failed'}")
+print(f"Metrics: {result.metrics}")
+
+# Get constraint suggestions
+suggestions = await deequ.suggest_constraints(spark_df)
+for suggestion in suggestions:
+    print(f"Suggested: {suggestion['code']} for column {suggestion['column']}")
+```
+
+### Event Processing with Multiple Backends
+
+```python
+from data_intelligence_common.core.events.backends import (
+    EventBackendFactory, BackendType, EventBackendConfig,
+    Event, ConsumerConfig
+)
+
+# Create event backend (Pulsar, Kafka, Redis, NATS)
+config = EventBackendConfig(
+    backend_type=BackendType.KAFKA,
+    connection_url="kafka://localhost:9092",
+    delivery_guarantee="exactly_once"
+)
+
+backend = EventBackendFactory.create_backend(config)
+await backend.connect()
+
+# Publish events with exactly-once semantics
+event = Event(
+    id="evt-123",
+    topic="user.events",
+    data={"action": "purchase", "amount": 99.99},
+    headers={"source": "web", "version": "1.0"}
+)
+
+result = await backend.publish(event)
+print(f"Published to partition {result.partition} at offset {result.offset}")
+
+# Subscribe with consumer group
+async def handle_event(event: Event):
+    print(f"Processing: {event.data}")
+    # Process event
+    return True
+
+subscription = await backend.subscribe(
+    ConsumerConfig(
+        consumer_group="analytics-processor",
+        topics=["user.events", "system.events"],
+        enable_dead_letter=True,
+        max_redeliveries=3
+    ),
+    handler=handle_event
+)
+
+# Stream events as async iterator
+async for event in backend.stream(consumer_config):
+    await process_event(event)
+```
+
+### Real-time Analytics
+
+```python
+from data_intelligence_common.integrations.realtime import (
+    PinotClient, TableSchema, TableConfig, TableType
+)
+
+# Initialize Pinot
+pinot = PinotClient()
+await pinot.connect()
+
+# Create real-time table
+schema = TableSchema(
+    schema_name="user_metrics",
+    dimension_fields=[
+        {"name": "user_id", "dataType": "STRING"},
+        {"name": "segment", "dataType": "STRING"}
+    ],
+    metric_fields=[
+        {"name": "revenue", "dataType": "DOUBLE"},
+        {"name": "events", "dataType": "LONG"}
+    ],
+    time_field={"name": "timestamp", "dataType": "TIMESTAMP"}
+)
+
+config = TableConfig(
+    table_name="user_metrics",
+    table_type=TableType.REALTIME,
+    time_column="timestamp",
+    stream_type="kafka",
+    stream_topic="user.metrics",
+    stream_bootstrap_servers="localhost:9092"
+)
+
+await pinot.create_schema(schema)
+await pinot.create_table(config)
+
+# Query real-time data
+result = await pinot.query("""
+    SELECT 
+        segment,
+        COUNT(DISTINCT user_id) as unique_users,
+        SUM(revenue) as total_revenue,
+        AVG(revenue) as avg_revenue
+    FROM user_metrics
+    WHERE timestamp >= ago('1h')
+    GROUP BY segment
+    ORDER BY total_revenue DESC
+""")
+
+df = result.to_dataframe()
+print(df)
+```
+
+### Metadata Management with DataHub
+
+```python
+from data_intelligence_common.integrations import (
+    DataHubClient, DatasetMetadata, MLModelMetadata,
+    DataPlatform, DataQualityMetric
+)
+
+datahub = DataHubClient()
+await datahub.connect()
+
+# Register dataset with full metadata
+dataset = DatasetMetadata(
+    platform=DataPlatform.SPARK,
+    name="customer_360",
+    env="PROD",
+    schema=[
+        {"name": "customer_id", "type": "string", "nullable": False},
+        {"name": "lifetime_value", "type": "double", "nullable": True},
+        {"name": "segment", "type": "string", "nullable": False}
+    ],
+    properties={
+        "description": "Unified customer view",
+        "refresh_schedule": "0 2 * * *"
+    },
+    tags=["pii", "gdpr", "customer-data"],
+    owners=["data-team", "analytics-team"],
+    upstream_datasets=[
+        "urn:li:dataset:(urn:li:dataPlatform:kafka,events.customer,PROD)",
+        "urn:li:dataset:(urn:li:dataPlatform:postgres,crm.customers,PROD)"
+    ]
+)
+
+await datahub.ingest_dataset(dataset)
+
+# Register ML model
+model = MLModelMetadata(
+    name="customer_churn_predictor",
+    version="2.1.0",
+    algorithm="XGBoost",
+    hyperparameters={
+        "max_depth": 6,
+        "learning_rate": 0.3,
+        "n_estimators": 100
+    },
+    metrics={
+        "auc": 0.92,
+        "precision": 0.87,
+        "recall": 0.89
+    },
+    features=["lifetime_value", "days_since_last_purchase", "support_tickets"],
+    tags=["production", "churn-prediction"]
+)
+
+await datahub.ingest_ml_model(model)
+
+# Track data quality metrics
+metrics = [
+    DataQualityMetric(
+        dataset_urn=dataset.get_urn(),
+        metric_name="completeness",
+        value=0.98,
+        dimension="completeness"
+    ),
+    DataQualityMetric(
+        dataset_urn=dataset.get_urn(),
+        metric_name="freshness_hours",
+        value=2.5,
+        dimension="timeliness"
+    )
+]
+
+await datahub.ingest_data_quality_metrics(metrics)
+
+# Search and discover
+results = await datahub.search_datasets(
+    query="customer",
+    filters={"tags": ["pii"], "platform": "spark"}
+)
+
+# Get lineage
+lineage = await datahub.get_dataset_lineage(
+    dataset.get_urn(),
+    direction="BOTH",
+    depth=3
+)
+```
+
+### Cross-platform Lineage with OpenLineage
+
+```python
+from data_intelligence_common.integrations import (
+    OpenLineageClient, LineageJob, LineageRun, LineageDataset,
+    JobType
+)
+
+# Initialize OpenLineage
+lineage_client = OpenLineageClient(
+    backend="http",
+    endpoint="http://marquez:5000"
+)
+await lineage_client.connect()
+
+# Create job with metadata
+job = await lineage_client.create_job_with_metadata(
+    namespace="etl",
+    name="customer_aggregation",
+    job_type=JobType.BATCH,
+    description="Daily customer metrics aggregation",
+    source_code_location="https://github.com/company/etl/blob/main/customer_agg.py"
+)
+
+# Define datasets
+input_dataset = await lineage_client.create_dataset_with_schema(
+    namespace="warehouse",
+    name="raw_events",
+    schema_fields=[
+        {"name": "event_id", "type": "string"},
+        {"name": "customer_id", "type": "string"},
+        {"name": "event_type", "type": "string"},
+        {"name": "timestamp", "type": "timestamp"}
+    ]
+)
+
+output_dataset = await lineage_client.create_dataset_with_schema(
+    namespace="warehouse",
+    name="customer_metrics",
+    schema_fields=[
+        {"name": "customer_id", "type": "string"},
+        {"name": "total_events", "type": "long"},
+        {"name": "last_activity", "type": "timestamp"}
+    ]
+)
+
+# Add column-level lineage
+output_dataset = await lineage_client.add_column_lineage(
+    output_dataset,
+    {
+        "customer_id": [
+            {"namespace": "warehouse", "dataset": "raw_events", "field": "customer_id"}
+        ],
+        "total_events": [
+            {"namespace": "warehouse", "dataset": "raw_events", "field": "event_id"}
+        ]
+    }
+)
+
+# Track job execution
+run = await lineage_client.create_run_with_parent(
+    parent_job_name="daily_etl_orchestrator",
+    nominal_time=datetime.now()
+)
+
+# Emit start event
+await lineage_client.emit_start_event(
+    job, run, 
+    inputs=[input_dataset],
+    outputs=[output_dataset]
+)
+
+# ... job execution ...
+
+# Add quality metrics
+output_dataset = await lineage_client.add_data_quality_metrics(
+    output_dataset,
+    metrics={"row_count": 1000000, "null_count": 0},
+    assertions=[
+        {"assertion": "customer_id IS NOT NULL", "success": True}
+    ]
+)
+
+# Emit complete event
+await lineage_client.emit_complete_event(
+    job, run,
+    inputs=[input_dataset],
+    outputs=[output_dataset]
+)
+```
+
+### Advanced Caching with Encryption
+
+```python
+from data_intelligence_common.core.caching import (
+    DistributedCacheManager, CacheConfig, CacheStrategy
+)
+
+# Initialize distributed cache
+cache_manager = DistributedCacheManager(
+    ignite_client=ignite_client,
+    vault_client=vault_client,
+    consul_client=consul_client
+)
+
+# Create encrypted cache with access control
+cache_config = CacheConfig(
+    name="sensitive_data",
+    strategy=CacheStrategy.WRITE_THROUGH,
+    encrypt_data=True,
+    encryption_key="pii-encryption",
+    ttl_seconds=3600,
+    access_roles=["data-scientist", "analyst"]
+)
+
+cache = await cache_manager.create_cache(cache_config)
+
+# Use cache with automatic encryption
+await cache.put("user:123", {"ssn": "123-45-6789", "income": 75000})
+data = await cache.get("user:123")  # Automatically decrypted
+
+# Batch operations
+batch_data = {f"user:{i}": {"data": i} for i in range(1000)}
+await cache.put_all(batch_data)
+
+# Cache statistics
+stats = await cache.get_statistics()
+print(f"Hit rate: {stats.hit_rate:.2%}")
+print(f"Avg get time: {stats.avg_get_time_ms}ms")
+```
+
+## 🔧 Configuration
 
 ### Environment Variables
-
 ```bash
+# Core settings
+SERVICE_NAME=my-service
+SERVICE_PORT=8000
+
 # Vault Configuration
 VAULT_ADDR=http://localhost:8200
 VAULT_TOKEN=your-token
@@ -103,568 +520,110 @@ CONSUL_HTTP_ADDR=http://localhost:8500
 CONSUL_HTTP_TOKEN=your-token
 CONSUL_DATACENTER=dc1
 
-# Service Configuration
-SERVICE_NAME=your-service
-SERVICE_VERSION=1.0.0
+# Feature flags
+ENABLE_LAKEHOUSE=true
+ENABLE_QUALITY_CHECKS=true
+ENABLE_REALTIME_ANALYTICS=true
 ```
 
-### Vault Setup
-
-1. **Database Secret Engine**:
-```bash
-vault secrets enable -path=database database
-
-vault write database/config/cassandra \
-    plugin_name=cassandra-database-plugin \
-    allowed_roles="readonly,readwrite" \
-    hosts=cassandra.service.consul \
-    username=cassandra \
-    password=cassandra
-
-vault write database/roles/readonly \
-    db_name=cassandra \
-    creation_statements="CREATE USER '{{username}}' WITH PASSWORD '{{password}}' NOSUPERUSER; \
-    GRANT SELECT ON ALL KEYSPACES TO {{username}};" \
-    default_ttl="1h" \
-    max_ttl="24h"
-```
-
-2. **Transit Encryption**:
-```bash
-vault secrets enable transit
-
-vault write -f transit/keys/data-encryption
-vault write -f transit/keys/pii-encryption
-```
-
-3. **PKI for mTLS**:
-```bash
-vault secrets enable pki
-
-vault write pki/root/generate/internal \
-    common_name="DataIntelligence Root CA" \
-    ttl=87600h
-
-vault write pki/roles/service \
-    allowed_domains="service.consul,local" \
-    allow_subdomains=true \
-    max_ttl=720h
-```
-
-### Consul Setup
-
-1. **Service Registration**:
-```json
-{
-  "service": {
-    "name": "data-intelligence-service",
-    "port": 8080,
-    "tags": ["data-intelligence", "v1.0.0"],
-    "meta": {
-      "version": "1.0.0",
-      "capabilities": "processing,caching,events"
-    },
-    "check": {
-      "http": "http://localhost:8080/health",
-      "interval": "10s"
-    }
-  }
-}
-```
-
-2. **Configuration Storage**:
-```bash
-consul kv put data-intelligence/common/config @config.json
-consul kv put data-intelligence/service-name/caches @cache-config.json
-```
-
-## Usage Examples
-
-### Base Service with Vault/Consul
-
-```python
-from data_intelligence_common.base_service import DataIntelligenceBaseService, ServiceMetadata
-from platformq_shared.vault.vault_client import VaultClient
-from platformq_shared.consul.consul_client import ConsulClient
-
-class MyDataService(DataIntelligenceBaseService):
-    async def initialize_service(self):
-        """Initialize service-specific components"""
-        # Service initialization logic
-        pass
-        
-    async def cleanup_service(self):
-        """Cleanup service-specific components"""
-        # Cleanup logic
-        pass
-
-# Create service
-metadata = ServiceMetadata(
-    name="my-data-service",
-    version="1.0.0",
-    description="My data processing service",
-    capabilities=["processing", "caching"],
-    dependencies=["cassandra", "pulsar"]
-)
-
-vault_client = VaultClient(vault_url, vault_token)
-consul_client = ConsulClient(consul_url)
-
-service = MyDataService(
-    metadata=metadata,
-    vault_client=vault_client,
-    consul_client=consul_client
-)
-
-# Service will automatically:
-# - Register with Consul
-# - Set up health checks
-# - Manage credentials from Vault
-# - Handle configuration updates
-```
-
-### Secure Database Client
-
-```python
-from data_intelligence_common.integrations import CassandraClient, CassandraConfig
-
-# Configure with Vault/Consul
-config = CassandraConfig(
-    service_name="cassandra",
-    use_vault_credentials=True,
-    vault_database_role="readonly",
-    use_service_discovery=True
-)
-
-# Create client
-client = CassandraClient(
-    config=config,
-    vault_client=vault_client,
-    consul_client=consul_client
-)
-
-# Connect - credentials are automatically obtained from Vault
-await client.connect()
-
-# Use client - credentials are automatically renewed
-results = await client.execute("SELECT * FROM users WHERE id = ?", (user_id,))
-
-# Credentials are automatically rotated before expiry
-```
-
-### Encrypted Cache Manager
-
-```python
-from data_intelligence_common.core.caching import CacheManager, CacheConfig, CacheMode
-
-# Create cache manager
-cache_manager = CacheManager(
-    ignite_nodes=[("localhost", 10800)],
-    service_name="my-service",
-    vault_client=vault_client,
-    consul_client=consul_client,
-    enable_encryption=True
-)
-
-await cache_manager.initialize()
-
-# Create encrypted cache
-cache_config = CacheConfig(
-    name="user_sessions",
-    mode=CacheMode.REPLICATED,
-    encrypt_data=True,
-    encryption_key="session-encryption",
-    access_control=True,
-    allowed_roles=["admin", "user"]
-)
-
-await cache_manager.create_cache(cache_config)
-
-# Use cache - data is automatically encrypted/decrypted
-await cache_manager.put("user_sessions", "user123", session_data)
-session = await cache_manager.get("user_sessions", "user123")
-```
-
-### Secure Message Publishing
-
-```python
-from data_intelligence_common.integrations import PulsarClient, PulsarConfig, ProducerConfig
-
-# Configure Pulsar with Vault/Consul
-config = PulsarConfig(
-    use_vault_credentials=True,
-    use_service_discovery=True,
-    enable_message_encryption=True,
-    encryption_key_name="message-encryption"
-)
-
-client = PulsarClient(config, vault_client, consul_client)
-await client.connect()
-
-# Create producer
-producer_config = ProducerConfig(
-    topic="events",
-    required_role="publisher"
-)
-
-producer = client.create_producer(producer_config)
-
-# Send encrypted message
-await client.send_async(
-    "events",
-    {"type": "user_action", "data": sensitive_data},
-    properties={"source": "my-service"}
-)
-```
-
-### Service Discovery
-
-```python
-# Discover service instances
-instances = await consul_client.discover_service("cassandra")
-
-for instance in instances:
-    print(f"Found {instance['address']}:{instance['port']}")
-    
-# Get service URL with load balancing
-url = await service.get_service_url("analytics-service")
-```
-
-### Configuration Management
-
-```python
-# Basic configuration usage
-await consul_client.watch_config(
-    "data-intelligence/my-service/config",
-    config_changed
-)
-
-# Get configuration
-config = await service.get_config("feature.enabled", default=False)
-```
-
-### Advanced Configuration Management
-
-```python
-from data_intelligence_common.core.config import ConfigManager, ConfigSchema
-
-# Initialize config manager
-config_manager = ConfigManager(
-    "my-service",
-    consul_client,
-    vault_client
-)
-await config_manager.initialize()
-
-# Register configuration schemas
-schemas = [
-    ConfigSchema(
-        key="api/rate_limit",
-        type=int,
-        default=100,
-        description="API rate limit per minute",
-        validator=lambda x: 0 < x <= 1000
-    ),
-    ConfigSchema(
-        key="database/connection_string",
-        type=str,
-        encrypted=True,  # Will be encrypted in Consul
-        description="Database connection string"
-    ),
-    ConfigSchema(
-        key="cache/ttl_seconds",
-        type=int,
-        default=300,
-        validator=lambda x: x > 0
-    )
-]
-config_manager.register_schemas(schemas)
-
-# Get configuration with schema validation
-rate_limit = await config_manager.get("api/rate_limit")
-cache_ttl = await config_manager.get("cache/ttl_seconds")
-
-# Set configuration (validates against schema)
-await config_manager.set("api/rate_limit", 200, user="admin")
-
-# Watch for configuration changes
-def on_rate_limit_change(key: str, value: int):
-    print(f"Rate limit changed to {value}")
-    # Update rate limiter
-    
-config_manager.watch("api/rate_limit", on_rate_limit_change)
-
-# Watch all API configurations
-config_manager.watch("api/*", on_api_config_change, recursive=True)
-
-# Configuration versioning and rollback
-await config_manager.set("api/rate_limit", 500)  # Version 2
-await config_manager.set("api/rate_limit", 1000)  # Version 3
-
-# Rollback to previous version
-await config_manager.rollback("api/rate_limit")  # Back to 500
-
-# Rollback to specific version
-await config_manager.rollback("api/rate_limit", version=1)  # Back to 100
-
-# Export configuration
-config_json = await config_manager.export_config("json")
-config_yaml = await config_manager.export_config("yaml")
-
-# Import configuration
-await config_manager.import_config(config_json, merge=True, user="backup")
-
-# Get all configurations with prefix
-api_configs = await config_manager.get_all("api")
-# Returns: {"rate_limit": 100, "timeout": 30, ...}
-
-# Delete configuration
-await config_manager.delete("api/deprecated_feature")
-```
-
-## Security Best Practices
-
-1. **Credential Management**
-   - Never hardcode credentials
-   - Use Vault for all secrets
-   - Enable automatic credential rotation
-   - Set appropriate TTLs
-
-2. **Encryption**
-   - Enable transit encryption for sensitive data
-   - Use field-level encryption where needed
-   - Rotate encryption keys regularly
-
-3. **Access Control**
-   - Implement role-based access
-   - Use Vault policies
-   - Audit all access
-
-4. **Network Security**
-   - Enable mTLS between services
-   - Use service mesh features
-   - Implement network segmentation
-
-## Monitoring and Observability
-
-The library provides built-in monitoring:
-
-- **Metrics**: Prometheus-compatible metrics
-- **Tracing**: OpenTelemetry integration
-- **Logging**: Structured logging with correlation IDs
-- **Health Checks**: Standardized health endpoints
-
-## Development
-
-### Running Tests
+### Vault Setup for New Features
 
 ```bash
+# Lakehouse credentials
+vault write database/config/iceberg \
+    plugin_name=postgresql-database-plugin \
+    allowed_roles="lakehouse-reader,lakehouse-writer" \
+    connection_url="postgresql://{{username}}:{{password}}@iceberg-catalog:5432/catalog"
+
+# Real-time analytics
+vault write database/config/pinot \
+    plugin_name=http-database-plugin \
+    allowed_roles="pinot-admin,pinot-user" \
+    url="http://pinot-controller:9000"
+
+# Data quality
+vault write kv/data-intelligence/great-expectations \
+    datasource_config=@ge-datasources.json \
+    expectation_stores=@ge-stores.json
+```
+
+## 📊 Performance Optimizations
+
+- **Connection Pooling**: Reuse connections across requests
+- **Async I/O**: Non-blocking operations throughout
+- **Batch Processing**: Efficient bulk operations
+- **Caching**: Multi-level caching with TTL
+- **Circuit Breakers**: Prevent cascade failures
+- **Compression**: Automatic data compression
+- **Lazy Loading**: Load components on demand
+- **Resource Limits**: Prevent resource exhaustion
+
+## 🧪 Testing
+
+```bash
+# Run all tests
 pytest tests/ -v
+
+# Run specific test categories
+pytest -m "lakehouse"
+pytest -m "quality"
+pytest -m "realtime"
+pytest -m "events"
+
+# Run with coverage
+pytest --cov=data_intelligence_common --cov-report=html
+
+# Run integration tests
+pytest tests/integration/ --integration
+
+# Run performance tests
+pytest tests/performance/ --benchmark
 ```
 
-### Code Quality
-
-```bash
-# Linting
-flake8 data_intelligence_common/
-
-# Type checking
-mypy data_intelligence_common/
-
-# Security scanning
-bandit -r data_intelligence_common/
-```
-
-## Architecture
-
-The library follows a modular architecture:
+## 📚 Architecture
 
 ```
 data-intelligence-common/
 ├── base_service/          # Base service framework
 ├── clients/               # Service client integrations
 ├── core/                  # Core functionality
-│   ├── caching/          # Cache management
-│   ├── events/           # Event handling
-│   ├── processing/       # Data processing
-│   └── ml/               # ML utilities
+│   ├── caching/          # Distributed cache management
+│   ├── catalog/          # Data catalog integration
+│   ├── clients/          # Plugin-based client architecture
+│   ├── config/           # Configuration management
+│   ├── events/           # Event processing
+│   │   └── backends/     # Pluggable event backends
+│   ├── integration/      # Data integration patterns
+│   ├── lakehouse/        # Lakehouse table formats
+│   ├── ml/               # ML utilities
+│   ├── orchestration/    # Workflow orchestration
+│   └── processing/       # Data processing
 ├── integrations/         # External service clients
+│   └── realtime/        # Real-time analytics
 ├── monitoring/           # Observability
 ├── utils/                # Utilities
 └── vault_consul/         # Vault/Consul integration
 ```
 
-## Contributing
+## 🤝 Contributing
 
 1. Follow the established patterns
-2. Add tests for new functionality
-3. Update documentation
+2. Add comprehensive tests for new features
+3. Update documentation with examples
 4. Ensure backward compatibility
+5. Run linting and type checking
+6. Add performance benchmarks for critical paths
 
-## Recent Enhancements
+## 📈 Roadmap
 
-### New Features (v2.0.0)
+- [ ] Apache Doris integration for real-time analytics
+- [ ] Databricks Unity Catalog support
+- [ ] Streaming SQL with Flink SQL
+- [ ] GraphQL federation for metadata
+- [ ] Policy-based data access control
+- [ ] Data mesh integration patterns
+- [ ] Federated learning support
 
-#### 🏔️ Lakehouse Architecture Support
-- **Apache Iceberg**: ACID transactions, time travel, schema evolution
-- **Delta Lake**: Unified batch and streaming with ACID guarantees
-- **Apache Hudi**: Incremental processing and CDC support
-
-#### 📊 Advanced Data Quality
-- **Great Expectations**: Comprehensive data validation and profiling
-- **Apache Deequ**: Unit tests for data quality
-- **Soda Core**: Data quality monitoring and alerting
-
-#### 🔍 Enhanced Data Catalog
-- **DataHub**: Centralized metadata management platform
-- **OpenLineage**: Cross-platform data lineage standard
-
-#### ⚡ Real-time Analytics
-- **Apache Pinot**: Real-time distributed OLAP datastore
-- **ClickHouse**: Column-oriented database for analytics
-- **Apache Doris**: Real-time analytical database
-
-#### 🔐 Advanced Security
-- **Apache Ranger**: Fine-grained access control and audit
-- **Enhanced OPA**: Policy versioning and testing framework
-
-#### 🎭 Modern Orchestration
-- **Temporal**: Durable workflow execution
-- **Apache DolphinScheduler**: Visual workflow scheduling
-
-### Installation with New Features
-
-```bash
-# Core installation
-pip install -e services/DataIntelligenceSuite/data-intelligence-common
-
-# With lakehouse support
-pip install -e "services/DataIntelligenceSuite/data-intelligence-common[lakehouse]"
-
-# With data quality tools
-pip install -e "services/DataIntelligenceSuite/data-intelligence-common[quality]"
-
-# With all enhancements
-pip install -e "services/DataIntelligenceSuite/data-intelligence-common[lakehouse,quality,catalog,olap,security,orchestration,streaming]"
-```
-
-### Usage Examples - New Features
-
-#### Lakehouse with Apache Iceberg
-
-```python
-from data_intelligence_common.core.lakehouse import IcebergClient, TableSchema
-
-# Initialize Iceberg client
-iceberg_client = IcebergClient(
-    catalog_uri="http://iceberg-catalog:8181",
-    warehouse_path="s3://datalake/warehouse",
-    vault_client=vault_client,
-    consul_client=consul_client
-)
-
-# Create table with schema
-schema = TableSchema(
-    fields=[
-        ("user_id", "string", False),
-        ("event_type", "string", False),
-        ("timestamp", "timestamp", False),
-        ("properties", "string", True)
-    ],
-    partition_fields=[("timestamp", PartitionStrategy.DAY)]
-)
-
-table = await iceberg_client.create_table("analytics", "user_events", schema)
-
-# Write data with ACID guarantees
-await iceberg_client.write_data(
-    "analytics", 
-    "user_events",
-    event_data,
-    mode="append"
-)
-
-# Time travel query
-historical_data = await iceberg_client.read_table(
-    "analytics",
-    "user_events",
-    as_of_timestamp=datetime.now() - timedelta(days=7)
-)
-```
-
-#### Data Quality with Great Expectations
-
-```python
-from data_intelligence_common.integrations import GreatExpectationsClient, ValidationRule, ExpectationType
-
-# Initialize Great Expectations
-ge_client = GreatExpectationsClient(
-    context_root_dir="/data/great_expectations",
-    vault_client=vault_client
-)
-
-# Define validation rules
-rules = [
-    ValidationRule(
-        expectation_type=ExpectationType.COLUMN_NOT_NULL,
-        kwargs={"column": "user_id"},
-        severity=ValidationSeverity.CRITICAL
-    ),
-    ValidationRule(
-        expectation_type=ExpectationType.COLUMN_VALUES_BETWEEN,
-        kwargs={"column": "age", "min_value": 0, "max_value": 120},
-        severity=ValidationSeverity.ERROR
-    )
-]
-
-# Create expectation suite
-suite = await ge_client.create_expectation_suite("user_data_quality", rules)
-
-# Validate data
-result = await ge_client.validate_data(
-    user_dataframe,
-    "user_data_quality"
-)
-
-if not result.success:
-    logger.error(f"Data quality check failed: {result.failed_expectations} failures")
-```
-
-#### Enhanced Caching with Tiered Storage
-
-```python
-from data_intelligence_common.core.caching import TieredCacheManager, CacheTier
-
-# Configure multi-tier cache
-cache_manager = TieredCacheManager([
-    CacheTier("memory", capacity=1000),      # L1: In-memory
-    CacheTier("ignite", capacity=100000),    # L2: Ignite
-    CacheTier("s3", capacity=None)          # L3: S3 (unlimited)
-])
-
-# Data automatically flows between tiers
-await cache_manager.put("hot_data", value)  # Goes to L1
-value = await cache_manager.get("cold_data")  # Promoted from L3 to L1
-```
-
-## Performance Improvements
-
-- **30% faster** data ingestion with optimized batch processing
-- **50% reduction** in cache misses with smart prefetching
-- **2x throughput** for stream processing with backpressure handling
-- **40% less memory** usage with adaptive connection pooling
-
-## Migration Guide
-
-For existing services using v1.x:
-
-1. **Update imports**: Some modules have been reorganized
-2. **Client configuration**: New clients use the enhanced plugin architecture
-3. **Event system**: Abstracted to support multiple backends
-4. **Cache configuration**: Update to use tiered caching if needed
-
-See [MIGRATION.md](docs/MIGRATION.md) for detailed migration instructions.
-
-## License
+## 📄 License
 
 Proprietary - PlatformQ 
