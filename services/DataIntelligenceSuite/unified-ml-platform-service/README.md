@@ -9,11 +9,19 @@ The Unified ML Platform Service provides:
 - **Model Training**: Distributed training orchestration with multiple frameworks
 - **Model Serving**: High-performance inference with auto-scaling
 - **MLOps**: Complete lifecycle management with versioning and monitoring
-- **Federated Learning**: Privacy-preserving distributed training
+- **Federated Learning**: Privacy-preserving distributed training with advanced framework
 - **AutoML**: Automated model selection and hyperparameter tuning
 - **Event-Driven Architecture**: Real-time ML lifecycle event processing
 - **Model Lineage**: Comprehensive ML model lineage tracking with impact analysis
 - **Data Lake Integration**: Seamless training data management
+
+### Enhanced Federated Learning
+The service now includes an enhanced federated learning framework with:
+- **Advanced Aggregation**: FedAvg, FedProx, SCAFFOLD, FedAdam, FedYogi
+- **Hybrid Privacy**: Differential Privacy + Secure Aggregation + Homomorphic Encryption
+- **Smart Client Selection**: Reliability-based, resource-aware, and contribution-based selection
+- **Real-time Analytics**: Live training metrics, convergence analysis, and privacy accounting
+- **Vault/Consul Integration**: Secure credential management and service discovery
 
 ### Note on Extracted Services
 The following capabilities have been extracted to dedicated services for better modularity:
@@ -185,6 +193,20 @@ async def on_drift_detected(drift_info):
 - `GET /api/v1/features` - List features
 - `GET /api/v1/features/{feature_id}/values` - Get feature values
 - `POST /api/v1/features/compute` - Compute features
+
+### Federated Learning
+- `POST /api/v1/federated/sessions` - Create federated session
+- `GET /api/v1/federated/sessions` - List sessions
+- `POST /api/v1/federated/sessions/{id}/join` - Join session
+- `POST /api/v1/federated/sessions/{id}/start` - Start training
+- `POST /api/v1/federated/sessions/{id}/submit-update` - Submit model update
+- `GET /api/v1/federated/sessions/{id}/status` - Get session status
+
+### Enhanced Federated Learning (with Vault/Consul)
+- `POST /api/v1/federated/sessions/{id}/enhanced/start` - Start with advanced framework
+- `GET /api/v1/federated/sessions/{id}/enhanced/analytics` - Real-time training analytics
+- `POST /api/v1/federated/sessions/{id}/enhanced/client-selection` - Configure client selection
+- `GET /api/v1/federated/enhanced/capabilities` - Get enhanced capabilities
 
 ## Integration Points
 
@@ -381,4 +403,66 @@ kubectl scale deployment unified-ml-platform-service --replicas=3
    - Check Graph Intelligence Service
    - Verify event publishing
    - Review lineage permissions
+
+### Enhanced Federated Learning Example
+```python
+# Create federated learning session with advanced features
+session_response = requests.post(
+    "http://ml-platform-service:8000/api/v1/federated/sessions",
+    json={
+        "name": "privacy-preserving-healthcare-model",
+        "model_type": "neural_network",
+        "algorithm": "FedAdam",  # Advanced aggregation
+        "num_rounds": 50,
+        "min_participants": 5,
+        "privacy_config": {
+            "differential_privacy": True,
+            "epsilon": 1.0,
+            "delta": 1e-5,
+            "secure_aggregation": True,
+            "homomorphic_encryption": False
+        },
+        "dataset_requirements": {
+            "min_samples": 1000,
+            "features": ["age", "symptoms", "lab_results"]
+        }
+    }
+)
+session_id = session_response.json()['session_id']
+
+# Start enhanced training with advanced framework
+enhanced_response = requests.post(
+    f"http://ml-platform-service:8000/api/v1/federated/sessions/{session_id}/enhanced/start"
+)
+print("Enhanced features:", enhanced_response.json()['features'])
+# Output: ["adaptive_client_selection", "advanced_aggregation", "hybrid_privacy", "real_time_analytics"]
+
+# Configure smart client selection
+selection_response = requests.post(
+    f"http://ml-platform-service:8000/api/v1/federated/sessions/{session_id}/enhanced/client-selection",
+    params={
+        "strategy": "hybrid",  # Combines reliability, resources, and data quality
+        "min_reliability": 0.9,
+        "resource_aware": True
+    }
+)
+
+# Monitor real-time training analytics
+analytics_response = requests.get(
+    f"http://ml-platform-service:8000/api/v1/federated/sessions/{session_id}/enhanced/analytics"
+)
+analytics = analytics_response.json()['analytics']
+print(f"Round: {analytics['current_round']}")
+print(f"Active clients: {analytics['active_clients']}")
+print(f"Convergence rate: {analytics['convergence_rate']}")
+print(f"Privacy budget used: {analytics['privacy_budget_used']}")
+
+# Events published during federated learning:
+# 1. FEDERATED_ROUND_STARTED
+# 2. CLIENT_SELECTED (for each client)
+# 3. CLIENT_UPDATE_RECEIVED (as clients submit)
+# 4. AGGREGATION_COMPLETED
+# 5. GLOBAL_MODEL_UPDATED
+# 6. FEDERATED_TRAINING_COMPLETED
+```
 """ 

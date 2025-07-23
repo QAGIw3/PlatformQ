@@ -18,6 +18,7 @@ security = HTTPBearer()
 # Global instances (initialized in main.py)
 medallion_manager = None
 lifecycle_manager = None
+lakehouse_manager = None
 
 
 async def get_current_user(credentials: HTTPAuthorizationCredentials = Depends(security)) -> Dict[str, Any]:
@@ -48,4 +49,14 @@ async def get_lifecycle_manager() -> DataLifecycleManager:
             status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
             detail="Lifecycle manager not initialized"
         )
-    return lifecycle_manager 
+    return lifecycle_manager
+
+
+async def get_lakehouse_manager():
+    """Get lakehouse manager instance"""
+    if lakehouse_manager is None:
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="Lakehouse manager not initialized"
+        )
+    return lakehouse_manager 

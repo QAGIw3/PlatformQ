@@ -209,10 +209,10 @@ async def leave_session(
 @router.post("/sessions/{session_id}/submit-update")
 async def submit_model_update(
     session_id: str,
+    request: Request,
     participant_id: str = Query(..., description="Participant ID"),
     model_update: Dict[str, Any] = Query(..., description="Model update data"),
     data_size: int = Query(..., ge=1, description="Number of data points used"),
-    request: Request,
     tenant_id: str = Query(..., description="Tenant ID")
 ):
     """Submit model update from participant"""
@@ -313,4 +313,182 @@ async def list_privacy_techniques():
                 "parameters": ["scheme", "key_size"]
             }
         ]
+    }
+
+
+# ============= Enhanced Federated Learning Endpoints =============
+
+@router.post("/sessions/{session_id}/enhanced/start")
+async def start_enhanced_federated_training(
+    session_id: str,
+    request: Request
+):
+    """
+    Start federated training using the enhanced framework
+    
+    This endpoint uses the new federated learning framework with advanced features:
+    - Adaptive client selection based on reliability and resources
+    - Advanced aggregation strategies (FedAdam, FedYogi)
+    - Hybrid privacy mechanisms (DP + Secure Aggregation)
+    - Real-time training analytics
+    """
+    coordinator = request.app.state.federated_coordinator
+    
+    # Check if using enhanced coordinator
+    if not hasattr(coordinator, 'fl_framework'):
+        raise HTTPException(
+            status_code=400,
+            detail="Enhanced federated learning not available. Please ensure Vault and Consul are configured."
+        )
+    
+    try:
+        # Get session details
+        session = await coordinator.get_session(session_id)
+        if not session:
+            raise HTTPException(status_code=404, detail=f"Session {session_id} not found")
+        
+        # Start enhanced training
+        training_job_id = await coordinator.start_federated_training(
+            model=session.model,
+            config=session.config,
+            dataset_id=session.dataset_id,
+            num_rounds=session.num_rounds,
+            min_clients=session.min_participants
+        )
+        
+        return {
+            "session_id": session_id,
+            "training_job_id": training_job_id,
+            "status": "training_started",
+            "framework": "enhanced",
+            "features": [
+                "adaptive_client_selection",
+                "advanced_aggregation",
+                "hybrid_privacy",
+                "real_time_analytics"
+            ]
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/sessions/{session_id}/enhanced/analytics")
+async def get_enhanced_training_analytics(
+    session_id: str,
+    request: Request
+):
+    """
+    Get real-time analytics for enhanced federated training
+    
+    Returns comprehensive analytics including:
+    - Client performance metrics
+    - Convergence analysis
+    - Privacy budget tracking
+    - Resource utilization
+    """
+    coordinator = request.app.state.federated_coordinator
+    
+    if not hasattr(coordinator, 'get_training_analytics'):
+        raise HTTPException(
+            status_code=400,
+            detail="Enhanced analytics not available"
+        )
+    
+    try:
+        analytics = await coordinator.get_training_analytics()
+        
+        return {
+            "session_id": session_id,
+            "analytics": analytics,
+            "timestamp": datetime.utcnow()
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.post("/sessions/{session_id}/enhanced/client-selection")
+async def configure_client_selection(
+    session_id: str,
+    request: Request,
+    strategy: str = Query("reliability_weighted", description="Client selection strategy"),
+    min_reliability: float = Query(0.8, description="Minimum client reliability score"),
+    resource_aware: bool = Query(True, description="Consider client resources")
+):
+    """
+    Configure advanced client selection for federated learning
+    
+    Strategies:
+    - reliability_weighted: Select based on historical reliability
+    - resource_aware: Consider compute, network, and battery
+    - contribution_based: Prefer clients with valuable data
+    - hybrid: Combine multiple factors
+    """
+    coordinator = request.app.state.federated_coordinator
+    
+    if not hasattr(coordinator, 'fl_framework'):
+        raise HTTPException(
+            status_code=400,
+            detail="Enhanced client selection not available"
+        )
+    
+    try:
+        # Configure client selection
+        config = {
+            "strategy": strategy,
+            "min_reliability": min_reliability,
+            "resource_aware": resource_aware,
+            "factors": {
+                "reliability_weight": 0.4,
+                "resource_weight": 0.3,
+                "data_quality_weight": 0.3
+            }
+        }
+        
+        await coordinator.fl_framework.configure_client_selection(config)
+        
+        return {
+            "session_id": session_id,
+            "client_selection": config,
+            "status": "configured"
+        }
+        
+    except Exception as e:
+        raise HTTPException(status_code=500, detail=str(e))
+
+
+@router.get("/enhanced/capabilities")
+async def get_enhanced_capabilities(request: Request):
+    """Get enhanced federated learning capabilities"""
+    coordinator = request.app.state.federated_coordinator
+    
+    has_enhanced = hasattr(coordinator, 'fl_framework')
+    
+    return {
+        "enhanced_available": has_enhanced,
+        "features": {
+            "aggregation_strategies": [
+                "FedAvg", "FedProx", "SCAFFOLD", "FedAdam", "FedYogi"
+            ] if has_enhanced else ["FedAvg"],
+            "privacy_mechanisms": [
+                "differential_privacy",
+                "secure_aggregation",
+                "homomorphic_encryption",
+                "hybrid"
+            ] if has_enhanced else ["differential_privacy"],
+            "client_selection": [
+                "random",
+                "reliability_weighted",
+                "resource_aware",
+                "contribution_based",
+                "hybrid"
+            ] if has_enhanced else ["random"],
+            "analytics": {
+                "real_time": has_enhanced,
+                "convergence_analysis": has_enhanced,
+                "privacy_accounting": has_enhanced,
+                "resource_tracking": has_enhanced
+            }
+        }
     } 

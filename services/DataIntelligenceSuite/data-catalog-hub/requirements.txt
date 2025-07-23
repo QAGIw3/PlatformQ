@@ -55,6 +55,10 @@ python-dateutil==2.8.2
 pytz==2023.3
 orjson==3.9.10
 
+# GraphQL
+strawberry-graphql[fastapi]==0.215.1
+graphql-core==3.2.3
+
 # PlatformQ dependencies
 platformq-shared
 platformq-events

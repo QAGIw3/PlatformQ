@@ -7,6 +7,9 @@ Implements privacy-preserving distributed machine learning with:
 - Secure aggregation
 - Verifiable credentials integration
 - Adaptive client selection
+
+package ai.qagi.common.dto
+Enhanced with the new federated learning framework from data-intelligence-common.
 """
 
 import asyncio
@@ -25,6 +28,22 @@ from cryptography.fernet import Fernet
 import hashlib
 from collections import defaultdict
 import httpx
+
+# Import the new federated learning framework
+from data_intelligence_common.integrations.federated_learning import (
+    FederatedLearningFramework,
+    FederationConfig,
+    ClientConfig,
+    TrainingRound,
+    ModelUpdate,
+    AggregationStrategy as NewAggregationStrategy,
+    PrivacyConfig,
+    PrivacyMechanism as NewPrivacyMechanism,
+    SecureAggregationProtocol,
+    DifferentialPrivacyConfig,
+    ClientSelection,
+    ClientMetrics
+)
 
 logger = logging.getLogger(__name__)
 

@@ -27,6 +27,21 @@ from data_intelligence_common import (
     create_data_intelligence_app
 )
 
+# Import new event backends and lakehouse clients
+from data_intelligence_common.core.events.backends import (
+    PulsarEventBackend,
+    KafkaEventBackend
+)
+from data_intelligence_common.core.lakehouse import (
+    IcebergClient,
+    DeltaClient,
+    LakehouseManager,
+    TableDefinition,
+    TableSchema,
+    PartitionSpec,
+    DataType
+)
+
 from app.core.config import settings
 from app.core.cdc_manager import CDCManager
 from app.core.stream_ingestion import StreamIngestionManager
@@ -63,6 +78,13 @@ connector_manager: Optional[ConnectorManager] = None
 medallion_manager: Optional[MedallionArchitectureManager] = None
 lifecycle_manager: Optional[DataLifecycleManager] = None
 
+# New lakehouse and event backend instances
+lakehouse_manager: Optional[LakehouseManager] = None
+iceberg_client: Optional[IcebergClient] = None
+delta_client: Optional[DeltaClient] = None
+pulsar_backend: Optional[PulsarEventBackend] = None
+kafka_backend: Optional[KafkaEventBackend] = None
+
 
 class DataIngestionService(DataIntelligenceBaseService):
     """Data Ingestion Service implementation"""
@@ -76,10 +98,16 @@ class DataIngestionService(DataIntelligenceBaseService):
         self.connector_manager = None
         self.medallion_manager = None
         self.lifecycle_manager = None
+        self.lakehouse_manager = None
+        self.iceberg_client = None
+        self.delta_client = None
+        self.pulsar_backend = None
+        self.kafka_backend = None
     
     async def initialize_service(self):
         """Initialize service-specific components"""
         global cdc_manager, stream_manager, batch_manager, schema_registry, connector_manager, medallion_manager, lifecycle_manager
+        global lakehouse_manager, iceberg_client, delta_client, pulsar_backend, kafka_backend
         
         logger.info("Initializing Data Ingestion Service components...")
         
@@ -151,6 +179,77 @@ class DataIngestionService(DataIntelligenceBaseService):
         await schema_registry.initialize()
         await connector_manager.initialize()
         
+        # Initialize lakehouse clients
+        logger.info("Initializing lakehouse clients...")
+        
+        # Initialize Iceberg client
+        iceberg_config = {
+            "catalog_type": "hive",
+            "catalog_uri": settings.hive_metastore_uri if hasattr(settings, 'hive_metastore_uri') else "thrift://localhost:9083",
+            "warehouse_path": f"s3a://lakehouse/iceberg",
+            "s3_endpoint": f"http://{settings.minio_endpoint}",
+            "s3_access_key": settings.minio_access_key,
+            "s3_secret_key": settings.minio_secret_key
+        }
+        iceberg_client = IcebergClient(iceberg_config)
+        await iceberg_client.connect()
+        self.iceberg_client = iceberg_client
+        
+        # Initialize Delta client
+        delta_config = {
+            "spark_session": spark,  # Use the existing Spark session
+            "warehouse_path": f"s3a://lakehouse/delta",
+            "s3_endpoint": f"http://{settings.minio_endpoint}",
+            "s3_access_key": settings.minio_access_key,
+            "s3_secret_key": settings.minio_secret_key
+        }
+        delta_client = DeltaClient(delta_config)
+        await delta_client.connect()
+        self.delta_client = delta_client
+        
+        # Initialize lakehouse manager
+        lakehouse_manager = LakehouseManager({
+            "default_format": "iceberg",
+            "iceberg_client": iceberg_client,
+            "delta_client": delta_client,
+            "metadata_store": schema_registry
+        })
+        self.lakehouse_manager = lakehouse_manager
+        
+        # Initialize event backends
+        logger.info("Initializing event backends...")
+        
+        # Initialize Pulsar backend
+        if hasattr(settings, 'pulsar_url'):
+            pulsar_config = {
+                "service_url": settings.pulsar_url,
+                "authentication": None,  # Will be configured from Vault if needed
+                "operation_timeout_seconds": 30
+            }
+            pulsar_backend = PulsarEventBackend(pulsar_config)
+            await pulsar_backend.connect()
+            self.pulsar_backend = pulsar_backend
+            
+            # Update stream manager to use new backend
+            stream_manager.add_backend("pulsar", pulsar_backend)
+        
+        # Initialize Kafka backend
+        if hasattr(settings, 'kafka_bootstrap_servers'):
+            kafka_config = {
+                "bootstrap_servers": settings.kafka_bootstrap_servers,
+                "security_protocol": "PLAINTEXT",
+                "consumer_group": "data-ingestion-service"
+            }
+            kafka_backend = KafkaEventBackend(kafka_config)
+            await kafka_backend.connect()
+            self.kafka_backend = kafka_backend
+            
+            # Update stream manager to use new backend
+            stream_manager.add_backend("kafka", kafka_backend)
+        
+        # Update medallion manager to use lakehouse clients
+        medallion_manager.set_lakehouse_manager(lakehouse_manager)
+        
         # Inject managers into API routers
         ingestion.cdc_manager = cdc_manager
         ingestion.stream_manager = stream_manager
@@ -165,6 +264,7 @@ class DataIngestionService(DataIntelligenceBaseService):
         # Inject medallion and lifecycle managers
         dependencies.medallion_manager = medallion_manager
         dependencies.lifecycle_manager = lifecycle_manager
+        dependencies.lakehouse_manager = lakehouse_manager
         
         # Register health checks
         self.health_manager.register_check("cdc", cdc_manager.health_check)
@@ -180,6 +280,20 @@ class DataIngestionService(DataIntelligenceBaseService):
     async def cleanup_service(self):
         """Cleanup service-specific components"""
         logger.info("Cleaning up Data Ingestion Service...")
+        
+        # Cleanup event backends
+        if self.pulsar_backend:
+            await self.pulsar_backend.disconnect()
+        
+        if self.kafka_backend:
+            await self.kafka_backend.disconnect()
+        
+        # Cleanup lakehouse clients
+        if self.iceberg_client:
+            await self.iceberg_client.close()
+        
+        if self.delta_client:
+            await self.delta_client.close()
         
         if self.lifecycle_manager:
             await self.lifecycle_manager.cleanup()

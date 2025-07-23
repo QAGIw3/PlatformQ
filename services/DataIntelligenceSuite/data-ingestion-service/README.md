@@ -10,6 +10,8 @@ The Data Ingestion Service is a comprehensive platform that consolidates all dat
 - **External Connectors**: Integration with CRM, ERP, APIs, and webhooks
 - **Traditional Capabilities**: CDC, streaming, batch processing, and schema management
 - **Cost Optimization**: Automated data tiering and retention policies
+- **Modern Lakehouse Formats**: Native support for Apache Iceberg and Delta Lake
+- **Unified Event Streaming**: Seamless integration with Apache Pulsar and Kafka
 
 ## Architecture
 
@@ -58,6 +60,13 @@ The Data Ingestion Service is a comprehensive platform that consolidates all dat
 - **Delta Lake & Iceberg**: ACID transactions and time travel
 - **Automated Transitions**: Quality-based promotions between layers
 
+### Modern Lakehouse Support 🏔️
+- **Apache Iceberg**: Advanced table format with schema evolution
+- **Delta Lake**: Unified batch and streaming with Z-ordering
+- **Time Travel**: Query historical data at any point in time
+- **ACID Transactions**: Full transactional guarantees
+- **Schema Evolution**: Seamless schema changes without rewrites
+
 ### Data Lifecycle Management ♻️
 - **Automated Tiering**: Hot → Warm → Cold storage transitions
 - **Cost Optimization**: Up to 90% storage cost reduction
@@ -83,6 +92,8 @@ The Data Ingestion Service is a comprehensive platform that consolidates all dat
 - Schema validation and transformation
 - Dead letter queue handling
 - Exactly-once semantics
+- Unified event backend abstraction
+- Dynamic backend switching
 
 ### Batch Ingestion
 - File upload support (CSV, JSON, Parquet, Avro)
@@ -111,6 +122,15 @@ The Data Ingestion Service is a comprehensive platform that consolidates all dat
 - `POST /api/v1/lake/aggregate/silver-to-gold` - Aggregate to gold layer
 - `GET /api/v1/lake/layers/{dataset}` - Get dataset layer information
 - `POST /api/v1/lake/optimize/{layer}/{dataset}` - Optimize storage
+
+### Lakehouse Operations 🏔️
+- `POST /api/v1/lake/tables/create` - Create Iceberg/Delta table
+- `GET /api/v1/lake/tables/{table_name}` - Get table information
+- `POST /api/v1/lake/tables/{table_name}/write` - Write data to table
+- `GET /api/v1/lake/tables/{table_name}/read` - Read data from table
+- `POST /api/v1/lake/tables/{table_name}/time-travel` - Query historical data
+- `POST /api/v1/lake/tables/{table_name}/optimize` - Optimize table storage
+- `GET /api/v1/lake/formats` - Get supported lakehouse formats
 
 ### Data Lifecycle ♻️
 - `POST /api/v1/lake/lifecycle/policy` - Apply tiering policy
@@ -222,6 +242,63 @@ response = requests.post('http://localhost:8010/api/v1/connectors', json={
 
 # Trigger connector manually
 response = requests.post('http://localhost:8010/api/v1/connectors/crm-sync/trigger')
+```
+
+### Create Lakehouse Table
+```python
+# Create an Iceberg table
+response = requests.post('http://localhost:8010/api/v1/lake/tables/create', json={
+    "table_name": "customer_events",
+    "schema": {
+        "customer_id": "string",
+        "event_type": "string",
+        "event_time": "timestamp",
+        "amount": "double",
+        "metadata": "string"
+    },
+    "format": "iceberg",
+    "partition_by": ["event_time"],
+    "properties": {
+        "write.format.default": "parquet",
+        "commit.retry.num-retries": "3"
+    }
+})
+```
+
+### Write Data to Lakehouse
+```python
+# Write data to the table
+response = requests.post('http://localhost:8010/api/v1/lake/tables/customer_events/write', json={
+    "data": [
+        {
+            "customer_id": "cust_123",
+            "event_type": "purchase",
+            "event_time": "2024-01-15T10:30:00Z",
+            "amount": 99.99,
+            "metadata": "{\"product\": \"widget\"}"
+        }
+    ],
+    "format": "iceberg",
+    "mode": "append"
+})
+```
+
+### Time Travel Query
+```python
+# Query data from yesterday
+from datetime import datetime, timedelta
+
+yesterday = datetime.now() - timedelta(days=1)
+response = requests.post('http://localhost:8010/api/v1/lake/tables/customer_events/time-travel', json={
+    "timestamp": yesterday.isoformat(),
+    "format": "iceberg"
+})
+
+# Or query by version
+response = requests.post('http://localhost:8010/api/v1/lake/tables/customer_events/time-travel', json={
+    "version": 5,
+    "format": "delta"
+})
 ```
 
 ## Deployment

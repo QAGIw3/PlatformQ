@@ -31,6 +31,7 @@ from .core.monitoring import ModelMonitor
 
 # Import modules
 from .modules.federated_learning import FederatedLearningCoordinator
+from .modules.federated_learning.enhanced_coordinator import EnhancedFederatedLearningCoordinator
 from .modules.mlops import MLOpsManager
 from .modules.automl import AutoMLEngine
 
@@ -143,12 +144,26 @@ async def lifespan(app: FastAPI):
     # Model marketplace has been extracted to a separate service
     
     # Initialize federated learning coordinator with certificates
-    federated_coordinator = FederatedLearningCoordinator(
-        model_registry=model_registry,
-        vault_integration=vault_consul,
-        ignite_host=config.get("ignite_host", "ignite"),
-        verifiable_credential_service_url=config.get("vc_service_url", "http://verifiable-credential-service:8000")
-    )
+    # Use enhanced coordinator if vault and consul are available
+    if vault_consul and vault_consul.vault_client and vault_consul.consul_client:
+        federated_coordinator = EnhancedFederatedLearningCoordinator(
+            model_registry=model_registry,
+            feature_store=None,  # Feature store is now a separate service
+            ignite_host=config.get("ignite_host", "ignite"),
+            verifiable_credential_service_url=config.get("vc_service_url", "http://verifiable-credential-service:8000"),
+            vault_client=vault_consul.vault_client,
+            consul_client=vault_consul.consul_client
+        )
+        logger.info("Using Enhanced Federated Learning Coordinator with new framework")
+    else:
+        federated_coordinator = FederatedLearningCoordinator(
+            model_registry=model_registry,
+            vault_integration=vault_consul,
+            ignite_host=config.get("ignite_host", "ignite"),
+            verifiable_credential_service_url=config.get("vc_service_url", "http://verifiable-credential-service:8000")
+        )
+        logger.info("Using standard Federated Learning Coordinator")
+    
     await federated_coordinator.initialize()
     app.state.federated_coordinator = federated_coordinator
     
