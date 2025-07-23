@@ -1,629 +1,366 @@
-# Data Intelligence Common Library
+# Data Intelligence Common Library v2.0
 
-A comprehensive shared library for all Data Intelligence Suite services, providing unified patterns for data processing, caching, event handling, and infrastructure integration with modern data architectures.
+Enterprise-scale shared library for DataIntelligenceSuite services.
 
-## 🚀 Major Enhancements (v2.0.0)
+## Overview
 
-### 🏔️ Lakehouse Architecture
-- **Apache Iceberg**: ACID transactions, time travel, schema evolution
-- **Delta Lake**: Unified batch and streaming with ACID guarantees  
-- **Apache Hudi**: Incremental processing and CDC support
-- **Unified Manager**: Seamless switching between lakehouse formats
+The `data-intelligence-common` library provides a comprehensive set of reusable components, patterns, and utilities for building high-performance data intelligence services. Version 2.0 introduces significant enhancements for enterprise-scale operations.
 
-### 📊 Data Quality & Governance
-- **Great Expectations**: Comprehensive data validation and profiling
-- **Apache Deequ**: Unit tests for data quality with Spark
-- **Soda Core**: Data quality monitoring and alerting
-- **Data Contracts**: Enforce quality SLAs and schema contracts
+## Key Features
 
-### 🔍 Metadata & Lineage
-- **DataHub**: Centralized metadata management platform
-- **OpenLineage**: Cross-platform data lineage standard
-- **Column-level Lineage**: Track data transformations at field level
-- **ML Model Registry**: Track models, features, and experiments
+### 🚀 Enhanced Processing Framework
+- **Unified Processor Base**: Single interface for batch, stream, and quality processing
+- **Automatic Partitioning**: Intelligent data partitioning with multiple strategies
+- **Parallel Processing**: Built-in parallelism with backpressure control
+- **Resource Management**: Adaptive resource allocation and monitoring
+- **Cost Optimization**: Track and optimize processing costs
 
-### ⚡ Real-time Analytics
-- **Apache Pinot**: Real-time distributed OLAP datastore
-- **ClickHouse**: Column-oriented database for analytics
-- **Star-tree Indexes**: Fast aggregation queries
-- **Materialized Views**: Pre-computed analytics
+### 🔧 Multi-Engine Support
+- **Batch Engines**: Spark, Ray, Dask, Pandas
+- **Stream Engines**: Flink, Beam, Bytewax, Native async
+- **Quality Engines**: Great Expectations, Deequ, Soda, Native
+- **Automatic Engine Selection**: Choose optimal engine based on workload
 
-### 🔌 Event Processing
-- **Pluggable Backends**: Pulsar, Kafka, Redis Streams, NATS
-- **Exactly-once Semantics**: Reliable event processing
-- **Event Sourcing**: Complete audit trail
-- **Saga Pattern**: Distributed transaction coordination
+### 📊 Advanced Features
+- **Lakehouse Integration**: Native support for Iceberg, Delta, Hudi
+- **ML Integration**: Built-in ML capabilities for anomaly detection
+- **Quality Monitoring**: Real-time data quality assessment
+- **Lineage Tracking**: Automatic data lineage capture
+- **Event-Driven Architecture**: Pulsar-based event bus
 
-### 🏗️ Architecture Improvements
-- **Plugin System**: Reduce code duplication across clients
-- **Async-first**: Built for high concurrency
-- **Circuit Breakers**: Fault tolerance patterns
-- **Connection Pooling**: Optimized resource usage
+### 🔒 Enterprise Security
+- **Vault Integration**: Dynamic secrets and encryption
+- **Consul Integration**: Service discovery and configuration
+- **Zero-Trust Architecture**: Built-in security patterns
+- **Audit Logging**: Comprehensive audit trails
 
-## 📦 Installation
+## Installation
 
 ```bash
-# Core installation
-pip install -e services/DataIntelligenceSuite/data-intelligence-common
-
-# With all features
-pip install -e "services/DataIntelligenceSuite/data-intelligence-common[all]"
-
-# Specific feature sets
-pip install -e "services/DataIntelligenceSuite/data-intelligence-common[lakehouse]"      # Lakehouse support
-pip install -e "services/DataIntelligenceSuite/data-intelligence-common[quality]"        # Data quality tools
-pip install -e "services/DataIntelligenceSuite/data-intelligence-common[realtime]"       # Real-time analytics
-pip install -e "services/DataIntelligenceSuite/data-intelligence-common[ml]"             # ML features
-pip install -e "services/DataIntelligenceSuite/data-intelligence-common[streaming]"      # Stream processing
+pip install data-intelligence-common
 ```
 
-## 🛠️ Core Features
+For specific engine support:
+```bash
+# Spark support
+pip install data-intelligence-common[spark]
 
-### 🔐 Security & Configuration
-- **HashiCorp Vault Integration**
-  - Dynamic database credentials with automatic rotation
-  - Transit encryption for sensitive data
-  - PKI certificate management for mTLS
-  - Secure secret storage and retrieval
-  - Encryption key management
+# Flink support
+pip install data-intelligence-common[flink]
 
-- **HashiCorp Consul Integration**  
-  - Service discovery with health checking
-  - Dynamic configuration management
-  - Distributed key-value storage
-  - Service mesh capabilities
-  - Leader election and distributed locks
+# ML support
+pip install data-intelligence-common[ml]
 
-### 🏗️ Enhanced Components
-
-#### Base Service Framework
-- Standardized service initialization with Vault/Consul
-- Health checking and monitoring
-- Graceful shutdown handling
-- Automatic credential renewal
-- Service registration and discovery
-
-#### Plugin-based Client Architecture
-```
-BaseServiceClient
-    ├── ClientPlugin (Interface)
-    │   ├── PulsarPlugin
-    │   ├── KafkaPlugin
-    │   ├── IgnitePlugin
-    │   └── CustomPlugin
-    └── PluginRegistry
-        └── Dynamic plugin discovery
+# All features
+pip install data-intelligence-common[all]
 ```
 
-#### Event Processing Pipeline
-```
-Event Source → Backend Adapter → Event Bus → Handlers
-                    ↓                ↓           ↓
-                 Pulsar          Saga Manager  Processors
-                 Kafka           Event Store   Analytics
-                 Redis           Audit Log     ML Pipeline
-                 NATS
-```
+## Quick Start
 
-## 💡 Usage Examples
-
-### Lakehouse Operations
+### Basic Batch Processing
 
 ```python
-from data_intelligence_common.core.lakehouse import LakehouseManager, LakehouseFormat
+from data_intelligence_common.core.processing import BatchProcessor, BatchConfig
+from data_intelligence_common.core.lakehouse import LakehouseManager
 
-# Initialize manager
-manager = LakehouseManager()
-await manager.initialize()
-
-# Create Iceberg table with time travel
-table = await manager.create_table(
-    name="events",
-    schema={"user_id": "string", "event": "string", "timestamp": "timestamp"},
-    format=LakehouseFormat.ICEBERG,
-    partition_by=["date(timestamp)"]
+# Configure processor
+config = BatchConfig(
+    name="my-batch-processor",
+    engine="auto",  # Auto-select best engine
+    enable_lakehouse=True,
+    enable_quality_checks=True
 )
 
-# Write data with ACID guarantees
-await manager.write_data("events", data)
+# Create processor
+processor = BatchProcessor(config)
+await processor.initialize()
 
-# Query with time travel
-yesterday_data = await manager.read_table(
-    "events",
-    timestamp=datetime.now() - timedelta(days=1)
-)
-
-# Migrate between formats
-await manager.migrate_table(
-    source_table="events",
-    target_table="events_delta",
-    target_format=LakehouseFormat.DELTA
-)
+# Process data
+result = await processor.process("s3://my-bucket/data.parquet")
+print(f"Processed {result.metrics.records_processed} records")
 ```
 
-### Data Quality Validation
+### Stream Processing
 
 ```python
-from data_intelligence_common.integrations import DeequClient, CheckBuilder, CheckLevel
+from data_intelligence_common.core.processing import StreamProcessor, StreamConfig
 
-# Initialize Deequ
-deequ = DeequClient()
-await deequ.connect()
+# Configure stream processor
+config = StreamConfig(
+    name="my-stream-processor",
+    source_type="pulsar",
+    enable_exactly_once=True,
+    enable_ml_quality=True
+)
 
-# Build quality checks
-checks = [
-    CheckBuilder("completeness", CheckLevel.ERROR)
-        .is_complete("user_id")
-        .is_complete("email")
-        .build(),
-    
-    CheckBuilder("uniqueness", CheckLevel.ERROR)
-        .is_unique("transaction_id")
-        .build(),
-    
-    CheckBuilder("validity", CheckLevel.WARNING)
-        .is_non_negative("amount")
-        .is_contained_in("status", ["pending", "completed", "failed"])
-        .satisfies("email", "email RLIKE '^[^@]+@[^@]+\\.[^@]+$'")
-        .build()
-]
+# Create processor
+processor = StreamProcessor(config)
+await processor.initialize()
 
-# Verify data quality
-result = await deequ.verify_data(spark_df, checks)
-print(f"Quality check {'passed' if result.status == 'SUCCESS' else 'failed'}")
-print(f"Metrics: {result.metrics}")
-
-# Get constraint suggestions
-suggestions = await deequ.suggest_constraints(spark_df)
-for suggestion in suggestions:
-    print(f"Suggested: {suggestion['code']} for column {suggestion['column']}")
+# Process stream with fluent API
+await processor \
+    .filter(lambda event: event["value"] > 100) \
+    .map(lambda event: transform(event)) \
+    .window("tumbling", timedelta(minutes=5)) \
+    .to_lakehouse("processed_events")
 ```
 
-### Event Processing with Multiple Backends
+### Data Quality
 
 ```python
-from data_intelligence_common.core.events.backends import (
-    EventBackendFactory, BackendType, EventBackendConfig,
-    Event, ConsumerConfig
+from data_intelligence_common.core.processing import QualityProcessor, QualityConfig
+from data_intelligence_common.core.processing import QualityRule, DataQualityDimension
+
+# Configure quality processor
+config = QualityConfig(
+    name="my-quality-processor",
+    enable_ml_quality=True,
+    enable_auto_remediation=True
 )
 
-# Create event backend (Pulsar, Kafka, Redis, NATS)
-config = EventBackendConfig(
-    backend_type=BackendType.KAFKA,
-    connection_url="kafka://localhost:9092",
-    delivery_guarantee="exactly_once"
-)
-
-backend = EventBackendFactory.create_backend(config)
-await backend.connect()
-
-# Publish events with exactly-once semantics
-event = Event(
-    id="evt-123",
-    topic="user.events",
-    data={"action": "purchase", "amount": 99.99},
-    headers={"source": "web", "version": "1.0"}
-)
-
-result = await backend.publish(event)
-print(f"Published to partition {result.partition} at offset {result.offset}")
-
-# Subscribe with consumer group
-async def handle_event(event: Event):
-    print(f"Processing: {event.data}")
-    # Process event
-    return True
-
-subscription = await backend.subscribe(
-    ConsumerConfig(
-        consumer_group="analytics-processor",
-        topics=["user.events", "system.events"],
-        enable_dead_letter=True,
-        max_redeliveries=3
-    ),
-    handler=handle_event
-)
-
-# Stream events as async iterator
-async for event in backend.stream(consumer_config):
-    await process_event(event)
-```
-
-### Real-time Analytics
-
-```python
-from data_intelligence_common.integrations.realtime import (
-    PinotClient, TableSchema, TableConfig, TableType
-)
-
-# Initialize Pinot
-pinot = PinotClient()
-await pinot.connect()
-
-# Create real-time table
-schema = TableSchema(
-    schema_name="user_metrics",
-    dimension_fields=[
-        {"name": "user_id", "dataType": "STRING"},
-        {"name": "segment", "dataType": "STRING"}
-    ],
-    metric_fields=[
-        {"name": "revenue", "dataType": "DOUBLE"},
-        {"name": "events", "dataType": "LONG"}
-    ],
-    time_field={"name": "timestamp", "dataType": "TIMESTAMP"}
-)
-
-config = TableConfig(
-    table_name="user_metrics",
-    table_type=TableType.REALTIME,
-    time_column="timestamp",
-    stream_type="kafka",
-    stream_topic="user.metrics",
-    stream_bootstrap_servers="localhost:9092"
-)
-
-await pinot.create_schema(schema)
-await pinot.create_table(config)
-
-# Query real-time data
-result = await pinot.query("""
-    SELECT 
-        segment,
-        COUNT(DISTINCT user_id) as unique_users,
-        SUM(revenue) as total_revenue,
-        AVG(revenue) as avg_revenue
-    FROM user_metrics
-    WHERE timestamp >= ago('1h')
-    GROUP BY segment
-    ORDER BY total_revenue DESC
-""")
-
-df = result.to_dataframe()
-print(df)
-```
-
-### Metadata Management with DataHub
-
-```python
-from data_intelligence_common.integrations import (
-    DataHubClient, DatasetMetadata, MLModelMetadata,
-    DataPlatform, DataQualityMetric
-)
-
-datahub = DataHubClient()
-await datahub.connect()
-
-# Register dataset with full metadata
-dataset = DatasetMetadata(
-    platform=DataPlatform.SPARK,
-    name="customer_360",
-    env="PROD",
-    schema=[
-        {"name": "customer_id", "type": "string", "nullable": False},
-        {"name": "lifetime_value", "type": "double", "nullable": True},
-        {"name": "segment", "type": "string", "nullable": False}
-    ],
-    properties={
-        "description": "Unified customer view",
-        "refresh_schedule": "0 2 * * *"
-    },
-    tags=["pii", "gdpr", "customer-data"],
-    owners=["data-team", "analytics-team"],
-    upstream_datasets=[
-        "urn:li:dataset:(urn:li:dataPlatform:kafka,events.customer,PROD)",
-        "urn:li:dataset:(urn:li:dataPlatform:postgres,crm.customers,PROD)"
-    ]
-)
-
-await datahub.ingest_dataset(dataset)
-
-# Register ML model
-model = MLModelMetadata(
-    name="customer_churn_predictor",
-    version="2.1.0",
-    algorithm="XGBoost",
-    hyperparameters={
-        "max_depth": 6,
-        "learning_rate": 0.3,
-        "n_estimators": 100
-    },
-    metrics={
-        "auc": 0.92,
-        "precision": 0.87,
-        "recall": 0.89
-    },
-    features=["lifetime_value", "days_since_last_purchase", "support_tickets"],
-    tags=["production", "churn-prediction"]
-)
-
-await datahub.ingest_ml_model(model)
-
-# Track data quality metrics
-metrics = [
-    DataQualityMetric(
-        dataset_urn=dataset.get_urn(),
-        metric_name="completeness",
-        value=0.98,
-        dimension="completeness"
-    ),
-    DataQualityMetric(
-        dataset_urn=dataset.get_urn(),
-        metric_name="freshness_hours",
-        value=2.5,
-        dimension="timeliness"
+# Define quality rules
+rules = [
+    QualityRule(
+        rule_id="null_check_email",
+        name="Email Null Check",
+        check_type="null_check",
+        dimension=DataQualityDimension.COMPLETENESS,
+        column="email",
+        severity="error"
     )
 ]
 
-await datahub.ingest_data_quality_metrics(metrics)
+# Create processor
+processor = QualityProcessor(config)
+processor.add_rules(rules)
 
-# Search and discover
-results = await datahub.search_datasets(
-    query="customer",
-    filters={"tags": ["pii"], "platform": "spark"}
-)
-
-# Get lineage
-lineage = await datahub.get_dataset_lineage(
-    dataset.get_urn(),
-    direction="BOTH",
-    depth=3
-)
+# Run quality assessment
+result = await processor.process(df)
+print(f"Quality Score: {result.overall_score}")
 ```
 
-### Cross-platform Lineage with OpenLineage
-
-```python
-from data_intelligence_common.integrations import (
-    OpenLineageClient, LineageJob, LineageRun, LineageDataset,
-    JobType
-)
-
-# Initialize OpenLineage
-lineage_client = OpenLineageClient(
-    backend="http",
-    endpoint="http://marquez:5000"
-)
-await lineage_client.connect()
-
-# Create job with metadata
-job = await lineage_client.create_job_with_metadata(
-    namespace="etl",
-    name="customer_aggregation",
-    job_type=JobType.BATCH,
-    description="Daily customer metrics aggregation",
-    source_code_location="https://github.com/company/etl/blob/main/customer_agg.py"
-)
-
-# Define datasets
-input_dataset = await lineage_client.create_dataset_with_schema(
-    namespace="warehouse",
-    name="raw_events",
-    schema_fields=[
-        {"name": "event_id", "type": "string"},
-        {"name": "customer_id", "type": "string"},
-        {"name": "event_type", "type": "string"},
-        {"name": "timestamp", "type": "timestamp"}
-    ]
-)
-
-output_dataset = await lineage_client.create_dataset_with_schema(
-    namespace="warehouse",
-    name="customer_metrics",
-    schema_fields=[
-        {"name": "customer_id", "type": "string"},
-        {"name": "total_events", "type": "long"},
-        {"name": "last_activity", "type": "timestamp"}
-    ]
-)
-
-# Add column-level lineage
-output_dataset = await lineage_client.add_column_lineage(
-    output_dataset,
-    {
-        "customer_id": [
-            {"namespace": "warehouse", "dataset": "raw_events", "field": "customer_id"}
-        ],
-        "total_events": [
-            {"namespace": "warehouse", "dataset": "raw_events", "field": "event_id"}
-        ]
-    }
-)
-
-# Track job execution
-run = await lineage_client.create_run_with_parent(
-    parent_job_name="daily_etl_orchestrator",
-    nominal_time=datetime.now()
-)
-
-# Emit start event
-await lineage_client.emit_start_event(
-    job, run, 
-    inputs=[input_dataset],
-    outputs=[output_dataset]
-)
-
-# ... job execution ...
-
-# Add quality metrics
-output_dataset = await lineage_client.add_data_quality_metrics(
-    output_dataset,
-    metrics={"row_count": 1000000, "null_count": 0},
-    assertions=[
-        {"assertion": "customer_id IS NOT NULL", "success": True}
-    ]
-)
-
-# Emit complete event
-await lineage_client.emit_complete_event(
-    job, run,
-    inputs=[input_dataset],
-    outputs=[output_dataset]
-)
-```
-
-### Advanced Caching with Encryption
-
-```python
-from data_intelligence_common.core.caching import (
-    DistributedCacheManager, CacheConfig, CacheStrategy
-)
-
-# Initialize distributed cache
-cache_manager = DistributedCacheManager(
-    ignite_client=ignite_client,
-    vault_client=vault_client,
-    consul_client=consul_client
-)
-
-# Create encrypted cache with access control
-cache_config = CacheConfig(
-    name="sensitive_data",
-    strategy=CacheStrategy.WRITE_THROUGH,
-    encrypt_data=True,
-    encryption_key="pii-encryption",
-    ttl_seconds=3600,
-    access_roles=["data-scientist", "analyst"]
-)
-
-cache = await cache_manager.create_cache(cache_config)
-
-# Use cache with automatic encryption
-await cache.put("user:123", {"ssn": "123-45-6789", "income": 75000})
-data = await cache.get("user:123")  # Automatically decrypted
-
-# Batch operations
-batch_data = {f"user:{i}": {"data": i} for i in range(1000)}
-await cache.put_all(batch_data)
-
-# Cache statistics
-stats = await cache.get_statistics()
-print(f"Hit rate: {stats.hit_rate:.2%}")
-print(f"Avg get time: {stats.avg_get_time_ms}ms")
-```
-
-## 🔧 Configuration
-
-### Environment Variables
-```bash
-# Core settings
-SERVICE_NAME=my-service
-SERVICE_PORT=8000
-
-# Vault Configuration
-VAULT_ADDR=http://localhost:8200
-VAULT_TOKEN=your-token
-VAULT_NAMESPACE=data-intelligence
-
-# Consul Configuration  
-CONSUL_HTTP_ADDR=http://localhost:8500
-CONSUL_HTTP_TOKEN=your-token
-CONSUL_DATACENTER=dc1
-
-# Feature flags
-ENABLE_LAKEHOUSE=true
-ENABLE_QUALITY_CHECKS=true
-ENABLE_REALTIME_ANALYTICS=true
-```
-
-### Vault Setup for New Features
-
-```bash
-# Lakehouse credentials
-vault write database/config/iceberg \
-    plugin_name=postgresql-database-plugin \
-    allowed_roles="lakehouse-reader,lakehouse-writer" \
-    connection_url="postgresql://{{username}}:{{password}}@iceberg-catalog:5432/catalog"
-
-# Real-time analytics
-vault write database/config/pinot \
-    plugin_name=http-database-plugin \
-    allowed_roles="pinot-admin,pinot-user" \
-    url="http://pinot-controller:9000"
-
-# Data quality
-vault write kv/data-intelligence/great-expectations \
-    datasource_config=@ge-datasources.json \
-    expectation_stores=@ge-stores.json
-```
-
-## 📊 Performance Optimizations
-
-- **Connection Pooling**: Reuse connections across requests
-- **Async I/O**: Non-blocking operations throughout
-- **Batch Processing**: Efficient bulk operations
-- **Caching**: Multi-level caching with TTL
-- **Circuit Breakers**: Prevent cascade failures
-- **Compression**: Automatic data compression
-- **Lazy Loading**: Load components on demand
-- **Resource Limits**: Prevent resource exhaustion
-
-## 🧪 Testing
-
-```bash
-# Run all tests
-pytest tests/ -v
-
-# Run specific test categories
-pytest -m "lakehouse"
-pytest -m "quality"
-pytest -m "realtime"
-pytest -m "events"
-
-# Run with coverage
-pytest --cov=data_intelligence_common --cov-report=html
-
-# Run integration tests
-pytest tests/integration/ --integration
-
-# Run performance tests
-pytest tests/performance/ --benchmark
-```
-
-## 📚 Architecture
+## Architecture
 
 ```
 data-intelligence-common/
-├── base_service/          # Base service framework
-├── clients/               # Service client integrations
-├── core/                  # Core functionality
-│   ├── caching/          # Distributed cache management
-│   ├── catalog/          # Data catalog integration
-│   ├── clients/          # Plugin-based client architecture
-│   ├── config/           # Configuration management
-│   ├── events/           # Event processing
-│   │   └── backends/     # Pluggable event backends
-│   ├── integration/      # Data integration patterns
-│   ├── lakehouse/        # Lakehouse table formats
-│   ├── ml/               # ML utilities
-│   ├── orchestration/    # Workflow orchestration
-│   └── processing/       # Data processing
-├── integrations/         # External service clients
-│   └── realtime/        # Real-time analytics
-├── monitoring/           # Observability
-├── utils/                # Utilities
-└── vault_consul/         # Vault/Consul integration
+├── base_service/          # Service templates and patterns
+├── core/
+│   ├── processing/        # Enhanced processing framework
+│   ├── lakehouse/         # Lakehouse integrations
+│   ├── ml/                # ML capabilities
+│   ├── quality/           # Quality framework
+│   ├── events/            # Event-driven patterns
+│   ├── orchestration/     # Workflow orchestration
+│   └── caching/           # Distributed caching
+├── integrations/          # External service integrations
+├── monitoring/            # Observability components
+└── vault_consul/          # Security integrations
 ```
 
-## 🤝 Contributing
+## Core Components
 
-1. Follow the established patterns
-2. Add comprehensive tests for new features
-3. Update documentation with examples
-4. Ensure backward compatibility
-5. Run linting and type checking
-6. Add performance benchmarks for critical paths
+### Processing Framework
 
-## 📈 Roadmap
+The enhanced processing framework provides:
+- Unified interface for all processing types
+- Automatic optimization and partitioning
+- Built-in monitoring and metrics
+- Fault tolerance and retry logic
 
-- [ ] Apache Doris integration for real-time analytics
-- [ ] Databricks Unity Catalog support
-- [ ] Streaming SQL with Flink SQL
-- [ ] GraphQL federation for metadata
-- [ ] Policy-based data access control
-- [ ] Data mesh integration patterns
-- [ ] Federated learning support
+### Lakehouse Integration
 
-## 📄 License
+Native support for modern lakehouse formats:
+- Apache Iceberg
+- Delta Lake
+- Apache Hudi
 
-Proprietary - PlatformQ 
+Features:
+- ACID transactions
+- Time travel
+- Schema evolution
+- Automatic optimization
+
+### ML Integration
+
+Built-in ML capabilities:
+- Anomaly detection
+- Feature engineering
+- Model serving
+- Online learning
+
+### Event-Driven Architecture
+
+Pulsar-based event bus with:
+- Exactly-once semantics
+- Event sourcing
+- Saga pattern support
+- Dead letter queues
+
+## Best Practices
+
+### 1. Use Dependency Injection
+
+```python
+from dependency_injector import containers, providers
+from data_intelligence_common.core.caching import CacheManager
+
+class Container(containers.DeclarativeContainer):
+    cache = providers.Singleton(CacheManager)
+```
+
+### 2. Leverage Async/Await
+
+```python
+async def process_data():
+    async with processor:
+        result = await processor.process(data)
+    return result
+```
+
+### 3. Enable Monitoring
+
+```python
+from data_intelligence_common.monitoring import setup_monitoring
+
+app = create_app()
+setup_monitoring(app)
+```
+
+### 4. Use Structured Logging
+
+```python
+from data_intelligence_common.monitoring import StructuredLogger
+
+logger = StructuredLogger.get_logger(__name__)
+logger.info("Processing started", extra={"job_id": job_id})
+```
+
+## Configuration
+
+### Environment Variables
+
+```bash
+# Service configuration
+SERVICE_NAME=my-service
+ENVIRONMENT=production
+
+# Consul configuration
+CONSUL_URL=http://consul:8500
+CONSUL_TOKEN=xxx
+
+# Vault configuration
+VAULT_URL=http://vault:8200
+VAULT_TOKEN=xxx
+
+# Processing configuration
+MAX_WORKERS=8
+ENABLE_CACHING=true
+CACHE_TTL=3600
+```
+
+### Consul Configuration
+
+```json
+{
+  "data-intelligence/processors/my-processor/config": {
+    "parallelism": 16,
+    "partition_size_mb": 256,
+    "enable_optimization": true
+  }
+}
+```
+
+## Performance Tuning
+
+### Batch Processing
+
+1. **Partition Size**: Adjust `partition_size_mb` based on data characteristics
+2. **Parallelism**: Set based on available CPU cores
+3. **Engine Selection**: Use Spark for large datasets, Pandas for small
+
+### Stream Processing
+
+1. **Buffer Size**: Tune based on throughput requirements
+2. **Checkpoint Interval**: Balance between performance and fault tolerance
+3. **Watermark Delay**: Set based on expected out-of-order data
+
+### Resource Management
+
+1. **Memory Limits**: Set to 70-80% of available memory
+2. **CPU Limits**: Leave headroom for system processes
+3. **Adaptive Scaling**: Enable for variable workloads
+
+## Monitoring and Debugging
+
+### Metrics
+
+Key metrics exposed via Prometheus:
+- `processing_records_total`: Total records processed
+- `processing_duration_seconds`: Processing duration histogram
+- `processing_errors_total`: Error count by type
+- `resource_usage_percent`: CPU/Memory usage
+
+### Logging
+
+Structured logs with correlation IDs:
+```json
+{
+  "timestamp": "2024-01-15T10:30:00Z",
+  "level": "INFO",
+  "service": "my-processor",
+  "job_id": "123e4567-e89b-12d3-a456-426614174000",
+  "message": "Processing completed",
+  "records_processed": 1000000,
+  "duration_ms": 5432
+}
+```
+
+### Tracing
+
+OpenTelemetry integration for distributed tracing:
+- Automatic span creation
+- Context propagation
+- Performance profiling
+
+## Migration Guide
+
+### From v1.x to v2.0
+
+1. **Update imports**:
+```python
+# Old
+from data_intelligence_common.processing import BatchProcessor
+
+# New
+from data_intelligence_common.core.processing import BatchProcessor
+```
+
+2. **Update configuration**:
+```python
+# Old
+config = ProcessorConfig(parallelism=4)
+
+# New
+config = BatchConfig(
+    parallelism=4,
+    engine="auto",
+    enable_optimization=True
+)
+```
+
+3. **Use new features**:
+```python
+# Enable ML-based quality
+config.enable_ml_quality = True
+
+# Enable cost tracking
+config.enable_cost_tracking = True
+```
+
+## Contributing
+
+See [CONTRIBUTING.md](CONTRIBUTING.md) for guidelines.
+
+## License
+
+See [LICENSE](LICENSE) for details. 

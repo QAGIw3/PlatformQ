@@ -1,192 +1,101 @@
 # Stream Processing Service
 
-A unified service for all real-time stream processing needs, consolidating multiple Flink jobs into a single, manageable service.
+Real-time stream processing service using Flink, Beam, and Bytewax
 
 ## Overview
 
-The Stream Processing Service provides a centralized platform for:
-- Real-time event processing
-- Complex Event Processing (CEP)
-- Stream analytics
-- Risk monitoring
-- Fraud detection
-- Settlement processing
+This service is part of the DataIntelligenceSuite v2.0 architecture, providing consolidated functionality with enterprise-grade features.
 
-## Architecture
+## Features
 
-```
-┌─────────────────────────────────────────────────────────┐
-│                Stream Processing Service                 │
-├─────────────────────────────────────────────────────────┤
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │
-│  │   Job       │  │   Pattern   │  │   State     │    │
-│  │  Manager    │  │   Library   │  │  Manager    │    │
-│  └─────────────┘  └─────────────┘  └─────────────┘    │
-│  ┌─────────────┐  ┌─────────────┐  ┌─────────────┐    │
-│  │   Flink     │  │    CEP      │  │  Analytics  │    │
-│  │  Runtime    │  │   Engine    │  │   Engine    │    │
-│  └─────────────┘  └─────────────┘  └─────────────┘    │
-└─────────────────────────────────────────────────────────┘
+- FastAPI-based REST API with automatic documentation
+- GraphQL support (optional)
+- Async/await throughout for high performance
+- Pulsar integration for event-driven architecture
+- Vault/Consul integration for security and configuration
+- Prometheus metrics and OpenTelemetry tracing
+- Structured logging with correlation IDs
+- Health checks and readiness probes
+
+## Quick Start
+
+### Development
+
+1. Install dependencies:
+```bash
+pip install -r requirements.txt
 ```
 
-## Consolidated Jobs
-
-### 1. Event Processing
-- **Activity Stream**: Unified event processing from all services
-- **Graph Ingestion**: Real-time graph updates
-- **Lineage Ingestion**: Data lineage tracking
-
-### 2. CEP & Pattern Detection
-- **Complex Event Processing**: Multi-stream pattern detection
-- **Fraud Detection**: Real-time fraud pattern matching
-- **Derivatives CEP**: Trading pattern detection
-
-### 3. Risk & Analytics
-- **Risk Analytics**: Real-time risk calculations
-- **Compute Futures Settlement**: Settlement processing
-- **Royalty Calculation**: Usage-based royalty processing
-
-### 4. Specialized Processing
-- **Simulation Engine**: Real-time simulation processing
-- **Resilience Monitoring**: System resilience patterns
-- **Workflow Federation**: Distributed workflow processing
-
-## API Endpoints
-
-```yaml
-POST   /jobs                    # Submit new job
-GET    /jobs                    # List all jobs
-GET    /jobs/{id}              # Get job status
-DELETE /jobs/{id}              # Cancel job
-POST   /jobs/{id}/savepoint    # Create savepoint
-GET    /patterns               # List CEP patterns
-POST   /patterns               # Register new pattern
+2. Set environment variables:
+```bash
+export VAULT_ADDR=http://localhost:8200
+export CONSUL_ADDR=http://localhost:8500
+export PULSAR_URL=pulsar://localhost:6650
 ```
+
+3. Run the service:
+```bash
+python -m uvicorn app.main:app --reload
+```
+
+### Docker
+
+```bash
+docker-compose up --build
+```
+
+## API Documentation
+
+Once running, visit:
+- Swagger UI: http://localhost:8000/docs
+- ReDoc: http://localhost:8000/redoc
+- GraphQL Playground: http://localhost:8000/graphql (if enabled)
 
 ## Configuration
 
-```yaml
-stream-processing:
-  flink:
-    parallelism: 8
-    checkpointing:
-      interval: 30000
-      mode: EXACTLY_ONCE
-    state-backend:
-      type: rocksdb
-      checkpoint-dir: hdfs://namenode:9000/flink/checkpoints
-  
-  patterns:
-    fraud:
-      velocity-check:
-        window: 5m
-        threshold: 10
-      wash-trading:
-        window: 5m
-        same-user: true
-    
-    risk:
-      liquidation-cascade:
-        window: 1h
-        threshold: 0.2
-      price-spike:
-        window: 1m
-        threshold: 0.05
+Configuration is managed through environment variables and Consul. See `app/core/config.py` for all available settings.
+
+## Testing
+
+```bash
+# Run all tests
+pytest
+
+# Run with coverage
+pytest --cov=app --cov-report=html
+
+# Run specific test file
+pytest tests/unit/test_example.py
 ```
-
-## Job Types
-
-### 1. Streaming SQL Jobs
-```sql
--- Example: Activity Stream Processing
-CREATE TABLE activity_stream (
-  event_id STRING,
-  tenant_id STRING,
-  event_type STRING,
-  timestamp TIMESTAMP(3),
-  data MAP<STRING, STRING>,
-  WATERMARK FOR timestamp AS timestamp - INTERVAL '5' SECOND
-) WITH (
-  'connector' = 'pulsar',
-  'topic' = 'activity-events',
-  'scan.startup.mode' = 'latest'
-);
-
--- Process and sink to Cassandra
-INSERT INTO cassandra_activity_stream
-SELECT 
-  event_id,
-  tenant_id,
-  event_type,
-  TUMBLE_START(timestamp, INTERVAL '1' MINUTE) as window_start,
-  COUNT(*) as event_count
-FROM activity_stream
-GROUP BY 
-  TUMBLE(timestamp, INTERVAL '1' MINUTE),
-  tenant_id,
-  event_type;
-```
-
-### 2. CEP Pattern Jobs
-```python
-# Fraud detection pattern
-pattern = Pattern.begin("first").where(lambda x: x["amount"] > 1000) \
-    .followedBy("second").where(lambda x: x["amount"] > 1000) \
-    .within(Time.minutes(5))
-```
-
-### 3. Stateful Processing Jobs
-```python
-class RiskCalculator(KeyedProcessFunction):
-    def process_element(self, value, ctx):
-        # Maintain state per user
-        current_exposure = self.exposure_state.value() or 0
-        new_exposure = self.calculate_exposure(value)
-        self.exposure_state.update(new_exposure)
-```
-
-## Integration Points
-
-- **Pulsar**: Event sourcing and sinking
-- **Cassandra**: Hot data storage
-- **MinIO**: Cold storage and checkpoints
-- **Ignite**: State caching
-- **Elasticsearch**: Analytics results
 
 ## Monitoring
 
-- Prometheus metrics: `/metrics`
-- Health check: `/health`
-- Job metrics: `/jobs/{id}/metrics`
+- Metrics: http://localhost:8000/metrics
+- Health: http://localhost:8000/health
+- Readiness: http://localhost:8000/api/v1/health/ready
+- Liveness: http://localhost:8000/api/v1/health/live
 
-## Migration Guide
+## Architecture
 
-To migrate existing Flink jobs:
+This service follows the consolidated architecture pattern:
 
-1. **Convert job to service module**:
-   ```python
-   # Old: Standalone job
-   env = StreamExecutionEnvironment.get_execution_environment()
-   
-   # New: Service module
-   class MyJobModule(StreamJobModule):
-       def configure(self, env: StreamExecutionEnvironment):
-           # Job logic here
-   ```
+```
+stream-processing-service/
+├── app/
+│   ├── api/          # API endpoints
+│   ├── core/         # Core functionality
+│   ├── models/       # Data models
+│   ├── services/     # Business logic
+│   └── utils/        # Utilities
+├── tests/            # Test suite
+├── scripts/          # Utility scripts
+└── configs/          # Configuration files
+```
 
-2. **Register patterns**:
-   ```yaml
-   patterns:
-     my-pattern:
-       type: cep
-       definition: pattern.yml
-   ```
+## Contributing
 
-3. **Update deployment**:
-   ```bash
-   # Old: Submit to Flink cluster
-   flink run -c MyJob job.jar
-   
-   # New: Deploy via service
-   curl -X POST /jobs -d @job-config.json
-   ``` 
+Please follow the contribution guidelines in the main repository.
+
+## License
+
+See LICENSE in the root directory.
