@@ -6,7 +6,7 @@ Provides advanced search capabilities with faceting, filtering, and relevance ra
 
 import re
 import uuid
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Any, Dict, List, Optional, Set, Union, Tuple
 from datetime import datetime
 from enum import Enum
@@ -188,7 +188,6 @@ class SearchResult:
 class BaseSearchBackend(ABC):
     """Base search backend interface"""
     
-    @abstractmethod
     async def index(
         self,
         doc_id: str,
@@ -196,34 +195,39 @@ class BaseSearchBackend(ABC):
         index_name: str = "catalog"
     ) -> bool:
         """Index document"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement index method"
+        )
         
-    @abstractmethod
     async def search(
         self,
         query: SearchQuery,
         index_name: str = "catalog"
     ) -> SearchResult:
         """Execute search"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement search method"
+        )
         
-    @abstractmethod
     async def delete(
         self,
         doc_id: str,
         index_name: str = "catalog"
     ) -> bool:
         """Delete document"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement delete method"
+        )
         
-    @abstractmethod
     async def bulk_index(
         self,
         documents: List[Tuple[str, Dict[str, Any]]],
         index_name: str = "catalog"
     ) -> Dict[str, bool]:
         """Bulk index documents"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement bulk_index method"
+        )
 
 
 class InMemorySearchBackend(BaseSearchBackend):

@@ -6,7 +6,7 @@ from dataclasses import dataclass
 from datetime import datetime
 import asyncio
 import logging
-from abc import ABC, abstractmethod
+from abc import ABC
 
 from fastapi import FastAPI
 from prometheus_client import Counter, Histogram, Gauge
@@ -18,9 +18,9 @@ from platformq_shared.event_publisher import EventPublisher
 
 from ..vault_consul import VaultConsulIntegration, DataServiceConfig
 from ..monitoring import MetricsCollector, StructuredLogger
-from ..event_handlers import BaseEventProcessor
+from ..core.events import BaseEventProcessor
 from ..core.caching import CacheManager, DistributedCacheClient
-from .health import HealthCheckManager, HealthStatus
+from ..monitoring import HealthCheckManager, HealthStatus
 from .config import ServiceConfig, CacheConfig, EventConfig
 from .middleware import CircuitBreakerManager
 
@@ -548,15 +548,75 @@ class DataIntelligenceBaseService(ABC):
         return metrics
         
     # Abstract methods to be implemented by derived services
-    @abstractmethod
     async def initialize_service(self):
-        """Initialize service-specific components."""
-        pass
+        """
+        Initialize service-specific components.
         
-    @abstractmethod
+        This method should be overridden by derived services to initialize
+        their specific components. The base implementation provides common
+        initialization that all services need.
+        """
+        logger.info(f"Initializing service-specific components for {self.metadata.name}")
+        
+        # Initialize service-specific metrics
+        if self.metrics:
+            self.metrics.register_counter(f"{self.metadata.name}_requests_total")
+            self.metrics.register_histogram(f"{self.metadata.name}_request_duration")
+            self.metrics.register_gauge(f"{self.metadata.name}_active_connections")
+            
+        # Initialize service-specific health checks
+        if self.health_manager:
+            # Add service-specific health check
+            async def service_health_check() -> bool:
+                # Basic health check - derived classes should override
+                return self._initialized and not self._shutting_down
+                
+            self.health_manager.add_check(
+                f"{self.metadata.name}_service",
+                service_health_check,
+                critical=True
+            )
+            
+        # Log service capabilities
+        logger.info(f"Service capabilities: {', '.join(self.metadata.capabilities)}")
+        logger.info(f"Service dependencies: {', '.join(self.metadata.dependencies)}")
+        
+        # Derived services should call super().initialize_service() and then
+        # add their own initialization logic
+        
     async def cleanup_service(self):
-        """Cleanup service-specific components."""
-        pass
+        """
+        Cleanup service-specific components.
+        
+        This method should be overridden by derived services to cleanup
+        their specific components. The base implementation provides common
+        cleanup that all services need.
+        """
+        logger.info(f"Cleaning up service-specific components for {self.metadata.name}")
+        
+        # Cancel any service-specific background tasks
+        service_tasks = [task for task in self._background_tasks if not task.done()]
+        if service_tasks:
+            logger.info(f"Cancelling {len(service_tasks)} service background tasks")
+            for task in service_tasks:
+                task.cancel()
+            await asyncio.gather(*service_tasks, return_exceptions=True)
+            
+        # Clear any service-specific caches
+        if self.cache_manager:
+            try:
+                # Clear service-specific cache regions
+                await self.cache_manager.clear(f"{self.metadata.name}_cache")
+            except Exception as e:
+                logger.warning(f"Error clearing service cache: {e}")
+                
+        # Log final metrics
+        if self.metrics:
+            metrics = self.get_service_metrics()
+            logger.info(f"Final service metrics: {metrics}")
+            
+        # Derived services should override this method and call
+        # super().cleanup_service() at the end
         
     # Helper methods for derived services
     async def get_config(self, key: str, default: Any = None) -> Any:

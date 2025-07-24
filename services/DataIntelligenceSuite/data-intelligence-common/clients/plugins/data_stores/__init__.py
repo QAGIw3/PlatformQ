@@ -1,0 +1,21 @@
+"""
+Data Store Client Plugins
+
+Plugins for database and data storage systems.
+"""
+
+from typing import Dict, Type
+from ...base_plugin import ClientPlugin
+
+# Plugin registry for data stores
+_plugins: Dict[str, Type[ClientPlugin]] = {}
+
+def register_plugin(name: str, plugin_class: Type[ClientPlugin]):
+    """Register a data store plugin"""
+    _plugins[name] = plugin_class
+
+def get_plugin(name: str) -> Type[ClientPlugin]:
+    """Get a data store plugin by name"""
+    return _plugins.get(name)
+
+__all__ = ["register_plugin", "get_plugin"] 

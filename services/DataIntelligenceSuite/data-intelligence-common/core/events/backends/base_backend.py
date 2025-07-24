@@ -5,7 +5,7 @@ Provides abstract interface for pluggable event backends.
 """
 
 from typing import Any, Dict, List, Optional, Callable, AsyncIterator
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass, field
 from datetime import datetime
 from enum import Enum
@@ -20,7 +20,7 @@ class BackendType(str, Enum):
     """Supported event backend types"""
     PULSAR = "pulsar"
     KAFKA = "kafka"
-    REDIS_STREAMS = "redis_streams"
+    IGNITE = "ignite"
     NATS = "nats"
     RABBITMQ = "rabbitmq"
     SQS = "sqs"
@@ -148,17 +148,18 @@ class EventBackend(ABC):
             "last_error": None
         }
     
-    @abstractmethod
     async def connect(self) -> None:
         """Connect to the event backend"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement connect method"
+        )
     
-    @abstractmethod
     async def disconnect(self) -> None:
         """Disconnect from the event backend"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement disconnect method"
+        )
     
-    @abstractmethod
     async def publish(
         self,
         event: Event,
@@ -174,9 +175,10 @@ class EventBackend(ABC):
         Returns:
             Publish result
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement publish method"
+        )
     
-    @abstractmethod
     async def publish_batch(
         self,
         events: List[Event],
@@ -192,9 +194,10 @@ class EventBackend(ABC):
         Returns:
             List of publish results
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement publish_batch method"
+        )
     
-    @abstractmethod
     async def subscribe(
         self,
         config: ConsumerConfig,
@@ -210,9 +213,10 @@ class EventBackend(ABC):
         Returns:
             Subscription ID
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement subscribe method"
+        )
     
-    @abstractmethod
     async def unsubscribe(self, subscription_id: str) -> None:
         """
         Unsubscribe from topics.
@@ -220,9 +224,10 @@ class EventBackend(ABC):
         Args:
             subscription_id: Subscription to cancel
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement unsubscribe method"
+        )
     
-    @abstractmethod
     async def consume_batch(
         self,
         config: ConsumerConfig,
@@ -240,9 +245,10 @@ class EventBackend(ABC):
         Returns:
             List of events
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement consume_batch method"
+        )
     
-    @abstractmethod
     async def acknowledge(
         self,
         event: Event,
@@ -255,9 +261,10 @@ class EventBackend(ABC):
             event: Event to acknowledge
             success: Whether processing was successful
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement acknowledge method"
+        )
     
-    @abstractmethod
     async def create_topic(
         self,
         topic: str,
@@ -277,9 +284,10 @@ class EventBackend(ABC):
         Returns:
             Success status
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement create_topic method"
+        )
     
-    @abstractmethod
     async def delete_topic(self, topic: str) -> bool:
         """
         Delete a topic.
@@ -290,9 +298,10 @@ class EventBackend(ABC):
         Returns:
             Success status
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement delete_topic method"
+        )
     
-    @abstractmethod
     async def list_topics(self) -> List[str]:
         """
         List all topics.
@@ -300,9 +309,10 @@ class EventBackend(ABC):
         Returns:
             List of topic names
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement list_topics method"
+        )
     
-    @abstractmethod
     async def get_topic_info(self, topic: str) -> Dict[str, Any]:
         """
         Get topic information.
@@ -313,7 +323,9 @@ class EventBackend(ABC):
         Returns:
             Topic information
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement get_topic_info method"
+        )
     
     async def health_check(self) -> bool:
         """Check backend health"""
@@ -344,7 +356,6 @@ class EventBackend(ABC):
         self._metrics["errors"] += 1
         self._metrics["last_error"] = error
     
-    @abstractmethod
     async def stream(
         self,
         config: ConsumerConfig
@@ -358,7 +369,9 @@ class EventBackend(ABC):
         Yields:
             Events
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement stream method"
+        )
 
 
 class EventBackendFactory:

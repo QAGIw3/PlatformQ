@@ -6,6 +6,21 @@ Enterprise-scale shared library for DataIntelligenceSuite services.
 
 The `data-intelligence-common` library provides a comprehensive set of reusable components, patterns, and utilities for building high-performance data intelligence services. Version 2.0 introduces significant enhancements for enterprise-scale operations.
 
+## Recent Refactoring (July 2024)
+
+This library has undergone significant refactoring to improve organization and reduce duplication:
+
+### ✅ Completed Improvements
+
+1. **Unified Base Client**: Merged `BaseServiceClient` and `BaseClient` into a single comprehensive base client in `clients/base.py` with full Vault/Consul integration
+2. **Event Consolidation**: Removed duplicate `event_handlers/` directory - all functionality now in `core/events/`
+3. **Cache Strategy Unification**: All services now use the unified `CacheStrategy` from `core/caching/strategies.py`
+4. **Processor Hierarchy**: Documented clear processor hierarchy with `BaseProcessor` as root for data processing
+5. **Base Configuration**: Created comprehensive `BaseConfig` class in `core/config/base.py` that all configs inherit from
+6. **Monitoring Consolidation**: Merged health checking components into `monitoring/` directory with backward compatibility
+7. **Integration Patterns**: Clarified distinction between patterns (`core/integration/`) and implementations (`integrations/`)
+8. **Utility Audit**: Documented which utilities provide value beyond standard library in `utils/README.md`
+
 ## Key Features
 
 ### 🚀 Enhanced Processing Framework
@@ -151,8 +166,10 @@ data-intelligence-common/
 │   ├── quality/           # Quality framework
 │   ├── events/            # Event-driven patterns
 │   ├── orchestration/     # Workflow orchestration
+│   ├── pipelines/         # Data pipeline framework
 │   └── caching/           # Distributed caching
 ├── integrations/          # External service integrations
+├── models/                # Data models and mixins
 ├── monitoring/            # Observability components
 └── vault_consul/          # Security integrations
 ```
@@ -166,6 +183,22 @@ The enhanced processing framework provides:
 - Automatic optimization and partitioning
 - Built-in monitoring and metrics
 - Fault tolerance and retry logic
+
+### Vault/Consul Integration
+
+Secure service integration with:
+- **Base Classes**: `BaseIntegration`, `CacheableMixin`, `LeaseManagerMixin`
+- **Vault Features**: Dynamic credentials, encryption, PKI certificates
+- **Consul Features**: Service discovery, configuration management, distributed locks
+- **Unified Interface**: Combined operations for both services
+
+### Data Models
+
+Comprehensive model system with:
+- **Base Models**: `TimestampedModel`, `VersionedModel`, `AuditedModel`
+- **Mixins**: `MetadataMixin`, `QualityMixin`, `LineageMixin`, `LifecycleMixin`
+- **Domain Models**: Dataset, Schema, ML models, Processing jobs
+- **Catalog Models**: Asset management, lineage tracking
 
 ### Lakehouse Integration
 
@@ -321,6 +354,45 @@ OpenTelemetry integration for distributed tracing:
 - Automatic span creation
 - Context propagation
 - Performance profiling
+
+## Module Organization
+
+### Core Modules (`core/`)
+- **`api/`**: Base API components (routers, middleware, validators)
+- **`caching/`**: Unified caching framework with multiple strategies
+- **`catalog/`**: Data catalog and metadata management
+- **`config/`**: Configuration base classes and utilities
+- **`engines/`**: Processing engine abstractions
+- **`events/`**: Event-driven architecture components
+- **`integration/`**: Integration patterns (DIH, CDC)
+- **`ml/`**: Machine learning components
+- **`orchestration/`**: Service and workflow orchestration
+- **`patterns/`**: Design patterns (CQRS, Saga, etc.)
+- **`pipelines/`**: Data pipeline building and execution
+- **`processing/`**: Data processing framework
+
+### Client Libraries (`clients/`)
+- **`base.py`**: Unified base client with Vault/Consul integration
+- Service-specific client implementations
+
+### External Integrations (`integrations/`)
+- Database clients (Cassandra, Elasticsearch, JanusGraph, Ignite)
+- Messaging clients (Pulsar, Flink)
+- Analytics clients (Spark, Trino, Druid)
+- Storage clients (MinIO)
+- Data quality clients (Great Expectations, Deequ)
+
+### Support Modules
+- **`base_service/`**: Base service components
+- **`monitoring/`**: Health checks, metrics, tracing
+- **`utils/`**: Utility functions that extend standard library
+- **`vault_consul/`**: HashiCorp integration utilities
+
+### Documentation
+- **`core/ARCHITECTURE.md`**: Explains core module relationships
+- **`core/integration/README.md`**: Integration patterns guide
+- **`integrations/README.md`**: Integration implementations guide
+- **`utils/README.md`**: Utility function guidelines
 
 ## Migration Guide
 

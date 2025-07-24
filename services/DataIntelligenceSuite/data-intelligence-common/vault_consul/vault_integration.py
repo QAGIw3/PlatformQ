@@ -11,6 +11,7 @@ from cryptography.fernet import Fernet
 
 from platformq_shared.vault.vault_client import VaultClient
 from tenacity import retry, stop_after_attempt, wait_exponential
+from .base import BaseIntegration, CacheableMixin, LeaseManagerMixin
 
 logger = logging.getLogger(__name__)
 
@@ -55,7 +56,7 @@ class VaultConfig:
             self.pki_roles = ["service", "client"]
 
 
-class VaultIntegration:
+class VaultIntegration(BaseIntegration, CacheableMixin, LeaseManagerMixin):
     """
     Vault integration for DataIntelligenceSuite services.
     
@@ -73,17 +74,13 @@ class VaultIntegration:
         service_name: str,
         config: Optional[VaultConfig] = None
     ):
+        super().__init__(service_name, config)
         self.client = vault_client
-        self.service_name = service_name
         self.config = config or VaultConfig()
         
         # Credential caches
         self._db_credentials: Dict[str, Dict[str, Any]] = {}
         self._encryption_keys: Dict[str, bytes] = {}
-        self._active_leases: Dict[str, str] = {}
-        
-        # Renewal tasks
-        self._renewal_tasks: Dict[str, asyncio.Task] = {}
         
     async def initialize(self):
         """Initialize Vault integration."""
@@ -106,7 +103,8 @@ class VaultIntegration:
                 
             # Start credential renewal
             await self._start_credential_renewal()
-                
+            
+            self._initialized = True
             logger.info(f"Vault integration initialized for {self.service_name}")
             
         except Exception as e:
@@ -169,7 +167,7 @@ class VaultIntegration:
     async def _start_credential_renewal(self):
         """Start credential renewal tasks."""
         # Create a renewal task
-        self._renewal_tasks["main"] = asyncio.create_task(self._renewal_loop())
+        self._create_task(self._renewal_loop())
         
     async def _renewal_loop(self):
         """Main renewal loop for all credentials."""
@@ -191,6 +189,14 @@ class VaultIntegration:
             except Exception as e:
                 logger.error(f"Error in renewal loop: {e}")
                 await asyncio.sleep(60)
+                
+    async def _renew_lease(self, lease_id: str):
+        """Renew a Vault lease."""
+        await self.client.renew_lease(lease_id)
+        
+    async def _revoke_lease(self, lease_id: str):
+        """Revoke a Vault lease."""
+        await self.client.revoke_lease(lease_id)
                 
     # Database credentials
     @asynccontextmanager
@@ -281,10 +287,24 @@ class VaultIntegration:
         )
         
     # Secret management
-    async def get_secret(self, path: str) -> Optional[Dict[str, Any]]:
+    async def get_secret(self, path: str, use_cache: bool = True) -> Optional[Dict[str, Any]]:
         """Get secret from KV store."""
         full_path = f"{self.config.kv_mount}/{self.service_name}/{path}"
-        return await self.client.read_secret(full_path)
+        
+        # Check cache first
+        if use_cache:
+            cached = self._get_from_cache(full_path)
+            if cached is not None:
+                return cached
+                
+        # Read from Vault
+        secret = await self.client.read_secret(full_path)
+        
+        # Cache the result
+        if secret and use_cache:
+            self._set_cache(full_path, secret)
+            
+        return secret
         
     async def put_secret(self, path: str, data: Dict[str, Any]):
         """Write secret to KV store."""
@@ -297,21 +317,13 @@ class VaultIntegration:
         return await self.client.read_secret(full_path)
         
     # Cleanup
-    async def cleanup(self):
-        """Clean up Vault integration."""
-        # Cancel renewal tasks
-        for task in self._renewal_tasks.values():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-                
-        # Revoke active leases
-        for lease_id in self._active_leases.values():
-            try:
-                await self.client.revoke_lease(lease_id)
-            except Exception as e:
-                logger.error(f"Failed to revoke lease {lease_id}: {e}")
-                
-        logger.info(f"Vault integration cleaned up for {self.service_name}") 
+    async def shutdown(self):
+        """Shutdown Vault integration."""
+        # Cancel all tasks
+        await self._cancel_tasks()
+        
+        # Revoke all active leases
+        await self._revoke_all_leases()
+        
+        self._initialized = False
+        logger.info(f"Vault integration shutdown for {self.service_name}") 

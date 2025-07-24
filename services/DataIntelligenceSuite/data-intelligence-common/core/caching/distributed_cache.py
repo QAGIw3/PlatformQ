@@ -5,7 +5,6 @@ Provides distributed caching capabilities with multi-node coordination.
 """
 
 import asyncio
-import logging
 from typing import Any, Dict, Optional, List, Set, Callable, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass
@@ -15,8 +14,9 @@ import json
 from pyignite import Client, AioClient
 from pyignite.datatypes import String, IntObject
 from pyignite.cache import Cache
+from ...monitoring import StructuredLogger
 
-logger = logging.getLogger(__name__)
+logger = StructuredLogger.get_logger(__name__)
 
 
 @dataclass

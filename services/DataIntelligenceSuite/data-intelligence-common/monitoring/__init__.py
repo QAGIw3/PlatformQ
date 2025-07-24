@@ -25,7 +25,11 @@ from .health import (
     HealthStatus,
     ComponentHealth,
     HealthIndicator,
-    HealthEndpoint
+    HealthEndpoint,
+    HealthCheckManager,
+    HealthMonitor,
+    ServiceHealth,
+    OverallHealth
 )
 
 from .tracing import (
@@ -67,6 +71,10 @@ __all__ = [
     "ComponentHealth",
     "HealthIndicator",
     "HealthEndpoint",
+    "HealthCheckManager",
+    "HealthMonitor",
+    "ServiceHealth",
+    "OverallHealth",
     
     # Tracing
     "TracingManager",

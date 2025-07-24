@@ -53,10 +53,10 @@ from .core.processing import (
 )
 
 # Event Framework
-from .event_handlers import (
+from .core.events import (
     BaseEventProcessor,
     EventRouter,
-    PulsarEventBus,
+    UnifiedEventBus as PulsarEventBus,  # Backward compatibility alias
     EventStore,
     EventType,
     EventPriority

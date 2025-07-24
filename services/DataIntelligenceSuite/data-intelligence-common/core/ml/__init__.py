@@ -66,6 +66,15 @@ from .automl import (
     ModelSelector
 )
 
+from .anomaly_detector import (
+    AnomalyDetector,
+    AnomalyDetectorConfig,
+    AnomalyType,
+    DetectionMethod,
+    AnomalyScore,
+    AnomalyResult
+)
+
 from .explainability import (
     ModelExplainer,
     ExplanationType,
@@ -132,6 +141,14 @@ __all__ = [
     "SearchSpace",
     "OptimizationMetric",
     "ModelSelector",
+    
+    # Anomaly Detection
+    "AnomalyDetector",
+    "AnomalyDetectorConfig",
+    "AnomalyType",
+    "DetectionMethod",
+    "AnomalyScore",
+    "AnomalyResult",
     
     # Explainability
     "ModelExplainer",

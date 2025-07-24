@@ -10,6 +10,7 @@ import uuid
 
 from platformq_shared.consul.consul_client import ConsulClient
 import consul.aio
+from .base import BaseIntegration, CacheableMixin, ConfigWatcherMixin
 
 logger = logging.getLogger(__name__)
 
@@ -52,7 +53,7 @@ class ConsulConfig:
             ]
 
 
-class ConsulIntegration:
+class ConsulIntegration(BaseIntegration, CacheableMixin, ConfigWatcherMixin):
     """
     Consul integration for DataIntelligenceSuite services.
     
@@ -70,17 +71,9 @@ class ConsulIntegration:
         service_name: str,
         config: Optional[ConsulConfig] = None
     ):
+        super().__init__(service_name, config)
         self.client = consul_client
-        self.service_name = service_name
         self.config = config or ConsulConfig()
-        
-        # Service discovery cache
-        self._service_cache: Dict[str, List[Dict[str, Any]]] = {}
-        self._cache_timestamps: Dict[str, datetime] = {}
-        
-        # Configuration watchers
-        self._config_watchers: Dict[str, asyncio.Task] = {}
-        self._config_callbacks: Dict[str, List[Callable]] = {}
         
         # Distributed locks
         self._active_locks: Dict[str, consul.aio.Semaphore] = {}
@@ -100,8 +93,9 @@ class ConsulIntegration:
             
             # Start service discovery cache refresh
             if self.config.enable_service_discovery:
-                asyncio.create_task(self._refresh_service_cache())
-                
+                self._create_task(self._refresh_service_cache())
+            
+            self._initialized = True
             logger.info(f"Consul integration initialized for {self.service_name}")
             
         except Exception as e:
@@ -123,7 +117,7 @@ class ConsulIntegration:
         session_id = response["ID"]
         
         # Start session renewal
-        asyncio.create_task(self._renew_session(session_id))
+        self._create_task(self._renew_session(session_id))
         
         return session_id
         
@@ -210,10 +204,9 @@ class ConsulIntegration:
             raise ValueError("Service discovery is disabled")
             
         # Check cache
-        if service_name in self._service_cache:
-            cache_time = self._cache_timestamps.get(service_name)
-            if cache_time and (datetime.utcnow() - cache_time).seconds < self.config.discovery_cache_ttl:
-                return self._service_cache[service_name]
+        cached = self._get_from_cache(service_name, self.config.discovery_cache_ttl)
+        if cached is not None:
+            return cached
                 
         # Query Consul
         _, services = await self.client.health.service(
@@ -234,8 +227,7 @@ class ConsulIntegration:
             })
             
         # Update cache
-        self._service_cache[service_name] = instances
-        self._cache_timestamps[service_name] = datetime.utcnow()
+        self._set_cache(service_name, instances)
         
         return instances
         
@@ -246,7 +238,7 @@ class ConsulIntegration:
                 await asyncio.sleep(self.config.discovery_cache_ttl)
                 
                 # Refresh all cached services
-                for service_name in list(self._service_cache.keys()):
+                for service_name in list(self._cache.keys()):
                     try:
                         await self.discover_service(service_name)
                     except Exception as e:
@@ -290,19 +282,9 @@ class ConsulIntegration:
             raise ValueError("Configuration watching is disabled")
             
         full_key = f"{self.config.config_prefix}/{key}"
-        
-        # Add callback
-        if full_key not in self._config_callbacks:
-            self._config_callbacks[full_key] = []
-        self._config_callbacks[full_key].append(callback)
-        
-        # Start watcher if not already running
-        if full_key not in self._config_watchers:
-            self._config_watchers[full_key] = asyncio.create_task(
-                self._watch_key(full_key)
-            )
+        await super().watch_config(full_key, callback)
             
-    async def _watch_key(self, key: str):
+    async def _watch_key_loop(self, key: str):
         """Watch a configuration key for changes."""
         index = None
         
@@ -314,12 +296,8 @@ class ConsulIntegration:
                 if data:
                     value = json.loads(data["Value"].decode())
                     
-                    # Call callbacks
-                    for callback in self._config_callbacks.get(key, []):
-                        try:
-                            await callback(key, value)
-                        except Exception as e:
-                            logger.error(f"Error in config callback: {e}")
+                    # Notify callbacks
+                    await self._notify_callbacks(key, value)
                             
             except asyncio.CancelledError:
                 break
@@ -355,7 +333,7 @@ class ConsulIntegration:
             self._active_locks[key] = lock
             
             # Auto-release after TTL
-            asyncio.create_task(self._auto_release_lock(key, ttl))
+            self._create_task(self._auto_release_lock(key, ttl))
             
         return acquired
         
@@ -395,16 +373,14 @@ class ConsulIntegration:
         return keys or []
         
     # Cleanup
-    async def cleanup(self):
-        """Clean up Consul integration."""
-        # Stop config watchers
-        for task in self._config_watchers.values():
-            task.cancel()
-            try:
-                await task
-            except asyncio.CancelledError:
-                pass
-                
+    async def shutdown(self):
+        """Shutdown Consul integration."""
+        # Stop all watchers
+        await self._stop_watchers()
+        
+        # Cancel all tasks
+        await self._cancel_tasks()
+        
         # Release locks
         for key in list(self._active_locks.keys()):
             await self.release_lock(key)
@@ -416,5 +392,6 @@ class ConsulIntegration:
         # Deregister service
         if self._service_id and self.config.deregister_on_shutdown:
             await self.deregister_service(self._service_id)
-            
-        logger.info(f"Consul integration cleaned up for {self.service_name}") 
+        
+        self._initialized = False
+        logger.info(f"Consul integration shutdown for {self.service_name}") 

@@ -10,7 +10,7 @@ import logging
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from pybreaker import CircuitBreaker
+from ..monitoring.resilience import CircuitBreaker, CircuitBreakerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -115,26 +115,18 @@ class CircuitBreakerManager:
     def get_circuit_breaker(self, name: str) -> CircuitBreaker:
         """Get or create circuit breaker"""
         if name not in self._circuit_breakers:
-            self._circuit_breakers[name] = CircuitBreaker(
-                fail_max=self.fail_max,
-                reset_timeout=self.reset_timeout,
-                expected_exception=self.expected_exception
+            config = CircuitBreakerConfig(
+                failure_threshold=self.fail_max,
+                recovery_timeout=self.reset_timeout,
+                expected_exceptions=[self.expected_exception]
             )
+            self._circuit_breakers[name] = CircuitBreaker(name, config)
             
-            # Track circuit breaker state
-            def state_change_listener(breaker, old_state, new_state):
-                state_value = {
-                    "closed": 0, 
-                    "open": 1, 
-                    "half_open": 0.5
-                }.get(new_state.name.lower(), -1)
-                
-                circuit_breaker_state.labels(
-                    service=self.service_name,
-                    breaker=name
-                ).set(state_value)
-                
-            self._circuit_breakers[name].add_listener(state_change_listener)
+            # Set initial state metric
+            circuit_breaker_state.labels(
+                service=self.service_name,
+                breaker=name
+            ).set(0)  # Start in closed state
             
         return self._circuit_breakers[name]
 

@@ -11,6 +11,17 @@ from .base_models import (
     AuditedModel
 )
 
+from .mixins import (
+    MetadataMixin,
+    OwnershipMixin,
+    LifecycleMixin,
+    QualityMixin,
+    LineageMixin,
+    SchemaEvolutionMixin,
+    AccessControlMixin,
+    MonitoringMixin
+)
+
 from .data_models import (
     Dataset,
     DataSource,
@@ -53,6 +64,16 @@ __all__ = [
     "TimestampedModel",
     "VersionedModel",
     "AuditedModel",
+    
+    # Mixins
+    "MetadataMixin",
+    "OwnershipMixin",
+    "LifecycleMixin",
+    "QualityMixin",
+    "LineageMixin",
+    "SchemaEvolutionMixin",
+    "AccessControlMixin",
+    "MonitoringMixin",
     
     # Data
     "Dataset",

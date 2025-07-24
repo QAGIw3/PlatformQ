@@ -1,35 +1,26 @@
 """
-Base configuration classes and utilities.
+Base Configuration Classes for DataIntelligenceSuite
 
-Provides foundation for all configuration management in the platform.
+Provides common configuration patterns and base classes.
 """
 
+from typing import Dict, Any, Optional, List, Union
+from dataclasses import dataclass, field
+from datetime import timedelta
+from enum import Enum
 import os
 import json
 import yaml
-from typing import Any, Dict, List, Optional, Type, TypeVar, Union
-from dataclasses import dataclass, field, asdict
-from datetime import timedelta
 from abc import ABC, abstractmethod
-from pathlib import Path
 import logging
-from enum import Enum
 
 from platformq_shared.vault.vault_client import VaultClient
 from platformq_shared.consul.consul_client import ConsulClient
-from ...monitoring import StructuredLogger
 
-logger = StructuredLogger.get_logger(__name__)
-
-T = TypeVar('T', bound='BaseConfig')
+logger = logging.getLogger(__name__)
 
 
-class ConfigurationError(Exception):
-    """Configuration related errors"""
-    pass
-
-
-class Environment(Enum):
+class Environment(str, Enum):
     """Deployment environments"""
     DEVELOPMENT = "development"
     TESTING = "testing"
@@ -38,313 +29,283 @@ class Environment(Enum):
     LOCAL = "local"
 
 
+class LogLevel(str, Enum):
+    """Log levels"""
+    DEBUG = "DEBUG"
+    INFO = "INFO"
+    WARNING = "WARNING"
+    ERROR = "ERROR"
+    CRITICAL = "CRITICAL"
+
+
 @dataclass
 class BaseConfig(ABC):
     """
-    Base configuration class with common functionality.
+    Base configuration class with common fields.
     
-    Features:
-    - Automatic validation
-    - Environment variable support
-    - Type conversion
-    - Serialization/deserialization
+    All service configurations should inherit from this.
     """
+    # Service identification
+    name: str
+    version: str = "1.0.0"
+    description: str = ""
+    environment: Environment = field(default_factory=lambda: Environment(os.getenv("ENVIRONMENT", "development")))
     
+    # Timeouts
+    startup_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    shutdown_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    request_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=60))
+    
+    # Resource limits
+    max_memory_mb: Optional[int] = None
+    max_cpu_percent: Optional[float] = None
+    max_concurrent_requests: int = 100
+    
+    # Monitoring
+    enable_metrics: bool = True
+    enable_tracing: bool = True
+    enable_profiling: bool = False
+    metrics_port: int = 9090
+    
+    # Logging
+    log_level: LogLevel = field(default_factory=lambda: LogLevel(os.getenv("LOG_LEVEL", "INFO")))
+    structured_logging: bool = True
+    log_format: str = "json"
+    
+    # Health checks
+    enable_health_check: bool = True
+    health_check_interval: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    health_check_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
+    
+    # Security
+    enable_auth: bool = True
+    enable_tls: bool = True
+    enable_encryption: bool = True
+    
+    # Feature flags
+    feature_flags: Dict[str, bool] = field(default_factory=dict)
+    
+    # Tags and metadata
+    tags: List[str] = field(default_factory=list)
+    metadata: Dict[str, Any] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        """Post-initialization validation and setup"""
+        self.validate()
+        
+    def validate(self):
+        """Validate configuration"""
+        if not self.name:
+            raise ValueError("Service name is required")
+            
+        if self.max_memory_mb and self.max_memory_mb < 128:
+            raise ValueError("Minimum memory requirement is 128MB")
+            
+        if self.max_cpu_percent and not 0 < self.max_cpu_percent <= 100:
+            raise ValueError("CPU percent must be between 0 and 100")
+            
+    def to_dict(self) -> Dict[str, Any]:
+        """Convert to dictionary"""
+        result = {}
+        for key, value in self.__dict__.items():
+            if isinstance(value, Enum):
+                result[key] = value.value
+            elif isinstance(value, timedelta):
+                result[key] = value.total_seconds()
+            elif hasattr(value, "to_dict"):
+                result[key] = value.to_dict()
+            else:
+                result[key] = value
+        return result
+        
     @classmethod
-    def from_dict(cls: Type[T], data: Dict[str, Any]) -> T:
-        """Create config from dictionary"""
+    def from_dict(cls, data: Dict[str, Any]) -> "BaseConfig":
+        """Create from dictionary"""
+        # Convert timedelta fields
+        for field_name in ["startup_timeout", "shutdown_timeout", "request_timeout", "health_check_interval", "health_check_timeout"]:
+            if field_name in data and isinstance(data[field_name], (int, float)):
+                data[field_name] = timedelta(seconds=data[field_name])
+                
+        # Convert enum fields
+        if "environment" in data and isinstance(data["environment"], str):
+            data["environment"] = Environment(data["environment"])
+        if "log_level" in data and isinstance(data["log_level"], str):
+            data["log_level"] = LogLevel(data["log_level"])
+            
         return cls(**data)
         
-    @classmethod
-    def from_json(cls: Type[T], json_str: str) -> T:
-        """Create config from JSON string"""
-        data = json.loads(json_str)
-        return cls.from_dict(data)
-        
-    @classmethod
-    def from_yaml(cls: Type[T], yaml_str: str) -> T:
-        """Create config from YAML string"""
-        data = yaml.safe_load(yaml_str)
-        return cls.from_dict(data)
-        
-    @classmethod
-    def from_file(cls: Type[T], file_path: Union[str, Path]) -> T:
-        """Load config from file"""
-        file_path = Path(file_path)
-        
-        if not file_path.exists():
-            raise ConfigurationError(f"Config file not found: {file_path}")
-            
-        content = file_path.read_text()
-        
-        if file_path.suffix == '.json':
-            return cls.from_json(content)
-        elif file_path.suffix in ['.yaml', '.yml']:
-            return cls.from_yaml(content)
-        else:
-            raise ConfigurationError(f"Unsupported file format: {file_path.suffix}")
-            
-    @classmethod
-    def from_env(cls: Type[T], prefix: str = "") -> T:
-        """Create config from environment variables"""
-        data = {}
-        prefix = prefix.upper()
-        
-        for key, value in os.environ.items():
-            if key.startswith(prefix):
-                # Remove prefix and convert to lowercase
-                config_key = key[len(prefix):].lstrip('_').lower()
-                
-                # Handle nested keys (e.g., DATABASE_HOST -> database.host)
-                if '__' in config_key:
-                    config_key = config_key.replace('__', '.')
-                    
-                data[config_key] = value
-                
-        return cls.from_dict(data)
-        
-    def to_dict(self) -> Dict[str, Any]:
-        """Convert config to dictionary"""
-        return asdict(self)
-        
-    def to_json(self, indent: int = 2) -> str:
-        """Convert config to JSON string"""
-        return json.dumps(self.to_dict(), indent=indent, default=str)
-        
-    def to_yaml(self) -> str:
-        """Convert config to YAML string"""
-        return yaml.dump(self.to_dict(), default_flow_style=False)
-        
-    def validate(self) -> List[str]:
-        """
-        Validate configuration.
-        
-        Returns:
-            List of validation errors (empty if valid)
-        """
-        errors = []
-        
-        # Override in subclasses for custom validation
-        errors.extend(self._validate())
-        
-        return errors
-        
-    def _validate(self) -> List[str]:
-        """Custom validation logic (override in subclasses)"""
-        return []
-        
-    def merge(self, other: 'BaseConfig') -> 'BaseConfig':
-        """Merge with another config (other takes precedence)"""
-        self_dict = self.to_dict()
-        other_dict = other.to_dict()
-        
-        merged = {**self_dict, **other_dict}
-        return self.__class__.from_dict(merged)
+    def merge(self, other: "BaseConfig") -> "BaseConfig":
+        """Merge with another config, other takes precedence"""
+        merged_data = self.to_dict()
+        other_data = other.to_dict()
+        merged_data.update(other_data)
+        return self.__class__.from_dict(merged_data)
 
 
 @dataclass
 class ServiceConfig(BaseConfig):
-    """Base configuration for services"""
-    name: str
-    version: str = "1.0.0"
-    environment: Environment = Environment.DEVELOPMENT
+    """Configuration for services with Vault/Consul integration"""
+    # Service discovery
+    use_service_discovery: bool = True
+    service_host: str = field(default_factory=lambda: os.getenv("SERVICE_HOST", "0.0.0.0"))
+    service_port: int = field(default_factory=lambda: int(os.getenv("SERVICE_PORT", "8000")))
+    advertise_address: Optional[str] = None
     
-    # Network
-    host: str = "0.0.0.0"
-    port: int = 8000
-    base_url: Optional[str] = None
+    # Consul
+    consul_enabled: bool = True
+    consul_url: str = field(default_factory=lambda: os.getenv("CONSUL_URL", "http://localhost:8500"))
+    consul_token: Optional[str] = field(default_factory=lambda: os.getenv("CONSUL_TOKEN"))
+    consul_datacenter: str = "dc1"
     
-    # Timeouts
-    request_timeout: timedelta = timedelta(seconds=30)
-    shutdown_timeout: timedelta = timedelta(seconds=30)
+    # Vault
+    vault_enabled: bool = True
+    vault_url: str = field(default_factory=lambda: os.getenv("VAULT_URL", "http://localhost:8200"))
+    vault_token: Optional[str] = field(default_factory=lambda: os.getenv("VAULT_TOKEN"))
+    vault_role: str = "service"
+    vault_mount: str = "secret"
     
-    # Features
-    debug: bool = False
-    enable_docs: bool = True
-    enable_metrics: bool = True
-    enable_tracing: bool = True
+    # Rate limiting
+    enable_rate_limiting: bool = True
+    rate_limit_requests: int = 100
+    rate_limit_window: timedelta = field(default_factory=lambda: timedelta(minutes=1))
     
-    # Resource limits
-    max_connections: int = 1000
-    max_workers: int = 10
-    
-    def _validate(self) -> List[str]:
-        """Validate service configuration"""
-        errors = []
-        
-        if not self.name:
-            errors.append("Service name is required")
-            
-        if self.port < 1 or self.port > 65535:
-            errors.append(f"Invalid port: {self.port}")
-            
-        if self.max_workers < 1:
-            errors.append(f"Invalid max_workers: {self.max_workers}")
-            
-        return errors
+    # Circuit breaker
+    enable_circuit_breaker: bool = True
+    circuit_breaker_failures: int = 5
+    circuit_breaker_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=60))
 
 
 @dataclass
 class DatabaseConfig(BaseConfig):
-    """Database connection configuration"""
-    type: str  # cassandra, ignite, elasticsearch, janusgraph
+    """Base database configuration"""
     host: str = "localhost"
-    port: int = 9042
+    port: int = 5432
+    database: str = "platformq"
     username: Optional[str] = None
     password: Optional[str] = None
-    database: Optional[str] = None
-    keyspace: Optional[str] = None
     
     # Connection pool
     pool_size: int = 10
     max_overflow: int = 20
-    pool_timeout: timedelta = timedelta(seconds=30)
+    pool_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     
     # SSL/TLS
-    ssl_enabled: bool = False
-    ssl_cert_path: Optional[str] = None
-    ssl_key_path: Optional[str] = None
-    ssl_ca_path: Optional[str] = None
+    ssl_enabled: bool = True
+    ssl_mode: str = "require"
+    ssl_cert: Optional[str] = None
+    ssl_key: Optional[str] = None
+    ssl_ca: Optional[str] = None
     
-    # Options
-    options: Dict[str, Any] = field(default_factory=dict)
+    # Performance
+    statement_timeout: timedelta = field(default_factory=lambda: timedelta(minutes=5))
+    connect_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=10))
     
-    def get_connection_string(self) -> str:
-        """Build connection string"""
-        if self.type == "cassandra":
-            return f"cassandra://{self.host}:{self.port}/{self.keyspace}"
-        elif self.type == "ignite":
-            return f"ignite://{self.host}:{self.port}"
-        elif self.type == "elasticsearch":
-            return f"http://{self.host}:{self.port}"
-        elif self.type == "janusgraph":
-            return f"janusgraph://{self.host}:{self.port}"
+    def get_connection_string(self, include_password: bool = False) -> str:
+        """Get database connection string"""
+        if include_password and self.password:
+            auth = f"{self.username}:{self.password}"
+        elif self.username:
+            auth = self.username
         else:
-            raise ValueError(f"Unknown database type: {self.type}")
+            auth = ""
+            
+        return f"postgresql://{auth}@{self.host}:{self.port}/{self.database}"
 
 
 @dataclass
 class CacheConfig(BaseConfig):
-    """Cache configuration"""
-    type: str = "ignite"  # ignite, redis, memory
+    """Base cache configuration"""
     enabled: bool = True
+    backend: str = "ignite"  # ignite, redis, memcached
     
     # TTL settings
-    default_ttl: timedelta = timedelta(minutes=5)
-    max_ttl: timedelta = timedelta(hours=24)
+    default_ttl: timedelta = field(default_factory=lambda: timedelta(minutes=5))
+    max_ttl: timedelta = field(default_factory=lambda: timedelta(hours=24))
     
     # Size limits
-    max_size: int = 10000
+    max_entries: Optional[int] = None
+    max_memory_mb: Optional[int] = None
+    
+    # Behavior
+    enable_compression: bool = False
+    enable_encryption: bool = False
     eviction_policy: str = "LRU"
-    
-    # Connection
-    host: str = "localhost"
-    port: int = 10800
-    
-    # Serialization
-    serializer: str = "json"  # json, pickle, msgpack
 
 
 @dataclass
 class MessagingConfig(BaseConfig):
-    """Messaging system configuration"""
-    type: str = "pulsar"  # pulsar, kafka
-    brokers: List[str] = field(default_factory=lambda: ["localhost:6650"])
+    """Base messaging configuration"""
+    enabled: bool = True
+    backend: str = "pulsar"  # pulsar, kafka, rabbitmq
     
-    # Authentication
-    auth_enabled: bool = False
-    auth_type: str = "token"  # token, oauth2, tls
-    auth_params: Dict[str, Any] = field(default_factory=dict)
+    # Connection
+    broker_url: str = field(default_factory=lambda: os.getenv("BROKER_URL", "pulsar://localhost:6650"))
     
     # Producer settings
-    producer_batch_size: int = 1000
-    producer_timeout: timedelta = timedelta(milliseconds=100)
-    compression_type: str = "lz4"
+    producer_batching: bool = True
+    producer_compression: str = "lz4"
+    producer_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=30))
     
     # Consumer settings
-    consumer_group: Optional[str] = None
-    subscription_type: str = "shared"  # shared, exclusive, failover
-    ack_timeout: timedelta = timedelta(seconds=10)
-    
-    # Topics
-    default_topic: Optional[str] = None
-    topic_prefix: str = "platformq"
+    consumer_type: str = "shared"  # shared, exclusive, failover
+    consumer_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    max_concurrent_messages: int = 100
 
 
 @dataclass
 class SecurityConfig(BaseConfig):
-    """Security configuration"""
-    # Vault
-    vault_enabled: bool = True
-    vault_url: str = "http://localhost:8200"
-    vault_token: Optional[str] = None
-    vault_namespace: Optional[str] = None
-    
-    # Consul
-    consul_enabled: bool = True
-    consul_url: str = "http://localhost:8500"
-    consul_token: Optional[str] = None
-    
-    # Encryption
-    encryption_enabled: bool = True
-    encryption_algorithm: str = "AES256"
-    key_rotation_interval: timedelta = timedelta(days=30)
-    
+    """Base security configuration"""
     # Authentication
-    auth_provider: str = "internal"  # internal, oauth2, ldap
+    auth_enabled: bool = True
+    auth_type: str = "jwt"  # jwt, oauth2, basic, api_key
     jwt_secret: Optional[str] = None
     jwt_algorithm: str = "HS256"
-    jwt_expiry: timedelta = timedelta(hours=1)
+    token_expiry: timedelta = field(default_factory=lambda: timedelta(hours=1))
     
     # Authorization
     rbac_enabled: bool = True
     default_role: str = "viewer"
     
-    # Security headers
+    # Encryption
+    encryption_enabled: bool = True
+    encryption_algorithm: str = "AES256"
+    
+    # API Security
     cors_enabled: bool = True
     cors_origins: List[str] = field(default_factory=lambda: ["*"])
-    csp_enabled: bool = True
+    csrf_enabled: bool = True
+    
+    # Rate limiting
+    rate_limit_enabled: bool = True
+    rate_limit_per_minute: int = 60
 
 
 @dataclass
 class ObservabilityConfig(BaseConfig):
-    """Observability configuration"""
+    """Base observability configuration"""
     # Metrics
     metrics_enabled: bool = True
+    metrics_backend: str = "prometheus"
     metrics_endpoint: str = "/metrics"
-    metrics_port: int = 9090
+    custom_metrics: Dict[str, str] = field(default_factory=dict)
     
     # Tracing
     tracing_enabled: bool = True
-    tracing_endpoint: str = "http://localhost:4317"
+    tracing_backend: str = "jaeger"
+    tracing_endpoint: str = field(default_factory=lambda: os.getenv("JAEGER_ENDPOINT", "http://localhost:14268/api/traces"))
     tracing_sample_rate: float = 0.1
     
     # Logging
-    log_level: str = "INFO"
-    log_format: str = "json"
-    log_file: Optional[str] = None
-    log_rotation: bool = True
-    log_max_size: int = 100  # MB
-    log_max_files: int = 10
+    logging_backend: str = "elasticsearch"
+    log_retention_days: int = 30
     
     # Alerting
     alerting_enabled: bool = True
-    alert_webhook: Optional[str] = None
-    alert_email: Optional[str] = None
+    alert_endpoints: List[str] = field(default_factory=list)
 
 
 class ConfigLoader:
-    """
-    Configuration loader with multiple source support.
-    
-    Features:
-    - Load from files
-    - Load from environment
-    - Load from Consul
-    - Load from Vault
-    - Merge configurations
-    - Watch for changes
-    """
+    """Utility class for loading configurations"""
     
     def __init__(
         self,
@@ -356,102 +317,98 @@ class ConfigLoader:
         
     async def load(
         self,
-        config_class: Type[T],
-        sources: List[str],
-        env_prefix: str = ""
-    ) -> T:
+        config_class: type,
+        sources: List[str] = ["env", "file", "consul", "vault"],
+        config_file: Optional[str] = None,
+        consul_key: Optional[str] = None,
+        vault_path: Optional[str] = None
+    ) -> BaseConfig:
         """
         Load configuration from multiple sources.
         
-        Args:
-            config_class: Configuration class
-            sources: List of sources (file paths, "env", "consul", "vault")
-            env_prefix: Environment variable prefix
-            
-        Returns:
-            Loaded configuration
+        Sources are applied in order, later sources override earlier ones.
         """
-        configs = []
+        config_data = {}
         
         for source in sources:
             if source == "env":
-                config = config_class.from_env(env_prefix)
-                configs.append(config)
+                config_data.update(self._load_from_env(config_class))
+            elif source == "file" and config_file:
+                config_data.update(self._load_from_file(config_file))
+            elif source == "consul" and self.consul_client and consul_key:
+                config_data.update(await self._load_from_consul(consul_key))
+            elif source == "vault" and self.vault_client and vault_path:
+                config_data.update(await self._load_from_vault(vault_path))
                 
-            elif source == "consul":
-                if self.consul_client:
-                    config = await self._load_from_consul(config_class)
-                    configs.append(config)
+        return config_class.from_dict(config_data)
+        
+    def _load_from_env(self, config_class: type) -> Dict[str, Any]:
+        """Load configuration from environment variables"""
+        config_data = {}
+        
+        # Get field names from config class
+        if hasattr(config_class, "__dataclass_fields__"):
+            for field_name in config_class.__dataclass_fields__:
+                env_var = field_name.upper()
+                if env_var in os.environ:
+                    config_data[field_name] = os.environ[env_var]
                     
-            elif source == "vault":
-                if self.vault_client:
-                    config = await self._load_from_vault(config_class)
-                    configs.append(config)
-                    
-            elif Path(source).exists():
-                config = config_class.from_file(source)
-                configs.append(config)
-                
+        return config_data
+        
+    def _load_from_file(self, config_file: str) -> Dict[str, Any]:
+        """Load configuration from file (JSON or YAML)"""
+        with open(config_file, 'r') as f:
+            if config_file.endswith('.json'):
+                return json.load(f)
+            elif config_file.endswith(('.yml', '.yaml')):
+                return yaml.safe_load(f)
             else:
-                logger.warning(f"Unknown config source: {source}")
+                raise ValueError(f"Unsupported config file format: {config_file}")
                 
-        # Merge configurations (later sources override earlier)
-        if not configs:
-            raise ConfigurationError("No configuration loaded")
-            
-        result = configs[0]
-        for config in configs[1:]:
-            result = result.merge(config)
-            
-        # Validate final configuration
-        errors = result.validate()
-        if errors:
-            raise ConfigurationError(f"Configuration validation failed: {errors}")
-            
-        return result
-        
-    async def _load_from_consul(self, config_class: Type[T]) -> T:
+    async def _load_from_consul(self, key: str) -> Dict[str, Any]:
         """Load configuration from Consul"""
-        key = f"config/{config_class.__name__.lower()}"
-        data = await self.consul_client.kv_get(key)
+        try:
+            data = await self.consul_client.kv_get(key)
+            if data:
+                return json.loads(data)
+        except Exception as e:
+            logger.error(f"Failed to load config from Consul: {e}")
+        return {}
         
-        if not data:
-            raise ConfigurationError(f"No configuration found in Consul at {key}")
-            
-        return config_class.from_json(data)
-        
-    async def _load_from_vault(self, config_class: Type[T]) -> T:
+    async def _load_from_vault(self, path: str) -> Dict[str, Any]:
         """Load configuration from Vault"""
-        path = f"secret/config/{config_class.__name__.lower()}"
-        data = await self.vault_client.read_secret(path)
-        
-        if not data:
-            raise ConfigurationError(f"No configuration found in Vault at {path}")
-            
-        return config_class.from_dict(data)
+        try:
+            secret = await self.vault_client.get_secret(path)
+            if secret:
+                return secret
+        except Exception as e:
+            logger.error(f"Failed to load config from Vault: {e}")
+        return {}
 
 
 class ConfigValidator:
-    """Configuration validator with custom rules"""
+    """Configuration validator"""
     
     @staticmethod
-    def validate_port(port: int) -> bool:
-        """Validate port number"""
-        return 1 <= port <= 65535
+    def validate(config: BaseConfig) -> List[str]:
+        """
+        Validate configuration and return list of errors.
         
-    @staticmethod
-    def validate_url(url: str) -> bool:
-        """Validate URL format"""
-        from urllib.parse import urlparse
+        Returns empty list if valid.
+        """
+        errors = []
+        
+        # Call the config's own validation
         try:
-            result = urlparse(url)
-            return all([result.scheme, result.netloc])
-        except:
-            return False
+            config.validate()
+        except Exception as e:
+            errors.append(str(e))
             
-    @staticmethod
-    def validate_email(email: str) -> bool:
-        """Validate email format"""
-        import re
-        pattern = r'^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}$'
-        return re.match(pattern, email) is not None 
+        # Additional validation rules can be added here
+        
+        return errors
+
+
+class ConfigurationError(Exception):
+    """Configuration-related errors"""
+    pass 

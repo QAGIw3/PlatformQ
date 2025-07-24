@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 from enum import Enum
 
 from .base_models import TimestampedModel, VersionedModel
+from .mixins import MetadataMixin, QualityMixin, LineageMixin, LifecycleMixin
 
 
 class DataType(Enum):
@@ -74,7 +75,7 @@ class CompressionType(Enum):
 
 
 @dataclass
-class DataField(TimestampedModel):
+class DataField(TimestampedModel, MetadataMixin):
     """Represents a field in a data schema"""
     name: str
     data_type: DataType
@@ -97,10 +98,6 @@ class DataField(TimestampedModel):
     # Default
     default_value: Optional[Any] = None
     
-    # Metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    tags: List[str] = field(default_factory=list)
-    
     # For nested types
     element_type: Optional['DataType'] = None  # For arrays
     fields: Optional[List['DataField']] = None  # For structs
@@ -116,7 +113,7 @@ class DataField(TimestampedModel):
 
 
 @dataclass
-class DataSchema(VersionedModel):
+class DataSchema(VersionedModel, MetadataMixin):
     """Represents the schema of a dataset"""
     name: str
     fields: List[DataField]
@@ -133,10 +130,6 @@ class DataSchema(VersionedModel):
     # Partitioning
     partition_columns: List[str] = field(default_factory=list)
     clustering_columns: List[str] = field(default_factory=list)
-    
-    # Metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    tags: List[str] = field(default_factory=list)
     
     def get_field(self, name: str) -> Optional[DataField]:
         """Get field by name"""
@@ -161,7 +154,7 @@ class DataSchema(VersionedModel):
 
 
 @dataclass
-class DataSource(TimestampedModel):
+class DataSource(TimestampedModel, MetadataMixin):
     """Represents a data source"""
     name: str
     storage_type: StorageType
@@ -176,10 +169,6 @@ class DataSource(TimestampedModel):
     # Configuration
     config: Dict[str, Any] = field(default_factory=dict)
     
-    # Metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    tags: List[str] = field(default_factory=list)
-    
     # Status
     is_active: bool = True
     last_accessed: Optional[datetime] = None
@@ -187,7 +176,7 @@ class DataSource(TimestampedModel):
 
 
 @dataclass
-class Dataset(VersionedModel):
+class Dataset(VersionedModel, MetadataMixin, QualityMixin, LineageMixin, LifecycleMixin):
     """Represents a dataset"""
     name: str
     source: DataSource
@@ -213,30 +202,18 @@ class Dataset(VersionedModel):
     partition_columns: List[str] = field(default_factory=list)
     partitions: List[Dict[str, Any]] = field(default_factory=list)
     
-    # Quality
-    quality_score: Optional[float] = None
-    quality_checks: List[Dict[str, Any]] = field(default_factory=list)
-    
-    # Lineage
-    upstream_datasets: List[str] = field(default_factory=list)
-    downstream_datasets: List[str] = field(default_factory=list)
-    
     # Access
     access_frequency: int = 0
     last_accessed: Optional[datetime] = None
     access_history: List[Dict[str, Any]] = field(default_factory=list)
     
-    # Metadata
-    metadata: Dict[str, Any] = field(default_factory=dict)
-    tags: List[str] = field(default_factory=list)
+    # Business metadata
     business_metadata: Dict[str, Any] = field(default_factory=dict)
     
     # Lifecycle
     retention_days: Optional[int] = None
     archive_after_days: Optional[int] = None
     delete_after_days: Optional[int] = None
-    is_archived: bool = False
-    is_deleted: bool = False
 
 
 @dataclass

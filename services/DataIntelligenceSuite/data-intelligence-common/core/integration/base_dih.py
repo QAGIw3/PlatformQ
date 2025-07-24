@@ -9,7 +9,7 @@ import logging
 from typing import Dict, List, Any, Optional, Callable, Set, Union, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
-from abc import ABC, abstractmethod
+from abc import ABC
 from contextlib import asynccontextmanager
 import json
 from enum import Enum
@@ -212,15 +212,17 @@ class BaseDigitalIntegrationHub(ABC):
         self._initialized = False
         logger.info("Digital Integration Hub shutdown complete")
         
-    @abstractmethod
     async def _initialize_impl(self):
         """Initialize implementation-specific components"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _initialize_impl method"
+        )
         
-    @abstractmethod
     async def _shutdown_impl(self):
         """Shutdown implementation-specific components"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _shutdown_impl method"
+        )
         
     async def create_cache_region(self, region: CacheRegion) -> None:
         """
@@ -242,10 +244,11 @@ class BaseDigitalIntegrationHub(ABC):
         
         logger.info(f"Cache region created: {region.name}")
         
-    @abstractmethod
     async def _create_cache_impl(self, region: CacheRegion):
         """Create implementation-specific cache"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _create_cache_impl method"
+        )
         
     async def register_data_source(
         self,
@@ -283,10 +286,11 @@ class BaseDigitalIntegrationHub(ABC):
             
         logger.info(f"Data source registered: {source_name}")
         
-    @abstractmethod
     async def _connect_data_source(self, source_name: str, config: DataSourceConfig):
         """Connect to data source"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _connect_data_source method"
+        )
         
     async def _sync_data_source_loop(self, source_name: str, target_regions: List[str]):
         """Synchronization loop for data source"""
@@ -326,7 +330,6 @@ class BaseDigitalIntegrationHub(ABC):
             # Wait for next sync
             await asyncio.sleep(config.sync_interval_seconds)
             
-    @abstractmethod
     async def _sync_data_source(
         self,
         source_name: str,
@@ -338,7 +341,9 @@ class BaseDigitalIntegrationHub(ABC):
         Returns:
             Number of records synced
         """
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _sync_data_source method"
+        )
         
     async def get(self, region_name: str, key: str) -> Optional[Any]:
         """
@@ -357,10 +362,11 @@ class BaseDigitalIntegrationHub(ABC):
             
         return await self._get_impl(region_name, key)
         
-    @abstractmethod
     async def _get_impl(self, region_name: str, key: str) -> Optional[Any]:
         """Implementation-specific get"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _get_impl method"
+        )
         
     async def put(
         self,
@@ -384,7 +390,6 @@ class BaseDigitalIntegrationHub(ABC):
             
         await self._put_impl(region_name, key, value, ttl_seconds or region.ttl_seconds)
         
-    @abstractmethod
     async def _put_impl(
         self,
         region_name: str,
@@ -393,7 +398,9 @@ class BaseDigitalIntegrationHub(ABC):
         ttl_seconds: Optional[int]
     ):
         """Implementation-specific put"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _put_impl method"
+        )
         
     async def remove(self, region_name: str, key: str):
         """
@@ -409,10 +416,11 @@ class BaseDigitalIntegrationHub(ABC):
             
         await self._remove_impl(region_name, key)
         
-    @abstractmethod
     async def _remove_impl(self, region_name: str, key: str):
         """Implementation-specific remove"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _remove_impl method"
+        )
         
     async def query_cross_region(
         self,
@@ -431,14 +439,15 @@ class BaseDigitalIntegrationHub(ABC):
         """
         return await self._query_impl(query, params)
         
-    @abstractmethod
     async def _query_impl(
         self,
         query: str,
         params: Optional[Dict[str, Any]]
     ) -> List[Dict[str, Any]]:
         """Implementation-specific query"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement _query_impl method"
+        )
         
     async def get_metrics(
         self,

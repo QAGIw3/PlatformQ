@@ -4,7 +4,6 @@ Cache Manager with Vault/Consul Integration
 Provides unified cache management with encryption and dynamic configuration.
 """
 
-import logging
 from typing import Any, Dict, List, Optional, Callable, Set, AsyncIterator, Tuple
 from contextlib import asynccontextmanager
 from dataclasses import dataclass, field
@@ -15,11 +14,11 @@ import pickle
 
 from platformq_shared.vault.vault_client import VaultClient
 from platformq_shared.consul.consul_client import ConsulClient
-from ..monitoring import MetricsCollector
+from ...monitoring import MetricsCollector, StructuredLogger
 from ..integrations.ignite_client import IgniteClient, IgniteConfig, CacheConfig as IgniteCacheConfig
 from .strategies import CacheMode, CacheStrategy, EvictionPolicy
 
-logger = logging.getLogger(__name__)
+logger = StructuredLogger.get_logger(__name__)
 
 
 @dataclass

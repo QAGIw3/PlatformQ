@@ -1,15 +1,43 @@
 """
 Processing Framework for DataIntelligenceSuite
 
-Provides unified processing patterns for batch, stream, and quality processing.
+Processor Hierarchy:
+-------------------
+BaseProcessor (ABC, Generic[T])
+├── BatchProcessor - For batch data processing
+├── StreamProcessor - For stream data processing  
+├── QualityProcessor - For data quality validation
+└── EventProcessor (in core.events) - For event-driven processing
+
+BaseEventProcessor (ABC) - Separate hierarchy for event handling
+└── Various event handlers in services
+
+BaseFileProcessor (ABC) - Separate hierarchy for file processing
+├── BlenderProcessor
+├── FreeCADProcessor
+├── MultimediaProcessor
+└── Other file processors
+
+BaseCDCProcessor (ABC) - Separate hierarchy for CDC
+└── IgniteCDCProcessor
+
+Notes:
+- BaseProcessor is the root for general data processing
+- BaseEventProcessor is for event-driven architectures
+- Different processor types serve different purposes
+- Not all processors need to inherit from BaseProcessor
 """
 
 from .base_processor import (
     BaseProcessor,
     ProcessorConfig,
-    ProcessingResult,
     ProcessingStatus,
-    ProcessingMode
+    ProcessingMode,
+    ProcessingMetrics,
+    ProcessingResult,
+    PartitionStrategy,
+    ResourceLimits,
+    OptimizationConfig
 )
 
 from .batch_processor import (
@@ -17,66 +45,82 @@ from .batch_processor import (
     BatchConfig,
     BatchJob,
     BatchResult,
-    PartitionStrategy
+    BatchEngine
 )
 
 from .stream_processor import (
     StreamProcessor,
     StreamConfig,
-    StreamSource,
-    StreamSink,
-    WindowType
+    StreamEngine,
+    WindowType,
+    WindowConfig,
+    StreamResult
 )
 
 from .quality_processor import (
     QualityProcessor,
     QualityConfig,
-    QualityCheck,
+    QualityEngine,
+    QualityRule,
     QualityResult,
-    DataQualityDimension
+    DataQualityDimension,
+    RemediationAction
 )
 
 from .pipeline_builder import (
     PipelineBuilder,
     Pipeline,
     PipelineStage,
+    StageConfig,
     StageResult,
-    TransformFunction
+    TransformFunction,
+    FilterFunction,
+    AggregateFunction
 )
 
 __all__ = [
     # Base
     "BaseProcessor",
     "ProcessorConfig",
-    "ProcessingResult",
     "ProcessingStatus",
     "ProcessingMode",
+    "ProcessingMetrics",
+    "ProcessingResult",
+    "PartitionStrategy",
+    "ResourceLimits",
+    "OptimizationConfig",
     
     # Batch
     "BatchProcessor",
     "BatchConfig",
     "BatchJob",
     "BatchResult",
-    "PartitionStrategy",
+    "BatchEngine",
     
     # Stream
     "StreamProcessor",
     "StreamConfig",
-    "StreamSource",
-    "StreamSink",
+    "StreamEngine",
     "WindowType",
+    "WindowConfig",
+    "StreamResult",
     
     # Quality
     "QualityProcessor",
     "QualityConfig",
-    "QualityCheck",
+    "QualityEngine",
+    "QualityRule",
     "QualityResult",
     "DataQualityDimension",
+    "RemediationAction",
     
     # Pipeline
     "PipelineBuilder",
     "Pipeline",
     "PipelineStage",
+    "StageConfig",
     "StageResult",
-    "TransformFunction"
+    "TransformFunction",
+    "FilterFunction",
+    "AggregateFunction"
 ] 

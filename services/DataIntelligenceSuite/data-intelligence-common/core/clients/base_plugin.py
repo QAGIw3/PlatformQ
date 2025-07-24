@@ -5,7 +5,7 @@ Provides a plugin-based architecture to reduce code duplication across service c
 """
 
 from typing import Any, Dict, List, Optional, Type, Callable, Union
-from abc import ABC, abstractmethod
+from abc import ABC
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from enum import Enum
@@ -70,36 +70,42 @@ class ClientPlugin(ABC):
         self._initialized = False
         self._metrics = {}
         
-    @abstractmethod
     def get_metadata(self) -> PluginMetadata:
         """Get plugin metadata"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement get_metadata method"
+        )
     
-    @abstractmethod
     async def initialize(self, vault_client: Optional[VaultClient] = None,
                         consul_client: Optional[ConsulClient] = None) -> None:
         """Initialize plugin with optional Vault/Consul clients"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement initialize method"
+        )
     
-    @abstractmethod
     async def connect(self, connection_params: Dict[str, Any]) -> None:
         """Connect to the service"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement connect method"
+        )
     
-    @abstractmethod
     async def disconnect(self) -> None:
         """Disconnect from the service"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement disconnect method"
+        )
     
-    @abstractmethod
     async def health_check(self) -> bool:
         """Check service health"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement health_check method"
+        )
     
-    @abstractmethod
     async def execute(self, operation: str, **kwargs) -> Any:
         """Execute an operation"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement execute method"
+        )
     
     async def validate_config(self) -> bool:
         """Validate plugin configuration"""

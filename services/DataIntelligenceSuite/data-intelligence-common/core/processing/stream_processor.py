@@ -50,8 +50,11 @@ from .base_processor import (
 )
 from ...monitoring import StructuredLogger
 from ...core.events import EventBus
-from ...core.quality import StreamQualityMonitor
-from ...core.ml import StreamMLEngine
+# TODO: Implement StreamQualityMonitor and StreamMLEngine
+# from ...core.quality import StreamQualityMonitor
+# from ...core.ml import StreamMLEngine
+StreamQualityMonitor = None
+StreamMLEngine = None
 
 logger = StructuredLogger.get_logger(__name__)
 

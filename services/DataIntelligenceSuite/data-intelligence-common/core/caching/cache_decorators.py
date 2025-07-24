@@ -8,11 +8,12 @@ import asyncio
 import functools
 import hashlib
 import json
-import logging
 from typing import Any, Optional, Callable, Union
 from datetime import timedelta
 
-logger = logging.getLogger(__name__)
+from ...monitoring import StructuredLogger
+
+logger = StructuredLogger.get_logger(__name__)
 
 
 def _generate_cache_key(func_name: str, args: tuple, kwargs: dict, prefix: Optional[str] = None) -> str:

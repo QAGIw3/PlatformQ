@@ -44,10 +44,27 @@ from .cache_patterns import (
 
 # Distributed cache
 from .distributed_cache import (
-    DistributedCache,
-    DistributedCacheConfig,
-    CacheNode,
-    ConsistentHashRing
+    DistributedCacheClient,
+    NodeInfo
+)
+
+# Cache utilities
+from .cache_utils import (
+    generate_cache_key,
+    hash_key,
+    parse_ttl,
+    serialize_value,
+    deserialize_value,
+    estimate_size,
+    is_cache_key_valid,
+    normalize_cache_key,
+    create_key_pattern,
+    match_keys,
+    chunk_keys,
+    create_cache_key_builder,
+    CacheKeyBuilder,
+    calculate_hit_rate,
+    format_cache_stats
 )
 
 __all__ = [
@@ -82,8 +99,23 @@ __all__ = [
     "CacheInvalidator",
     
     # Distributed
-    "DistributedCache",
-    "DistributedCacheConfig",
-    "CacheNode",
-    "ConsistentHashRing"
+    "DistributedCacheClient",
+    "NodeInfo",
+    
+    # Utilities
+    "generate_cache_key",
+    "hash_key",
+    "parse_ttl",
+    "serialize_value",
+    "deserialize_value",
+    "estimate_size",
+    "is_cache_key_valid",
+    "normalize_cache_key",
+    "create_key_pattern",
+    "match_keys",
+    "chunk_keys",
+    "create_cache_key_builder",
+    "CacheKeyBuilder",
+    "calculate_hit_rate",
+    "format_cache_stats"
 ] 

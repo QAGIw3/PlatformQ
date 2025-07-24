@@ -4,8 +4,8 @@ Base Engine Class
 Provides base class for all processing engines.
 """
 
-from abc import ABC, abstractmethod
-from typing import Any, Dict, List, Optional, Callable, TypeVar, Generic
+from abc import ABC
+from typing import Any, Dict, List, Optional, Callable, TypeVar, Generic, Tuple
 from datetime import datetime
 from dataclasses import dataclass, field
 from enum import Enum
@@ -285,15 +285,34 @@ class BaseEngine(ABC, Generic[T, R]):
         
         return None
     
-    @abstractmethod
     async def _initialize_components(self) -> None:
         """Initialize engine-specific components"""
-        pass
+        # Base initialization - set up common components
+        logger.info(f"Initializing base components for engine {self.config.name}")
+        
+        # Initialize metrics if enabled
+        if self.config.enable_monitoring and self.metrics:
+            self.metrics.register_counter(f"{self.config.name}_tasks_submitted")
+            self.metrics.register_counter(f"{self.config.name}_tasks_completed")
+            self.metrics.register_counter(f"{self.config.name}_tasks_failed")
+            self.metrics.register_histogram(f"{self.config.name}_task_duration")
+            self.metrics.register_gauge(f"{self.config.name}_active_tasks")
+            
+        # Initialize health checks
+        if hasattr(self, 'health_manager') and self.health_manager:
+            await self.health_manager.register_check(
+                f"{self.config.name}_engine",
+                self._check_engine_health
+            )
+            
+        # Derived classes should override this to add engine-specific initialization
+        logger.info(f"Base initialization completed for engine {self.config.name}")
     
-    @abstractmethod
     async def _process_task(self, task_data: T, **kwargs) -> R:
         """
         Process a single task.
+        
+        This base implementation should be overridden by derived classes.
         
         Args:
             task_data: Task input data
@@ -302,7 +321,11 @@ class BaseEngine(ABC, Generic[T, R]):
         Returns:
             Task result
         """
-        pass
+        # Base implementation - raise NotImplementedError
+        # Derived classes MUST override this method
+        raise NotImplementedError(
+            f"Engine {self.config.name} must implement _process_task method"
+        )
     
     async def _worker_loop(self, worker_id: int) -> None:
         """Worker loop for processing tasks"""
@@ -460,6 +483,35 @@ class BaseEngine(ABC, Generic[T, R]):
             await self.event_bus.publish(event)
         except Exception as e:
             logger.warning(f"Failed to publish event: {e}")
+    
+    async def _check_engine_health(self) -> Tuple[bool, str]:
+        """Check engine health status"""
+        try:
+            # Check if engine is running
+            if not self._running:
+                return False, "Engine is not running"
+                
+            # Check worker threads
+            active_workers = sum(1 for w in self._workers if not w.done())
+            if active_workers < self.config.max_workers * 0.5:
+                return False, f"Only {active_workers}/{self.config.max_workers} workers active"
+                
+            # Check error rate
+            total = self._processed_count + self._error_count
+            if total > 100:  # Only check after processing some tasks
+                error_rate = self._error_count / total
+                if error_rate > 0.1:  # More than 10% errors
+                    return False, f"High error rate: {error_rate:.2%}"
+                    
+            # Check queue size
+            queue_size = self._task_queue.qsize()
+            if queue_size > self.config.max_queue_size * 0.9:
+                return False, f"Queue nearly full: {queue_size}/{self.config.max_queue_size}"
+                
+            return True, "Engine is healthy"
+            
+        except Exception as e:
+            return False, f"Health check failed: {str(e)}"
     
     @property
     def status(self) -> EngineStatus:

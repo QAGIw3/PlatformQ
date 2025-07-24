@@ -8,7 +8,7 @@ import logging
 from typing import Any, Dict, Optional, List, Callable, Type, TypeVar
 from datetime import datetime
 from dataclasses import dataclass
-from abc import ABC, abstractmethod
+from abc import ABC
 import uuid
 
 from fastapi import APIRouter, Request, Depends, Query, HTTPException
@@ -112,15 +112,17 @@ class BaseRouter(ABC):
         # Add custom routes
         self.setup_routes()
         
-    @abstractmethod
     def setup_routes(self):
         """Setup custom routes - must be implemented by subclasses"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement setup_routes method"
+        )
         
-    @abstractmethod
     async def check_health(self) -> List[ComponentHealth]:
         """Check health of components - must be implemented by subclasses"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement check_health method"
+        )
         
     async def _health_check(self, request: Request) -> HealthResponse:
         """Standard health check endpoint"""

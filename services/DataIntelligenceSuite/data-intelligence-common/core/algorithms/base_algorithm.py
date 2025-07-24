@@ -4,7 +4,7 @@ Base Algorithm Class
 Provides base class and common patterns for all algorithms.
 """
 
-from abc import ABC, abstractmethod
+from abc import ABC
 from typing import Any, Dict, List, Optional, Union, Callable, TypeVar, Generic
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -228,16 +228,35 @@ class BaseAlgorithm(ABC, Generic[T, R]):
             result.fail(f"Algorithm timed out after {self.config.timeout_seconds} seconds")
             await self._publish_event("algorithm.timeout", {
                 "algorithm": self.config.name,
-                "execution_id": self._execution_id
+                "execution_id": self._execution_id,
+                "timeout_seconds": self.config.timeout_seconds,
+                "iterations_completed": self._iterations
             })
+            logger.error(
+                f"Algorithm timeout",
+                algorithm=self.config.name,
+                execution_id=self._execution_id,
+                timeout_seconds=self.config.timeout_seconds,
+                iterations=self._iterations
+            )
             
         except Exception as e:
-            logger.error(f"Algorithm {self.config.name} failed: {str(e)}")
+            logger.error(
+                f"Algorithm execution failed",
+                algorithm=self.config.name,
+                execution_id=self._execution_id,
+                error_type=type(e).__name__,
+                error_message=str(e),
+                iterations=self._iterations,
+                exc_info=True
+            )
             result.fail(str(e))
             await self._publish_event("algorithm.failed", {
                 "algorithm": self.config.name,
                 "execution_id": self._execution_id,
-                "error": str(e)
+                "error": str(e),
+                "error_type": type(e).__name__,
+                "iterations_completed": self._iterations
             })
             
         finally:
@@ -245,7 +264,6 @@ class BaseAlgorithm(ABC, Generic[T, R]):
             
         return result
     
-    @abstractmethod
     def validate_input(self, input_data: T) -> None:
         """
         Validate input data.
@@ -256,12 +274,31 @@ class BaseAlgorithm(ABC, Generic[T, R]):
         Raises:
             ValueError: If input is invalid
         """
-        pass
+        # Base validation - check input is not None
+        if input_data is None:
+            raise ValueError("Input data cannot be None")
+            
+        # Check input size limits if configured
+        if self.config.max_memory_mb:
+            try:
+                import sys
+                size_mb = sys.getsizeof(input_data) / (1024 * 1024)
+                if size_mb > self.config.max_memory_mb:
+                    raise ValueError(
+                        f"Input data size ({size_mb:.2f}MB) exceeds limit "
+                        f"({self.config.max_memory_mb}MB)"
+                    )
+            except Exception:
+                # If we can't determine size, continue
+                pass
+                
+        # Derived classes should override this method to add specific validation
     
-    @abstractmethod
     async def _execute_algorithm(self, input_data: T, **kwargs) -> R:
         """
         Execute the core algorithm logic.
+        
+        This base implementation should be overridden by derived classes.
         
         Args:
             input_data: Preprocessed input data
@@ -270,7 +307,11 @@ class BaseAlgorithm(ABC, Generic[T, R]):
         Returns:
             Algorithm result
         """
-        pass
+        # Base implementation - just return the input
+        # Derived classes MUST override this method
+        raise NotImplementedError(
+            f"Algorithm {self.config.name} must implement _execute_algorithm method"
+        )
     
     async def preprocess(self, input_data: T) -> T:
         """

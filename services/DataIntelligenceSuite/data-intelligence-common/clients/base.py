@@ -8,6 +8,10 @@ Provides a foundation for all client implementations with built-in support for:
 - Metrics and monitoring
 - Authentication handling
 - Request/response transformation
+- Service discovery via Consul
+- Dynamic credentials from Vault
+- Health checking and load balancing
+- mTLS support
 """
 
 import asyncio
@@ -23,11 +27,18 @@ import json
 import hashlib
 from contextlib import asynccontextmanager
 import uuid
+import ssl
+import random
+
+import aiohttp
+from aiohttp import ClientTimeout, ClientError as AioHttpClientError
+from tenacity import retry as tenacity_retry, stop_after_attempt, wait_exponential, retry_if_exception_type
 
 from platformq_shared.vault.vault_client import VaultClient
 from platformq_shared.consul.consul_client import ConsulClient
 from ..monitoring import MetricsCollector, StructuredLogger
 from ..caching import CacheManager
+from ..vault_consul import VaultConsulIntegration, DataServiceConfig
 
 logger = StructuredLogger.get_logger(__name__)
 
@@ -60,6 +71,13 @@ class CircuitBreakerError(ClientError):
     pass
 
 
+class ServiceDiscoveryMode(Enum):
+    """Service discovery modes"""
+    CONSUL = "consul"
+    STATIC = "static"
+    DNS = "dns"
+
+
 @dataclass
 class RetryConfig:
     """Retry configuration"""
@@ -74,7 +92,6 @@ class RetryConfig:
         """Calculate delay for attempt"""
         delay = min(self.initial_delay * (self.exponential_base ** (attempt - 1)), self.max_delay)
         if self.jitter:
-            import random
             delay *= (0.5 + random.random())
         return delay
 
@@ -143,14 +160,39 @@ class CircuitBreaker:
 
 @dataclass
 class ClientConfig:
-    """Base client configuration"""
+    """Unified client configuration with all features"""
     name: str
+    service_name: Optional[str] = None  # For service discovery
     base_url: Optional[str] = None
     timeout: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    
+    # Service discovery
+    use_service_discovery: bool = True
+    discovery_mode: ServiceDiscoveryMode = ServiceDiscoveryMode.CONSUL
+    consul_url: str = "http://localhost:8500"
+    
+    # Vault integration
+    use_vault_credentials: bool = True
+    vault_url: str = "http://localhost:8200"
+    vault_role: str = "readonly"
+    credential_ttl: int = 3600  # seconds
+    
+    # Timeouts
+    connect_timeout: float = 5.0
+    read_timeout: float = 30.0
+    total_timeout: float = 60.0
     
     # Security
     auth_enabled: bool = True
     auth_type: str = "bearer"  # bearer, basic, api_key, oauth2
+    auth_token: Optional[str] = None
+    auth_header: str = "Authorization"
+    
+    # SSL/TLS
+    verify_ssl: bool = True
+    use_mtls: bool = False
+    ssl_cert: Optional[str] = None
+    ssl_key: Optional[str] = None
     
     # Retry
     retry_config: RetryConfig = field(default_factory=RetryConfig)
@@ -171,8 +213,21 @@ class ClientConfig:
     # Rate limiting
     rate_limit: Optional[int] = None  # requests per minute
     
+    # Health check
+    health_check_path: str = "/health"
+    health_check_interval: int = 30
+    
+    # Load balancing
+    load_balancing_strategy: str = "round_robin"  # round_robin, random, least_conn
+    
     # Custom headers
     headers: Dict[str, str] = field(default_factory=dict)
+    
+    def __post_init__(self):
+        """Post-init processing"""
+        # Use service_name if provided, otherwise use name
+        if not self.service_name:
+            self.service_name = self.name
 
 
 # Decorators
@@ -435,7 +490,7 @@ def authenticated(auth_type: Optional[str] = None):
 
 class BaseClient(ABC):
     """
-    Enhanced base client with built-in patterns.
+    Unified base client with all features.
     
     Features:
     - Automatic retry with backoff
@@ -445,6 +500,12 @@ class BaseClient(ABC):
     - Metrics collection
     - Authentication handling
     - Request/response transformation
+    - Dynamic service discovery via Consul
+    - Dynamic credentials from Vault
+    - Automatic credential renewal
+    - Health checking
+    - Load balancing
+    - mTLS support
     """
     
     def __init__(
@@ -461,9 +522,25 @@ class BaseClient(ABC):
         self.cache = cache_manager
         self.metrics = metrics_collector or MetricsCollector(config.name)
         
+        # HTTP session
+        self._session: Optional[aiohttp.ClientSession] = None
+        
+        # Service instances cache
+        self._service_instances: List[Dict[str, Any]] = []
+        self._current_instance_index = 0
+        self._last_discovery: Optional[datetime] = None
+        
+        # Credentials cache
+        self._credentials: Optional[Dict[str, Any]] = None
+        self._credentials_lease_id: Optional[str] = None
+        self._credentials_expiry: Optional[datetime] = None
+        
         # Authentication state
         self._auth_token: Optional[str] = None
         self._auth_expires: Optional[datetime] = None
+        
+        # SSL context
+        self._ssl_context: Optional[ssl.SSLContext] = None
         
         # Circuit breakers per endpoint
         self._circuit_breakers: Dict[str, CircuitBreaker] = {}
@@ -471,28 +548,109 @@ class BaseClient(ABC):
         # Rate limiting
         self._rate_limit_calls: List[datetime] = []
         
+        # Background tasks
+        self._renewal_task: Optional[asyncio.Task] = None
+        self._health_check_task: Optional[asyncio.Task] = None
+        
+    async def __aenter__(self):
+        """Async context manager entry"""
+        await self.initialize()
+        return self
+        
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        """Async context manager exit"""
+        await self.shutdown()
+        
     async def initialize(self):
         """Initialize client"""
         logger.info(f"Initializing {self.config.name} client")
         
-        # Load configuration from Consul
-        if self.consul_client:
-            await self._load_config()
+        try:
+            # Create SSL context if needed
+            if self.config.verify_ssl or self.config.use_mtls:
+                self._ssl_context = self._create_ssl_context()
+                
+            # Create HTTP session
+            timeout = ClientTimeout(
+                sock_connect=self.config.connect_timeout,
+                sock_read=self.config.read_timeout,
+                total=self.config.total_timeout
+            )
             
-        # Initialize authentication
-        if self.config.auth_enabled:
-            await self._authenticate()
+            connector = aiohttp.TCPConnector(
+                ssl=self._ssl_context,
+                limit=100,
+                ttl_dns_cache=300
+            )
             
-        # Custom initialization
-        await self._initialize()
-        
-        logger.info(f"{self.config.name} client initialized")
+            self._session = aiohttp.ClientSession(
+                timeout=timeout,
+                connector=connector,
+                headers=self.config.headers
+            )
+            
+            # Load configuration from Consul
+            if self.consul_client:
+                await self._load_config()
+                
+            # Discover service instances if using service discovery
+            if self.config.use_service_discovery and self.config.service_name:
+                await self._discover_service_instances()
+                
+            # Initialize authentication
+            if self.config.auth_enabled:
+                await self._authenticate()
+                
+            # Start background tasks
+            if self.config.use_vault_credentials and self.vault_client:
+                self._renewal_task = asyncio.create_task(self._credential_renewal_loop())
+                
+            if self.config.use_service_discovery and self.consul_client:
+                self._health_check_task = asyncio.create_task(self._health_check_loop())
+                
+            # Custom initialization
+            await self._initialize()
+            
+            logger.info(f"{self.config.name} client initialized")
+            
+        except Exception as e:
+            logger.error(f"Failed to initialize: {e}")
+            await self.shutdown()
+            raise
         
     async def shutdown(self):
         """Shutdown client"""
         logger.info(f"Shutting down {self.config.name} client")
+        
+        # Cancel background tasks
+        if self._renewal_task:
+            self._renewal_task.cancel()
+            try:
+                await self._renewal_task
+            except asyncio.CancelledError:
+                pass
+                
+        if self._health_check_task:
+            self._health_check_task.cancel()
+            try:
+                await self._health_check_task
+            except asyncio.CancelledError:
+                pass
+                
+        # Revoke credentials if using Vault
+        if self._credentials_lease_id and self.vault_client:
+            try:
+                await self.vault_client.revoke_lease(self._credentials_lease_id)
+            except Exception as e:
+                logger.error(f"Failed to revoke credentials: {e}")
+                
+        # Custom shutdown
         await self._shutdown()
         
+        # Close HTTP session
+        if self._session:
+            await self._session.close()
+            
     @abstractmethod
     async def _initialize(self):
         """Custom initialization logic"""
@@ -521,6 +679,128 @@ class BaseClient(ABC):
         except Exception as e:
             logger.error(f"Failed to load config from Consul: {e}")
             
+    async def _get_service_url(self) -> str:
+        """Get service URL with load balancing"""
+        if self.config.base_url:
+            return self.config.base_url
+            
+        if not self._service_instances:
+            await self._discover_service_instances()
+            
+        if not self._service_instances:
+            raise ValueError(f"No instances found for service {self.config.service_name}")
+            
+        # Load balancing
+        if self.config.load_balancing_strategy == "round_robin":
+            instance = self._service_instances[self._current_instance_index]
+            self._current_instance_index = (self._current_instance_index + 1) % len(self._service_instances)
+        elif self.config.load_balancing_strategy == "random":
+            instance = random.choice(self._service_instances)
+        else:  # least_conn or default
+            # For now, just use round robin
+            instance = self._service_instances[self._current_instance_index]
+            self._current_instance_index = (self._current_instance_index + 1) % len(self._service_instances)
+            
+        return f"http://{instance['address']}:{instance['port']}"
+        
+    async def _discover_service_instances(self):
+        """Discover service instances from Consul"""
+        if not self.consul_client or not self.config.service_name:
+            logger.warning("Consul client not available or service_name not set, using static URL")
+            return
+            
+        try:
+            instances = await self.consul_client.discover_service(
+                self.config.service_name,
+                passing_only=True
+            )
+            
+            self._service_instances = instances
+            self._last_discovery = datetime.utcnow()
+            
+            logger.info(f"Discovered {len(instances)} instances of {self.config.service_name}")
+            
+        except Exception as e:
+            logger.error(f"Service discovery failed: {e}")
+            
+    async def _get_credentials(self) -> Optional[Dict[str, Any]]:
+        """Get credentials from Vault or cache"""
+        if not self.config.use_vault_credentials or not self.vault_client:
+            return None
+            
+        # Check cache
+        if self._credentials and self._credentials_expiry:
+            if datetime.utcnow() < self._credentials_expiry:
+                return self._credentials
+                
+        # Get new credentials
+        try:
+            creds = await self.vault_client.get_database_credentials(
+                self.config.service_name,
+                self.config.vault_role
+            )
+            
+            self._credentials = creds["data"]
+            self._credentials_lease_id = creds["lease_id"]
+            self._credentials_expiry = datetime.utcnow() + timedelta(seconds=self.config.credential_ttl)
+            
+            logger.info(f"Obtained new credentials for {self.config.service_name}")
+            
+            return self._credentials
+            
+        except Exception as e:
+            logger.error(f"Failed to get credentials: {e}")
+            return None
+            
+    async def _credential_renewal_loop(self):
+        """Background task to renew credentials"""
+        while True:
+            try:
+                # Wait until half the TTL
+                await asyncio.sleep(self.config.credential_ttl / 2)
+                
+                # Renew credentials
+                if self._credentials_lease_id:
+                    await self.vault_client.renew_lease(self._credentials_lease_id)
+                    logger.debug(f"Renewed credentials for {self.config.service_name}")
+                    
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Credential renewal failed: {e}")
+                await asyncio.sleep(60)
+                
+    async def _health_check_loop(self):
+        """Background task to check service health"""
+        while True:
+            try:
+                await asyncio.sleep(self.config.health_check_interval)
+                
+                # Re-discover services periodically
+                await self._discover_service_instances()
+                
+                # Check health of each instance
+                healthy_instances = []
+                for instance in self._service_instances:
+                    if await self._check_instance_health(instance):
+                        healthy_instances.append(instance)
+                        
+                self._service_instances = healthy_instances
+                
+            except asyncio.CancelledError:
+                break
+            except Exception as e:
+                logger.error(f"Health check failed: {e}")
+                
+    async def _check_instance_health(self, instance: Dict[str, Any]) -> bool:
+        """Check health of a service instance"""
+        try:
+            url = f"http://{instance['address']}:{instance['port']}{self.config.health_check_path}"
+            async with self._session.get(url, timeout=5) as response:
+                return response.status == 200
+        except:
+            return False
+            
     async def _authenticate(self):
         """Authenticate with service"""
         if not self.config.auth_enabled:
@@ -541,6 +821,12 @@ class BaseClient(ABC):
             
     async def _authenticate_bearer(self):
         """Bearer token authentication"""
+        # Check if token provided in config
+        if self.config.auth_token:
+            self._auth_token = self.config.auth_token
+            self._auth_expires = datetime.utcnow() + timedelta(hours=1)
+            return
+            
         # Get token from Vault
         if self.vault_client:
             secret = await self.vault_client.get_secret(
@@ -574,9 +860,129 @@ class BaseClient(ABC):
                 self._auth_token = secret["api_key"]
                 
     async def _authenticate_oauth2(self):
-        """OAuth2 authentication"""
-        # This would implement OAuth2 flow
-        raise NotImplementedError("OAuth2 authentication not implemented")
+        """OAuth2 authentication with client credentials and refresh token support"""
+        try:
+            # Get OAuth2 configuration from Vault if available
+            oauth_config = {}
+            if self.vault_client and self.config.use_vault_credentials:
+                try:
+                    secret_path = f"secret/data/{self.config.name}/oauth2"
+                    secret = await self.vault_client.read_secret(secret_path)
+                    if secret and "data" in secret:
+                        oauth_config = secret["data"]
+                except Exception as e:
+                    logger.warning(f"Could not load OAuth2 config from Vault: {e}")
+            
+            # Override with any config values
+            oauth_config.update({
+                "token_url": oauth_config.get("token_url", getattr(self.config, "oauth2_token_url", None)),
+                "client_id": oauth_config.get("client_id", getattr(self.config, "oauth2_client_id", None)),
+                "client_secret": oauth_config.get("client_secret", getattr(self.config, "oauth2_client_secret", None)),
+                "scope": oauth_config.get("scope", getattr(self.config, "oauth2_scope", "")),
+                "grant_type": oauth_config.get("grant_type", "client_credentials")
+            })
+            
+            # Validate required fields
+            if not all([oauth_config.get("token_url"), oauth_config.get("client_id"), oauth_config.get("client_secret")]):
+                raise ValueError("OAuth2 requires token_url, client_id, and client_secret")
+            
+            # Check if we have a valid token in cache
+            cache_key = f"oauth2_token_{self.config.name}_{oauth_config['client_id']}"
+            if self.cache_manager:
+                cached_token = await self.cache_manager.get("auth_tokens", cache_key)
+                if cached_token and cached_token.get("expires_at", 0) > time.time():
+                    self._auth_token = cached_token["access_token"]
+                    self._auth_headers = {"Authorization": f"Bearer {self._auth_token}"}
+                    return
+            
+            # Request new token
+            async with aiohttp.ClientSession() as session:
+                # Prepare request data based on grant type
+                if oauth_config["grant_type"] == "client_credentials":
+                    data = {
+                        "grant_type": "client_credentials",
+                        "client_id": oauth_config["client_id"],
+                        "client_secret": oauth_config["client_secret"],
+                        "scope": oauth_config["scope"]
+                    }
+                elif oauth_config["grant_type"] == "refresh_token":
+                    # Get refresh token from cache or config
+                    refresh_token = None
+                    if self.cache_manager:
+                        cached_refresh = await self.cache_manager.get("auth_tokens", f"{cache_key}_refresh")
+                        if cached_refresh:
+                            refresh_token = cached_refresh.get("refresh_token")
+                    
+                    if not refresh_token:
+                        refresh_token = oauth_config.get("refresh_token")
+                        
+                    if not refresh_token:
+                        # Fall back to client credentials
+                        oauth_config["grant_type"] = "client_credentials"
+                        data = {
+                            "grant_type": "client_credentials",
+                            "client_id": oauth_config["client_id"],
+                            "client_secret": oauth_config["client_secret"],
+                            "scope": oauth_config["scope"]
+                        }
+                    else:
+                        data = {
+                            "grant_type": "refresh_token",
+                            "refresh_token": refresh_token,
+                            "client_id": oauth_config["client_id"],
+                            "client_secret": oauth_config["client_secret"]
+                        }
+                else:
+                    raise ValueError(f"Unsupported OAuth2 grant type: {oauth_config['grant_type']}")
+                
+                # Make token request
+                async with session.post(
+                    oauth_config["token_url"],
+                    data=data,
+                    headers={"Content-Type": "application/x-www-form-urlencoded"},
+                    timeout=aiohttp.ClientTimeout(total=30)
+                ) as response:
+                    if response.status != 200:
+                        error_text = await response.text()
+                        raise AuthenticationError(f"OAuth2 token request failed: {response.status} - {error_text}")
+                    
+                    token_data = await response.json()
+                    
+                    # Extract token information
+                    self._auth_token = token_data["access_token"]
+                    self._auth_headers = {"Authorization": f"Bearer {self._auth_token}"}
+                    
+                    # Calculate expiration time
+                    expires_in = token_data.get("expires_in", 3600)  # Default 1 hour
+                    expires_at = time.time() + expires_in - 60  # Refresh 1 minute early
+                    
+                    # Cache the token
+                    if self.cache_manager:
+                        cache_data = {
+                            "access_token": self._auth_token,
+                            "token_type": token_data.get("token_type", "Bearer"),
+                            "expires_at": expires_at,
+                            "scope": token_data.get("scope", oauth_config["scope"])
+                        }
+                        
+                        # Cache with TTL based on expiration
+                        ttl = timedelta(seconds=max(expires_in - 60, 60))
+                        await self.cache_manager.put("auth_tokens", cache_key, cache_data, ttl=ttl)
+                        
+                        # Cache refresh token if provided
+                        if "refresh_token" in token_data:
+                            await self.cache_manager.put(
+                                "auth_tokens",
+                                f"{cache_key}_refresh",
+                                {"refresh_token": token_data["refresh_token"]},
+                                ttl=timedelta(days=30)  # Refresh tokens typically last longer
+                            )
+                    
+                    logger.info(f"OAuth2 authentication successful for {self.config.name}")
+                    
+        except Exception as e:
+            logger.error(f"OAuth2 authentication failed: {e}")
+            raise AuthenticationError(f"OAuth2 authentication failed: {str(e)}")
         
     def _add_auth_headers(self, headers: Dict[str, str]) -> Dict[str, str]:
         """Add authentication headers"""
@@ -584,9 +990,9 @@ class BaseClient(ABC):
             return headers
             
         if self.config.auth_type == "bearer":
-            headers["Authorization"] = f"Bearer {self._auth_token}"
+            headers[self.config.auth_header] = f"Bearer {self._auth_token}"
         elif self.config.auth_type == "basic":
-            headers["Authorization"] = f"Basic {self._auth_token}"
+            headers[self.config.auth_header] = f"Basic {self._auth_token}"
         elif self.config.auth_type == "api_key":
             headers["X-API-Key"] = self._auth_token
             
@@ -622,6 +1028,40 @@ class BaseClient(ABC):
                 self.config.circuit_breaker_config
             )
         return self._circuit_breakers[endpoint]
+        
+    def _is_circuit_open(self, url: str) -> bool:
+        """Check if circuit breaker is open for URL"""
+        breaker = self._circuit_breakers.get(url)
+        if breaker:
+            return not breaker.can_execute()
+        return False
+        
+    def _record_success(self, url: str):
+        """Record successful request"""
+        breaker = self._circuit_breakers.get(url)
+        if breaker:
+            breaker.call_succeeded()
+        
+    def _record_failure(self, url: str):
+        """Record failed request"""
+        breaker = self._circuit_breakers.get(url)
+        if not breaker:
+            breaker = CircuitBreaker(self.config.circuit_breaker_config)
+            self._circuit_breakers[url] = breaker
+        breaker.call_failed()
+        
+    def _create_ssl_context(self) -> ssl.SSLContext:
+        """Create SSL context for HTTPS connections"""
+        context = ssl.create_default_context()
+        
+        if not self.config.verify_ssl:
+            context.check_hostname = False
+            context.verify_mode = ssl.CERT_NONE
+            
+        if self.config.use_mtls and self.config.ssl_cert and self.config.ssl_key:
+            context.load_cert_chain(self.config.ssl_cert, self.config.ssl_key)
+            
+        return context
         
     @asynccontextmanager
     async def _request_context(self, endpoint: str, method: str = "GET"):
@@ -686,104 +1126,176 @@ class BaseClient(ABC):
             return f"{self.config.cache_key_prefix}:hash:{key_hash}"
             
         return key_string
+        
+    @tenacity_retry(
+        stop=stop_after_attempt(3),
+        wait=wait_exponential(multiplier=1, min=1, max=10),
+        retry=retry_if_exception_type(AioHttpClientError)
+    )
+    async def request(
+        self,
+        method: str,
+        path: str,
+        json_data: Optional[Dict[str, Any]] = None,
+        params: Optional[Dict[str, Any]] = None,
+        headers: Optional[Dict[str, str]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """Make HTTP request with retries and circuit breaker"""
+        url = await self._get_service_url()
+        full_url = f"{url}{path}"
+        
+        # Check circuit breaker
+        if self._is_circuit_open(url):
+            raise CircuitBreakerError(f"Circuit breaker open for {url}")
+            
+        # Get credentials if needed
+        creds = await self._get_credentials()
+        
+        # Build headers
+        request_headers = dict(self.config.headers)
+        if headers:
+            request_headers.update(headers)
+            
+        # Add authentication
+        request_headers = self._add_auth_headers(request_headers)
+        if creds and "token" in creds and not self._auth_token:
+            request_headers[self.config.auth_header] = f"Bearer {creds['token']}"
+            
+        # Make request
+        try:
+            async with self._session.request(
+                method,
+                full_url,
+                json=json_data,
+                params=params,
+                headers=request_headers,
+                **kwargs
+            ) as response:
+                response.raise_for_status()
+                
+                self._record_success(url)
+                
+                # Record metrics
+                if self.metrics:
+                    self.metrics.record_request(
+                        method=method,
+                        path=path,
+                        status=response.status,
+                        duration=(datetime.utcnow() - datetime.utcnow()).total_seconds()
+                    )
+                    
+                return await response.json()
+                
+        except Exception as e:
+            self._record_failure(url)
+            logger.error(f"Request failed: {method} {full_url} - {e}")
+            raise
+            
+    async def get(self, path: str, **kwargs) -> Dict[str, Any]:
+        """GET request"""
+        return await self.request("GET", path, **kwargs)
+        
+    async def post(
+        self,
+        path: str,
+        json_data: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """POST request"""
+        return await self.request("POST", path, json_data=json_data, **kwargs)
+        
+    async def put(
+        self,
+        path: str,
+        json_data: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """PUT request"""
+        return await self.request("PUT", path, json_data=json_data, **kwargs)
+        
+    async def patch(
+        self,
+        path: str,
+        json_data: Optional[Dict[str, Any]] = None,
+        **kwargs
+    ) -> Dict[str, Any]:
+        """PATCH request"""
+        return await self.request("PATCH", path, json_data=json_data, **kwargs)
+        
+    async def delete(self, path: str, **kwargs) -> Dict[str, Any]:
+        """DELETE request"""
+        return await self.request("DELETE", path, **kwargs)
+        
+    async def health_check(self) -> bool:
+        """Check if service is healthy"""
+        try:
+            await self.get(self.config.health_check_path)
+            return True
+        except:
+            return False
+            
+    @abstractmethod
+    async def get_client_specific_config(self) -> Dict[str, Any]:
+        """Get client-specific configuration from Consul"""
+        pass
 
 
 class RESTClient(BaseClient):
     """Base REST API client"""
     
-    def __init__(self, *args, session=None, **kwargs):
-        super().__init__(*args, **kwargs)
-        self.session = session
-        
     async def _initialize(self):
-        """Initialize HTTP session"""
-        if not self.session:
-            import aiohttp
-            timeout = aiohttp.ClientTimeout(
-                total=self.config.timeout.total_seconds()
-            )
-            self.session = aiohttp.ClientSession(
-                timeout=timeout,
-                headers=self.config.headers
-            )
+        """Initialize is handled in parent class"""
+        pass
             
     async def _shutdown(self):
-        """Close HTTP session"""
-        if self.session and hasattr(self.session, 'close'):
-            await self.session.close()
+        """Shutdown is handled in parent class"""
+        pass
             
     @retry()
     @circuit_breaker()
     @monitored()
     @authenticated()
     async def get(self, endpoint: str, **kwargs) -> Dict[str, Any]:
-        """GET request"""
+        """GET request with decorators"""
         async with self._request_context(endpoint, "GET"):
             self._check_rate_limit()
-            
-            url = f"{self.config.base_url}{endpoint}"
-            headers = self._add_auth_headers(kwargs.pop("headers", {}))
-            
-            async with self.session.get(url, headers=headers, **kwargs) as response:
-                response.raise_for_status()
-                return await response.json()
+            return await super().get(endpoint, **kwargs)
                 
     @retry()
     @circuit_breaker()
     @monitored()
     @authenticated()
     async def post(self, endpoint: str, data: Any = None, **kwargs) -> Dict[str, Any]:
-        """POST request"""
+        """POST request with decorators"""
         async with self._request_context(endpoint, "POST"):
             self._check_rate_limit()
-            
-            url = f"{self.config.base_url}{endpoint}"
-            headers = self._add_auth_headers(kwargs.pop("headers", {}))
-            
-            if data and not isinstance(data, (str, bytes)):
-                kwargs["json"] = data
-            else:
-                kwargs["data"] = data
-                
-            async with self.session.post(url, headers=headers, **kwargs) as response:
-                response.raise_for_status()
-                return await response.json()
+            return await super().post(endpoint, json_data=data, **kwargs)
                 
     @retry()
     @circuit_breaker()
     @monitored()
     @authenticated()
     async def put(self, endpoint: str, data: Any = None, **kwargs) -> Dict[str, Any]:
-        """PUT request"""
+        """PUT request with decorators"""
         async with self._request_context(endpoint, "PUT"):
             self._check_rate_limit()
-            
-            url = f"{self.config.base_url}{endpoint}"
-            headers = self._add_auth_headers(kwargs.pop("headers", {}))
-            
-            if data and not isinstance(data, (str, bytes)):
-                kwargs["json"] = data
-            else:
-                kwargs["data"] = data
-                
-            async with self.session.put(url, headers=headers, **kwargs) as response:
-                response.raise_for_status()
-                return await response.json()
+            return await super().put(endpoint, json_data=data, **kwargs)
                 
     @retry()
     @circuit_breaker()
     @monitored()
     @authenticated()
     async def delete(self, endpoint: str, **kwargs) -> Dict[str, Any]:
-        """DELETE request"""
+        """DELETE request with decorators"""
         async with self._request_context(endpoint, "DELETE"):
             self._check_rate_limit()
+            return await super().delete(endpoint, **kwargs)
             
-            url = f"{self.config.base_url}{endpoint}"
-            headers = self._add_auth_headers(kwargs.pop("headers", {}))
-            
-            async with self.session.delete(url, headers=headers, **kwargs) as response:
-                response.raise_for_status()
-                if response.content_length:
-                    return await response.json()
-                return {"status": "success"} 
+    async def get_client_specific_config(self) -> Dict[str, Any]:
+        """Default implementation - can be overridden"""
+        return {}
+
+
+# Backward compatibility alias
+BaseServiceClient = BaseClient 

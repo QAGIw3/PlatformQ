@@ -32,10 +32,9 @@ class Command(ABC):
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @property
-    @abstractmethod
     def name(self) -> str:
         """Get command name"""
-        pass
+        return self.__class__.__name__
 
 
 @dataclass
@@ -46,40 +45,53 @@ class Query(ABC):
     metadata: Dict[str, Any] = field(default_factory=dict)
     
     @property
-    @abstractmethod
     def name(self) -> str:
         """Get query name"""
-        pass
+        return self.__class__.__name__
 
 
 class CommandHandler(ABC, Generic[TCommand, TResult]):
     """Base class for command handlers"""
     
-    @abstractmethod
     async def handle(self, command: TCommand) -> TResult:
         """Handle command and return result"""
-        pass
+        raise NotImplementedError(f"Handler {self.__class__.__name__} must implement handle method")
         
     @property
-    @abstractmethod
     def command_type(self) -> Type[TCommand]:
         """Get handled command type"""
-        pass
+        # Use type hints to determine command type
+        import inspect
+        sig = inspect.signature(self.handle)
+        params = list(sig.parameters.values())
+        if len(params) >= 2:  # self, command
+            command_param = params[1]
+            if hasattr(command_param.annotation, '__origin__'):
+                return command_param.annotation.__args__[0]
+            return command_param.annotation
+        raise NotImplementedError(f"Handler {self.__class__.__name__} must specify command type")
 
 
 class QueryHandler(ABC, Generic[TQuery, TResult]):
     """Base class for query handlers"""
     
-    @abstractmethod
     async def handle(self, query: TQuery) -> TResult:
         """Handle query and return result"""
-        pass
+        raise NotImplementedError(f"Handler {self.__class__.__name__} must implement handle method")
         
     @property
-    @abstractmethod
     def query_type(self) -> Type[TQuery]:
         """Get handled query type"""
-        pass
+        # Use type hints to determine query type
+        import inspect
+        sig = inspect.signature(self.handle)
+        params = list(sig.parameters.values())
+        if len(params) >= 2:  # self, query
+            query_param = params[1]
+            if hasattr(query_param.annotation, '__origin__'):
+                return query_param.annotation.__args__[0]
+            return query_param.annotation
+        raise NotImplementedError(f"Handler {self.__class__.__name__} must specify query type")
 
 
 class CommandBus:

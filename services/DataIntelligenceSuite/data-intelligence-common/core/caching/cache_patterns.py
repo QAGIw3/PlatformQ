@@ -5,37 +5,40 @@ Implements advanced caching patterns and multi-level cache support.
 """
 
 import asyncio
-import logging
 from typing import Any, Dict, Optional, Callable, List, Set, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
-from abc import ABC, abstractmethod
+from abc import ABC
 import hashlib
 import json
 
 from .strategies import CacheStrategy, CacheEntry, BaseCacheStrategy, create_cache_strategy
 from .cache_manager import CacheManager, CacheConfig
+from ...monitoring import StructuredLogger
 
-logger = logging.getLogger(__name__)
+logger = StructuredLogger.get_logger(__name__)
 
 
 class CachePattern(ABC):
     """Base class for cache patterns"""
     
-    @abstractmethod
     async def get(self, key: str) -> Optional[Any]:
         """Get value using pattern"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement get method"
+        )
         
-    @abstractmethod
     async def put(self, key: str, value: Any, ttl: Optional[timedelta] = None) -> None:
         """Put value using pattern"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement put method"
+        )
         
-    @abstractmethod
     async def remove(self, key: str) -> bool:
         """Remove value using pattern"""
-        pass
+        raise NotImplementedError(
+            f"{self.__class__.__name__} must implement remove method"
+        )
 
 
 class MultiLevelCache(CachePattern):

@@ -44,7 +44,7 @@ from .base_processor import (
 )
 from ...monitoring import StructuredLogger
 from ...core.ml import AnomalyDetector
-from ...core.lineage import QualityLineageTracker
+from ...core.catalog import LineageTracker as QualityLineageTracker
 
 logger = StructuredLogger.get_logger(__name__)
 

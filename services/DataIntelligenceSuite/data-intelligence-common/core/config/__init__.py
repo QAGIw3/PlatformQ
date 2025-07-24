@@ -14,7 +14,9 @@ from .base import (
     ObservabilityConfig,
     ConfigLoader,
     ConfigValidator,
-    ConfigurationError
+    ConfigurationError,
+    Environment,
+    LogLevel
 )
 
 from .service_configs import (
@@ -52,7 +54,11 @@ from .security import (
     VaultConfig,
     ConsulConfig,
     AuthConfig,
-    EncryptionConfig
+    EncryptionConfig,
+    AuthType,
+    EncryptionAlgorithm,
+    SecurityPolicyConfig,
+    SecretsConfig
 )
 
 from .monitoring import (
@@ -114,6 +120,10 @@ __all__ = [
     "ConsulConfig",
     "AuthConfig",
     "EncryptionConfig",
+    "AuthType",
+    "EncryptionAlgorithm",
+    "SecurityPolicyConfig",
+    "SecretsConfig",
     
     # Monitoring
     "MetricsConfig",

@@ -605,4 +605,89 @@ class HealthEndpoints:
             if stats:
                 response["checks"][name]["statistics"] = stats
                 
-        return response 
+        return response
+
+
+# Backward compatibility - HealthCheckManager from base_service
+class HealthCheckManager(HealthMonitor):
+    """
+    Legacy health check manager for backward compatibility.
+    
+    Wraps HealthMonitor to provide the same interface as base_service/health.py
+    """
+    
+    def __init__(self, service_name: str):
+        super().__init__(service_name)
+        self.check_results: Dict[str, HealthCheckResult] = {}
+        self.overall_status = HealthStatus.HEALTHY
+        self.startup_time = datetime.utcnow()
+        
+        # Configuration
+        self.check_timeout = 5.0  # seconds
+        self.max_retries = 3
+        
+        # History
+        self.health_history: List[ServiceHealth] = []
+        self.max_history_size = 100
+        
+    def add_check(self, name: str, check_func: Callable, critical: bool = False, interval: int = 30):
+        """Add a health check using legacy interface."""
+        config = HealthCheckConfig(
+            name=name,
+            check_func=check_func,
+            timeout=self.check_timeout,
+            interval=timedelta(seconds=interval),
+            critical=critical
+        )
+        super().add_check(config)
+        
+    async def check_health(self) -> ServiceHealth:
+        """
+        Run all health checks and return overall health.
+        
+        Compatible with base_service interface.
+        """
+        return await self.get_health()
+        
+    def set_status(self, status: HealthStatus, message: Optional[str] = None):
+        """Set manual health status."""
+        # Store the manual status
+        self.overall_status = status
+        if message:
+            logger.info(f"Health status manually set to {status.value}: {message}")
+            
+    def get_status(self) -> HealthStatus:
+        """Get current health status."""
+        return self.overall_status
+        
+    def get_history(self, limit: int = 10) -> List[ServiceHealth]:
+        """Get health check history."""
+        return self.health_history[-limit:]
+        
+    def get_uptime(self) -> float:
+        """Get service uptime in seconds."""
+        return (datetime.utcnow() - self.startup_time).total_seconds()
+        
+    def get_health_summary(self) -> Dict[str, Any]:
+        """Get health summary including uptime and check statistics."""
+        total_checks = len(self.checks)
+        healthy_checks = sum(1 for check in self.checks.values() 
+                           if check.last_result and check.last_result.status == HealthStatus.HEALTHY)
+        
+        return {
+            "status": self.overall_status.value,
+            "uptime_seconds": self.get_uptime(),
+            "total_checks": total_checks,
+            "healthy_checks": healthy_checks,
+            "unhealthy_checks": total_checks - healthy_checks,
+            "last_check": self.health_history[-1].timestamp.isoformat() if self.health_history else None
+        }
+
+
+# Additional backward compatibility aliases
+OverallHealth = ServiceHealth  # Alias for compatibility
+
+
+class HealthChecker(HealthMonitor):
+    """Alias for services using HealthChecker name."""
+    pass 
