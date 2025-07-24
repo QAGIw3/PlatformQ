@@ -1,122 +1,96 @@
 """
-Unified Event Framework for DataIntelligenceSuite
+Unified event system for DataIntelligenceSuite.
 
-Provides comprehensive event processing capabilities with support for multiple patterns.
+Provides comprehensive event handling, processing, and routing capabilities.
 """
 
-# Base components
+# Base event models and types
 from .base import (
-    Event,
-    EventPriority,
-    EventDeliveryMode,
-    EventProcessingMode,
-    EventHandler,
-    EventProcessingConfig,
-    EventRouter,
-    BaseEventProcessor
+    Event, EventPriority, EventCategory, EventStatus, EventType,
+    EventProcessingMode, EventDeliveryMode, EventHandler,
+    EventProcessingConfig, EventRouter, BaseEventProcessor,
+    create_system_event, create_data_event, create_model_event,
+    create_processing_event, create_audit_event
 )
 
-# Event bus
-from .bus import (
-    UnifiedEventBus,
-    EventSubscription,
-    SubscriptionType,
-    EventBackend,
-    PulsarBackend
-)
-
-# Event models
+# Specialized event types
 from .models import (
-    EventCategory,
-    EventStatus,
-    EventType,
-    SystemEvent,
-    DataEvent,
-    ModelEvent,
-    ProcessingEvent,
-    AuditEvent,
-    NotificationEvent,
-    WorkflowEvent,
-    SecurityEvent,
-    create_system_event,
-    create_data_event,
-    create_model_event,
-    create_processing_event,
-    create_audit_event
+    SystemEvent, DataEvent, ModelEvent, ProcessingEvent,
+    AuditEvent, WorkflowEvent, SecurityEvent, NotificationEvent,
+    IntegrationEvent
+)
+
+# Event bus and subscriptions
+from .bus import (
+    UnifiedEventBus, EventSubscription, SubscriptionType,
+    EventBackend
+)
+
+# Event processing
+from .event_processor import (
+    EventConfig, EventResult, EventProcessor
 )
 
 # Event patterns
-from .event_patterns import EventPattern, PatternMatcher
-
-# Event store
-from .event_store import EventStore, EventQuery
+from .event_patterns import (
+    EventPattern, EventFilter, EventAggregator, EventEnricher,
+    EventSplitter, EventRouter as PatternRouter, EventTransformer
+)
 
 # Event sourcing
-from .event_sourcing import EventSourcingMixin, AggregateRoot
+from .event_sourcing import (
+    EventSourcedAggregate, EventStore, Snapshot, Command,
+    CommandHandler, EventProjection
+)
+
+# Event store
+from .event_store import (
+    InMemoryEventStore, PersistentEventStore, EventQuery,
+    EventStream
+)
 
 # Saga pattern
-from .saga import SagaOrchestrator, SagaStep, CompensationStrategy
+from .saga import (
+    Saga, SagaStep, SagaContext, SagaOrchestrator,
+    CompensationHandler
+)
 
 # Backward compatibility aliases
 EventBus = UnifiedEventBus
-EventProcessor = BaseEventProcessor
-EventConfig = EventProcessingConfig
 
 __all__ = [
     # Base
-    "Event",
-    "EventPriority",
-    "EventDeliveryMode",
-    "EventProcessingMode",
-    "EventHandler",
-    "EventProcessingConfig",
-    "EventRouter",
-    "BaseEventProcessor",
-    
-    # Bus
-    "UnifiedEventBus",
-    "EventBus",  # Alias
-    "EventSubscription",
-    "SubscriptionType",
-    "EventBackend",
-    "PulsarBackend",
+    'Event', 'EventPriority', 'EventCategory', 'EventStatus', 'EventType',
+    'EventProcessingMode', 'EventDeliveryMode', 'EventHandler',
+    'EventProcessingConfig', 'EventRouter', 'BaseEventProcessor',
+    'create_system_event', 'create_data_event', 'create_model_event',
+    'create_processing_event', 'create_audit_event',
     
     # Models
-    "EventCategory",
-    "EventStatus",
-    "EventType",
-    "SystemEvent",
-    "DataEvent",
-    "ModelEvent",
-    "ProcessingEvent",
-    "AuditEvent",
-    "NotificationEvent",
-    "WorkflowEvent",
-    "SecurityEvent",
-    "create_system_event",
-    "create_data_event",
-    "create_model_event",
-    "create_processing_event",
-    "create_audit_event",
+    'SystemEvent', 'DataEvent', 'ModelEvent', 'ProcessingEvent',
+    'AuditEvent', 'WorkflowEvent', 'SecurityEvent', 'NotificationEvent',
+    'IntegrationEvent',
+    
+    # Bus
+    'EventBus', 'UnifiedEventBus', 'EventSubscription', 'SubscriptionType',
+    'EventBackend',
+    
+    # Processing
+    'EventConfig', 'EventResult', 'EventProcessor',
     
     # Patterns
-    "EventPattern",
-    "PatternMatcher",
+    'EventPattern', 'EventFilter', 'EventAggregator', 'EventEnricher',
+    'EventSplitter', 'PatternRouter', 'EventTransformer',
     
-    # Store
-    "EventStore",
-    "EventQuery",
+    # Event Sourcing
+    'EventSourcedAggregate', 'EventStore', 'Snapshot', 'Command',
+    'CommandHandler', 'EventProjection',
     
-    # Sourcing
-    "EventSourcingMixin",
-    "AggregateRoot",
+    # Event Store
+    'InMemoryEventStore', 'PersistentEventStore', 'EventQuery',
+    'EventStream',
     
     # Saga
-    "SagaOrchestrator",
-    "SagaStep",
-    "CompensationStrategy",
-    
-    # Aliases for backward compatibility
-    "EventProcessor",
-    "EventConfig"
+    'Saga', 'SagaStep', 'SagaContext', 'SagaOrchestrator',
+    'CompensationHandler'
 ] 

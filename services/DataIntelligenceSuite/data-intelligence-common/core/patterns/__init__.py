@@ -59,8 +59,19 @@ from .observer import (
 from .factory import (
     Factory,
     AbstractFactory,
+    Builder,
     FactoryRegistry,
-    Builder
+    get_global_registry,
+    GenericFactory,
+    SingletonFactory,
+    PrototypeFactory,
+    PooledFactory,
+    ConfigurableFactory,
+    PluginFactory,
+    TypedFactory,
+    ChainedBuilder,
+    FactoryConfig,
+    create_factory
 )
 
 from .strategy import (
@@ -111,8 +122,19 @@ __all__ = [
     # Factory
     "Factory",
     "AbstractFactory",
-    "FactoryRegistry",
     "Builder",
+    "FactoryRegistry",
+    "get_global_registry",
+    "GenericFactory",
+    "SingletonFactory",
+    "PrototypeFactory",
+    "PooledFactory",
+    "ConfigurableFactory",
+    "PluginFactory",
+    "TypedFactory",
+    "ChainedBuilder",
+    "FactoryConfig",
+    "create_factory",
     
     # Strategy
     "Strategy",

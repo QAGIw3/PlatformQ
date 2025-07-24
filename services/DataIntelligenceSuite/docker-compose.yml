@@ -1,0 +1,514 @@
+version: '3.8'
+
+services:
+  # Analytics Engine Service
+  analytics-engine:
+    build:
+      context: ./analytics-engine-service
+      dockerfile: Dockerfile
+    image: platformq/analytics-engine:3.0.0
+    container_name: analytics-engine
+    ports:
+      - "8000:8000"
+    environment:
+      - SERVICE_NAME=analytics-engine-service
+      - SERVICE_PORT=8000
+      - ENVIRONMENT=development
+      # Engine configuration
+      - ENABLE_TRINO=true
+      - ENABLE_DRUID=true
+      - ENABLE_CLICKHOUSE=true
+      - ENABLE_PINOT=false
+      # Connection settings
+      - TRINO_HOST=trino
+      - TRINO_PORT=8080
+      - DRUID_HOST=druid-broker
+      - DRUID_PORT=8082
+      - CLICKHOUSE_HOST=clickhouse
+      - CLICKHOUSE_PORT=8123
+      # Vault/Consul
+      - VAULT_ADDR=http://vault:8200
+      - CONSUL_ADDR=http://consul:8500
+    depends_on:
+      - vault
+      - consul
+      - trino
+      - druid-broker
+      - clickhouse
+      - ignite
+    networks:
+      - platformq
+    volumes:
+      - ./analytics-engine-service/config:/app/config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Data Governance Service
+  data-governance:
+    build:
+      context: ./data-governance-service
+      dockerfile: Dockerfile
+    image: platformq/data-governance:3.0.0
+    container_name: data-governance
+    ports:
+      - "8020:8020"
+    environment:
+      - SERVICE_NAME=data-governance-service
+      - SERVICE_PORT=8020
+      - ENVIRONMENT=development
+      # Quality settings
+      - ENABLE_AUTO_PROFILING=true
+      - ENABLE_ANOMALY_DETECTION=true
+      - ENABLE_AUTO_REMEDIATION=false
+      - QUALITY_THRESHOLD=0.95
+      # Processing
+      - BATCH_SIZE=1000
+      - PROFILING_SAMPLE_SIZE=10000
+      # Vault/Consul
+      - VAULT_ADDR=http://vault:8200
+      - CONSUL_ADDR=http://consul:8500
+    depends_on:
+      - vault
+      - consul
+      - ignite
+      - cassandra
+      - pulsar
+    networks:
+      - platformq
+    volumes:
+      - ./data-governance-service/config:/app/config
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8020/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # ML Platform Service
+  ml-platform:
+    build:
+      context: ./ml-platform-service
+      dockerfile: Dockerfile
+    image: platformq/ml-platform:3.0.0
+    container_name: ml-platform
+    ports:
+      - "8030:8030"
+    environment:
+      - SERVICE_NAME=ml-platform-service
+      - SERVICE_PORT=8030
+      - ENVIRONMENT=development
+      # ML settings
+      - MLFLOW_TRACKING_URI=http://mlflow:5000
+      - EXPERIMENT_TRACKING=true
+      - AUTO_VERSIONING=true
+      # Training
+      - DEFAULT_TRAINING_MODE=auto
+      - DISTRIBUTED_FRAMEWORK=ray
+      - GPU_ENABLED=false
+      # Serving
+      - ENABLE_MODEL_SERVING=true
+      - SERVING_FRAMEWORK=triton
+      - DEFAULT_REPLICAS=2
+      # Feature store
+      - ENABLE_FEATURE_STORE=true
+      - FEATURE_STORE_BACKEND=feast
+      # Storage
+      - MODEL_STORAGE_PATH=/models
+      - ARTIFACT_STORAGE=minio
+      # Vault/Consul
+      - VAULT_ADDR=http://vault:8200
+      - CONSUL_ADDR=http://consul:8500
+    depends_on:
+      - vault
+      - consul
+      - mlflow
+      - minio
+      - ray-head
+    networks:
+      - platformq
+    volumes:
+      - ./ml-platform-service/config:/app/config
+      - ml-models:/models
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8030/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Data Platform Service
+  data-platform:
+    build:
+      context: ./data-platform-service
+      dockerfile: Dockerfile
+    image: platformq/data-platform:3.0.0
+    container_name: data-platform
+    ports:
+      - "8040:8040"
+    environment:
+      - SERVICE_NAME=data-platform-service
+      - SERVICE_PORT=8040
+      - ENVIRONMENT=development
+      # Storage settings
+      - PRIMARY_STORAGE=minio
+      - STORAGE_PATH=/data
+      - DEFAULT_FORMAT=parquet
+      # Catalog
+      - ENABLE_DATA_CATALOG=true
+      - CATALOG_BACKEND=iceberg
+      # Lakehouse
+      - ENABLE_LAKEHOUSE=true
+      - LAKEHOUSE_FORMAT=delta
+      - ENABLE_TIME_TRAVEL=true
+      # Processing
+      - DEFAULT_BATCH_SIZE=10000
+      - ENABLE_AUTO_PARTITIONING=true
+      # Vault/Consul
+      - VAULT_ADDR=http://vault:8200
+      - CONSUL_ADDR=http://consul:8500
+    depends_on:
+      - vault
+      - consul
+      - minio
+      - spark-master
+      - trino
+    networks:
+      - platformq
+    volumes:
+      - ./data-platform-service/config:/app/config
+      - data-storage:/data
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8040/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Orchestration Service
+  orchestration:
+    build:
+      context: ./orchestration-service
+      dockerfile: Dockerfile
+    image: platformq/orchestration:3.0.0
+    container_name: orchestration
+    ports:
+      - "8050:8050"
+    environment:
+      - SERVICE_NAME=orchestration-service
+      - SERVICE_PORT=8050
+      - ENVIRONMENT=development
+      # Workflow settings
+      - MAX_CONCURRENT_WORKFLOWS=100
+      - MAX_CONCURRENT_TASKS=1000
+      # Scheduling
+      - ENABLE_SCHEDULING=true
+      - SCHEDULER_INTERVAL=60
+      # Event triggers
+      - ENABLE_EVENT_TRIGGERS=true
+      - EVENT_PROCESSING_MODE=parallel
+      # State
+      - STATE_BACKEND=ignite
+      - ENABLE_CHECKPOINTING=true
+      # Vault/Consul
+      - VAULT_ADDR=http://vault:8200
+      - CONSUL_ADDR=http://consul:8500
+    depends_on:
+      - vault
+      - consul
+      - airflow-webserver
+      - ignite
+      - pulsar
+    networks:
+      - platformq
+    volumes:
+      - ./orchestration-service/config:/app/config
+      - ./orchestration-service/workflows:/app/workflows
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8050/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Integration Hub Service
+  integration-hub:
+    build:
+      context: ./integration-hub-service
+      dockerfile: Dockerfile
+    image: platformq/integration-hub:3.0.0
+    container_name: integration-hub
+    ports:
+      - "8060:8060"
+    environment:
+      - SERVICE_NAME=integration-hub-service
+      - SERVICE_PORT=8060
+      - ENVIRONMENT=development
+      # Connector settings
+      - CONNECTOR_PLUGIN_DIR=/app/connectors
+      - MAX_CONCURRENT_CONNECTIONS=100
+      - CONNECTION_POOL_SIZE=10
+      # Sync settings
+      - DEFAULT_SYNC_MODE=incremental
+      - DEFAULT_BATCH_SIZE=1000
+      - ENABLE_PARALLEL_SYNC=true
+      # Transformation
+      - ENABLE_TRANSFORMATIONS=true
+      - TRANSFORMATION_PLUGIN_DIR=/app/transformations
+      # Security
+      - ENABLE_CREDENTIAL_ROTATION=true
+      - CREDENTIAL_ROTATION_INTERVAL=2592000
+      # Vault/Consul
+      - VAULT_ADDR=http://vault:8200
+      - CONSUL_ADDR=http://consul:8500
+    depends_on:
+      - vault
+      - consul
+      - ignite
+      - janusgraph
+    networks:
+      - platformq
+    volumes:
+      - ./integration-hub-service/config:/app/config
+      - ./integration-hub-service/connectors:/app/connectors
+      - ./integration-hub-service/transformations:/app/transformations
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8060/health"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  # Infrastructure Services
+  
+  # Vault
+  vault:
+    image: vault:1.13.3
+    container_name: vault
+    ports:
+      - "8200:8200"
+    environment:
+      - VAULT_DEV_ROOT_TOKEN_ID=root
+      - VAULT_DEV_LISTEN_ADDRESS=0.0.0.0:8200
+    cap_add:
+      - IPC_LOCK
+    networks:
+      - platformq
+    volumes:
+      - vault-data:/vault/data
+
+  # Consul
+  consul:
+    image: consul:1.15.4
+    container_name: consul
+    ports:
+      - "8500:8500"
+      - "8600:8600/udp"
+    command: agent -server -bootstrap-expect=1 -ui -client=0.0.0.0
+    networks:
+      - platformq
+    volumes:
+      - consul-data:/consul/data
+
+  # Apache Ignite
+  ignite:
+    image: apacheignite/ignite:2.15.0
+    container_name: ignite
+    ports:
+      - "10800:10800"
+      - "11211:11211"
+      - "47100:47100"
+      - "47500:47500"
+    environment:
+      - IGNITE_QUIET=false
+      - JVM_OPTS=-Xms512m -Xmx2g
+    networks:
+      - platformq
+    volumes:
+      - ignite-data:/ignite/work
+      - ./infra/ignite:/opt/ignite/config
+
+  # Cassandra
+  cassandra:
+    image: cassandra:4.1
+    container_name: cassandra
+    ports:
+      - "9042:9042"
+    environment:
+      - CASSANDRA_CLUSTER_NAME=platformq
+      - CASSANDRA_DC=datacenter1
+      - CASSANDRA_ENDPOINT_SNITCH=GossipingPropertyFileSnitch
+    networks:
+      - platformq
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+
+  # Apache Pulsar
+  pulsar:
+    image: apachepulsar/pulsar:3.0.0
+    container_name: pulsar
+    command: bin/pulsar standalone
+    ports:
+      - "6650:6650"
+      - "8080:8080"
+    networks:
+      - platformq
+    volumes:
+      - pulsar-data:/pulsar/data
+
+  # MinIO
+  minio:
+    image: minio/minio:latest
+    container_name: minio
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      - MINIO_ROOT_USER=admin
+      - MINIO_ROOT_PASSWORD=admin123
+    command: server /data --console-address ":9001"
+    networks:
+      - platformq
+    volumes:
+      - minio-data:/data
+
+  # MLflow
+  mlflow:
+    image: ghcr.io/mlflow/mlflow:v2.8.0
+    container_name: mlflow
+    ports:
+      - "5000:5000"
+    environment:
+      - MLFLOW_BACKEND_STORE_URI=postgresql://mlflow:mlflow@postgres/mlflow
+      - MLFLOW_ARTIFACT_URI=s3://mlflow/artifacts
+      - AWS_ACCESS_KEY_ID=admin
+      - AWS_SECRET_ACCESS_KEY=admin123
+      - MLFLOW_S3_ENDPOINT_URL=http://minio:9000
+    depends_on:
+      - postgres
+      - minio
+    networks:
+      - platformq
+    command: >
+      mlflow server
+      --backend-store-uri postgresql://mlflow:mlflow@postgres/mlflow
+      --default-artifact-root s3://mlflow/artifacts
+      --host 0.0.0.0
+
+  # PostgreSQL (for MLflow)
+  postgres:
+    image: postgres:15
+    container_name: postgres
+    environment:
+      - POSTGRES_USER=mlflow
+      - POSTGRES_PASSWORD=mlflow
+      - POSTGRES_DB=mlflow
+    networks:
+      - platformq
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+
+  # Trino
+  trino:
+    image: trinodb/trino:420
+    container_name: trino
+    ports:
+      - "8080:8080"
+    networks:
+      - platformq
+    volumes:
+      - ./infra/trino:/etc/trino
+
+  # Druid
+  druid-broker:
+    image: apache/druid:27.0.0
+    container_name: druid-broker
+    ports:
+      - "8082:8082"
+    environment:
+      - DRUID_SERVICE=broker
+    networks:
+      - platformq
+
+  # ClickHouse
+  clickhouse:
+    image: clickhouse/clickhouse-server:23.8
+    container_name: clickhouse
+    ports:
+      - "8123:8123"
+      - "9000:9000"
+    networks:
+      - platformq
+    volumes:
+      - clickhouse-data:/var/lib/clickhouse
+
+  # JanusGraph
+  janusgraph:
+    image: janusgraph/janusgraph:1.0.0
+    container_name: janusgraph
+    ports:
+      - "8182:8182"
+    environment:
+      - JANUS_PROPS_TEMPLATE=cassandra
+      - janusgraph.storage.backend=cassandra
+      - janusgraph.storage.hostname=cassandra
+    depends_on:
+      - cassandra
+    networks:
+      - platformq
+
+  # Ray Head Node
+  ray-head:
+    image: rayproject/ray:2.7.0
+    container_name: ray-head
+    ports:
+      - "8265:8265"
+      - "10001:10001"
+    environment:
+      - RAY_HEAD_SERVICE_HOST=ray-head
+    command: ray start --head --dashboard-host=0.0.0.0
+    networks:
+      - platformq
+
+  # Spark Master
+  spark-master:
+    image: bitnami/spark:3.4
+    container_name: spark-master
+    environment:
+      - SPARK_MODE=master
+      - SPARK_MASTER_HOST=spark-master
+    ports:
+      - "7077:7077"
+      - "8081:8080"
+    networks:
+      - platformq
+
+  # Airflow
+  airflow-webserver:
+    image: apache/airflow:2.7.0
+    container_name: airflow-webserver
+    environment:
+      - AIRFLOW__CORE__EXECUTOR=LocalExecutor
+      - AIRFLOW__DATABASE__SQL_ALCHEMY_CONN=postgresql+psycopg2://airflow:airflow@postgres/airflow
+      - AIRFLOW__CORE__FERNET_KEY=46BKJoQYlPPOexq0OhDZnIlNepKFf87WFwLbfzqDDho=
+      - AIRFLOW__CORE__LOAD_EXAMPLES=False
+    ports:
+      - "8090:8080"
+    depends_on:
+      - postgres
+    networks:
+      - platformq
+    command: webserver
+
+networks:
+  platformq:
+    driver: bridge
+
+volumes:
+  vault-data:
+  consul-data:
+  ignite-data:
+  cassandra-data:
+  pulsar-data:
+  minio-data:
+  postgres-data:
+  clickhouse-data:
+  ml-models:
+  data-storage: 

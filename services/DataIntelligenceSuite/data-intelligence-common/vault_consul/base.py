@@ -58,7 +58,12 @@ class BaseIntegration(ABC):
 
 
 class CacheableMixin:
-    """Mixin for adding caching capabilities."""
+    """
+    Mixin for adding caching capabilities.
+    
+    DEPRECATED: Use the @cached decorator from core.caching instead.
+    This is maintained for backward compatibility only.
+    """
     
     def __init__(self, *args, **kwargs):
         super().__init__(*args, **kwargs)
@@ -67,6 +72,12 @@ class CacheableMixin:
         
     def _get_from_cache(self, key: str, ttl_seconds: int = 300) -> Optional[Any]:
         """Get value from cache if not expired."""
+        import warnings
+        warnings.warn(
+            "CacheableMixin is deprecated. Use @cached decorator from core.caching instead.",
+            DeprecationWarning,
+            stacklevel=2
+        )
         if key in self._cache:
             timestamp = self._cache_timestamps.get(key)
             if timestamp and (datetime.utcnow() - timestamp).seconds < ttl_seconds:

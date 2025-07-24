@@ -23,6 +23,7 @@ from ..core.caching import CacheManager, DistributedCacheClient
 from ..monitoring import HealthCheckManager, HealthStatus
 from .config import ServiceConfig, CacheConfig, EventConfig
 from .middleware import CircuitBreakerManager
+from ..core.mixins import ServiceMixin
 
 logger = logging.getLogger(__name__)
 
@@ -56,21 +57,22 @@ class ServiceMetadata:
             self.data_outputs = []
 
 
-class DataIntelligenceBaseService(ABC):
+class DataIntelligenceBaseService(ServiceMixin, ABC):
     """
     Base service class for all DataIntelligenceSuite services.
     
-    Provides:
-    - Standardized initialization and shutdown
-    - Vault/Consul integration
-    - Health checking
-    - Metrics collection
+    Now uses mixin-based architecture for common functionality:
+    - LifecycleMixin: Initialization, start, stop, background tasks
+    - MonitoringMixin: Metrics, events, health checks
+    - VaultConsulMixin: Secret and configuration management
+    - ConfigurationMixin: Configuration handling
+    - ResilienceMixin: Retry and circuit breaker patterns
+    
+    Service-specific functionality:
+    - FastAPI application management
+    - Service discovery and registration
+    - Pulsar client management
     - Event processing
-    - Configuration management
-    - Service discovery
-    - Caching with Ignite
-    - Rate limiting
-    - Circuit breakers
     """
     
     def __init__(
@@ -79,26 +81,31 @@ class DataIntelligenceBaseService(ABC):
         config: Optional[ServiceConfig] = None,
         vault_client: Optional[VaultClient] = None,
         consul_client: Optional[ConsulClient] = None,
-        event_publisher: Optional[EventPublisher] = None
+        event_publisher: Optional[EventPublisher] = None,
+        metrics_collector: Optional[MetricsCollector] = None,
+        event_bus: Optional[Any] = None
     ):
+        # Initialize mixins
+        super().__init__(
+            vault_client=vault_client,
+            consul_client=consul_client,
+            metrics_collector=metrics_collector,
+            event_bus=event_bus,
+            config=config.__dict__ if config else {}
+        )
+        
         self.metadata = metadata
         self.config = config or ServiceConfig(name=metadata.name, version=metadata.version)
         self.app: Optional[FastAPI] = None
         
-        # Core integrations
-        self.vault_client = vault_client
-        self.consul_client = consul_client
+        # Additional service-specific components
         self.event_publisher = event_publisher
         
         # Unified Vault/Consul integration
         self.vault_consul: Optional[VaultConsulIntegration] = None
         
-        # Health checking
+        # Health checking (in addition to mixin functionality)
         self.health_manager = HealthCheckManager(metadata.name)
-        
-        # Metrics
-        self.metrics = MetricsCollector(metadata.name)
-        self._setup_base_metrics()
         
         # Event processing
         self.event_processor: Optional[BaseEventProcessor] = None
@@ -115,620 +122,300 @@ class DataIntelligenceBaseService(ABC):
         self._publishers: Dict[str, pulsar.Producer] = {}
         self._consumers: Dict[str, pulsar.Consumer] = {}
         
-        # Service state
-        self._initialized = False
-        self._shutting_down = False
+        # Register health checks from mixin
+        self._register_service_health_checks()
         
-        # Background tasks
-        self._background_tasks: List[asyncio.Task] = []
+    def _register_service_health_checks(self):
+        """Register service-specific health checks"""
+        self.register_health_check("vault_consul", self._check_vault_consul_health)
+        self.register_health_check("pulsar", self._check_pulsar_health)
+        self.register_health_check("cache", self._check_cache_health)
         
-    def _setup_base_metrics(self):
-        """Set up base metrics for all services."""
-        # Request metrics
-        self.metrics.request_counter = Counter(
-            "data_intelligence_requests_total",
-            "Total number of requests",
-            ["service", "method", "status"]
-        )
-        
-        self.metrics.request_duration = Histogram(
-            "data_intelligence_request_duration_seconds",
-            "Request duration in seconds",
-            ["service", "method"]
-        )
-        
-        # Service health
-        self.metrics.health_status = Gauge(
-            "data_intelligence_health_status",
-            "Service health status (0=unhealthy, 1=degraded, 2=healthy)",
-            ["service"]
-        )
-        
-        # Resource usage
-        self.metrics.active_connections = Gauge(
-            "data_intelligence_active_connections",
-            "Number of active connections",
-            ["service", "type"]
-        )
-        
-        # Cache metrics
-        self.metrics.cache_hits = Counter(
-            "data_intelligence_cache_hits_total",
-            "Total cache hits",
-            ["service", "cache"]
-        )
-        
-        self.metrics.cache_misses = Counter(
-            "data_intelligence_cache_misses_total",
-            "Total cache misses",
-            ["service", "cache"]
-        )
-        
-        # Event metrics
-        self.metrics.events_published = Counter(
-            "data_intelligence_events_published_total",
-            "Total events published",
-            ["service", "event_type"]
-        )
-        
-        self.metrics.events_consumed = Counter(
-            "data_intelligence_events_consumed_total",
-            "Total events consumed",
-            ["service", "event_type"]
-        )
-        
-    @asynccontextmanager
-    async def lifespan(self, app: FastAPI):
-        """Lifespan context manager for FastAPI."""
-        # Startup
-        await self.startup()
-        
-        yield
-        
-        # Shutdown
-        await self.shutdown()
-        
-    async def startup(self):
-        """Initialize the service."""
-        if self._initialized:
-            logger.warning(f"Service {self.metadata.name} already initialized")
-            return
-            
-        try:
-            logger.info(f"Starting {self.metadata.name} v{self.metadata.version}")
-            
-            # Initialize Vault/Consul if clients provided
-            if self.vault_client and self.consul_client:
-                await self._initialize_vault_consul()
-                
-            # Initialize caching if enabled
-            if self.config.enable_caching:
-                await self._initialize_cache()
-                
-            # Initialize Pulsar client if events enabled
-            if self.config.enable_events:
-                await self._initialize_pulsar()
-                
-            # Initialize circuit breaker manager
-            if self.config.enable_circuit_breaker:
-                self.circuit_breaker_manager = CircuitBreakerManager(
-                    service_name=self.metadata.name,
-                    fail_max=self.config.circuit_breaker_failures,
-                    reset_timeout=self.config.circuit_breaker_timeout,
-                    expected_exception=self.config.circuit_breaker_expected_exception
-                )
-                
-            # Initialize event processor
-            if self.event_publisher:
-                await self._initialize_event_processor()
-                
-            # Register health checks
-            await self._register_health_checks()
-            
-            # Service-specific initialization
-            await self.initialize_service()
-            
-            # Start background tasks
-            await self._start_background_tasks()
-            
-            self._initialized = True
-            self.health_manager.set_status(HealthStatus.HEALTHY)
-            
-            logger.info(f"Service {self.metadata.name} started successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to start service: {e}")
-            self.health_manager.set_status(HealthStatus.UNHEALTHY, str(e))
-            raise
-            
-    async def shutdown(self):
-        """Shutdown the service gracefully."""
-        if self._shutting_down:
-            return
-            
-        self._shutting_down = True
-        logger.info(f"Shutting down {self.metadata.name}")
-        
-        try:
-            # Stop background tasks
-            await self._stop_background_tasks()
-            
-            # Service-specific cleanup
-            await self.cleanup_service()
-            
-            # Close Pulsar connections
-            if self.pulsar_client:
-                try:
-                    # Close all producers
-                    for producer in self._publishers.values():
-                        producer.close()
-                    self._publishers.clear()
-                    
-                    # Close all consumers
-                    for consumer in self._consumers.values():
-                        consumer.close()
-                    self._consumers.clear()
-                    
-                    # Close client
-                    self.pulsar_client.close()
-                    logger.info("Pulsar client closed")
-                except Exception as e:
-                    logger.error(f"Error closing Pulsar: {e}")
-                    
-            # Close cache connections
-            if self.distributed_cache:
-                try:
-                    await self.distributed_cache.close()
-                    logger.info("Cache connections closed")
-                except Exception as e:
-                    logger.error(f"Error closing cache: {e}")
-            
-            # Cleanup integrations
-            if self.vault_consul:
-                await self.vault_consul.shutdown()
-                
-            if self.event_processor:
-                await self.event_processor.stop()
-                
-            logger.info(f"Service {self.metadata.name} shutdown complete")
-            
-        except Exception as e:
-            logger.error(f"Error during shutdown: {e}")
-            
-    async def _initialize_vault_consul(self):
-        """Initialize Vault/Consul integration."""
-        config = DataServiceConfig(
-            service_name=self.metadata.name,
-            service_version=self.metadata.version,
-            max_concurrent_requests=self.metadata.max_concurrent_requests,
-            request_timeout_seconds=self.metadata.request_timeout_seconds,
-            tags=[
-                "data-intelligence",
-                f"version:{self.metadata.version}",
-                *[f"capability:{cap}" for cap in self.metadata.capabilities],
-                *[f"dependency:{dep}" for dep in self.metadata.dependencies]
-            ],
-            metadata={
-                "description": self.metadata.description,
-                "min_memory_mb": str(self.metadata.min_memory_mb),
-                "min_cpu_cores": str(self.metadata.min_cpu_cores),
-                "data_sources": ",".join(self.metadata.data_sources),
-                "data_outputs": ",".join(self.metadata.data_outputs)
-            }
-        )
-        
-        self.vault_consul = VaultConsulIntegration(
-            self.vault_client,
-            self.consul_client,
-            config
-        )
-        
-        await self.vault_consul.initialize()
-        
-    async def _initialize_event_processor(self):
-        """Initialize event processor."""
-        # This will be implemented by derived classes
-        pass
-        
-    async def _initialize_cache(self):
-        """Initialize Ignite cache connection."""
-        try:
-            from pyignite.aio import AioClient
-            
-            # Create Ignite client
-            ignite_client = AioClient()
-            await ignite_client.connect(self.config.ignite_nodes)
-            
-            # Create distributed cache client wrapper
-            self.distributed_cache = DistributedCacheClient(ignite_client)
-            
-            # Initialize cache manager
-            self.cache_manager = CacheManager(self.distributed_cache)
-            
-            # Create standard caches
-            cache_config = CacheConfig()
-            await self.cache_manager.create_cache(
-                cache_config.session_cache,
-                ttl=cache_config.session_ttl
-            )
-            await self.cache_manager.create_cache(
-                cache_config.configuration_cache,
-                ttl=cache_config.configuration_ttl
-            )
-            await self.cache_manager.create_cache(
-                cache_config.query_results_cache,
-                ttl=cache_config.query_results_ttl
-            )
-            
-            logger.info("Cache initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize cache: {e}")
-            # Cache is optional, don't fail startup
-            
-    async def _initialize_pulsar(self):
-        """Initialize Pulsar client."""
-        try:
-            self.pulsar_client = pulsar.Client(
-                self.config.pulsar_url,
-                # Add authentication if needed
-            )
-            
-            logger.info("Pulsar client initialized successfully")
-            
-        except Exception as e:
-            logger.error(f"Failed to initialize Pulsar: {e}")
-            # Events are optional, don't fail startup
-        
-    async def _register_health_checks(self):
-        """Register standard health checks."""
-        # Vault/Consul connectivity
-        if self.vault_consul:
-            self.health_manager.add_check(
-                "vault_consul",
-                self._check_vault_consul_health
-            )
-            
-        # Database connectivity
-        for data_source in self.metadata.data_sources:
-            self.health_manager.add_check(
-                f"database_{data_source}",
-                lambda: self._check_database_health(data_source)
-            )
-            
-        # Event publisher
-        if self.event_publisher:
-            self.health_manager.add_check(
-                "event_publisher",
-                self._check_event_publisher_health
-            )
-            
-        # Cache health check
-        if self.distributed_cache:
-            self.health_manager.add_check(
-                "cache",
-                self._check_cache_health
-            )
-            
-        # Pulsar health check
-        if self.pulsar_client:
-            self.health_manager.add_check(
-                "pulsar",
-                self._check_pulsar_health
-            )
-            
     async def _check_vault_consul_health(self) -> bool:
-        """Check Vault/Consul health."""
+        """Check Vault/Consul health"""
+        if not self.vault_consul:
+            return True  # Not configured, so consider healthy
+        return await self.vault_consul.health_check()
+        
+    async def _check_pulsar_health(self) -> bool:
+        """Check Pulsar health"""
+        if not self.pulsar_client:
+            return True  # Not configured
         try:
-            # Check if we can get a config value
-            test_value = await self.vault_consul.get_config("health_check")
+            # Simple health check - can be enhanced
             return True
-        except:
-            return False
-            
-    async def _check_database_health(self, database: str) -> bool:
-        """Check database connectivity."""
-        try:
-            async with self.vault_consul.get_database_connection(database) as conn:
-                # Simple connectivity check
-                return conn is not None
-        except:
-            return False
-            
-    async def _check_event_publisher_health(self) -> bool:
-        """Check event publisher health."""
-        try:
-            # Assume event publisher has a health check method
-            return await self.event_publisher.is_healthy()
-        except:
+        except Exception:
             return False
             
     async def _check_cache_health(self) -> bool:
-        """Check Ignite cache health."""
+        """Check cache health"""
+        if not self.cache_manager:
+            return True  # Not configured
         try:
-            # Check if the distributed cache client is initialized
-            return self.distributed_cache is not None and self.distributed_cache.is_connected()
-        except:
+            # Simple health check
+            await self.cache_manager.get("health_check", "test")
+            return True
+        except Exception:
             return False
+    
+    async def _initialize_internal(self):
+        """Service-specific initialization"""
+        # Setup Vault/Consul integration
+        if self.vault_client and self.consul_client:
+            data_service_config = DataServiceConfig(
+                service_name=self.metadata.name,
+                service_type="data-intelligence",
+                vault_mount_path=f"data-intelligence/{self.metadata.name}",
+                consul_key_prefix=f"data-intelligence/{self.metadata.name}"
+            )
             
-    async def _check_pulsar_health(self) -> bool:
-        """Check Pulsar client health."""
-        try:
-            # Check if the pulsar client is initialized and connected
-            return self.pulsar_client is not None and self.pulsar_client.is_connected()
-        except:
-            return False
+            self.vault_consul = VaultConsulIntegration(
+                vault_client=self.vault_client,
+                consul_client=self.consul_client,
+                config=data_service_config
+            )
             
-    async def _start_background_tasks(self):
-        """Start background tasks."""
-        # Health check updates
-        self._background_tasks.append(
-            asyncio.create_task(self._health_check_loop())
+            await self.vault_consul.initialize()
+            
+        # Initialize health manager
+        await self.health_manager.initialize()
+        
+        # Initialize caching
+        if self.config.caching.enable_distributed_cache:
+            await self._initialize_caching()
+            
+        # Initialize Pulsar
+        if self.config.events.enabled:
+            await self._initialize_pulsar()
+            
+        # Initialize circuit breakers
+        self.circuit_breaker_manager = CircuitBreakerManager()
+        
+        # Publish initialization event
+        await self.publish_lifecycle_event("initialized")
+        
+    async def _initialize_caching(self):
+        """Initialize caching subsystem"""
+        from ..core.caching import CacheManager, CacheConfig
+        
+        # Get Ignite nodes from config or Consul
+        ignite_nodes = await self._get_ignite_nodes()
+        
+        self.cache_manager = CacheManager(
+            ignite_nodes=ignite_nodes,
+            service_name=self.metadata.name,
+            vault_client=self.vault_client,
+            consul_client=self.consul_client,
+            metrics_collector=self.metrics,
+            enable_encryption=self.config.security.enable_encryption
         )
         
-        # Metrics reporting
-        self._background_tasks.append(
-            asyncio.create_task(self._metrics_reporting_loop())
-        )
+        await self.cache_manager.initialize()
         
-    async def _stop_background_tasks(self):
-        """Stop background tasks."""
-        for task in self._background_tasks:
-            task.cancel()
+        # Setup default caches
+        await self._setup_default_caches()
+        
+    async def _get_ignite_nodes(self) -> List[tuple]:
+        """Get Ignite nodes from Consul or config"""
+        if self.consul_client:
+            # Get from Consul
+            services = await self.consul_client.get_service("ignite")
+            return [(s["ServiceAddress"], s["ServicePort"]) for s in services]
+        else:
+            # Fallback to config
+            return [("localhost", 10800)]
             
-        await asyncio.gather(
-            *self._background_tasks,
-            return_exceptions=True
+    async def _setup_default_caches(self):
+        """Setup default caches for the service"""
+        from ..core.caching import CacheConfig, CacheStrategy
+        
+        # Session cache
+        await self.cache_manager.create_cache(
+            CacheConfig(
+                name=self.config.caching.session_cache,
+                strategy=CacheStrategy.CACHE_ASIDE,
+                ttl=self.config.caching.session_ttl,
+                encrypt_data=True
+            )
         )
         
-    async def _health_check_loop(self):
-        """Periodically run health checks."""
-        while True:
+        # Configuration cache
+        await self.cache_manager.create_cache(
+            CacheConfig(
+                name=self.config.caching.configuration_cache,
+                strategy=CacheStrategy.READ_THROUGH,
+                ttl=self.config.caching.configuration_ttl,
+                loader=self._load_configuration
+            )
+        )
+        
+        # Query results cache
+        await self.cache_manager.create_cache(
+            CacheConfig(
+                name=self.config.caching.query_results_cache,
+                strategy=CacheStrategy.CACHE_ASIDE,
+                ttl=self.config.caching.query_results_ttl
+            )
+        )
+        
+    async def _load_configuration(self, key: str) -> Any:
+        """Load configuration from Consul"""
+        if self.consul_client:
+            return await self.consul_client.get_value(key)
+        return None
+        
+    async def _initialize_pulsar(self):
+        """Initialize Pulsar client and setup topics"""
+        pulsar_url = await self.get_config("pulsar_url", "pulsar://localhost:6650")
+        
+        self.pulsar_client = pulsar.Client(
+            pulsar_url,
+            authentication=None,  # TODO: Add authentication
+            operation_timeout_seconds=30
+        )
+        
+        # Setup default topics
+        await self._setup_default_topics()
+        
+    async def _setup_default_topics(self):
+        """Setup default Pulsar topics"""
+        # Create event topic producer
+        event_topic = f"persistent://data-intelligence/{self.metadata.name}/events"
+        self._publishers["events"] = self.pulsar_client.create_producer(event_topic)
+        
+        # Create metrics topic producer
+        metrics_topic = f"persistent://data-intelligence/{self.metadata.name}/metrics"
+        self._publishers["metrics"] = self.pulsar_client.create_producer(metrics_topic)
+        
+    async def _start_internal(self):
+        """Service-specific start logic"""
+        # Register with Consul
+        if self.consul_client and self.config.service_discovery.enabled:
+            await self.register_service(
+                name=self.metadata.name,
+                port=self.config.port,
+                tags=[
+                    f"version:{self.metadata.version}",
+                    "data-intelligence",
+                    *self.metadata.capabilities
+                ]
+            )
+            
+        # Start background tasks
+        if self.config.monitoring.enable_metrics:
+            self.create_background_task(self._metrics_reporter())
+            
+        if self.config.events.enabled:
+            self.create_background_task(self._event_processor())
+            
+        # Publish start event
+        await self.publish_lifecycle_event("started")
+        
+    async def _stop_internal(self):
+        """Service-specific stop logic"""
+        # Close Pulsar connections
+        if self.pulsar_client:
+            for producer in self._publishers.values():
+                producer.close()
+            for consumer in self._consumers.values():
+                consumer.close()
+            self.pulsar_client.close()
+            
+        # Shutdown cache manager
+        if self.cache_manager:
+            await self.cache_manager.shutdown()
+            
+        # Shutdown health manager
+        await self.health_manager.shutdown()
+        
+        # Deregister from Consul
+        if self.consul_client and self.config.service_discovery.enabled:
+            # Consul client handles deregistration
+            pass
+            
+        # Publish stop event
+        await self.publish_lifecycle_event("stopped")
+        
+    async def _metrics_reporter(self):
+        """Background task to report metrics"""
+        while self.is_running:
             try:
-                await asyncio.sleep(30)  # Check every 30 seconds
+                # Collect and publish metrics
+                metrics_data = {
+                    "service": self.metadata.name,
+                    "timestamp": datetime.utcnow().isoformat(),
+                    "uptime": self.uptime.total_seconds() if self.uptime else 0,
+                    "health": await self.check_health()
+                }
                 
-                # Run health checks
-                overall_health = await self.health_manager.check_health()
-                
-                # Update metrics
-                health_value = {
-                    HealthStatus.HEALTHY: 2,
-                    HealthStatus.DEGRADED: 1,
-                    HealthStatus.UNHEALTHY: 0
-                }[overall_health.status]
-                
-                self.metrics.health_status.labels(
-                    service=self.metadata.name
-                ).set(health_value)
-                
-                # Report to Consul if integrated
-                if self.vault_consul:
-                    await self.vault_consul.report_health(
-                        overall_health.status,
-                        overall_health.message or ""
+                if "metrics" in self._publishers:
+                    self._publishers["metrics"].send_async(
+                        json.dumps(metrics_data).encode('utf-8')
                     )
                     
-            except asyncio.CancelledError:
-                break
+                await asyncio.sleep(self.config.monitoring.metrics_interval_seconds)
+                
             except Exception as e:
-                logger.error(f"Error in health check loop: {e}")
+                logger.error(f"Error in metrics reporter: {e}")
+                await asyncio.sleep(60)  # Back off on error
                 
-    async def _metrics_reporting_loop(self):
-        """Periodically report metrics."""
-        while True:
-            try:
-                await asyncio.sleep(60)  # Report every minute
-                
-                # Get service metrics
-                metrics = self.get_service_metrics()
-                
-                # Log metrics
-                logger.info(f"Service metrics: {metrics}")
-                
-                # Could also push to monitoring system
-                
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in metrics reporting: {e}")
-                
-    def get_service_metrics(self) -> Dict[str, Any]:
-        """Get current service metrics."""
-        metrics = {
-            "service": self.metadata.name,
-            "version": self.metadata.version,
-            "uptime_seconds": (datetime.utcnow() - self.health_manager.startup_time).total_seconds(),
-            "health_status": self.health_manager.overall_status.value,
-        }
+    async def _event_processor(self):
+        """Background task to process events"""
+        # This would be implemented by specific services
+        pass
         
-        # Add Vault/Consul metrics
-        if self.vault_consul:
-            metrics.update(self.vault_consul.get_integration_metrics())
+    def create_pulsar_producer(self, topic: str) -> pulsar.Producer:
+        """Create a Pulsar producer for a topic"""
+        if not self.pulsar_client:
+            raise RuntimeError("Pulsar client not initialized")
             
-        return metrics
-        
-    # Abstract methods to be implemented by derived services
-    async def initialize_service(self):
-        """
-        Initialize service-specific components.
-        
-        This method should be overridden by derived services to initialize
-        their specific components. The base implementation provides common
-        initialization that all services need.
-        """
-        logger.info(f"Initializing service-specific components for {self.metadata.name}")
-        
-        # Initialize service-specific metrics
-        if self.metrics:
-            self.metrics.register_counter(f"{self.metadata.name}_requests_total")
-            self.metrics.register_histogram(f"{self.metadata.name}_request_duration")
-            self.metrics.register_gauge(f"{self.metadata.name}_active_connections")
+        if topic not in self._publishers:
+            self._publishers[topic] = self.pulsar_client.create_producer(topic)
             
-        # Initialize service-specific health checks
-        if self.health_manager:
-            # Add service-specific health check
-            async def service_health_check() -> bool:
-                # Basic health check - derived classes should override
-                return self._initialized and not self._shutting_down
-                
-            self.health_manager.add_check(
-                f"{self.metadata.name}_service",
-                service_health_check,
-                critical=True
+        return self._publishers[topic]
+        
+    def create_pulsar_consumer(self, topic: str, subscription: str) -> pulsar.Consumer:
+        """Create a Pulsar consumer for a topic"""
+        if not self.pulsar_client:
+            raise RuntimeError("Pulsar client not initialized")
+            
+        consumer_key = f"{topic}:{subscription}"
+        if consumer_key not in self._consumers:
+            self._consumers[consumer_key] = self.pulsar_client.subscribe(
+                topic,
+                subscription,
+                consumer_type=pulsar.ConsumerType.Shared
             )
             
-        # Log service capabilities
-        logger.info(f"Service capabilities: {', '.join(self.metadata.capabilities)}")
-        logger.info(f"Service dependencies: {', '.join(self.metadata.dependencies)}")
+        return self._consumers[consumer_key]
         
-        # Derived services should call super().initialize_service() and then
-        # add their own initialization logic
-        
-    async def cleanup_service(self):
-        """
-        Cleanup service-specific components.
-        
-        This method should be overridden by derived services to cleanup
-        their specific components. The base implementation provides common
-        cleanup that all services need.
-        """
-        logger.info(f"Cleaning up service-specific components for {self.metadata.name}")
-        
-        # Cancel any service-specific background tasks
-        service_tasks = [task for task in self._background_tasks if not task.done()]
-        if service_tasks:
-            logger.info(f"Cancelling {len(service_tasks)} service background tasks")
-            for task in service_tasks:
-                task.cancel()
-            await asyncio.gather(*service_tasks, return_exceptions=True)
-            
-        # Clear any service-specific caches
-        if self.cache_manager:
-            try:
-                # Clear service-specific cache regions
-                await self.cache_manager.clear(f"{self.metadata.name}_cache")
-            except Exception as e:
-                logger.warning(f"Error clearing service cache: {e}")
-                
-        # Log final metrics
-        if self.metrics:
-            metrics = self.get_service_metrics()
-            logger.info(f"Final service metrics: {metrics}")
-            
-        # Derived services should override this method and call
-        # super().cleanup_service() at the end
-        
-    # Helper methods for derived services
-    async def get_config(self, key: str, default: Any = None) -> Any:
-        """Get configuration value."""
-        if self.vault_consul:
-            return await self.vault_consul.get_config(key, default)
-        return default
-        
-    async def discover_service(self, service_name: str) -> List[Dict[str, Any]]:
-        """Discover service instances."""
-        if self.consul_client:
-            return await self.consul_client.discover_service(service_name)
-        return []
-        
-    async def get_service_url(self, service_name: str) -> str:
-        """Get URL for another service."""
-        if self.vault_consul:
-            return await self.vault_consul.get_service_url(service_name)
-        raise ValueError(f"Service discovery not available")
-        
-    async def publish_event(self, topic: str, event: Dict[str, Any],
-                           event_type: Optional[str] = None) -> bool:
-        """Publish event to Pulsar."""
-        if not self.pulsar_client:
-            return False
-            
+    @asynccontextmanager
+    async def lifespan(self):
+        """Async context manager for service lifecycle"""
+        await self.initialize()
+        await self.start()
         try:
-            # Get or create producer
-            if topic not in self._publishers:
-                self._publishers[topic] = self.pulsar_client.create_producer(topic)
-                
-            # Add metadata
-            event["_metadata"] = {
-                "source": self.metadata.name,
-                "timestamp": datetime.utcnow().isoformat(),
-                "event_type": event_type or "generic"
-            }
+            yield
+        finally:
+            await self.stop()
             
-            # Publish
-            import json
-            self._publishers[topic].send(
-                json.dumps(event).encode('utf-8')
-            )
-            
-            # Update metrics
-            self.metrics.events_published.labels(
-                service=self.metadata.name,
-                event_type=event_type or "generic"
-            ).inc()
-            
-            return True
-            
-        except Exception as e:
-            logger.error(f"Failed to publish event: {e}")
-            return False
-            
-    def subscribe_event(self, topic: str, subscription: str,
-                       handler: Callable[[Dict[str, Any]], None]) -> None:
-        """Subscribe to events from Pulsar."""
-        if not self.pulsar_client:
-            return
-            
-        async def consumer_loop():
-            try:
-                # Create consumer
-                consumer = self.pulsar_client.subscribe(
-                    topic,
-                    subscription,
-                    consumer_type=pulsar.ConsumerType.Shared
-                )
-                self._consumers[f"{topic}:{subscription}"] = consumer
-                
-                while True:
-                    msg = consumer.receive()
-                    
-                    try:
-                        # Parse message
-                        import json
-                        data = msg.data().decode('utf-8')
-                        event = json.loads(data)
-                        
-                        # Extract metadata
-                        metadata = event.get("_metadata", {})
-                        event_type = metadata.get("event_type", "generic")
-                        
-                        # Update metrics
-                        self.metrics.events_consumed.labels(
-                            service=self.metadata.name,
-                            event_type=event_type
-                        ).inc()
-                        
-                        # Call handler
-                        if asyncio.iscoroutinefunction(handler):
-                            await handler(event)
-                        else:
-                            handler(event)
-                            
-                        # Acknowledge
-                        consumer.acknowledge(msg)
-                        
-                    except Exception as e:
-                        logger.error(f"Error processing message: {e}")
-                        consumer.negative_acknowledge(msg)
-                        
-            except Exception as e:
-                logger.error(f"Consumer loop error: {e}")
-                
-        # Start consumer loop
-        asyncio.create_task(consumer_loop())
+    def mount_app(self, app: FastAPI):
+        """Mount FastAPI application"""
+        self.app = app
         
-    def get_circuit_breaker(self, name: str):
-        """Get circuit breaker for external service calls."""
-        if self.circuit_breaker_manager:
-            return self.circuit_breaker_manager.get_circuit_breaker(name)
-        return None 
+        # Add health endpoint
+        @app.get("/health")
+        async def health():
+            return await self.check_health()
+            
+        # Add metrics endpoint if enabled
+        if self.config.monitoring.enable_metrics:
+            from prometheus_client import generate_latest, CONTENT_TYPE_LATEST
+            from fastapi.responses import Response
+            
+            @app.get("/metrics")
+            async def metrics():
+                return Response(
+                    generate_latest(),
+                    media_type=CONTENT_TYPE_LATEST
+                ) 

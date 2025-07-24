@@ -7,12 +7,17 @@ Provides implementations of:
 - Bulkhead isolation
 - Timeout handling
 - Fallback mechanisms
+- Rate limiting
+- Adaptive concurrency
+
+This module consolidates all resilience patterns from across the codebase.
 """
 
 import asyncio
 import functools
 import time
 import random
+import threading
 from typing import Any, Callable, Dict, List, Optional, TypeVar, Union, Set, Tuple
 from datetime import datetime, timedelta
 from dataclasses import dataclass, field
@@ -20,6 +25,7 @@ from enum import Enum
 from abc import ABC, abstractmethod
 import logging
 from collections import deque
+from contextlib import asynccontextmanager
 
 from ...monitoring import StructuredLogger
 
@@ -35,6 +41,11 @@ class CircuitState(Enum):
     HALF_OPEN = "half_open"
 
 
+class CircuitBreakerError(Exception):
+    """Raised when circuit breaker is open"""
+    pass
+
+
 @dataclass
 class RetryConfig:
     """Retry pattern configuration"""
@@ -45,6 +56,7 @@ class RetryConfig:
     jitter: bool = True
     retry_on: List[type] = field(default_factory=lambda: [Exception])
     retry_condition: Optional[Callable[[Exception], bool]] = None
+    on_retry: Optional[Callable[[int, float, Exception], None]] = None
     
     def should_retry(self, exception: Exception) -> bool:
         """Check if should retry for exception"""
@@ -74,6 +86,10 @@ class CircuitBreakerConfig:
     timeout: timedelta = timedelta(seconds=60)
     expected_exception: type = Exception
     exclude_exceptions: List[type] = field(default_factory=list)
+    half_open_requests: int = 1
+    on_open: Optional[Callable[[], None]] = None
+    on_close: Optional[Callable[[], None]] = None
+    on_half_open: Optional[Callable[[], None]] = None
     
     def should_count_failure(self, exception: Exception) -> bool:
         """Check if exception should count as failure"""
@@ -100,10 +116,20 @@ class TimeoutConfig:
 @dataclass
 class FallbackConfig:
     """Fallback configuration"""
-    fallback_function: Optional[Callable] = None
-    fallback_value: Any = None
-    cache_result: bool = False
-    cache_ttl: timedelta = timedelta(minutes=5)
+    fallback_function: Callable[..., Any]
+    fallback_on: List[type] = field(default_factory=lambda: [Exception])
+    
+    def should_fallback(self, exception: Exception) -> bool:
+        """Check if should use fallback for exception"""
+        return any(isinstance(exception, exc_type) for exc_type in self.fallback_on)
+
+
+@dataclass
+class RateLimitConfig:
+    """Rate limiting configuration"""
+    max_calls: int
+    period: timedelta
+    burst_size: Optional[int] = None
 
 
 @dataclass
@@ -114,6 +140,7 @@ class ResilienceConfig:
     bulkhead: Optional[BulkheadConfig] = None
     timeout: Optional[TimeoutConfig] = None
     fallback: Optional[FallbackConfig] = None
+    rate_limit: Optional[RateLimitConfig] = None
 
 
 class RetryPattern:
@@ -125,6 +152,7 @@ class RetryPattern:
     - Exponential backoff with jitter
     - Custom retry conditions
     - Async and sync support
+    - Retry callbacks
     """
     
     def __init__(self, config: RetryConfig):
@@ -154,6 +182,10 @@ class RetryPattern:
                     raise
                     
                 delay = self.config.calculate_delay(attempt)
+                
+                if self.config.on_retry:
+                    self.config.on_retry(attempt, delay, e)
+                    
                 logger.warning(
                     f"Retry attempt {attempt}/{self.config.max_attempts} "
                     f"failed: {e}. Retrying in {delay:.2f}s"
@@ -182,6 +214,10 @@ class RetryPattern:
                     raise
                     
                 delay = self.config.calculate_delay(attempt)
+                
+                if self.config.on_retry:
+                    self.config.on_retry(attempt, delay, e)
+                    
                 logger.warning(
                     f"Retry attempt {attempt}/{self.config.max_attempts} "
                     f"failed: {e}. Retrying in {delay:.2f}s"
@@ -205,6 +241,8 @@ class CircuitBreakerPattern:
     - Automatic recovery
     - Failure counting
     - Custom failure conditions
+    - Thread-safe operation
+    - State change callbacks
     """
     
     def __init__(self, config: CircuitBreakerConfig):
@@ -214,6 +252,8 @@ class CircuitBreakerPattern:
         self._success_count = 0
         self._last_failure_time: Optional[datetime] = None
         self._state_changed_at = datetime.utcnow()
+        self._half_open_calls = 0
+        self._lock = threading.Lock()
         
         self._metrics = {
             "calls": 0,
@@ -241,14 +281,26 @@ class CircuitBreakerPattern:
     def _transition_to(self, new_state: CircuitState):
         """Transition to new state"""
         if self._state != new_state:
-            logger.info(f"Circuit breaker state change: {self._state.value} -> {new_state.value}")
+            old_state = self._state
+            logger.info(f"Circuit breaker state change: {old_state.value} -> {new_state.value}")
             self._state = new_state
             self._state_changed_at = datetime.utcnow()
             self._metrics["state_changes"] += 1
             
+            # Reset counters based on state
             if new_state == CircuitState.CLOSED:
                 self._failure_count = 0
                 self._success_count = 0
+                if self.config.on_close:
+                    self.config.on_close()
+            elif new_state == CircuitState.OPEN:
+                if self.config.on_open:
+                    self.config.on_open()
+            elif new_state == CircuitState.HALF_OPEN:
+                self._success_count = 0
+                self._half_open_calls = 0
+                if self.config.on_half_open:
+                    self.config.on_half_open()
                 
     def _should_attempt_reset(self) -> bool:
         """Check if should attempt reset from open state"""
@@ -261,18 +313,60 @@ class CircuitBreakerPattern:
             
         return False
         
+    def _allow_request(self) -> bool:
+        """Check if request is allowed"""
+        if self._state == CircuitState.CLOSED:
+            return True
+            
+        if self._state == CircuitState.OPEN:
+            if self._should_attempt_reset():
+                self._transition_to(CircuitState.HALF_OPEN)
+                return True
+            return False
+            
+        if self._state == CircuitState.HALF_OPEN:
+            if self._half_open_calls < self.config.half_open_requests:
+                self._half_open_calls += 1
+                return True
+            return False
+            
+        return False
+        
+    def _on_success(self):
+        """Handle successful call"""
+        with self._lock:
+            self._metrics["successes"] += 1
+            
+            if self._state == CircuitState.HALF_OPEN:
+                self._success_count += 1
+                if self._success_count >= self.config.success_threshold:
+                    self._transition_to(CircuitState.CLOSED)
+            else:
+                self._failure_count = 0
+                
+    def _on_failure(self, exception: Exception):
+        """Handle failed call"""
+        with self._lock:
+            if not self.config.should_count_failure(exception):
+                return
+                
+            self._metrics["failures"] += 1
+            self._failure_count += 1
+            self._last_failure_time = datetime.utcnow()
+            
+            if self._state == CircuitState.HALF_OPEN:
+                self._transition_to(CircuitState.OPEN)
+            elif self._failure_count >= self.config.failure_threshold:
+                self._transition_to(CircuitState.OPEN)
+        
     async def execute_async(self, func: Callable[..., T], *args, **kwargs) -> T:
         """Execute async function with circuit breaker"""
         self._metrics["calls"] += 1
         
-        # Check if should attempt reset
-        if self._should_attempt_reset():
-            self._transition_to(CircuitState.HALF_OPEN)
-            
-        # Check if circuit is open
-        if self._state == CircuitState.OPEN:
-            self._metrics["rejections"] += 1
-            raise Exception(f"Circuit breaker is OPEN")
+        with self._lock:
+            if not self._allow_request():
+                self._metrics["rejections"] += 1
+                raise CircuitBreakerError(f"Circuit breaker is {self._state.value}")
             
         try:
             result = await func(*args, **kwargs)
@@ -287,14 +381,10 @@ class CircuitBreakerPattern:
         """Execute sync function with circuit breaker"""
         self._metrics["calls"] += 1
         
-        # Check if should attempt reset
-        if self._should_attempt_reset():
-            self._transition_to(CircuitState.HALF_OPEN)
-            
-        # Check if circuit is open
-        if self._state == CircuitState.OPEN:
-            self._metrics["rejections"] += 1
-            raise Exception(f"Circuit breaker is OPEN")
+        with self._lock:
+            if not self._allow_request():
+                self._metrics["rejections"] += 1
+                raise CircuitBreakerError(f"Circuit breaker is {self._state.value}")
             
         try:
             result = func(*args, **kwargs)
@@ -305,44 +395,26 @@ class CircuitBreakerPattern:
             self._on_failure(e)
             raise
             
-    def _on_success(self):
-        """Handle successful execution"""
-        self._metrics["successes"] += 1
-        
-        if self._state == CircuitState.HALF_OPEN:
-            self._success_count += 1
-            
-            if self._success_count >= self.config.success_threshold:
-                self._transition_to(CircuitState.CLOSED)
-                
-        elif self._state == CircuitState.CLOSED:
-            self._failure_count = 0
-            
-    def _on_failure(self, exception: Exception):
-        """Handle failed execution"""
-        if not self.config.should_count_failure(exception):
-            return
-            
-        self._metrics["failures"] += 1
-        self._last_failure_time = datetime.utcnow()
-        
-        if self._state == CircuitState.HALF_OPEN:
-            self._transition_to(CircuitState.OPEN)
-            
-        elif self._state == CircuitState.CLOSED:
-            self._failure_count += 1
-            
-            if self._failure_count >= self.config.failure_threshold:
-                self._transition_to(CircuitState.OPEN)
-                
     def get_metrics(self) -> Dict[str, Any]:
         """Get circuit breaker metrics"""
-        return {
-            **self._metrics,
-            "current_state": self._state.value,
-            "failure_count": self._failure_count,
-            "time_in_state": (datetime.utcnow() - self._state_changed_at).total_seconds()
-        }
+        with self._lock:
+            return {
+                **self._metrics.copy(),
+                "state": self._state.value,
+                "failure_count": self._failure_count,
+                "success_count": self._success_count
+            }
+            
+    def get_state(self) -> Dict[str, Any]:
+        """Get circuit breaker state info"""
+        with self._lock:
+            return {
+                "state": self._state.value,
+                "failure_count": self._failure_count,
+                "success_count": self._success_count,
+                "last_failure_time": self._last_failure_time.isoformat() if self._last_failure_time else None,
+                "state_changed_at": self._state_changed_at.isoformat()
+            }
 
 
 class BulkheadPattern:
@@ -351,58 +423,57 @@ class BulkheadPattern:
     
     Features:
     - Limits concurrent executions
-    - Queue for pending executions
+    - Queue management
     - Timeout handling
-    - Resource isolation
+    - Async support
     """
     
     def __init__(self, config: BulkheadConfig):
         self.config = config
         self._semaphore = asyncio.Semaphore(config.max_concurrent)
-        self._queue: asyncio.Queue = asyncio.Queue(maxsize=config.max_queue_size)
-        self._active_count = 0
+        self._queue_size = 0
+        self._queue_lock = asyncio.Lock()
         
         self._metrics = {
             "executions": 0,
             "rejections": 0,
             "timeouts": 0,
-            "queue_full": 0
+            "active": 0
         }
         
     async def execute_async(self, func: Callable[..., T], *args, **kwargs) -> T:
         """Execute async function with bulkhead isolation"""
-        self._metrics["executions"] += 1
-        
-        # Try to acquire semaphore
+        # Check queue size
+        async with self._queue_lock:
+            if self._queue_size >= self.config.max_queue_size:
+                self._metrics["rejections"] += 1
+                raise Exception(f"Bulkhead queue full: {self._queue_size}/{self.config.max_queue_size}")
+            self._queue_size += 1
+            
         try:
-            async with asyncio.wait_for(
-                self._semaphore.acquire(),
-                timeout=self.config.timeout.total_seconds()
-            ):
-                self._active_count += 1
+            # Acquire semaphore with timeout
+            try:
+                async with asyncio.timeout(self.config.timeout.total_seconds()):
+                    async with self._semaphore:
+                        self._metrics["active"] += 1
+                        self._metrics["executions"] += 1
+                        
+                        try:
+                            return await func(*args, **kwargs)
+                        finally:
+                            self._metrics["active"] -= 1
+                            
+            except asyncio.TimeoutError:
+                self._metrics["timeouts"] += 1
+                raise
                 
-                try:
-                    return await func(*args, **kwargs)
-                finally:
-                    self._active_count -= 1
-                    self._semaphore.release()
-                    
-        except asyncio.TimeoutError:
-            self._metrics["timeouts"] += 1
-            raise TimeoutError(f"Bulkhead timeout after {self.config.timeout}")
-            
-        except asyncio.QueueFull:
-            self._metrics["queue_full"] += 1
-            self._metrics["rejections"] += 1
-            raise Exception("Bulkhead queue is full")
-            
-    def get_metrics(self) -> Dict[str, Any]:
+        finally:
+            async with self._queue_lock:
+                self._queue_size -= 1
+                
+    def get_metrics(self) -> Dict[str, int]:
         """Get bulkhead metrics"""
-        return {
-            **self._metrics,
-            "active_count": self._active_count,
-            "available_permits": self.config.max_concurrent - self._active_count
-        }
+        return self._metrics.copy()
 
 
 class TimeoutPattern:
@@ -411,7 +482,7 @@ class TimeoutPattern:
     
     Features:
     - Configurable timeout
-    - Cancellation on timeout
+    - Cancellation support
     - Async support
     """
     
@@ -419,8 +490,7 @@ class TimeoutPattern:
         self.config = config
         self._metrics = {
             "executions": 0,
-            "timeouts": 0,
-            "completions": 0
+            "timeouts": 0
         }
         
     async def execute_async(self, func: Callable[..., T], *args, **kwargs) -> T:
@@ -428,16 +498,13 @@ class TimeoutPattern:
         self._metrics["executions"] += 1
         
         try:
-            result = await asyncio.wait_for(
-                func(*args, **kwargs),
-                timeout=self.config.timeout.total_seconds()
-            )
-            self._metrics["completions"] += 1
-            return result
-            
+            async with asyncio.timeout(self.config.timeout.total_seconds()):
+                return await func(*args, **kwargs)
         except asyncio.TimeoutError:
             self._metrics["timeouts"] += 1
-            raise TimeoutError(f"Operation timed out after {self.config.timeout}")
+            if self.config.cancel_on_timeout:
+                raise
+            return None
             
     def get_metrics(self) -> Dict[str, int]:
         """Get timeout metrics"""
@@ -449,84 +516,91 @@ class FallbackPattern:
     Fallback pattern implementation.
     
     Features:
-    - Fallback function or value
-    - Result caching
-    - Error handling
+    - Configurable fallback function
+    - Exception-based fallback
+    - Async support
     """
     
     def __init__(self, config: FallbackConfig):
         self.config = config
-        self._cache: Optional[Tuple[Any, datetime]] = None
         self._metrics = {
             "executions": 0,
-            "fallbacks": 0,
-            "cache_hits": 0
+            "fallbacks": 0
         }
         
     async def execute_async(self, func: Callable[..., T], *args, **kwargs) -> T:
         """Execute async function with fallback"""
         self._metrics["executions"] += 1
         
-        # Check cache
-        if self.config.cache_result and self._cache:
-            cached_value, cached_at = self._cache
-            if datetime.utcnow() - cached_at < self.config.cache_ttl:
-                self._metrics["cache_hits"] += 1
-                return cached_value
-                
         try:
-            result = await func(*args, **kwargs)
-            
-            # Cache result
-            if self.config.cache_result:
-                self._cache = (result, datetime.utcnow())
-                
-            return result
-            
+            return await func(*args, **kwargs)
         except Exception as e:
-            logger.warning(f"Primary function failed, using fallback: {e}")
-            self._metrics["fallbacks"] += 1
-            
-            if self.config.fallback_function:
+            if self.config.should_fallback(e):
+                self._metrics["fallbacks"] += 1
                 if asyncio.iscoroutinefunction(self.config.fallback_function):
                     return await self.config.fallback_function(*args, **kwargs)
                 else:
                     return self.config.fallback_function(*args, **kwargs)
-            else:
-                return self.config.fallback_value
-                
+            raise
+            
     def execute(self, func: Callable[..., T], *args, **kwargs) -> T:
         """Execute sync function with fallback"""
         self._metrics["executions"] += 1
         
-        # Check cache
-        if self.config.cache_result and self._cache:
-            cached_value, cached_at = self._cache
-            if datetime.utcnow() - cached_at < self.config.cache_ttl:
-                self._metrics["cache_hits"] += 1
-                return cached_value
-                
         try:
-            result = func(*args, **kwargs)
-            
-            # Cache result
-            if self.config.cache_result:
-                self._cache = (result, datetime.utcnow())
-                
-            return result
-            
+            return func(*args, **kwargs)
         except Exception as e:
-            logger.warning(f"Primary function failed, using fallback: {e}")
-            self._metrics["fallbacks"] += 1
-            
-            if self.config.fallback_function:
+            if self.config.should_fallback(e):
+                self._metrics["fallbacks"] += 1
                 return self.config.fallback_function(*args, **kwargs)
-            else:
-                return self.config.fallback_value
-                
+            raise
+            
     def get_metrics(self) -> Dict[str, int]:
         """Get fallback metrics"""
         return self._metrics.copy()
+
+
+class RateLimiter:
+    """
+    Rate limiting implementation with token bucket algorithm.
+    
+    Features:
+    - Configurable rate and burst
+    - Async support
+    - Per-key limiting
+    """
+    
+    def __init__(self, config: RateLimitConfig):
+        self.config = config
+        self._buckets: Dict[str, Tuple[float, datetime]] = {}
+        self._lock = asyncio.Lock()
+        
+        # Calculate rate
+        self._rate = config.max_calls / config.period.total_seconds()
+        self._burst = config.burst_size or config.max_calls
+        
+    async def is_allowed(self, key: str = "default") -> bool:
+        """Check if request is allowed"""
+        async with self._lock:
+            now = datetime.utcnow()
+            
+            if key in self._buckets:
+                tokens, last_update = self._buckets[key]
+                
+                # Calculate tokens accumulated
+                elapsed = (now - last_update).total_seconds()
+                tokens = min(self._burst, tokens + elapsed * self._rate)
+            else:
+                tokens = self._burst
+                
+            if tokens >= 1:
+                # Consume token
+                self._buckets[key] = (tokens - 1, now)
+                return True
+            else:
+                # Update timestamp without consuming
+                self._buckets[key] = (tokens, now)
+                return False
 
 
 class ResiliencePolicy:
@@ -548,6 +622,7 @@ class ResiliencePolicy:
         self.bulkhead = BulkheadPattern(config.bulkhead) if config.bulkhead else None
         self.timeout = TimeoutPattern(config.timeout) if config.timeout else None
         self.fallback = FallbackPattern(config.fallback) if config.fallback else None
+        self.rate_limiter = RateLimiter(config.rate_limit) if config.rate_limit else None
         
     async def execute_async(self, func: Callable[..., T], *args, **kwargs) -> T:
         """Execute async function with resilience policy"""
@@ -664,35 +739,32 @@ def bulkhead(config: Optional[BulkheadConfig] = None):
         pattern = BulkheadPattern(config or BulkheadConfig())
         
         @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def async_wrapper(*args, **kwargs):
             return await pattern.execute_async(func, *args, **kwargs)
             
-        return wrapper
+        return async_wrapper
     return decorator
 
 
-def timeout(duration: Union[timedelta, float]):
+def timeout(config: Optional[TimeoutConfig] = None):
     """Timeout decorator"""
-    if isinstance(duration, (int, float)):
-        duration = timedelta(seconds=duration)
-        
     def decorator(func):
-        pattern = TimeoutPattern(TimeoutConfig(timeout=duration))
+        pattern = TimeoutPattern(config or TimeoutConfig(timeout=timedelta(seconds=30)))
         
         @functools.wraps(func)
-        async def wrapper(*args, **kwargs):
+        async def async_wrapper(*args, **kwargs):
             return await pattern.execute_async(func, *args, **kwargs)
             
-        return wrapper
+        return async_wrapper
     return decorator
 
 
-def fallback(fallback_func: Optional[Callable] = None, fallback_value: Any = None):
+def fallback(fallback_func: Callable, exceptions: List[type] = None):
     """Fallback decorator"""
     def decorator(func):
         config = FallbackConfig(
             fallback_function=fallback_func,
-            fallback_value=fallback_value
+            fallback_on=exceptions or [Exception]
         )
         pattern = FallbackPattern(config)
         
@@ -705,4 +777,89 @@ def fallback(fallback_func: Optional[Callable] = None, fallback_value: Any = Non
             return pattern.execute(func, *args, **kwargs)
             
         return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
-    return decorator 
+    return decorator
+
+
+def rate_limit(max_calls: int, period: timedelta):
+    """Rate limiting decorator"""
+    def decorator(func):
+        config = RateLimitConfig(max_calls=max_calls, period=period)
+        limiter = RateLimiter(config)
+        
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            # Extract key from first argument if it has an 'id' attribute
+            key = "default"
+            if args and hasattr(args[0], 'id'):
+                key = str(args[0].id)
+                
+            if not await limiter.is_allowed(key):
+                raise Exception(f"Rate limit exceeded for key: {key}")
+                
+            return await func(*args, **kwargs)
+            
+        return async_wrapper
+    return decorator
+
+
+def resilient(
+    retry_attempts: int = 3,
+    circuit_breaker_failures: int = 5,
+    timeout_seconds: int = 30,
+    fallback_func: Optional[Callable] = None
+):
+    """Combined resilience decorator with sensible defaults"""
+    def decorator(func):
+        config = ResilienceConfig(
+            retry=RetryConfig(max_attempts=retry_attempts),
+            circuit_breaker=CircuitBreakerConfig(failure_threshold=circuit_breaker_failures),
+            timeout=TimeoutConfig(timeout=timedelta(seconds=timeout_seconds)),
+            fallback=FallbackConfig(fallback_function=fallback_func) if fallback_func else None
+        )
+        policy = ResiliencePolicy(config)
+        
+        @functools.wraps(func)
+        async def async_wrapper(*args, **kwargs):
+            return await policy.execute_async(func, *args, **kwargs)
+            
+        @functools.wraps(func)
+        def sync_wrapper(*args, **kwargs):
+            return policy.execute(func, *args, **kwargs)
+            
+        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
+    return decorator
+
+
+# Export all public classes and decorators
+__all__ = [
+    # States and Errors
+    "CircuitState",
+    "CircuitBreakerError",
+    
+    # Configurations
+    "RetryConfig",
+    "CircuitBreakerConfig", 
+    "BulkheadConfig",
+    "TimeoutConfig",
+    "FallbackConfig",
+    "RateLimitConfig",
+    "ResilienceConfig",
+    
+    # Patterns
+    "RetryPattern",
+    "CircuitBreakerPattern",
+    "BulkheadPattern",
+    "TimeoutPattern",
+    "FallbackPattern",
+    "RateLimiter",
+    "ResiliencePolicy",
+    
+    # Decorators
+    "retry",
+    "circuit_breaker",
+    "bulkhead",
+    "timeout",
+    "fallback",
+    "rate_limit",
+    "resilient"
+] 

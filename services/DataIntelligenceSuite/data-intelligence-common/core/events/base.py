@@ -1,10 +1,14 @@
 """
 Unified base event processing for DataIntelligenceSuite.
 
-Combines functionality from event_handlers and core/events modules.
+This module consolidates all event-related base classes and models from:
+- core/events/base.py (original)
+- core/events/event_bus.py
+- core/events/models.py
+- Various event handlers
 """
 
-from typing import Dict, Any, Callable, List, Optional, Set, Union, AsyncIterator
+from typing import Dict, Any, Callable, List, Optional, Set, Union, AsyncIterator, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta
 from abc import ABC, abstractmethod
@@ -22,6 +26,8 @@ from ..caching import CacheManager
 logger = StructuredLogger.get_logger(__name__)
 
 
+# Enums
+
 class EventPriority(str, Enum):
     """Event priority levels"""
     LOW = "low"
@@ -37,34 +43,148 @@ class EventDeliveryMode(str, Enum):
     EXACTLY_ONCE = "exactly_once"
 
 
-class EventProcessingMode(Enum):
+class EventProcessingMode(str, Enum):
     """Event processing modes"""
     SEQUENTIAL = "sequential"
     PARALLEL = "parallel"
     WINDOWED = "windowed"
     STATEFUL = "stateful"
+    STREAM = "stream"
 
+
+class EventCategory(str, Enum):
+    """Event categories for classification"""
+    SYSTEM = "system"
+    DATA = "data"
+    MODEL = "model"
+    AUDIT = "audit"
+    NOTIFICATION = "notification"
+    PROCESSING = "processing"
+    SECURITY = "security"
+    WORKFLOW = "workflow"
+    INTEGRATION = "integration"
+    BUSINESS = "business"
+
+
+class EventStatus(str, Enum):
+    """Event processing status"""
+    PENDING = "pending"
+    PROCESSING = "processing"
+    PROCESSED = "processed"
+    FAILED = "failed"
+    RETRYING = "retrying"
+    DEAD_LETTER = "dead_letter"
+
+
+class EventType(str, Enum):
+    """Standard event types across the platform"""
+    # System events
+    SYSTEM_STARTUP = "system.startup"
+    SYSTEM_SHUTDOWN = "system.shutdown"
+    SYSTEM_ERROR = "system.error"
+    SYSTEM_WARNING = "system.warning"
+    SYSTEM_HEALTH_CHECK = "system.health_check"
+    
+    # Data events
+    DATA_CREATED = "data.created"
+    DATA_UPDATED = "data.updated"
+    DATA_DELETED = "data.deleted"
+    DATA_QUALITY_CHECK = "data.quality_check"
+    DATA_TRANSFORMATION = "data.transformation"
+    DATA_INGESTION = "data.ingestion"
+    DATA_EXPORT = "data.export"
+    DATA_VALIDATION = "data.validation"
+    
+    # Model events
+    MODEL_CREATED = "model.created"
+    MODEL_UPDATED = "model.updated"
+    MODEL_DEPLOYED = "model.deployed"
+    MODEL_RETIRED = "model.retired"
+    MODEL_TRAINING_STARTED = "model.training.started"
+    MODEL_TRAINING_COMPLETED = "model.training.completed"
+    MODEL_TRAINING_FAILED = "model.training.failed"
+    MODEL_PREDICTION = "model.prediction"
+    MODEL_EVALUATION = "model.evaluation"
+    
+    # Processing events
+    PROCESSING_STARTED = "processing.started"
+    PROCESSING_COMPLETED = "processing.completed"
+    PROCESSING_FAILED = "processing.failed"
+    PROCESSING_PROGRESS = "processing.progress"
+    PROCESSING_CANCELLED = "processing.cancelled"
+    
+    # Workflow events
+    WORKFLOW_STARTED = "workflow.started"
+    WORKFLOW_COMPLETED = "workflow.completed"
+    WORKFLOW_FAILED = "workflow.failed"
+    WORKFLOW_STEP_COMPLETED = "workflow.step.completed"
+    WORKFLOW_CANCELLED = "workflow.cancelled"
+    
+    # Security events
+    SECURITY_LOGIN = "security.login"
+    SECURITY_LOGOUT = "security.logout"
+    SECURITY_ACCESS_DENIED = "security.access_denied"
+    SECURITY_TOKEN_EXPIRED = "security.token_expired"
+    SECURITY_PERMISSION_CHANGED = "security.permission_changed"
+    
+    # Audit events
+    AUDIT_CREATE = "audit.create"
+    AUDIT_UPDATE = "audit.update"
+    AUDIT_DELETE = "audit.delete"
+    AUDIT_ACCESS = "audit.access"
+    AUDIT_EXPORT = "audit.export"
+    
+    # Notification events
+    NOTIFICATION_SENT = "notification.sent"
+    NOTIFICATION_FAILED = "notification.failed"
+    NOTIFICATION_DELIVERED = "notification.delivered"
+    NOTIFICATION_READ = "notification.read"
+    
+    # Custom event type
+    CUSTOM = "custom"
+
+
+# Data classes
 
 @dataclass
 class Event:
-    """Unified event model"""
+    """
+    Unified event model.
+    
+    Consolidates event models from various modules with all features.
+    """
+    # Identity
     event_id: str = field(default_factory=lambda: str(uuid.uuid4()))
     event_type: str = ""
     source: str = ""
     timestamp: datetime = field(default_factory=datetime.utcnow)
     
+    # Classification
+    category: Optional[EventCategory] = None
+    priority: EventPriority = EventPriority.NORMAL
+    
     # Event data
     data: Dict[str, Any] = field(default_factory=dict)
     metadata: Dict[str, Any] = field(default_factory=dict)
+    headers: Dict[str, str] = field(default_factory=dict)
     
-    # Routing and processing
+    # Routing and correlation
     correlation_id: Optional[str] = None
     causation_id: Optional[str] = None
-    priority: EventPriority = EventPriority.NORMAL
+    partition_key: Optional[str] = None
+    
+    # Processing
+    status: EventStatus = EventStatus.PENDING
+    retry_count: int = 0
+    max_retries: int = 3
     
     # Security
     encrypted: bool = False
     user_context: Optional[Dict[str, Any]] = None
+    
+    # Versioning
+    version: str = "1.0"
+    schema_version: str = "1.0"
     
     def to_dict(self) -> Dict[str, Any]:
         """Convert to dictionary"""
@@ -73,69 +193,96 @@ class Event:
             "event_type": self.event_type,
             "source": self.source,
             "timestamp": self.timestamp.isoformat(),
+            "category": self.category.value if self.category else None,
+            "priority": self.priority.value,
             "data": self.data,
             "metadata": self.metadata,
+            "headers": self.headers,
             "correlation_id": self.correlation_id,
             "causation_id": self.causation_id,
-            "priority": self.priority.value,
+            "partition_key": self.partition_key,
+            "status": self.status.value,
+            "retry_count": self.retry_count,
+            "max_retries": self.max_retries,
             "encrypted": self.encrypted,
-            "user_context": self.user_context
+            "user_context": self.user_context,
+            "version": self.version,
+            "schema_version": self.schema_version
         }
     
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'Event':
         """Create from dictionary"""
-        event = cls(
-            event_id=data.get("event_id", str(uuid.uuid4())),
-            event_type=data.get("event_type", ""),
-            source=data.get("source", ""),
-            data=data.get("data", {}),
-            metadata=data.get("metadata", {}),
-            correlation_id=data.get("correlation_id"),
-            causation_id=data.get("causation_id"),
-            encrypted=data.get("encrypted", False),
-            user_context=data.get("user_context")
-        )
+        data = data.copy()
         
-        # Parse timestamp
-        if "timestamp" in data:
-            if isinstance(data["timestamp"], str):
-                event.timestamp = datetime.fromisoformat(data["timestamp"])
-            else:
-                event.timestamp = data["timestamp"]
-                
-        # Parse priority
-        if "priority" in data:
-            event.priority = EventPriority(data["priority"])
+        # Convert string timestamps
+        if isinstance(data.get('timestamp'), str):
+            data['timestamp'] = datetime.fromisoformat(data['timestamp'])
             
-        return event
+        # Convert enums
+        if data.get('category'):
+            data['category'] = EventCategory(data['category'])
+        if data.get('priority'):
+            data['priority'] = EventPriority(data['priority'])
+        if data.get('status'):
+            data['status'] = EventStatus(data['status'])
+            
+        return cls(**data)
+    
+    def with_correlation(self, correlation_id: str) -> 'Event':
+        """Create new event with correlation ID"""
+        self.correlation_id = correlation_id
+        return self
+    
+    def with_causation(self, causation_id: str) -> 'Event':
+        """Create new event with causation ID"""
+        self.causation_id = causation_id
+        return self
+    
+    def is_expired(self, ttl: timedelta) -> bool:
+        """Check if event is expired"""
+        return datetime.utcnow() - self.timestamp > ttl
 
 
 @dataclass
 class EventHandler:
-    """Event handler registration"""
+    """Event handler configuration"""
     handler_id: str = field(default_factory=lambda: str(uuid.uuid4()))
-    event_type: str = ""
-    handler_func: Callable = None
-    filter_func: Optional[Callable] = None
-    priority: int = 0  # Higher priority handlers run first
-    required_role: Optional[str] = None
-    encrypt_response: bool = False
-    processing_mode: EventProcessingMode = EventProcessingMode.SEQUENTIAL
+    name: str = ""
+    event_types: List[str] = field(default_factory=list)
+    handler_func: Optional[Callable] = None
     
-    def __post_init__(self):
-        if self.handler_func and not asyncio.iscoroutinefunction(self.handler_func):
-            raise ValueError(f"Handler function must be async: {self.handler_func.__name__}")
+    # Processing
+    processing_mode: EventProcessingMode = EventProcessingMode.SEQUENTIAL
+    max_concurrent: int = 1
+    timeout: timedelta = field(default_factory=lambda: timedelta(seconds=30))
+    
+    # Error handling
+    retry_on_error: bool = True
+    max_retries: int = 3
+    retry_delay: timedelta = field(default_factory=lambda: timedelta(seconds=1))
+    dead_letter_handler: Optional[Callable] = None
+    
+    # Filtering
+    filter_func: Optional[Callable[[Event], bool]] = None
+    
+    # Metrics
+    events_processed: int = 0
+    events_failed: int = 0
+    last_error: Optional[str] = None
+    last_processed: Optional[datetime] = None
 
 
 @dataclass
 class EventProcessingConfig:
-    """Configuration for event processing"""
+    """Event processing configuration"""
     name: str
-    processing_mode: EventProcessingMode = EventProcessingMode.SEQUENTIAL
+    description: str = ""
     
-    # Parallel processing
-    max_concurrent_events: int = 10
+    # Processing
+    processing_mode: EventProcessingMode = EventProcessingMode.SEQUENTIAL
+    batch_size: int = 100
+    batch_timeout: timedelta = field(default_factory=lambda: timedelta(seconds=5))
     
     # Windowing
     window_size: Optional[timedelta] = None
@@ -143,161 +290,120 @@ class EventProcessingConfig:
     
     # State management
     enable_state: bool = False
-    state_ttl: Optional[timedelta] = None
-    
-    # Event routing
-    routing_rules: Dict[str, str] = field(default_factory=dict)
-    
-    # Error handling
-    error_topic: Optional[str] = None
-    dead_letter_topic: Optional[str] = None
-    max_retries: int = 3
-    retry_delay: timedelta = field(default_factory=lambda: timedelta(seconds=5))
+    state_backend: str = "memory"  # memory, ignite, cassandra
+    checkpoint_interval: timedelta = field(default_factory=lambda: timedelta(minutes=5))
     
     # Deduplication
-    enable_deduplication: bool = False
-    dedup_window: timedelta = field(default_factory=lambda: timedelta(minutes=5))
+    enable_deduplication: bool = True
+    deduplication_window: timedelta = field(default_factory=lambda: timedelta(hours=24))
+    
+    # Error handling
+    max_retries: int = 3
+    retry_delay: timedelta = field(default_factory=lambda: timedelta(seconds=1))
+    dead_letter_topic: Optional[str] = None
     
     # Security
-    enable_encryption: bool = True
-    required_roles: List[str] = field(default_factory=list)
+    enable_encryption: bool = False
+    enable_rbac: bool = True
+    allowed_roles: List[str] = field(default_factory=list)
     
     # Monitoring
     enable_metrics: bool = True
     enable_tracing: bool = True
+    
+    # Resource limits
+    max_memory_mb: Optional[int] = None
+    max_cpu_percent: Optional[float] = None
+    
+    # Advanced
+    parallelism: int = 1
+    buffer_size: int = 1000
+    enable_watermarks: bool = False
+    watermark_interval: timedelta = field(default_factory=lambda: timedelta(seconds=10))
 
 
 class EventRouter:
-    """Routes events to appropriate handlers with security integration"""
+    """
+    Routes events based on patterns and rules.
     
-    def __init__(self, vault_client: Optional[VaultClient] = None,
-                 consul_client: Optional[ConsulClient] = None):
-        self.handlers: Dict[str, List[EventHandler]] = {}
-        self._handler_metrics: Dict[str, Dict[str, int]] = {}
+    Consolidates routing logic from various modules.
+    """
+    
+    def __init__(
+        self,
+        vault_client: Optional[VaultClient] = None,
+        consul_client: Optional[ConsulClient] = None
+    ):
         self.vault_client = vault_client
         self.consul_client = consul_client
-        self._handler_config: Dict[str, Dict[str, Any]] = {}
-        self._config_watcher_task: Optional[asyncio.Task] = None
         
-    async def initialize(self):
-        """Initialize router with configuration from Consul"""
-        if self.consul_client:
-            await self._load_handler_config()
-            self._config_watcher_task = asyncio.create_task(self._watch_config_changes())
+        # Routing rules: pattern -> list of handlers
+        self._routes: Dict[str, List[EventHandler]] = {}
+        self._regex_routes: List[Tuple[str, List[EventHandler]]] = []
+        
+        # Dynamic routing from Consul
+        self._dynamic_routes_enabled = consul_client is not None
+        self._dynamic_routes: Dict[str, List[EventHandler]] = {}
+        
+    def add_route(self, pattern: str, handler: EventHandler):
+        """Add routing rule"""
+        if '*' in pattern or '?' in pattern:
+            # Convert wildcard to regex
+            import fnmatch
+            regex_pattern = fnmatch.translate(pattern)
+            self._regex_routes.append((regex_pattern, [handler]))
+        else:
+            if pattern not in self._routes:
+                self._routes[pattern] = []
+            self._routes[pattern].append(handler)
             
-    async def shutdown(self):
-        """Shutdown router"""
-        if self._config_watcher_task:
-            self._config_watcher_task.cancel()
-            try:
-                await self._config_watcher_task
-            except asyncio.CancelledError:
-                pass
+    def get_handlers(self, event: Event) -> List[EventHandler]:
+        """Get handlers for event"""
+        handlers = []
+        
+        # Exact match
+        if event.event_type in self._routes:
+            handlers.extend(self._routes[event.event_type])
+            
+        # Pattern match
+        import re
+        for pattern, pattern_handlers in self._regex_routes:
+            if re.match(pattern, event.event_type):
+                handlers.extend(pattern_handlers)
                 
-    async def _load_handler_config(self):
-        """Load handler configuration from Consul"""
-        try:
-            config_data = await self.consul_client.kv_get("data-intelligence/event-handlers/config")
-            if config_data:
-                self._handler_config = json.loads(config_data)
-                logger.info("Loaded handler configuration from Consul")
-        except Exception as e:
-            logger.error(f"Failed to load handler config: {e}")
-            
-    async def _watch_config_changes(self):
-        """Watch for configuration changes in Consul"""
-        while True:
-            try:
-                await asyncio.sleep(30)
-                await self._load_handler_config()
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error watching config: {e}")
+        # Dynamic routes
+        if self._dynamic_routes_enabled:
+            if event.event_type in self._dynamic_routes:
+                handlers.extend(self._dynamic_routes[event.event_type])
                 
-    def register_handler(self, handler: EventHandler):
-        """Register event handler"""
-        if handler.event_type not in self.handlers:
-            self.handlers[handler.event_type] = []
-            
-        self.handlers[handler.event_type].append(handler)
-        
-        # Sort by priority
-        self.handlers[handler.event_type].sort(key=lambda h: h.priority, reverse=True)
-        
-        # Initialize metrics
-        if handler.event_type not in self._handler_metrics:
-            self._handler_metrics[handler.event_type] = {
-                "processed": 0,
-                "failed": 0,
-                "skipped": 0
-            }
-            
-        logger.info(f"Registered handler for event type: {handler.event_type}")
-        
-    def unregister_handler(self, handler_id: str):
-        """Unregister event handler"""
-        for event_type, handlers in self.handlers.items():
-            self.handlers[event_type] = [h for h in handlers if h.handler_id != handler_id]
-            
-    async def route_event(self, event: Event) -> List[Any]:
-        """Route event to appropriate handlers with security checks"""
-        if event.event_type not in self.handlers:
-            logger.debug(f"No handlers registered for event type: {event.event_type}")
-            return []
-            
-        results = []
-        handlers = self.handlers[event.event_type]
-        
-        # Get handler config from Consul if available
-        handler_config = self._handler_config.get(event.event_type, {})
-        
+        # Filter handlers
+        filtered_handlers = []
         for handler in handlers:
-            try:
-                # Check role requirements
-                if handler.required_role and event.user_context:
-                    user_roles = event.user_context.get("roles", [])
-                    if handler.required_role not in user_roles:
-                        logger.warning(f"User lacks required role {handler.required_role} for handler {handler.handler_func.__name__}")
-                        self._handler_metrics[event.event_type]["skipped"] += 1
-                        continue
+            if handler.filter_func is None or handler.filter_func(event):
+                filtered_handlers.append(handler)
                 
-                # Apply filter if provided
-                if handler.filter_func and not handler.filter_func(event):
-                    self._handler_metrics[event.event_type]["skipped"] += 1
-                    continue
-                    
-                # Call handler
-                result = await handler.handler_func(event)
-                
-                # Encrypt response if required
-                if handler.encrypt_response and self.vault_client and result:
-                    encryption_key = handler_config.get("encryption_key", "event-responses")
-                    encrypted_result = await self.vault_client.transit_encrypt(
-                        encryption_key,
-                        json.dumps(result)
-                    )
-                    result = {"encrypted": encrypted_result["ciphertext"]}
-                
-                results.append(result)
-                self._handler_metrics[event.event_type]["processed"] += 1
-                
-            except Exception as e:
-                logger.error(f"Error in handler {handler.handler_func.__name__}: {e}")
-                self._handler_metrics[event.event_type]["failed"] += 1
-                
-        return results
+        return filtered_handlers
         
-    def get_metrics(self) -> Dict[str, Dict[str, int]]:
-        """Get handler metrics"""
-        return self._handler_metrics.copy()
+    async def refresh_dynamic_routes(self):
+        """Refresh dynamic routes from Consul"""
+        if not self.consul_client:
+            return
+            
+        try:
+            # Get routing rules from Consul
+            routes_data = await self.consul_client.get_value("event_routes")
+            if routes_data:
+                self._dynamic_routes = json.loads(routes_data)
+                logger.info(f"Refreshed {len(self._dynamic_routes)} dynamic routes")
+        except Exception as e:
+            logger.error(f"Failed to refresh dynamic routes: {e}")
 
 
 class BaseEventProcessor(ABC):
     """
-    Unified base class for event processing with Vault/Consul integration.
+    Unified base class for event processing.
     
-    Combines functionality from event_handlers and core/events modules.
+    Consolidates functionality from all event processor implementations.
     """
     
     def __init__(
@@ -322,6 +428,10 @@ class BaseEventProcessor(ABC):
         self._windows: Dict[str, List[Event]] = {}
         self._processed_events: Set[str] = set() if config.enable_deduplication else None
         
+        # Handlers
+        self._handlers: Dict[str, EventHandler] = {}
+        self._global_handlers: List[EventHandler] = []
+        
         # Processing metrics
         self._processing_metrics: Dict[str, int] = {
             "events_processed": 0,
@@ -335,24 +445,32 @@ class BaseEventProcessor(ABC):
         
         # Background tasks
         self._tasks: Set[asyncio.Task] = set()
+        self._running = False
         
-    async def initialize(self):
-        """Initialize event processor"""
-        await self.router.initialize()
+    @abstractmethod
+    async def process_event(self, event: Event) -> Optional[Any]:
+        """Process single event - must be implemented by subclasses"""
+        pass
+        
+    async def start(self):
+        """Start event processor"""
+        self._running = True
         
         # Start background tasks
-        if self.config.enable_state and self.config.state_ttl:
-            task = asyncio.create_task(self._cleanup_state_loop())
+        if self.config.enable_state and self.config.checkpoint_interval:
+            task = asyncio.create_task(self._checkpoint_loop())
             self._tasks.add(task)
             
-        if self.config.enable_deduplication:
-            task = asyncio.create_task(self._cleanup_dedup_loop())
+        if self._dynamic_routes_enabled:
+            task = asyncio.create_task(self._route_refresh_loop())
             self._tasks.add(task)
             
-        logger.info(f"Initialized event processor: {self.config.name}")
+        logger.info(f"Started event processor: {self.config.name}")
         
-    async def shutdown(self):
-        """Shutdown event processor"""
+    async def stop(self):
+        """Stop event processor"""
+        self._running = False
+        
         # Cancel background tasks
         for task in self._tasks:
             task.cancel()
@@ -360,221 +478,318 @@ class BaseEventProcessor(ABC):
         if self._tasks:
             await asyncio.gather(*self._tasks, return_exceptions=True)
             
-        await self.router.shutdown()
-        logger.info(f"Shutdown event processor: {self.config.name}")
-        
-    def set_user_context(self, context: Dict[str, Any]):
-        """Set user context for role-based access control"""
-        self._user_context = context
-        
-    def add_handler(self, event_type: str, handler: Callable,
-                   filter_func: Optional[Callable] = None,
-                   priority: int = 0,
-                   required_role: Optional[str] = None,
-                   encrypt_response: bool = False):
-        """Add event handler for specific event type"""
-        event_handler = EventHandler(
-            event_type=event_type,
-            handler_func=handler,
-            filter_func=filter_func,
-            priority=priority,
-            required_role=required_role,
-            encrypt_response=encrypt_response,
-            processing_mode=self.config.processing_mode
-        )
-        self.router.register_handler(event_handler)
-        
-    @abstractmethod
-    async def process_event(self, event: Event) -> Optional[Dict[str, Any]]:
-        """Process a single event. Must be implemented by derived classes."""
-        pass
-        
-    async def handle_event(self, event: Union[Event, Dict[str, Any]]) -> Optional[Dict[str, Any]]:
-        """Main event handling entry point with security and processing modes"""
-        # Convert dict to Event if needed
-        if isinstance(event, dict):
-            event = Event.from_dict(event)
+        # Save final checkpoint
+        if self.config.enable_state:
+            await self._save_checkpoint()
             
-        # Set user context
-        if self._user_context:
-            event.user_context = self._user_context
-            
-        logger.info(f"Processing event {event.event_id} of type {event.event_type}")
+        logger.info(f"Stopped event processor: {self.config.name}")
         
-        try:
-            # Decrypt event data if encrypted
-            if event.encrypted and self.vault_client:
-                decrypted_data = await self.vault_client.transit_decrypt(
-                    self.config.routing_rules.get("encryption_key", "event-data"),
-                    event.data["encrypted"]
-                )
-                event.data = json.loads(decrypted_data)
-                event.encrypted = False
+    def add_handler(self, event_type: str, handler: Union[Callable, EventHandler]):
+        """Add event handler"""
+        if isinstance(handler, EventHandler):
+            self._handlers[event_type] = handler
+            self.router.add_route(event_type, handler)
+        else:
+            # Create handler wrapper
+            event_handler = EventHandler(
+                name=f"{event_type}_handler",
+                event_types=[event_type],
+                handler_func=handler
+            )
+            self._handlers[event_type] = event_handler
+            self.router.add_route(event_type, event_handler)
             
-            # Check deduplication
-            if self.config.enable_deduplication:
-                if not await self._check_duplicate(event):
-                    self._processing_metrics["events_skipped"] += 1
-                    return None
+    def add_global_handler(self, handler: Union[Callable, EventHandler]):
+        """Add global handler for all events"""
+        if isinstance(handler, EventHandler):
+            self._global_handlers.append(handler)
+        else:
+            event_handler = EventHandler(
+                name="global_handler",
+                event_types=["*"],
+                handler_func=handler
+            )
+            self._global_handlers.append(event_handler)
+            
+    async def handle_event(self, event: Event) -> List[Any]:
+        """Handle event using registered handlers"""
+        results = []
+        
+        # Check deduplication
+        if self._processed_events is not None:
+            if event.event_id in self._processed_events:
+                self._processing_metrics["events_skipped"] += 1
+                logger.debug(f"Skipping duplicate event: {event.event_id}")
+                return results
+                
+        # Get handlers
+        handlers = self.router.get_handlers(event)
+        handlers.extend(self._global_handlers)
+        
+        if not handlers:
+            # Use default processing
+            try:
+                result = await self.process_event(event)
+                if result is not None:
+                    results.append(result)
+            except Exception as e:
+                logger.error(f"Error processing event {event.event_id}: {e}")
+                self._processing_metrics["events_failed"] += 1
+                
+                # Retry logic
+                if event.retry_count < event.max_retries:
+                    event.retry_count += 1
+                    event.status = EventStatus.RETRYING
+                    await self._retry_event(event)
+                else:
+                    event.status = EventStatus.FAILED
+                    await self._handle_dead_letter(event, str(e))
+        else:
+            # Process with handlers
+            for handler in handlers:
+                try:
+                    result = await self._execute_handler(handler, event)
+                    if result is not None:
+                        results.append(result)
+                except Exception as e:
+                    logger.error(f"Handler {handler.name} failed for event {event.event_id}: {e}")
+                    handler.events_failed += 1
+                    handler.last_error = str(e)
                     
-            # Process based on mode
-            result = None
-            if self.config.processing_mode == EventProcessingMode.WINDOWED:
-                await self._add_to_window(event)
-            else:
-                result = await self._process_with_retry(event)
-                
-            self._processing_metrics["events_processed"] += 1
+        # Mark as processed
+        if self._processed_events is not None:
+            self._processed_events.add(event.event_id)
             
-            # Publish result events if configured
-            if result and hasattr(self, 'event_bus') and self.event_bus:
-                await self._publish_result(event, result)
-                
+        # Update metrics
+        self._processing_metrics["events_processed"] += 1
+        event.status = EventStatus.PROCESSED
+        
+        return results
+        
+    async def _execute_handler(self, handler: EventHandler, event: Event) -> Any:
+        """Execute handler with timeout and error handling"""
+        if handler.handler_func is None:
+            return None
+            
+        try:
+            # Apply timeout
+            result = await asyncio.wait_for(
+                handler.handler_func(event),
+                timeout=handler.timeout.total_seconds()
+            )
+            
+            # Update handler metrics
+            handler.events_processed += 1
+            handler.last_processed = datetime.utcnow()
+            
             return result
             
-        except Exception as e:
-            logger.error(f"Error processing event {event.event_id}: {e}")
-            self._processing_metrics["events_failed"] += 1
+        except asyncio.TimeoutError:
+            raise TimeoutError(f"Handler {handler.name} timed out")
             
-            # Publish error event
-            if hasattr(self, 'event_bus') and self.event_bus:
-                await self._publish_error(event, e)
-                
-            raise
-            
-    async def _process_with_retry(self, event: Event) -> Optional[Dict[str, Any]]:
-        """Process event with retry logic"""
-        last_error = None
+    async def _retry_event(self, event: Event):
+        """Retry event processing"""
+        self._processing_metrics["events_retried"] += 1
         
-        for attempt in range(self.config.max_retries + 1):
+        # Wait before retry
+        await asyncio.sleep(self.config.retry_delay.total_seconds())
+        
+        # Re-process
+        await self.handle_event(event)
+        
+    async def _handle_dead_letter(self, event: Event, error: str):
+        """Handle dead letter event"""
+        event.status = EventStatus.DEAD_LETTER
+        event.metadata["error"] = error
+        event.metadata["failed_at"] = datetime.utcnow().isoformat()
+        
+        # Log to dead letter topic if configured
+        if self.config.dead_letter_topic:
+            logger.warning(f"Sending event {event.event_id} to dead letter topic")
+            # Implementation would publish to dead letter topic
+            
+    async def _checkpoint_loop(self):
+        """Periodically save checkpoints"""
+        while self._running:
             try:
-                # Route to handlers
-                results = await self.router.route_event(event)
-                
-                # If no specific handler, use generic processor
-                if not results:
-                    result = await self.process_event(event)
-                    results = [result] if result else []
-                    
-                return results[0] if results else None
-                
+                await asyncio.sleep(self.config.checkpoint_interval.total_seconds())
+                await self._save_checkpoint()
+            except asyncio.CancelledError:
+                break
             except Exception as e:
-                last_error = e
-                if attempt < self.config.max_retries:
-                    self._processing_metrics["events_retried"] += 1
-                    await asyncio.sleep(self.config.retry_delay.total_seconds() * (2 ** attempt))
-                else:
-                    raise
-                    
-        raise last_error
-        
-    async def _check_duplicate(self, event: Event) -> bool:
-        """Check if event is duplicate"""
-        if event.event_id in self._processed_events:
-            return False
-            
-        self._processed_events.add(event.event_id)
-        return True
-        
-    async def _add_to_window(self, event: Event):
-        """Add event to processing window"""
-        window_key = self._get_window_key(event)
-        
-        if window_key not in self._windows:
-            self._windows[window_key] = []
-            
-        self._windows[window_key].append(event)
-        
-        # Check if window is ready for processing
-        if self._is_window_ready(window_key):
-            await self._process_window(window_key)
-            
-    def _get_window_key(self, event: Event) -> str:
-        """Get window key for event"""
-        # Simple time-based windowing
-        window_start = event.timestamp.replace(second=0, microsecond=0)
-        return f"{event.event_type}:{window_start.isoformat()}"
-        
-    def _is_window_ready(self, window_key: str) -> bool:
-        """Check if window is ready for processing"""
-        # Simple size-based trigger
-        return len(self._windows.get(window_key, [])) >= 100
-        
-    async def _process_window(self, window_key: str):
-        """Process events in window"""
-        events = self._windows.pop(window_key, [])
-        if not events:
+                logger.error(f"Checkpoint error: {e}")
+                
+    async def _save_checkpoint(self):
+        """Save processing state"""
+        if not self.config.enable_state:
             return
             
-        # Process window of events
-        for event in events:
-            await self._process_with_retry(event)
+        checkpoint = {
+            "processor": self.config.name,
+            "timestamp": datetime.utcnow().isoformat(),
+            "state": self._state,
+            "metrics": self._processing_metrics,
+            "processed_count": len(self._processed_events) if self._processed_events else 0
+        }
+        
+        # Save to state backend
+        if self.cache:
+            await self.cache.put(
+                f"checkpoint:{self.config.name}",
+                checkpoint,
+                ttl=timedelta(days=7)
+            )
             
-    async def _cleanup_state_loop(self):
-        """Cleanup expired state entries"""
-        while True:
+    async def _route_refresh_loop(self):
+        """Periodically refresh dynamic routes"""
+        while self._running:
             try:
-                await asyncio.sleep(300)  # Every 5 minutes
-                
-                if self.config.state_ttl:
-                    cutoff = datetime.utcnow() - self.config.state_ttl
-                    # Cleanup logic here
-                    
+                await asyncio.sleep(60)  # Refresh every minute
+                await self.router.refresh_dynamic_routes()
             except asyncio.CancelledError:
                 break
             except Exception as e:
-                logger.error(f"Error in state cleanup: {e}")
+                logger.error(f"Route refresh error: {e}")
                 
-    async def _cleanup_dedup_loop(self):
-        """Cleanup old deduplication entries"""
-        while True:
-            try:
-                await asyncio.sleep(60)  # Every minute
-                
-                # Keep only recent event IDs
-                # This is simplified - real implementation would use timestamp tracking
-                if len(self._processed_events) > 10000:
-                    self._processed_events.clear()
-                    
-            except asyncio.CancelledError:
-                break
-            except Exception as e:
-                logger.error(f"Error in dedup cleanup: {e}")
-                
-    async def _publish_result(self, event: Event, result: Dict[str, Any]):
-        """Publish result event"""
-        result_event = Event(
-            event_type=f"{event.event_type}.result",
-            source=self.config.name,
-            data=result,
-            correlation_id=event.correlation_id,
-            causation_id=event.event_id
-        )
-        
-        if hasattr(self, 'event_bus'):
-            await self.event_bus.publish(result_event)
-            
-    async def _publish_error(self, event: Event, error: Exception):
-        """Publish error event"""
-        error_event = Event(
-            event_type=f"{event.event_type}.error",
-            source=self.config.name,
-            data={
-                "error_type": type(error).__name__,
-                "error_message": str(error),
-                "original_event_id": event.event_id
-            },
-            correlation_id=event.correlation_id,
-            causation_id=event.event_id,
-            priority=EventPriority.HIGH
-        )
-        
-        if hasattr(self, 'event_bus'):
-            await self.event_bus.publish(error_event)
-            
     def get_metrics(self) -> Dict[str, Any]:
         """Get processing metrics"""
         return {
-            "processing": self._processing_metrics.copy(),
-            "routing": self.router.get_metrics()
-        } 
+            **self._processing_metrics,
+            "handlers": len(self._handlers),
+            "state_size": len(self._state),
+            "dedup_cache_size": len(self._processed_events) if self._processed_events else 0
+        }
+
+
+# Factory functions for creating specific event types
+
+def create_system_event(
+    event_type: str,
+    source: str,
+    message: str,
+    level: str = "info",
+    **kwargs
+) -> Event:
+    """Create system event"""
+    return Event(
+        event_type=event_type,
+        source=source,
+        category=EventCategory.SYSTEM,
+        data={
+            "message": message,
+            "level": level,
+            **kwargs
+        }
+    )
+
+
+def create_data_event(
+    event_type: str,
+    source: str,
+    entity_type: str,
+    entity_id: str,
+    operation: str,
+    **kwargs
+) -> Event:
+    """Create data event"""
+    return Event(
+        event_type=event_type,
+        source=source,
+        category=EventCategory.DATA,
+        data={
+            "entity_type": entity_type,
+            "entity_id": entity_id,
+            "operation": operation,
+            **kwargs
+        }
+    )
+
+
+def create_model_event(
+    event_type: str,
+    source: str,
+    model_id: str,
+    model_name: str,
+    **kwargs
+) -> Event:
+    """Create model event"""
+    return Event(
+        event_type=event_type,
+        source=source,
+        category=EventCategory.MODEL,
+        data={
+            "model_id": model_id,
+            "model_name": model_name,
+            **kwargs
+        }
+    )
+
+
+def create_processing_event(
+    event_type: str,
+    source: str,
+    job_id: str,
+    status: str,
+    **kwargs
+) -> Event:
+    """Create processing event"""
+    return Event(
+        event_type=event_type,
+        source=source,
+        category=EventCategory.PROCESSING,
+        data={
+            "job_id": job_id,
+            "status": status,
+            **kwargs
+        }
+    )
+
+
+def create_audit_event(
+    event_type: str,
+    source: str,
+    user_id: str,
+    action: str,
+    resource: str,
+    **kwargs
+) -> Event:
+    """Create audit event"""
+    return Event(
+        event_type=event_type,
+        source=source,
+        category=EventCategory.AUDIT,
+        priority=EventPriority.HIGH,
+        data={
+            "user_id": user_id,
+            "action": action,
+            "resource": resource,
+            "timestamp": datetime.utcnow().isoformat(),
+            **kwargs
+        }
+    )
+
+
+# Export all public classes and functions
+__all__ = [
+    # Enums
+    'EventPriority',
+    'EventDeliveryMode',
+    'EventProcessingMode',
+    'EventCategory',
+    'EventStatus',
+    'EventType',
+    
+    # Classes
+    'Event',
+    'EventHandler',
+    'EventProcessingConfig',
+    'EventRouter',
+    'BaseEventProcessor',
+    
+    # Factory functions
+    'create_system_event',
+    'create_data_event',
+    'create_model_event',
+    'create_processing_event',
+    'create_audit_event'
+] 

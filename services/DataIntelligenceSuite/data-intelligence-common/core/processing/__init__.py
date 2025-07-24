@@ -1,38 +1,84 @@
 """
 Processing Framework for DataIntelligenceSuite
 
-Processor Hierarchy:
--------------------
-BaseProcessor (ABC, Generic[T])
-├── BatchProcessor - For batch data processing
-├── StreamProcessor - For stream data processing  
-├── QualityProcessor - For data quality validation
-└── EventProcessor (in core.events) - For event-driven processing
+Unified Processing Architecture:
+-------------------------------
+UnifiedProcessor - Handles both batch and stream processing
+├── DataSource - Abstract source interface
+├── DataSink - Abstract sink interface
+└── ProcessingStage - Abstract processing stage
 
-BaseEventProcessor (ABC) - Separate hierarchy for event handling
-└── Various event handlers in services
+Common Sources:
+- FileSource (JSON, CSV, Parquet)
+- EventBusSource
+- DatabaseSource
+- PulsarSource
+- LambdaSource
 
-BaseFileProcessor (ABC) - Separate hierarchy for file processing
-├── BlenderProcessor
-├── FreeCADProcessor
-├── MultimediaProcessor
-└── Other file processors
+Common Sinks:
+- FileSink
+- EventBusSink
+- DatabaseSink
+- LambdaSink
 
-BaseCDCProcessor (ABC) - Separate hierarchy for CDC
-└── IgniteCDCProcessor
+Quality Stages:
+- QualityCheckStage
+- SchemaValidationStage
+- DataCleaningStage
+- DeduplicationStage
+- AnomalyDetectionStage
 
-Notes:
-- BaseProcessor is the root for general data processing
-- BaseEventProcessor is for event-driven architectures
-- Different processor types serve different purposes
-- Not all processors need to inherit from BaseProcessor
+Legacy Processors (for backward compatibility):
+- BaseProcessor
+- BatchProcessor
+- StreamProcessor
+- QualityProcessor
 """
 
+# Unified processing components
+from .unified_processor import (
+    ProcessingMode,
+    ProcessingEngine,
+    WindowType,
+    ProcessingWindow,
+    ProcessingConfig,
+    ProcessingContext,
+    DataSource,
+    DataSink,
+    ProcessingStage,
+    UnifiedProcessor,
+    PipelineBuilder
+)
+
+from .sources_sinks import (
+    FileSource,
+    FileSink,
+    EventBusSource,
+    EventBusSink,
+    DatabaseSource,
+    DatabaseSink,
+    LambdaSource,
+    LambdaSink
+)
+
+from .quality_stages import (
+    QualityLevel,
+    QualityCheckType,
+    QualityRule,
+    QualityResult,
+    QualityCheckStage,
+    SchemaValidationStage,
+    DataCleaningStage,
+    DeduplicationStage,
+    AnomalyDetectionStage,
+    CommonQualityRules
+)
+
+# Legacy components (backward compatibility)
 from .base_processor import (
     BaseProcessor,
     ProcessorConfig,
     ProcessingStatus,
-    ProcessingMode,
     ProcessingMetrics,
     ProcessingResult,
     PartitionStrategy,
@@ -51,8 +97,8 @@ from .batch_processor import (
 from .stream_processor import (
     StreamProcessor,
     StreamConfig,
-    StreamEngine,
-    WindowType,
+    StreamEngine as LegacyStreamEngine,
+    WindowType as LegacyWindowType,
     WindowConfig,
     StreamResult
 )
@@ -61,14 +107,14 @@ from .quality_processor import (
     QualityProcessor,
     QualityConfig,
     QualityEngine,
-    QualityRule,
-    QualityResult,
+    QualityRule as LegacyQualityRule,
+    QualityResult as LegacyQualityResult,
     DataQualityDimension,
     RemediationAction
 )
 
 from .pipeline_builder import (
-    PipelineBuilder,
+    PipelineBuilder as LegacyPipelineBuilder,
     Pipeline,
     PipelineStage,
     StageConfig,
@@ -79,43 +125,69 @@ from .pipeline_builder import (
 )
 
 __all__ = [
-    # Base
+    # Unified processing
+    "ProcessingMode",
+    "ProcessingEngine",
+    "WindowType",
+    "ProcessingWindow",
+    "ProcessingConfig",
+    "ProcessingContext",
+    "DataSource",
+    "DataSink",
+    "ProcessingStage",
+    "UnifiedProcessor",
+    "PipelineBuilder",
+    
+    # Sources and sinks
+    "FileSource",
+    "FileSink",
+    "EventBusSource",
+    "EventBusSink",
+    "DatabaseSource",
+    "DatabaseSink",
+    "LambdaSource",
+    "LambdaSink",
+    
+    # Quality stages
+    "QualityLevel",
+    "QualityCheckType",
+    "QualityRule",
+    "QualityResult",
+    "QualityCheckStage",
+    "SchemaValidationStage",
+    "DataCleaningStage",
+    "DeduplicationStage",
+    "AnomalyDetectionStage",
+    "CommonQualityRules",
+    
+    # Legacy (backward compatibility)
     "BaseProcessor",
     "ProcessorConfig",
     "ProcessingStatus",
-    "ProcessingMode",
     "ProcessingMetrics",
     "ProcessingResult",
     "PartitionStrategy",
     "ResourceLimits",
     "OptimizationConfig",
-    
-    # Batch
     "BatchProcessor",
     "BatchConfig",
     "BatchJob",
     "BatchResult",
     "BatchEngine",
-    
-    # Stream
     "StreamProcessor",
     "StreamConfig",
-    "StreamEngine",
-    "WindowType",
+    "LegacyStreamEngine",
+    "LegacyWindowType",
     "WindowConfig",
     "StreamResult",
-    
-    # Quality
     "QualityProcessor",
     "QualityConfig",
     "QualityEngine",
-    "QualityRule",
-    "QualityResult",
+    "LegacyQualityRule",
+    "LegacyQualityResult",
     "DataQualityDimension",
     "RemediationAction",
-    
-    # Pipeline
-    "PipelineBuilder",
+    "LegacyPipelineBuilder",
     "Pipeline",
     "PipelineStage",
     "StageConfig",

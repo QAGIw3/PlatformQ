@@ -39,6 +39,15 @@ from platformq_shared.consul.consul_client import ConsulClient
 from ..monitoring import MetricsCollector, StructuredLogger
 from ..caching import CacheManager
 from ..vault_consul import VaultConsulIntegration, DataServiceConfig
+from ..core.patterns.resilience import (
+    RetryConfig as BaseRetryConfig,
+    CircuitBreakerConfig as BaseCircuitBreakerConfig,
+    CircuitBreakerPattern,
+    CircuitState,
+    CircuitBreakerError as BaseCircuitBreakerError,
+    retry as retry_decorator,
+    circuit_breaker as circuit_breaker_decorator
+)
 
 logger = StructuredLogger.get_logger(__name__)
 
@@ -66,7 +75,7 @@ class RateLimitError(ClientError):
     pass
 
 
-class CircuitBreakerError(ClientError):
+class CircuitBreakerError(ClientError, BaseCircuitBreakerError):
     """Circuit breaker open error"""
     pass
 
@@ -78,84 +87,19 @@ class ServiceDiscoveryMode(Enum):
     DNS = "dns"
 
 
-@dataclass
-class RetryConfig:
-    """Retry configuration"""
-    max_attempts: int = 3
-    initial_delay: float = 1.0
-    max_delay: float = 60.0
-    exponential_base: float = 2.0
-    jitter: bool = True
-    retry_on: List[type] = field(default_factory=lambda: [ConnectionError, TimeoutError])
-    
-    def calculate_delay(self, attempt: int) -> float:
-        """Calculate delay for attempt"""
-        delay = min(self.initial_delay * (self.exponential_base ** (attempt - 1)), self.max_delay)
-        if self.jitter:
-            delay *= (0.5 + random.random())
-        return delay
+# Re-export resilience configs with backward compatibility
+class RetryConfig(BaseRetryConfig):
+    """Retry configuration - extends base with client-specific defaults"""
+    def __init__(self, **kwargs):
+        # Set client-specific defaults
+        if 'retry_on' not in kwargs:
+            kwargs['retry_on'] = [ConnectionError, TimeoutError]
+        super().__init__(**kwargs)
 
 
-@dataclass
-class CircuitBreakerConfig:
-    """Circuit breaker configuration"""
-    failure_threshold: int = 5
-    recovery_timeout: timedelta = timedelta(seconds=60)
-    expected_exception: type = Exception
-    success_threshold: int = 2
-
-
-class CircuitBreakerState(Enum):
-    """Circuit breaker states"""
-    CLOSED = "closed"
-    OPEN = "open"
-    HALF_OPEN = "half_open"
-
-
-@dataclass
-class CircuitBreaker:
-    """Circuit breaker implementation"""
-    config: CircuitBreakerConfig
-    state: CircuitBreakerState = CircuitBreakerState.CLOSED
-    failures: int = 0
-    successes: int = 0
-    last_failure_time: Optional[datetime] = None
-    
-    def call_succeeded(self):
-        """Record successful call"""
-        self.failures = 0
-        if self.state == CircuitBreakerState.HALF_OPEN:
-            self.successes += 1
-            if self.successes >= self.config.success_threshold:
-                self.state = CircuitBreakerState.CLOSED
-                self.successes = 0
-                
-    def call_failed(self):
-        """Record failed call"""
-        self.failures += 1
-        self.last_failure_time = datetime.utcnow()
-        
-        if self.failures >= self.config.failure_threshold:
-            self.state = CircuitBreakerState.OPEN
-            
-        if self.state == CircuitBreakerState.HALF_OPEN:
-            self.state = CircuitBreakerState.OPEN
-            self.successes = 0
-            
-    def can_execute(self) -> bool:
-        """Check if execution is allowed"""
-        if self.state == CircuitBreakerState.CLOSED:
-            return True
-            
-        if self.state == CircuitBreakerState.OPEN:
-            if self.last_failure_time and \
-               datetime.utcnow() - self.last_failure_time > self.config.recovery_timeout:
-                self.state = CircuitBreakerState.HALF_OPEN
-                return True
-            return False
-            
-        # HALF_OPEN
-        return True
+class CircuitBreakerConfig(BaseCircuitBreakerConfig):
+    """Circuit breaker configuration - extends base with client-specific defaults"""
+    pass
 
 
 @dataclass
@@ -230,148 +174,15 @@ class ClientConfig:
             self.service_name = self.name
 
 
-# Decorators
-
-def retry(config: Optional[RetryConfig] = None):
-    """
-    Retry decorator with exponential backoff.
-    
-    Usage:
-        @retry(RetryConfig(max_attempts=5))
-        async def make_request():
-            ...
-    """
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        @functools.wraps(func)
-        async def async_wrapper(*args, **kwargs) -> T:
-            retry_config = config or RetryConfig()
-            last_exception = None
-            
-            for attempt in range(1, retry_config.max_attempts + 1):
-                try:
-                    return await func(*args, **kwargs)
-                except Exception as e:
-                    last_exception = e
-                    
-                    # Check if should retry
-                    if not any(isinstance(e, exc_type) for exc_type in retry_config.retry_on):
-                        raise
-                        
-                    if attempt < retry_config.max_attempts:
-                        delay = retry_config.calculate_delay(attempt)
-                        logger.warning(
-                            f"Attempt {attempt} failed for {func.__name__}: {e}. "
-                            f"Retrying in {delay:.2f}s..."
-                        )
-                        await asyncio.sleep(delay)
-                    else:
-                        raise
-                        
-            raise last_exception
-            
-        @functools.wraps(func)
-        def sync_wrapper(*args, **kwargs) -> T:
-            retry_config = config or RetryConfig()
-            last_exception = None
-            
-            for attempt in range(1, retry_config.max_attempts + 1):
-                try:
-                    return func(*args, **kwargs)
-                except Exception as e:
-                    last_exception = e
-                    
-                    if not any(isinstance(e, exc_type) for exc_type in retry_config.retry_on):
-                        raise
-                        
-                    if attempt < retry_config.max_attempts:
-                        delay = retry_config.calculate_delay(attempt)
-                        logger.warning(
-                            f"Attempt {attempt} failed for {func.__name__}: {e}. "
-                            f"Retrying in {delay:.2f}s..."
-                        )
-                        time.sleep(delay)
-                    else:
-                        raise
-                        
-            raise last_exception
-            
-        return async_wrapper if asyncio.iscoroutinefunction(func) else sync_wrapper
-    return decorator
+# Re-export decorators from resilience module for backward compatibility
+retry = retry_decorator
 
 
-def cached(ttl: Optional[timedelta] = None, key_func: Optional[Callable] = None):
-    """
-    Caching decorator.
-    
-    Usage:
-        @cached(ttl=timedelta(minutes=10))
-        async def get_data(id: str):
-            ...
-    """
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        @functools.wraps(func)
-        async def wrapper(self, *args, **kwargs) -> T:
-            if not hasattr(self, 'cache') or not self.cache or not self.config.cache_enabled:
-                return await func(self, *args, **kwargs)
-                
-            # Generate cache key
-            if key_func:
-                cache_key = key_func(self, *args, **kwargs)
-            else:
-                # Default key generation
-                key_parts = [self.config.cache_key_prefix, func.__name__]
-                key_parts.extend(str(arg) for arg in args)
-                key_parts.extend(f"{k}={v}" for k, v in sorted(kwargs.items()))
-                cache_key = ":".join(key_parts)
-                
-            # Try cache
-            cached_value = await self.cache.get(self.config.name, cache_key)
-            if cached_value is not None:
-                logger.debug(f"Cache hit for {cache_key}")
-                return cached_value
-                
-            # Call function
-            result = await func(self, *args, **kwargs)
-            
-            # Cache result
-            cache_ttl = ttl or self.config.cache_ttl
-            await self.cache.put(self.config.name, cache_key, result, cache_ttl)
-            
-            return result
-            
-        return wrapper
-    return decorator
+# Re-export cached decorator from caching module for backward compatibility
+from ..core.caching import cached
 
 
-def circuit_breaker(config: Optional[CircuitBreakerConfig] = None):
-    """
-    Circuit breaker decorator.
-    
-    Usage:
-        @circuit_breaker(CircuitBreakerConfig(failure_threshold=3))
-        async def external_call():
-            ...
-    """
-    def decorator(func: Callable[..., T]) -> Callable[..., T]:
-        breaker = CircuitBreaker(config or CircuitBreakerConfig())
-        
-        @functools.wraps(func)
-        async def wrapper(*args, **kwargs) -> T:
-            if not breaker.can_execute():
-                raise CircuitBreakerError(
-                    f"Circuit breaker is OPEN for {func.__name__}"
-                )
-                
-            try:
-                result = await func(*args, **kwargs)
-                breaker.call_succeeded()
-                return result
-            except breaker.config.expected_exception as e:
-                breaker.call_failed()
-                raise
-                
-        return wrapper
-    return decorator
+circuit_breaker = circuit_breaker_decorator
 
 
 def rate_limited(max_calls: int, period: timedelta):
@@ -543,7 +354,7 @@ class BaseClient(ABC):
         self._ssl_context: Optional[ssl.SSLContext] = None
         
         # Circuit breakers per endpoint
-        self._circuit_breakers: Dict[str, CircuitBreaker] = {}
+        self._circuit_breakers: Dict[str, CircuitBreakerPattern] = {}
         
         # Rate limiting
         self._rate_limit_calls: List[datetime] = []
@@ -1021,10 +832,10 @@ class BaseClient(ABC):
         # Record call
         self._rate_limit_calls.append(now)
         
-    def _get_circuit_breaker(self, endpoint: str) -> CircuitBreaker:
+    def _get_circuit_breaker(self, endpoint: str) -> CircuitBreakerPattern:
         """Get or create circuit breaker for endpoint"""
         if endpoint not in self._circuit_breakers:
-            self._circuit_breakers[endpoint] = CircuitBreaker(
+            self._circuit_breakers[endpoint] = CircuitBreakerPattern(
                 self.config.circuit_breaker_config
             )
         return self._circuit_breakers[endpoint]
@@ -1046,7 +857,7 @@ class BaseClient(ABC):
         """Record failed request"""
         breaker = self._circuit_breakers.get(url)
         if not breaker:
-            breaker = CircuitBreaker(self.config.circuit_breaker_config)
+            breaker = self._get_circuit_breaker(url)
             self._circuit_breakers[url] = breaker
         breaker.call_failed()
         

@@ -19,6 +19,24 @@ from .base import (
     LogLevel
 )
 
+from .unified import (
+    ConnectionConfig,
+    RetryableConfig,
+    CacheableConfig,
+    ObservableConfig,
+    SecurableConfig,
+    ScalableConfig,
+    DatabaseConnectionConfig,
+    MessagingConnectionConfig,
+    ServiceConnectionConfig,
+    UnifiedServiceConfig,
+    ConfigBuilder,
+    load_config_from_env,
+    load_config_from_file,
+    AnalyticsServiceConfig as UnifiedAnalyticsConfig,
+    MLPlatformServiceConfig as UnifiedMLPlatformConfig
+)
+
 from .service_configs import (
     AnalyticsConfig,
     MLPlatformConfig,
@@ -87,6 +105,25 @@ __all__ = [
     "ConfigLoader",
     "ConfigValidator",
     "ConfigurationError",
+    "Environment",
+    "LogLevel",
+    
+    # Unified configuration
+    "ConnectionConfig",
+    "RetryableConfig",
+    "CacheableConfig",
+    "ObservableConfig",
+    "SecurableConfig",
+    "ScalableConfig",
+    "DatabaseConnectionConfig",
+    "MessagingConnectionConfig",
+    "ServiceConnectionConfig",
+    "UnifiedServiceConfig",
+    "ConfigBuilder",
+    "load_config_from_env",
+    "load_config_from_file",
+    "UnifiedAnalyticsConfig",
+    "UnifiedMLPlatformConfig",
     
     # Service specific
     "AnalyticsConfig",

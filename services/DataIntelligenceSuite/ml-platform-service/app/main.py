@@ -1,203 +1,158 @@
 """
-ML Platform Service
+ML Platform Service - Main Application
 
-Comprehensive machine learning platform for model training, serving, and lifecycle management
+Unified ML platform using the migrated architecture.
 """
-import logging
+
+import os
 from contextlib import asynccontextmanager
-from typing import Optional
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from data_intelligence_common import (
     create_data_intelligence_app,
     ServiceMetadata,
-    DataIntelligenceBaseService,
-    VaultConsulIntegration,
-    EventBus,
     StructuredLogger
 )
 
-# Import engines
-from .engines.training import TrainingOrchestrator, DistributedTrainer
-from .engines.serving import ServingEngine
-from .engines.mlops import MLOpsManager, ModelMonitor, DriftDetector
-from .engines.federated import (
-    FederatedCoordinator, ClientManager, FedAvg, DifferentialPrivacy
-)
-from .engines.automl import (
-    AutoMLEngine, ModelSearch, HyperparameterTuner, FeatureEngineer
-)
+from .core.base import MLPlatformConfig, MLPlatformService
+from .api.v1 import training_router, serving_router, models_router, experiments_router
 
-# Import API routers
-from .api import training, serving, mlops, federated, automl
+# Setup logging
+logger = StructuredLogger.get_logger(__name__)
 
 # Service metadata
 SERVICE_METADATA = ServiceMetadata(
     name="ml-platform-service",
-    version="2.0.0",
-    description="Unified ML platform for training, serving, MLOps, and federated learning",
-    dependencies=["vault", "consul", "pulsar", "mlflow", "ignite"],
-    health_checks=["mlflow", "training", "serving"]
+    version="3.0.0",
+    description="Unified ML platform for model training, serving, MLOps, and federated learning",
+    dependencies=["mlflow", "triton", "ray", "ignite", "pulsar", "minio"],
+    health_checks=["model_registry", "serving_engine", "training_engine"],
+    capabilities=[
+        "model-training", "distributed-training", "federated-learning",
+        "model-serving", "online-inference", "batch-inference",
+        "experiment-tracking", "model-versioning", "drift-detection",
+        "automl", "hyperparameter-tuning", "feature-engineering"
+    ],
+    data_sources=["feature-store", "data-platform", "streaming"],
+    data_outputs=["models", "predictions", "metrics", "experiments"]
 )
 
-logger = StructuredLogger.get_logger(__name__)
-
-# Global instances
-vault_consul: Optional[VaultConsulIntegration] = None
-event_bus: Optional[EventBus] = None
-training_orchestrator: Optional[TrainingOrchestrator] = None
-serving_engine: Optional[ServingEngine] = None
-mlops_manager: Optional[MLOpsManager] = None
-federated_coordinator: Optional[FederatedCoordinator] = None
-automl_engine: Optional[AutoMLEngine] = None
+# Global service instance
+ml_service: MLPlatformService = None
 
 
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     """Application lifespan manager"""
-    global vault_consul, event_bus, training_orchestrator, serving_engine
-    global mlops_manager, federated_coordinator, automl_engine
+    global ml_service
     
-    logger.info("Starting ML Platform Service...")
+    logger.info("Starting ML Platform Service", version=SERVICE_METADATA.version)
     
-    try:
-        # Initialize Vault and Consul
-        vault_consul = VaultConsulIntegration()
-        await vault_consul.initialize()
+    # Create service configuration
+    config = MLPlatformConfig(
+        name=SERVICE_METADATA.name,
+        version=SERVICE_METADATA.version,
         
-        # Initialize event bus
-        event_bus = EventBus()
-        await event_bus.initialize()
+        # ML settings
+        model_registry_url=os.getenv("MLFLOW_TRACKING_URI", "http://mlflow:5000"),
+        experiment_tracking_enabled=os.getenv("EXPERIMENT_TRACKING", "true").lower() == "true",
+        auto_versioning=os.getenv("AUTO_VERSIONING", "true").lower() == "true",
         
-        # Initialize model registry (placeholder)
-        model_registry = {}  # This would be the actual model registry
+        # Training settings
+        default_training_mode=os.getenv("DEFAULT_TRAINING_MODE", "auto"),
+        distributed_framework=os.getenv("DISTRIBUTED_FRAMEWORK", "ray"),
+        gpu_enabled=os.getenv("GPU_ENABLED", "true").lower() == "true",
         
-        # Initialize training components
-        distributed_trainer = DistributedTrainer()
-        training_orchestrator = TrainingOrchestrator(
-            vault_consul, event_bus, model_registry, distributed_trainer
-        )
-        await training_orchestrator.initialize()
+        # Serving settings
+        enable_model_serving=os.getenv("ENABLE_MODEL_SERVING", "true").lower() == "true",
+        serving_framework=os.getenv("SERVING_FRAMEWORK", "triton"),
+        default_replicas=int(os.getenv("DEFAULT_REPLICAS", "2")),
+        autoscaling_enabled=os.getenv("AUTOSCALING_ENABLED", "true").lower() == "true",
         
-        # Initialize serving engine
-        serving_engine = ServingEngine(vault_consul, event_bus, model_registry)
-        await serving_engine.initialize()
+        # Feature store
+        enable_feature_store=os.getenv("ENABLE_FEATURE_STORE", "true").lower() == "true",
+        feature_store_backend=os.getenv("FEATURE_STORE_BACKEND", "feast"),
         
-        # Initialize MLOps components
-        model_monitor = ModelMonitor()
-        drift_detector = DriftDetector()
-        mlops_manager = MLOpsManager(
-            vault_consul, event_bus, model_registry, model_monitor, drift_detector
-        )
-        await mlops_manager.initialize()
+        # Monitoring
+        enable_model_monitoring=os.getenv("ENABLE_MODEL_MONITORING", "true").lower() == "true",
+        drift_detection_enabled=os.getenv("DRIFT_DETECTION", "true").lower() == "true",
+        performance_tracking_enabled=os.getenv("PERFORMANCE_TRACKING", "true").lower() == "true",
         
-        # Initialize federated learning
-        client_manager = ClientManager()
-        aggregation_strategy = FedAvg()
-        privacy_mechanism = DifferentialPrivacy()
-        federated_coordinator = FederatedCoordinator(
-            vault_consul, event_bus, model_registry, client_manager,
-            aggregation_strategy, privacy_mechanism
-        )
-        await federated_coordinator.initialize()
-        
-        # Initialize AutoML
-        model_search = ModelSearch()
-        hyperparameter_tuner = HyperparameterTuner()
-        feature_engineer = FeatureEngineer()
-        automl_engine = AutoMLEngine(
-            vault_consul, event_bus, model_search, hyperparameter_tuner,
-            feature_engineer, training_orchestrator
-        )
-        await automl_engine.initialize()
-        
-        logger.info("ML Platform Service initialized successfully")
-        
-        yield
-        
-    finally:
-        # Cleanup
-        logger.info("Shutting down ML Platform Service...")
-        
-        if training_orchestrator:
-            await training_orchestrator.cleanup()
-        if serving_engine:
-            await serving_engine.cleanup()
-        if mlops_manager:
-            await mlops_manager.cleanup()
-        if federated_coordinator:
-            await federated_coordinator.cleanup()
-        if automl_engine:
-            await automl_engine.cleanup()
-        if event_bus:
-            await event_bus.cleanup()
-        if vault_consul:
-            await vault_consul.cleanup()
+        # Storage
+        model_storage_path=os.getenv("MODEL_STORAGE_PATH", "/models"),
+        artifact_storage=os.getenv("ARTIFACT_STORAGE", "minio")
+    )
+    
+    # Initialize service
+    ml_service = MLPlatformService(config)
+    await ml_service.start()
+    
+    # Set service instance in routers
+    training_router.set_service(ml_service)
+    serving_router.set_service(ml_service)
+    models_router.set_service(ml_service)
+    experiments_router.set_service(ml_service)
+    
+    yield
+    
+    # Shutdown
+    logger.info("Shutting down ML Platform Service")
+    await ml_service.stop()
 
 
-# Create app
-app = create_data_intelligence_app(SERVICE_METADATA, lifespan=lifespan)
+# Create FastAPI app
+app = create_data_intelligence_app(
+    service_metadata=SERVICE_METADATA,
+    lifespan=lifespan
+)
 
 # Add CORS middleware
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
+    allow_origins=os.getenv("CORS_ORIGINS", "*").split(","),
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-# Include routers
-app.include_router(training.router, prefix="/api/v1/training", tags=["training"])
-app.include_router(serving.router, prefix="/api/v1/serving", tags=["serving"])
-app.include_router(mlops.router, prefix="/api/v1/mlops", tags=["mlops"])
-app.include_router(federated.router, prefix="/api/v1/federated", tags=["federated"])
-app.include_router(automl.router, prefix="/api/v1/automl", tags=["automl"])
+# Include API routers
+app.include_router(training_router, prefix="/api/v1/training", tags=["Training"])
+app.include_router(serving_router, prefix="/api/v1/serving", tags=["Serving"])
+app.include_router(models_router, prefix="/api/v1/models", tags=["Models"])
+app.include_router(experiments_router, prefix="/api/v1/experiments", tags=["Experiments"])
 
-# Root endpoint
+
 @app.get("/")
 async def root():
+    """Root endpoint"""
     return {
         "service": SERVICE_METADATA.name,
         "version": SERVICE_METADATA.version,
         "status": "operational",
         "description": SERVICE_METADATA.description,
-        "capabilities": {
-            "training": {
-                "distributed": True,
-                "frameworks": ["pytorch", "tensorflow", "scikit-learn", "xgboost"],
-                "hyperparameter_optimization": True,
-                "experiment_tracking": True
-            },
-            "serving": {
-                "frameworks": ["triton", "torchserve", "tensorflow-serving", "kserve"],
-                "auto_scaling": True,
-                "ab_testing": True,
-                "multi_model": True
-            },
-            "mlops": {
-                "model_versioning": True,
-                "drift_detection": True,
-                "automated_retraining": True,
-                "model_governance": True
-            },
-            "federated_learning": {
-                "privacy_preserving": True,
-                "secure_aggregation": True,
-                "differential_privacy": True,
-                "multiple_strategies": ["fedavg", "fedprox", "scaffold"]
-            },
-            "automl": {
-                "automated_model_selection": True,
-                "hyperparameter_tuning": True,
-                "feature_engineering": True,
-                "ensemble_methods": True
-            }
+        "capabilities": SERVICE_METADATA.capabilities,
+        "endpoints": {
+            "training": "/api/v1/training",
+            "serving": "/api/v1/serving",
+            "models": "/api/v1/models",
+            "experiments": "/api/v1/experiments",
+            "health": "/health",
+            "metrics": "/metrics",
+            "docs": "/docs"
         }
     }
 
 
 if __name__ == "__main__":
     import uvicorn
-    uvicorn.run(app, host="0.0.0.0", port=8000) 
+    
+    port = int(os.getenv("SERVICE_PORT", "8030"))
+    reload = os.getenv("ENVIRONMENT", "development") == "development"
+    
+    uvicorn.run(
+        "app.main:app",
+        host="0.0.0.0",
+        port=port,
+        reload=reload
+    ) 

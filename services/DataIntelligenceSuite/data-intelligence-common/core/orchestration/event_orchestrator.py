@@ -16,7 +16,10 @@ import re
 import json
 
 from ..caching import CacheManager
-from ..events import EventBus, Event
+from ..events import (
+    EventBus, Event, EventHandler as BaseEventHandler,
+    EventProcessingConfig, EventRouter
+)
 from ...monitoring import StructuredLogger
 
 logger = StructuredLogger.get_logger(__name__)
@@ -220,8 +223,8 @@ class EventAggregate:
         return False
 
 
-class BaseEventHandler(ABC):
-    """Base class for event handlers"""
+class OrchestrationHandler(ABC):
+    """Base class for orchestration handlers"""
     
     @abstractmethod
     async def handle(
@@ -239,7 +242,7 @@ class BaseEventHandler(ABC):
         pass
 
 
-class PipelineEventHandler(BaseEventHandler):
+class PipelineEventHandler(OrchestrationHandler):
     """Handler for triggering pipelines"""
     
     def __init__(self, pipeline_orchestrator):
@@ -285,7 +288,7 @@ class PipelineEventHandler(BaseEventHandler):
         return action_type == ActionType.PIPELINE
 
 
-class FunctionEventHandler(BaseEventHandler):
+class FunctionEventHandler(OrchestrationHandler):
     """Handler for executing functions"""
     
     def __init__(self):
@@ -357,7 +360,7 @@ class EventOrchestrator:
         self._rule_index: Dict[str, List[str]] = defaultdict(list)  # event_type -> rule_ids
         
         # Handlers
-        self._handlers: List[BaseEventHandler] = []
+        self._handlers: List[OrchestrationHandler] = []
         
         # Add default handlers
         if pipeline_orchestrator:
@@ -519,14 +522,14 @@ class EventOrchestrator:
     def _get_handler_for_action(
         self,
         action_type: ActionType
-    ) -> Optional[BaseEventHandler]:
+    ) -> Optional[OrchestrationHandler]:
         """Get handler for action type"""
         for handler in self._handlers:
             if handler.can_handle(action_type):
                 return handler
         return None
         
-    def register_handler(self, handler: BaseEventHandler):
+    def register_handler(self, handler: OrchestrationHandler):
         """Register custom event handler"""
         self._handlers.append(handler)
         

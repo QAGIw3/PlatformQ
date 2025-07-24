@@ -17,6 +17,10 @@ from datetime import datetime
 T = TypeVar('T')
 
 
+# Deprecated - use core.patterns.resilience.retry instead
+from ..core.patterns.resilience import retry as retry_async_impl
+from ..core.patterns.resilience import RetryConfig
+
 def retry_async(
     max_attempts: int = 3,
     delay: float = 1.0,
@@ -26,33 +30,28 @@ def retry_async(
     """
     Async retry decorator with exponential backoff.
     
+    DEPRECATED: Use core.patterns.resilience.retry instead.
+    
     Args:
         max_attempts: Maximum number of retry attempts
         delay: Initial delay between retries in seconds
         backoff: Backoff multiplier for each retry
         exceptions: Tuple of exceptions to catch and retry
     """
-    def decorator(func: Callable) -> Callable:
-        @wraps(func)
-        async def wrapper(*args, **kwargs) -> Any:
-            last_exception = None
-            current_delay = delay
-            
-            for attempt in range(max_attempts):
-                try:
-                    return await func(*args, **kwargs)
-                except exceptions as e:
-                    last_exception = e
-                    if attempt < max_attempts - 1:
-                        await asyncio.sleep(current_delay)
-                        current_delay *= backoff
-                    else:
-                        raise
-                        
-            raise last_exception
-            
-        return wrapper
-    return decorator
+    import warnings
+    warnings.warn(
+        "retry_async is deprecated. Use core.patterns.resilience.retry instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
+    
+    config = RetryConfig(
+        max_attempts=max_attempts,
+        initial_delay=delay,
+        exponential_base=backoff,
+        retry_on=list(exceptions)
+    )
+    return retry_async_impl(config)
 
 
 def timeout_async(seconds: float):
@@ -401,9 +400,15 @@ async def batch_process_async(
     return [result for _, result in batch_results]
 
 
+# Deprecated - use core.caching.memoize instead
+from ..core.caching import memoize as memoize_impl
+
 def memoize(func: Callable) -> Callable:
     """
     Simple memoization decorator.
+    
+    DEPRECATED: Use core.caching.memoize instead, which provides more features
+    like maxsize and TTL support.
     
     Args:
         func: Function to memoize
@@ -411,20 +416,15 @@ def memoize(func: Callable) -> Callable:
     Returns:
         Memoized function
     """
-    cache = {}
+    import warnings
+    warnings.warn(
+        "memoize is deprecated. Use core.caching.memoize instead.",
+        DeprecationWarning,
+        stacklevel=2
+    )
     
-    @wraps(func)
-    def wrapper(*args, **kwargs):
-        # Create cache key from args and kwargs
-        key = str(args) + str(sorted(kwargs.items()))
-        
-        if key not in cache:
-            cache[key] = func(*args, **kwargs)
-            
-        return cache[key]
-        
-    wrapper.cache_clear = lambda: cache.clear()
-    return wrapper
+    # Use the new memoize with unlimited cache size
+    return memoize_impl(maxsize=None)(func)
 
 
 def rate_limit(calls: int, period: float):

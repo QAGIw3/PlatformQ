@@ -30,8 +30,12 @@ from .cache_manager import (
 from .cache_decorators import (
     cached,
     cache_result,
+    cache_aside,
+    cache_invalidate,
     invalidate_cache,
-    cache_key_generator
+    cache_key_generator,
+    memoize,
+    CacheContext
 )
 
 # Cache patterns
@@ -89,8 +93,12 @@ __all__ = [
     # Decorators
     "cached",
     "cache_result",
+    "cache_aside",
+    "cache_invalidate",
     "invalidate_cache",
     "cache_key_generator",
+    "memoize",
+    "CacheContext",
     
     # Patterns
     "CachePattern",

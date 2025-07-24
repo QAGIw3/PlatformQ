@@ -4,6 +4,64 @@ Common utilities for Data Intelligence Suite.
 Provides reusable utility functions and helpers.
 """
 
+# Import from optimized utilities
+from .optimized import (
+    # String utilities
+    to_snake_case,
+    to_camel_case,
+    
+    # URL utilities
+    parse_url,
+    is_valid_url,
+    
+    # ID and token generation
+    generate_id,
+    generate_secure_token,
+    
+    # Hashing
+    hash_string,
+    hash_dict,
+    
+    # Dictionary utilities
+    merge_dicts,
+    deep_merge,
+    
+    # Iteration utilities
+    chunk_iterable,
+    process_in_batches,
+    
+    # Path utilities
+    ensure_dir,
+    safe_path_join,
+    
+    # Async utilities
+    run_async_tasks,
+    async_timer,
+    memoize_async,
+    
+    # Timing utilities
+    timer,
+    
+    # JSON utilities
+    safe_json_loads,
+    safe_json_dumps,
+    
+    # Type conversion
+    to_bool,
+    to_int,
+    to_float,
+    
+    # Environment utilities
+    get_env,
+    
+    # Validation
+    is_valid_email,
+    is_valid_uuid,
+    
+    # Retry utilities
+    retry
+)
+
 from .converters import (
     DataFormat,
     TypeConverter,
@@ -75,7 +133,62 @@ from .quantum_utils import (
     estimate_quantum_advantage
 )
 
+# Import deprecated functions from helpers for backward compatibility
+from .helpers import (
+    retry_async,  # Deprecated
+    timeout_async,
+    chunk_list,
+    flatten_dict,
+    unflatten_dict,
+    safe_get,
+    safe_set,
+    memoize,  # Deprecated
+    rate_limit,
+    sanitize_string,
+    truncate_string,
+    format_bytes,
+    parse_bool,
+    deep_get,
+    deep_set,
+    remove_none_values,
+    get_nested_attr,
+    set_nested_attr,
+    camel_to_snake,
+    snake_to_camel,
+    slugify,
+    calculate_checksum
+)
+
 __all__ = [
+    # Optimized utilities
+    "to_snake_case",
+    "to_camel_case",
+    "parse_url",
+    "is_valid_url",
+    "generate_id",
+    "generate_secure_token",
+    "hash_string",
+    "hash_dict",
+    "merge_dicts",
+    "deep_merge",
+    "chunk_iterable",
+    "process_in_batches",
+    "ensure_dir",
+    "safe_path_join",
+    "run_async_tasks",
+    "async_timer",
+    "memoize_async",
+    "timer",
+    "safe_json_loads",
+    "safe_json_dumps",
+    "to_bool",
+    "to_int",
+    "to_float",
+    "get_env",
+    "is_valid_email",
+    "is_valid_uuid",
+    "retry",
+    
     # Converters
     "DataFormat",
     "TypeConverter",
@@ -140,5 +253,29 @@ __all__ = [
     "create_portfolio_qubo",
     "decode_solution",
     "calculate_circuit_metrics",
-    "estimate_quantum_advantage"
+    "estimate_quantum_advantage",
+    
+    # Backward compatibility (deprecated)
+    "retry_async",
+    "timeout_async",
+    "chunk_list",
+    "flatten_dict",
+    "unflatten_dict",
+    "safe_get",
+    "safe_set",
+    "memoize",
+    "rate_limit",
+    "sanitize_string",
+    "truncate_string",
+    "format_bytes",
+    "parse_bool",
+    "deep_get",
+    "deep_set",
+    "remove_none_values",
+    "get_nested_attr",
+    "set_nested_attr",
+    "camel_to_snake",
+    "snake_to_camel",
+    "slugify",
+    "calculate_checksum"
 ] 

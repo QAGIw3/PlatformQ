@@ -545,16 +545,30 @@ def _execute_stage_dask(
         )
 
 
+# Use the consolidated factory pattern
+from ..patterns import TypedFactory, get_global_registry
+
+# Create typed factory for executors
+_executor_factory = TypedFactory(BaseExecutor)
+
+# Register built-in executors
+_executor_factory.register_creator(ExecutorType.ASYNC.value, lambda config, metrics=None: AsyncExecutor(config, metrics))
+_executor_factory.register_creator(ExecutorType.THREAD.value, lambda config, metrics=None: ThreadExecutor(config, metrics))
+_executor_factory.register_creator(ExecutorType.PROCESS.value, lambda config, metrics=None: ProcessExecutor(config, metrics))
+_executor_factory.register_creator(ExecutorType.RAY.value, lambda config, metrics=None: RayExecutor(config, metrics))
+_executor_factory.register_creator(ExecutorType.DASK.value, lambda config, metrics=None: DaskExecutor(config, metrics))
+
+# Also register in global registry for discoverability
+_global_registry = get_global_registry()
+_global_registry.register("executor", _executor_factory, aliases=["pipeline_executor"])
+
+
 class ExecutorFactory:
-    """Factory for creating executors"""
+    """
+    Factory for creating executors.
     
-    _executors = {
-        ExecutorType.ASYNC: AsyncExecutor,
-        ExecutorType.THREAD: ThreadExecutor,
-        ExecutorType.PROCESS: ProcessExecutor,
-        ExecutorType.RAY: RayExecutor,
-        ExecutorType.DASK: DaskExecutor
-    }
+    This is now a compatibility wrapper around the consolidated factory pattern.
+    """
     
     @classmethod
     def create_executor(
@@ -563,12 +577,7 @@ class ExecutorFactory:
         metrics: Optional[MetricsCollector] = None
     ) -> BaseExecutor:
         """Create executor based on configuration"""
-        executor_class = cls._executors.get(config.executor_type)
-        
-        if not executor_class:
-            raise ValueError(f"Unknown executor type: {config.executor_type}")
-            
-        return executor_class(config, metrics)
+        return _executor_factory.create(config.executor_type.value, config, metrics)
         
     @classmethod
     def register_executor(
@@ -577,4 +586,7 @@ class ExecutorFactory:
         executor_class: type
     ):
         """Register custom executor"""
-        cls._executors[executor_type] = executor_class 
+        _executor_factory.register_creator(
+            executor_type.value,
+            lambda config, metrics=None: executor_class(config, metrics)
+        ) 

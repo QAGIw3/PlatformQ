@@ -1,0 +1,245 @@
+# Analytics Engine Service Configuration
+# Using the unified configuration system from data-intelligence-common
+
+service:
+  name: analytics-engine-service
+  version: 3.0.0
+  environment: production
+
+# Connection configurations
+connections:
+  trino:
+    host: trino.platform.local
+    port: 8080
+    catalog: iceberg
+    schema: analytics
+    # Connection pool settings
+    pool_size: 10
+    timeout: 30
+    # Retry configuration
+    retry:
+      max_retries: 3
+      initial_delay: 1.0
+      max_delay: 30.0
+      exponential_base: 2.0
+    # Security
+    ssl_enabled: true
+    auth_type: oauth2
+
+  druid:
+    host: druid-broker.platform.local
+    port: 8082
+    coordinator_url: http://druid-coordinator:8081
+    overlord_url: http://druid-overlord:8090
+    # Connection settings
+    pool_size: 20
+    timeout: 10
+    # Performance
+    enable_query_cache: true
+    cache_ttl: 300
+
+  clickhouse:
+    host: clickhouse.platform.local
+    port: 8123
+    database: analytics
+    # Connection settings
+    pool_size: 15
+    compression: true
+    # Security
+    ssl_enabled: true
+    verify_ssl: true
+
+  pinot:
+    controller_url: http://pinot-controller:9000
+    broker_url: http://pinot-broker:8099
+    # Connection settings
+    timeout: 5
+    enable_multi_stage: true
+
+# Engine configuration
+engines:
+  # Enable/disable specific engines
+  trino:
+    enabled: true
+    priority: 1
+    use_for:
+      - complex_queries
+      - historical_analysis
+      - joins
+    max_concurrent_queries: 50
+    query_timeout: 300
+
+  druid:
+    enabled: true
+    priority: 2
+    use_for:
+      - timeseries
+      - real_time
+      - aggregations
+    max_concurrent_queries: 100
+    query_timeout: 60
+
+  clickhouse:
+    enabled: true
+    priority: 3
+    use_for:
+      - log_analytics
+      - complex_aggregations
+      - window_functions
+    max_concurrent_queries: 75
+    query_timeout: 120
+
+  pinot:
+    enabled: false
+    priority: 4
+    use_for:
+      - ultra_low_latency
+      - real_time_analytics
+    max_concurrent_queries: 200
+    query_timeout: 10
+
+# Processing configuration
+processing:
+  # Stream processing
+  stream_processing:
+    enabled: true
+    framework: flink
+    checkpoint_interval: 60
+    state_backend: rocksdb
+    
+  # ML predictions
+  ml_predictions:
+    enabled: true
+    model_cache_size: 100
+    inference_timeout: 5
+    batch_size: 1000
+
+# Caching configuration
+cache:
+  # Query result cache
+  query_cache:
+    enabled: true
+    backend: ignite
+    ttl: 3600
+    max_size: 10000
+    eviction_policy: lru
+    
+  # Metadata cache
+  metadata_cache:
+    enabled: true
+    ttl: 86400
+    refresh_interval: 3600
+
+# Monitoring and observability
+monitoring:
+  # Metrics collection
+  metrics:
+    enabled: true
+    interval: 60
+    exporters:
+      - prometheus
+      - datadog
+    
+  # Tracing
+  tracing:
+    enabled: true
+    sampling_rate: 0.1
+    exporter: jaeger
+    
+  # Logging
+  logging:
+    level: INFO
+    format: json
+    outputs:
+      - stdout
+      - elasticsearch
+
+# Security configuration
+security:
+  # Authentication
+  auth:
+    enabled: true
+    providers:
+      - oauth2
+      - jwt
+    token_validation: true
+    
+  # Authorization
+  authorization:
+    enabled: true
+    backend: opa
+    policy_refresh_interval: 300
+    
+  # Encryption
+  encryption:
+    at_rest: true
+    in_transit: true
+    key_rotation_interval: 2592000  # 30 days
+
+# Resource limits
+resources:
+  # CPU limits
+  cpu:
+    requests: 4
+    limits: 8
+    
+  # Memory limits
+  memory:
+    requests: 8Gi
+    limits: 16Gi
+    
+  # Query limits
+  query_limits:
+    max_result_size: 1000000
+    max_execution_time: 600
+    max_memory_per_query: 4Gi
+
+# High availability
+high_availability:
+  enabled: true
+  replicas: 3
+  leader_election: true
+  health_check_interval: 30
+  
+# Scaling configuration
+scaling:
+  # Horizontal scaling
+  horizontal:
+    enabled: true
+    min_replicas: 2
+    max_replicas: 10
+    target_cpu_utilization: 70
+    target_memory_utilization: 80
+    
+  # Vertical scaling
+  vertical:
+    enabled: false
+    max_cpu: 16
+    max_memory: 32Gi
+
+# Feature flags
+features:
+  # Advanced features
+  query_optimization: true
+  adaptive_execution: true
+  cost_based_optimization: true
+  
+  # Experimental features
+  quantum_optimization: false
+  neuromorphic_computing: false
+  
+# Integration settings
+integrations:
+  # Vault integration
+  vault:
+    enabled: true
+    address: https://vault.platform.local:8200
+    auth_method: kubernetes
+    secrets_path: secret/data/analytics
+    
+  # Consul integration
+  consul:
+    enabled: true
+    address: https://consul.platform.local:8500
+    service_name: analytics-engine
+    health_check_interval: 10 

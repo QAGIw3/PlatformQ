@@ -10,7 +10,7 @@ import logging
 import traceback
 import uuid
 from datetime import datetime, timedelta
-from ..monitoring.resilience import CircuitBreaker, CircuitBreakerConfig
+from ..core.patterns.resilience import CircuitBreakerPattern, CircuitBreakerConfig
 
 logger = logging.getLogger(__name__)
 
@@ -110,9 +110,9 @@ class CircuitBreakerManager:
         self.fail_max = fail_max
         self.reset_timeout = reset_timeout
         self.expected_exception = expected_exception
-        self._circuit_breakers: Dict[str, CircuitBreaker] = {}
+        self._circuit_breakers: Dict[str, CircuitBreakerPattern] = {}
         
-    def get_circuit_breaker(self, name: str) -> CircuitBreaker:
+    def get_circuit_breaker(self, name: str) -> CircuitBreakerPattern:
         """Get or create circuit breaker"""
         if name not in self._circuit_breakers:
             config = CircuitBreakerConfig(
@@ -120,7 +120,7 @@ class CircuitBreakerManager:
                 recovery_timeout=self.reset_timeout,
                 expected_exceptions=[self.expected_exception]
             )
-            self._circuit_breakers[name] = CircuitBreaker(name, config)
+            self._circuit_breakers[name] = CircuitBreakerPattern(config)
             
             # Set initial state metric
             circuit_breaker_state.labels(
